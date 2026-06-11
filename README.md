@@ -74,10 +74,11 @@ go run ./cmd/harness --verbose   # also stream the agent transcript to the conso
 |---|---|---|
 | `LINEAR_API_KEY` | host only | ticket selection, claiming, breadcrumbs, filing findings |
 | `ANTHROPIC_API_KEY` | passed into sandbox | running `claude` |
-| `GH_TOKEN` | sandbox **and** host | sandbox: review's `git push`; host: harness's `gh pr create` |
-| `HERD_PATH` | host | path to the herd checkout to mount |
+| `GH_TOKEN` | host only | harness's own `git push` + `gh pr create`; never enters the sandbox |
+| `HERD_PATH` | host (also passed into sandbox as the mount path) | path to the herd checkout, bind-mounted at its real path |
 
-`LINEAR_API_KEY` never enters the sandbox.
+`LINEAR_API_KEY` and `GH_TOKEN` never enter the sandbox: the container holds only
+the Claude credential and no longer pushes (ADR-0002).
 
 ## Stopping it
 

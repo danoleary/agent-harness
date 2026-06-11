@@ -16,10 +16,6 @@ var helpTrailerRE = regexp.MustCompile(`^See '.*--help'\.?$`)
 // opposed to a code returned by the process inside the container.
 const ExitCannotStart = 125
 
-// DefaultMountPath is the fixed container path the herd checkout is bind-mounted
-// at in every sandbox (DESIGN.md).
-const DefaultMountPath = "/workspace/herd"
-
 // FindingsMountPath is the fixed container path the findings dropbox is mounted at.
 const FindingsMountPath = "/findings"
 
@@ -27,15 +23,17 @@ const FindingsMountPath = "/findings"
 const PnpmStoreMountPath = "/pnpm-store"
 
 // SecretEnv is the only set of secrets that ever cross the sandbox boundary
-// (ADR-0001). LINEAR_API_KEY is deliberately absent — Linear access never
-// enters the container. Both Claude credential vars are listed: an
-// `sk-ant-api03-` API key (ANTHROPIC_API_KEY, x-api-key auth) and an
+// (ADR-0002): the Claude credential and nothing else. LINEAR_API_KEY and
+// GH_TOKEN are deliberately absent — Linear access never enters the container,
+// and the container no longer pushes (the harness owns all remote git I/O), so
+// the host's GH_TOKEN stays host-only. Both Claude credential vars are listed:
+// an `sk-ant-api03-` API key (ANTHROPIC_API_KEY, x-api-key auth) and an
 // `sk-ant-oat01-` subscription OAuth token (CLAUDE_CODE_OAUTH_TOKEN, Bearer
 // auth — an oat token passed as ANTHROPIC_API_KEY is rejected as an invalid
 // x-api-key). `docker -e NAME` forwards only host vars that are actually set,
 // so whichever one the operator configured flows through and the other is a
 // no-op (BEH-316).
-var SecretEnv = []string{"ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "GH_TOKEN"}
+var SecretEnv = []string{"ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"}
 
 // Config describes one sandboxed claude session.
 type Config struct {
@@ -54,9 +52,6 @@ type Config struct {
 	// omits the flag and lets the CLI fall back to its account default — which is
 	// not guaranteed to be Opus, so the harness always sets it (BEH-316).
 	Model string
-	// MountPath is the container path the checkout is mounted at; empty defaults
-	// to DefaultMountPath.
-	MountPath string
 	// ContainerName is an optional `--name` so the harness can `docker kill` the
 	// container on timeout.
 	ContainerName string
@@ -65,15 +60,10 @@ type Config struct {
 // BuildDockerRunArgs builds the argv (everything after `docker`) to run one
 // sandboxed claude session. Secrets are passed by name only (`-e NAME`, no
 // value) so they are read from the harness's own environment at spawn time and
-// never appear in the process table. The herd checkout is mounted at a single
-// fixed path so a worktree's container-relative `.git` pointer resolves
-// identically every run.
+// never appear in the process table. The herd checkout is bind-mounted at its
+// real host path (ADR-0002) so a worktree's absolute `.git` pointer resolves
+// identically inside the container and on the host.
 func BuildDockerRunArgs(c Config) []string {
-	mountPath := c.MountPath
-	if mountPath == "" {
-		mountPath = DefaultMountPath
-	}
-
 	args := []string{"run", "--rm", "--init"}
 
 	if c.ContainerName != "" {
@@ -84,11 +74,16 @@ func BuildDockerRunArgs(c Config) []string {
 		args = append(args, "-e", name)
 	}
 
+	// The mount path is the real host path, which the entrypoint stat-s to match
+	// the runtime uid to the checkout's owner. It is not a secret, so pass it by
+	// value (unlike the `-e NAME` secrets read from the harness env).
+	args = append(args, "-e", "HERD_PATH="+c.HerdPath)
+
 	args = append(args,
-		"-v", c.HerdPath+":"+mountPath,
+		"-v", c.HerdPath+":"+c.HerdPath,
 		"-v", c.PnpmStoreVolume+":"+PnpmStoreMountPath,
 		"-v", c.FindingsDir+":"+FindingsMountPath,
-		"-w", mountPath,
+		"-w", c.HerdPath,
 		c.Image,
 		"claude",
 		"-p", c.Prompt,

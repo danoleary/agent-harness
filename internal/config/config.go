@@ -43,10 +43,12 @@ func requireEnv(get Getenv, key string) (string, error) {
 	return v, nil
 }
 
-// Load reads harness config from the environment. The sandbox secrets (a Claude
-// credential + GH_TOKEN) are validated for presence here but are not returned —
-// they flow into the container via docker's `-e NAME` reading the harness's own
-// inherited environment, so they never sit in our argv.
+// Load reads harness config from the environment. The Claude credential is the
+// only secret that crosses the sandbox boundary (ADR-0002); it is validated for
+// presence here but not returned — it flows into the container via docker's
+// `-e NAME` reading the harness's own inherited environment, so it never sits in
+// our argv. GH_TOKEN is validated host-side too but stays host-only (the
+// harness's own push + `gh pr create`); it never enters the container.
 func Load(get Getenv) (Config, error) {
 	// Exactly one Claude credential is required: a long-lived API key
 	// (ANTHROPIC_API_KEY) or a subscription OAuth token (CLAUDE_CODE_OAUTH_TOKEN,

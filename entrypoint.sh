@@ -3,13 +3,16 @@
 #   1. As root: pick the unprivileged user to run as (the bind-mounted herd
 #      checkout's owner, so worktree writes succeed regardless of host uid),
 #      hand it the writable surfaces it needs, then re-exec under gosu.
-#   2. As that user: set the commit identity, trust the repo, wire git to push
-#      over HTTPS with GH_TOKEN, then exec the claude session.
+#   2. As that user: set the commit identity, trust the repo, then exec the
+#      claude session. The container never pushes (ADR-0002) — no push auth is
+#      wired, and GH_TOKEN never enters the container.
 # claude --dangerously-skip-permissions refuses to run as root, so pass 1 must
 # always drop privileges (BEH-316).
 set -euo pipefail
 
-MOUNT=/workspace/herd
+# The checkout is bind-mounted at its real host path (ADR-0002); the harness
+# passes that path in as HERD_PATH so this entrypoint can stat the mount.
+MOUNT="${HERD_PATH:?HERD_PATH must be set by the harness (the checkout mount path)}"
 
 if [ "$(id -u)" = "0" ]; then
 	# Match the runtime user to the checkout's owner. On Linux that's the host
@@ -27,7 +30,7 @@ if [ "$(id -u)" = "0" ]; then
 	fi
 
 	# Re-home the `node` account onto the target uid/gid so getpwuid() lookups
-	# (git, gh, npm) resolve to a real user (-o allows a non-unique id if the
+	# (git, npm) resolve to a real user (-o allows a non-unique id if the
 	# host uid collides with a baked-in account). Only when it differs — usermod
 	# writes a "no changes" line straight to the terminal that no redirect can
 	# swallow, so guard rather than suppress.
@@ -57,10 +60,5 @@ git config --global user.email "agent-harness@beherd.co"
 # The repo is bind-mounted from the host; without this git refuses to operate
 # ("detected dubious ownership") when the worktree's owner doesn't match.
 git config --global --add safe.directory '*'
-
-# Let `git push` (review session) authenticate with the GH_TOKEN PAT.
-if [ -n "${GH_TOKEN:-}" ]; then
-	gh auth setup-git
-fi
 
 exec "$@"

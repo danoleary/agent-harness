@@ -72,18 +72,26 @@ func TestOmitsModelWhenAbsent(t *testing.T) {
 	}
 }
 
-func TestBindMounts(t *testing.T) {
+// The checkout is bind-mounted at its real host path (ADR-0002), not a synthetic
+// container path, so a worktree's absolute `.git` pointer resolves identically in
+// the container and on the host.
+func TestBindMountsCheckoutAtRealHostPath(t *testing.T) {
 	c := baseConfig()
-	mounts := valuesForFlag(BuildDockerRunArgs(c), "-v")
+	args := BuildDockerRunArgs(c)
+	mounts := valuesForFlag(args, "-v")
 
 	for _, want := range []string{
-		c.HerdPath + ":" + DefaultMountPath,
+		c.HerdPath + ":" + c.HerdPath,
 		c.PnpmStoreVolume + ":/pnpm-store",
 		c.FindingsDir + ":" + FindingsMountPath,
 	} {
 		if !slices.Contains(mounts, want) {
 			t.Errorf("mounts missing %q", want)
 		}
+	}
+
+	if workdirs := valuesForFlag(args, "-w"); !slices.Contains(workdirs, c.HerdPath) {
+		t.Errorf("workdir should be the real host path %q, got -w %v", c.HerdPath, workdirs)
 	}
 }
 
@@ -97,14 +105,31 @@ func TestPassesSandboxSecretsByNameButNeverLinear(t *testing.T) {
 	if !slices.Contains(envNames, "CLAUDE_CODE_OAUTH_TOKEN") {
 		t.Error("missing CLAUDE_CODE_OAUTH_TOKEN — oat tokens need Bearer auth, not x-api-key")
 	}
-	if !slices.Contains(envNames, "GH_TOKEN") {
-		t.Error("missing GH_TOKEN")
+	// The container no longer pushes (ADR-0002): only the Claude credential crosses
+	// the boundary. GH_TOKEN stays host-only for the harness's own push/PR.
+	if slices.Contains(envNames, "GH_TOKEN") {
+		t.Error("GH_TOKEN must not cross the sandbox boundary — the container no longer pushes")
+	}
+	if regexp.MustCompile(`(?i)GH_TOKEN`).MatchString(strings.Join(args, " ")) {
+		t.Error("GH_TOKEN may not appear anywhere in the argv")
 	}
 	if slices.Contains(envNames, "LINEAR_API_KEY") {
 		t.Error("LINEAR_API_KEY must never cross the boundary")
 	}
 	if regexp.MustCompile(`(?i)LINEAR`).MatchString(strings.Join(args, " ")) {
 		t.Error("no Linear secret may appear anywhere in the argv")
+	}
+}
+
+// The entrypoint matches the runtime uid to the checkout's owner by stat-ing the
+// mount, so it must know where the checkout landed. With the mount now at the
+// real host path, that path is passed in by value as HERD_PATH (not a secret).
+func TestPassesMountPathToEntrypoint(t *testing.T) {
+	c := baseConfig()
+	envs := valuesForFlag(BuildDockerRunArgs(c), "-e")
+
+	if !slices.Contains(envs, "HERD_PATH="+c.HerdPath) {
+		t.Errorf("entrypoint needs the mount path: expected -e HERD_PATH=%s, got %v", c.HerdPath, envs)
 	}
 }
 
