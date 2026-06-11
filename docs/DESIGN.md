@@ -7,38 +7,54 @@
 
 ## What it is
 
-A Go harness that autonomously works the BeHerd Linear backlog one ticket
-at a time. For each eligible ticket it runs two Claude Code skill sessions, each
-inside its own ephemeral Docker sandbox (so Claude can run with
-`--dangerously-skip-permissions` safely):
+A Go harness that works the BeHerd Linear backlog one ticket at a time through
+**three single-role tools**, each a separate binary under `cmd/`, each taking a
+ticket id, each running one Claude Code skill inside its own ephemeral Docker
+sandbox (so Claude can run with `--dangerously-skip-permissions` safely):
 
-1. **`/tdd`** — red-green-refactor implementation; ends at a handoff commit on a
-   feature branch, no PR.
-2. **`/review-worktree`** — a *cold* review of that worktree; runs gates, reviews
-   the diff, applies fixes, then **commits and pushes** — but does **not** raise
-   the PR.
-3. **PR author (Haiku)** — a cheap, short session that reads the ticket + final
-   diff + commit messages and emits a PR `{title, body}` as JSON. The **harness**
-   then creates the PR host-side with `gh pr create`.
+1. **`implementation`** (skill: `/tdd`) — red-green-refactor implementation; ends
+   at a handoff commit on `feat/beh-nnn`. No push, no PR.
+2. **`review`** (skill: `/review-worktree`, steered off its findings/push/PR
+   steps) — a *cold* review of the worktree diff; applies fixes as a local commit.
+   The **harness** (host-side, after the container exits) then independently
+   re-runs the quality gates in a throwaway container and, **only if they pass,
+   pushes the branch and opens the PR** with `gh`.
+3. **`retrospective`** (skill: `/retrospective`, new) — runs **last**; reads
+   *every prior session's transcript* for the ticket plus the diff, and writes
+   harness/environment findings to `/findings/out.json` (**always**, even `[]`).
+   The harness then files each finding to Linear.
 
-It loops until there are no unblocked, `agent-ready` Todo tickets left, or until
-it's told to stop.
+**Three agents, three roles. The contract between them is the shared host
+checkout** — the worktree (code) and the ticket-keyed transcripts — **plus the
+`/findings/out.json` dropbox.** Each tool advances that shared state; none of
+them reaches a remote. This single-role split is deliberate: in an earlier
+two-role design the findings/retrospective step lived *inside* `/tdd` and was
+silently skipped (the agent ended with a summary and never wrote `out.json`), so
+"no systemic issues found" was indistinguishable from "the step never ran."
+Making retrospective its own agent with a single job — and making an absent
+`out.json` a hard failure (see ground truth below) — closes that gap.
 
-PR authoring is split out to its own session (and onto Haiku) because writing a
-title/body is cheap summarization, not reasoning — keeping it off the review
-model's context and budget. Review still owns the *judgement* (what to fix, what
-to push); the author session only *describes* the finished branch.
+The eventual destination is an autonomous loop over the `agent-ready` queue (see
+**The loop**), but the three tools are independently runnable by hand first.
 
 ## Build order
 
-This is built incrementally; the full loop above is the destination, not the
-first deliverable. **Phase 1 (the tracer bullet) is a manual, single-stage CLI:**
-`run-tdd BEH-NNN` — fetch + claim the ticket, run *only* the `/tdd` session in the
-sandbox, show the logs, and prove three things by hand afterward: the worktree was
-created, a handoff commit landed, and any harness-improvement findings the session
-emitted were filed as Linear issues. No selection, no review, no PR, no loop.
-Everything else (review, PR-author, the loop, stop control, automatic selection)
-is layered on only once Phase 1 works correctly end-to-end.
+This is built incrementally; the autonomous loop is the destination, not the
+first deliverable. The build order is the three tools, in pipeline order, each
+runnable by hand against a ticket id before the next is added:
+
+1. **`implementation BEH-NNN`** (was `run-tdd`) — fetch + claim the ticket, run
+   *only* `/tdd` in the sandbox, verify by ground truth that the worktree exists
+   and a handoff commit landed.
+2. **`review BEH-NNN`** — run `/review-worktree` over the existing worktree, then
+   host-side re-run the gates and, if green, push + open the PR.
+3. **`retrospective BEH-NNN`** — run `/retrospective` over the ticket's
+   transcripts, then file any `out.json` findings to Linear.
+
+Selection, stop control, the circuit breaker, and the loop that chains the three
+are layered on only once the tools work correctly by hand. The three binaries
+share their plumbing (container launch, transcript tee, ground-truth verify,
+findings filing) via `internal/` so each `cmd/` entry stays thin.
 
 ## The loop
 
@@ -54,32 +70,34 @@ loop:
 
   Linear: move ticket -> In Progress         // harness owns ALL Linear I/O
 
-  --- session 1: tdd (sandbox, 30 min cap) ---
-  run: claude -p "/tdd Work on BEH-NNN. Create the worktree with slug `beh-nnn`. <injected ticket context + findings-dropbox instructions>"
-  collectFindings(/findings/out.json) -> harness files any emitted harness-improvement issues   // after EVERY session
-  tdd OK  <=> worktree exists AND feat/beh-nnn has >=1 commit ahead of merge-base(origin/main)
-  if not OK -> log + Linear breadcrumb comment + skip review + record failure + continue
+  --- implementation: /tdd (sandbox, 30 min cap) ---
+  run: claude -p "/tdd Work on BEH-NNN. Create the worktree with slug `beh-nnn`. <injected ticket context>"
+  impl OK <=> worktree exists AND feat/beh-nnn has >=1 commit ahead of merge-base(origin/main)
+  if not OK -> log + Linear breadcrumb comment + skip rest + record failure + continue
 
   fetch + fast-forward origin/main           // "pull main after every session"
 
-  --- session 2: review (sandbox, 15 min cap) ---
-  run: claude -p "/review-worktree <worktree-path>  <injected ticket context + 'do not touch Linear; do NOT run gh pr create — commit+push only; append harness-improvement findings to /findings/out.json'>"
-  collectFindings(/findings/out.json) -> harness files any emitted harness-improvement issues
-  review OK <=> feat/beh-nnn is pushed and ahead of origin/main
+  --- review: /review-worktree (sandbox, 15 min cap) ---
+  run: claude -p "/review-worktree <worktree-path>  <injected ticket context + 'do not touch Linear; commit locally ONLY — do NOT push, do NOT run gh; do NOT emit findings (retrospective owns that)'>"
+  # agent has no GH_TOKEN; it can only commit into the shared local .git
+
+  --- review ground truth + push gate (harness, host-side) ---
+  re-run gates in a throwaway container: `pnpm check && pnpm build` on feat/beh-nnn
+  review OK <=> gates are GREEN          // never the agent's self-report
+  if OK     -> git -C $HERD_PATH push origin feat/beh-nnn
+               gh pr create --repo <origin> --head feat/beh-nnn --base main \
+                            --title <templated> --body <templated: ticket id + commit subjects>
   if not OK -> log + Linear breadcrumb comment + KEEP worktree + record failure + continue
 
   fetch + fast-forward origin/main
 
-  --- session 3: PR author (sandbox, Haiku, 5 min cap) ---
-  run: claude -p "/… write a PR title+body from <ticket context + final diff + commit messages>; emit {title, body} JSON" --model claude-haiku-4-5
-  author OK <=> valid {title, body} emitted
-  if not OK -> harness falls back to a templated title/body (ticket id + commit subjects)
-
-  --- PR creation (harness, host-side) ---
-  gh pr create --repo <origin> --head feat/beh-nnn --base main --title <…> --body <…>
-  PR OK     <=> gh returned a URL
-  if OK     -> git worktree remove <worktree-path>
+  --- retrospective: /retrospective (sandbox, 10 min cap) ---
+  run: claude -p "/retrospective for BEH-NNN. Read every transcript under logs/BEH-NNN/ + the diff. Append harness/environment findings to /findings/out.json (ALWAYS write the file, even as []). Touch no code, no Linear."
+  retro OK <=> /findings/out.json EXISTS          // absent => the step never ran => failure
+  collectFindings(/findings/out.json) -> harness files one Linear issue per finding (or none, for [])
   if not OK -> log + Linear breadcrumb comment + KEEP worktree + record failure
+
+  if review OK -> git worktree remove <worktree-path>   // branch pushed + PR captures everything
 
   fetch + fast-forward origin/main
   reset/advance consecutive-failure counter
@@ -93,24 +111,32 @@ loop:
   but the shared `.git` object/ref store and Linear ticket-selection would race
   under concurrency. Parallelism would need per-ticket *clones*, not worktrees —
   out of scope.
-- **Fixed bind-mount path.** The whole herd checkout (incl. `.git` and
-  `.claude/worktrees/`) is bind-mounted into every container at one identical
-  path (e.g. `/workspace/herd`). A worktree's `.git` pointer stores that
-  container path, so **all git ops happen inside containers** at the fixed path;
-  the harness on the host only *launches* containers and never runs git inside a
-  worktree.
+- **Real-path bind mount — see [ADR-0002](adr/0002-harness-owns-remote-io.md).**
+  The whole herd checkout (incl. `.git` and `.claude/worktrees/`) is bind-mounted
+  into every container at **its own real host path** (`$HERD_PATH:$HERD_PATH`,
+  `-w $HERD_PATH`), not a synthetic `/workspace/herd`. A worktree's `.git` pointer
+  is an absolute path, so mounting at the real path makes it resolve **identically
+  in every container and on the host** — a human can `cd .claude/worktrees/beh-nnn
+  && git diff` to inspect live work. (The path is still fixed *per machine*, so
+  the cross-container invariant the worktree contract relies on still holds.)
 - **Harness picks the ticket; the skill is told which.** Neither skill selects a
   ticket. The harness queries Linear and passes the explicit `BEH-NNN` into the
   `/tdd` prompt.
 - **Deterministic slug.** The harness dictates the worktree slug (`beh-nnn`) so
   the path is known without parsing model output: `…/.claude/worktrees/beh-nnn`
   on `feat/beh-nnn`.
-- **Success is ground-truth, never self-report.** tdd success = a real commit on
-  the branch; review success = a real PR. The agent's own "I'm done" is logged
-  but not authoritative.
-- **The harness owns all Linear I/O — see [ADR-0001](adr/0001-harness-owns-linear-integration.md).**
-  Nothing Linear enters the sandbox. The only secrets in the container are
-  `ANTHROPIC_API_KEY` and `GH_TOKEN`.
+- **Success is ground-truth, never self-report.** Per tool: *implementation* = a
+  real commit ahead of merge-base; *review* = the harness's **own** re-run of the
+  gates is green (which is also the push gate — no branch reaches a PR on the
+  agent's say-so); *retrospective* = `/findings/out.json` exists on disk (an empty
+  `[]` is a valid "ran, found nothing"; an *absent* file means the step never ran
+  and is a failure). The agent's own "I'm done" is logged but never authoritative.
+- **The harness owns all remote I/O — Linear ([ADR-0001](adr/0001-harness-owns-linear-integration.md))
+  *and* git push / PR ([ADR-0002](adr/0002-harness-owns-remote-io.md)).** Agents
+  commit only into the local shared `.git`; the harness pushes (via the main
+  checkout) and opens the PR host-side. The sandbox is air-gapped except for
+  Anthropic: the **only** secret in the container is the Claude credential
+  (`ANTHROPIC_API_KEY` *or* `CLAUDE_CODE_OAUTH_TOKEN`). No `GH_TOKEN`, no Linear.
 - **Failure never mutates Linear state and never deletes a worktree.** It logs,
   drops a Linear breadcrumb comment, and continues. Worktrees are the recoverable
   artifact.
@@ -130,51 +156,68 @@ A ticket is eligible iff **all** hold:
 Ordering: **priority** (Urgent → High → Medium → Low → No-priority), tie-broken by
 **board sort order** then `createdAt` ascending. Take the top one.
 
-## Harness-improvement findings (both sessions)
+## Harness-improvement findings (retrospective owns this, alone)
 
-Both skills surface findings about the *harness/environment itself* (not the
-feature): `tdd` via its session-retrospective step, `review-worktree` via its
-systemic-findings step. Under Design B the sandbox has no Linear access, so the
-sessions can't file these — the **harness files them after every session**.
+Findings about the *harness/environment itself* (setup friction, systemic gaps,
+missing patterns) — **not** the feature — are produced by exactly one agent:
+`retrospective`. `implementation` and `review` no longer emit findings; this is a
+deliberate change from the earlier design where both did. A single writer means
+no merge races on `out.json`, one clear owner, and the systemic judgement living
+in one model's context. Review's in-the-moment "this fought me" instinct survives
+into its transcript, which retrospective reads.
 
-Mechanism — a **findings dropbox**, kept deliberately simple and out-of-band:
+**Input — the prior transcripts are a first-class input.** Retrospective reviews
+the *sessions*, not just the code, so it needs what happened during them. With the
+real-path mount, the ticket-keyed transcripts at
+`$HERD_PATH/agent-harness/logs/BEH-NNN/` are already visible inside the container
+at their natural path — no extra mount. Retrospective reads **every** prior
+transcript for the ticket (implementation *and* review) plus the diff.
 
-- A dedicated writable dir is mounted into every session at a fixed container
-  path (`/findings`; host `logs/<run-id>/findings/<ticket>-<session>/`), **outside
-  the repo tree** so it never dirties the worktree or risks being committed.
-- Each session's prompt instructs it: "if you hit problems with the harness itself
-  (setup friction, systemic gaps, missing patterns), append them to
-  `/findings/out.json` as `{title, body, kind}`; do **not** file Linear issues."
-- After **every** session returns (tdd, review — PR-author too, though it rarely
-  has any), the harness reads `out.json`, files one Linear issue per finding (team
-  BeHerd, referencing the worked ticket), logs each, and clears the file.
+**Output — the findings dropbox**, kept deliberately simple and out-of-band:
 
-These are a separate concern from the feature PR and never go in it — same rule
-both skills already follow, just relocated from in-session MCP to post-session
-harness filing.
+- A dedicated writable dir is mounted at a fixed container path (`/findings`;
+  host `logs/BEH-NNN/findings/retrospective/`), **outside the repo tree** so it
+  never dirties the worktree or risks being committed.
+- The retrospective prompt instructs it: append findings to `/findings/out.json`
+  as a JSON array of `{title, body, kind}`; do **not** file Linear issues; and
+  **always write the file, even as `[]`** (so absence means the step never ran).
+- After the session returns, the harness reads `out.json`, files one Linear issue
+  per finding (team BeHerd, referencing the worked ticket), and logs each.
+
+These are a separate concern from the feature PR and never go in it.
+
+> Why `review` is a **cold** review and does *not* read the implementation
+> transcript: coldness is the point — review reconstructs intent from the
+> branch/issue/diff so it isn't anchored to the implementer's framing. Only
+> retrospective, whose job *is* to study the sessions, reads the transcripts.
 
 ## Credentials & sandbox boundary
 
 | Secret | Where | Used by |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | container env | running `claude` (incl. Haiku PR-author) |
-| `GH_TOKEN` (PAT, repo scope) | **container env + host** | container: review's `git push` (`gh auth setup-git`); host: harness's `gh pr create` against `origin` (no worktree git op) |
+| `ANTHROPIC_API_KEY` *or* `CLAUDE_CODE_OAUTH_TOKEN` | **container env** | running `claude` (the only secret that crosses the boundary) |
+| `GH_TOKEN` (PAT, repo scope) | **host only** | harness's `git push` (via the main checkout) + `gh pr create` against `origin` |
 | `LINEAR_API_KEY` | **host only** | harness's Linear GraphQL calls |
 
 `web/.env.*` + Supabase link config reach the container **for free** via the
-worktree symlinks resolving into the mounted main checkout. Linear never enters
-the sandbox (Design B).
+worktree symlinks resolving into the mounted main checkout. Neither Linear nor
+GitHub credentials ever enter the sandbox (ADR-0001, ADR-0002).
 
-The Docker boundary limits filesystem/network blast radius, but the sandboxed
-agent runs with the real `ANTHROPIC_API_KEY` + `GH_TOKEN`. That is inherent to
-"let it run with `--dangerously-skip-permissions`" — the `agent-ready` label is
-the human gate that keeps it bounded.
+The Docker boundary limits filesystem/network blast radius, and — unlike the
+original design — the sandboxed agent now holds **only the Claude credential**, so
+even a fully compromised `--dangerously-skip-permissions` session cannot push to a
+remote, open a PR, or touch Linear; the worst it can do is mutate the local
+checkout, which the harness's independent gate re-run catches before anything
+ships. The `agent-ready` label remains the human gate on *what* runs unattended.
 
 ## Sandbox image
 
-- Node 20, `pnpm` (corepack), `git`, `bash`, the `claude` CLI (pinned), `gh`,
-  `supabase` CLI (for schema-touching tdd tickets).
-- Entrypoint: `gh auth setup-git`, set git committer identity, `corepack enable`.
+- Node 20, `pnpm` (corepack), `git`, `bash`, the `claude` CLI (pinned),
+  `supabase` CLI (for schema-touching tdd tickets). `gh` is **not** needed in the
+  image — push/PR are host-side (ADR-0002).
+- Entrypoint: set git committer identity, trust the repo, `corepack enable`. It
+  does **not** run `gh auth setup-git` or wire HTTPS push — the container has no
+  `GH_TOKEN` and never pushes.
 - **Persistent pnpm content-addressed store** mounted as a Docker volume so the
   per-worktree `pnpm install` (run twice per ticket on fresh worktrees) is a
   near-instant hardlink op instead of a network fetch.
@@ -184,8 +227,8 @@ the human gate that keeps it bounded.
 ## Stop control
 
 - **Graceful, per-ticket checkpoint.** Stop only ever lands *between* tickets
-  (after a full tdd→review cycle), never mid-ticket — stopping between tdd and
-  review would strand a half-reviewed worktree.
+  (after a full implementation→review→retrospective cycle), never mid-ticket —
+  stopping between stages would strand a half-finished worktree.
 - **Two signals, one check** (`stopRequested || existsSync(STOP_FILE)` at each
   between-ticket checkpoint):
   - `SIGINT` (Ctrl-C) — flips the flag, logs `will stop after current ticket`,
@@ -201,16 +244,16 @@ the human gate that keeps it bounded.
 
 ## Timeouts & failure handling
 
-- Per-session wall-clock caps: **tdd 30 min, review 15 min, PR-author 5 min**
-  (configurable). On expiry the harness kills the container and treats the
-  session as failed.
+- Per-session wall-clock caps: **implementation 30 min, review 15 min,
+  retrospective 10 min** (configurable). On expiry the harness kills the container
+  and treats the session as failed.
 - **Failure matrix:**
 
-  | Outcome | tdd | review | PR author + creation |
+  | Outcome | implementation | review (+ harness gate/push/PR) | retrospective |
   |---|---|---|---|
-  | Clean success (ground-truth passes) | → run review | branch pushed → run PR author | PR created → remove worktree, ticket done, next |
-  | Crash / non-zero exit / timeout | log + breadcrumb, skip rest, next | log + breadcrumb, keep worktree (no push), next | author fails → harness uses a **templated** title/body and still creates the PR |
-  | Ran but ground-truth fails | no commit → skip + breadcrumb | not pushed → breadcrumb, keep worktree, next | `gh pr create` returns no URL → breadcrumb, keep worktree, next |
+  | Clean success (ground-truth passes) | commit ahead → run review | gates green → push + PR created → run retrospective | `out.json` present → file findings → remove worktree, ticket done, next |
+  | Crash / non-zero exit / timeout | log + breadcrumb, skip rest, next | log + breadcrumb, keep worktree (no push), next | log + breadcrumb, keep worktree, next |
+  | Ran but ground-truth fails | no commit → skip + breadcrumb | gates **red** → no push, breadcrumb, keep worktree, next | `out.json` absent → breadcrumb, keep worktree, next |
 
 - **Circuit breaker:** 3 consecutive ticket failures → stop and report (assume
   something environmental broke, e.g. expired auth or a broken base build —
@@ -221,11 +264,17 @@ the human gate that keeps it bounded.
 - **Console = concise harness narration**, one timestamped line per event
   (`selected BEH-312 (Urgent)`, `tdd ✓ committed a1b2c3d`, `review ✓ PR #418`,
   `stop requested — finishing current ticket`, `queue empty — exiting`).
-- **Disk = full forensic detail**, per run id:
-  - `agent-harness/logs/<run-id>/BEH-NNN-tdd.jsonl` and `…-review.jsonl` — the
-    complete `claude … --output-format stream-json` transcript, teed from each
-    session.
-  - `agent-harness/logs/<run-id>/run.jsonl` — the structured event stream
+- **Disk = full forensic detail, keyed by ticket** (not by run id) so any later
+  tool finds a ticket's whole arc by globbing one dir:
+  - `agent-harness/logs/BEH-NNN/<session>-<run-id>.jsonl` — the complete
+    `claude … --output-format stream-json` transcript per session
+    (`implementation-…`, `review-…`, `retrospective-…`). The ticket id is the
+    stable key all three tools share; the run-id is a filename suffix for ordering
+    and uniqueness when a ticket is worked more than once. This is what lets
+    `retrospective BEH-NNN`, invoked separately, locate the implementation and
+    review transcripts.
+  - `agent-harness/logs/BEH-NNN/findings/retrospective/out.json` — the dropbox.
+  - `agent-harness/logs/BEH-NNN/run.jsonl` — the structured event stream
     (machine-readable mirror of the console).
 - `--verbose` tees the raw agent stream to the console too; off by default.
 
@@ -243,9 +292,13 @@ the human gate that keeps it bounded.
 ## Worktree lifecycle
 
 - Created by the `tdd` skill inside the sandbox (`scripts/new-worktree.sh beh-nnn feat`).
-- Persists on the host between sessions via the bind mount.
-- **On PR-creation success → `git worktree remove`** (branch is pushed and the PR
-  captures everything; the worktree is pure disk cost). Run inside a throwaway
-  container at the fixed mount path, since the worktree's `.git` pointer is
-  container-relative.
-- **On any failure → keep it** (recoverable artifact).
+- Persists on the host between sessions via the bind mount, and — because of the
+  real-path mount (ADR-0002) — is fully usable from the host: a human can `cd` in
+  and run git on it.
+- **On a clean run (review pushed + retrospective filed) → `git worktree
+  remove`** (branch is pushed and the PR captures everything; the worktree is pure
+  disk cost). The harness runs this **host-side** via the main checkout — the
+  real-path mount makes the worktree's `.git` pointer resolve on the host, so no
+  throwaway container is needed.
+- **On any failure → keep it** (recoverable artifact a human or a re-run can pick
+  up).
