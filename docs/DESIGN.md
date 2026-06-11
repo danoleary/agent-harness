@@ -7,7 +7,7 @@
 
 ## What it is
 
-A TypeScript harness that autonomously works the BeHerd Linear backlog one ticket
+A Go harness that autonomously works the BeHerd Linear backlog one ticket
 at a time. For each eligible ticket it runs two Claude Code skill sessions, each
 inside its own ephemeral Docker sandbox (so Claude can run with
 `--dangerously-skip-permissions` safely):
@@ -231,10 +231,11 @@ the human gate that keeps it bounded.
 
 ## Harness runtime (host side)
 
-- **Node 24+**, run via `tsx`, no build step, near-zero dependencies: native
-  `fetch` (Linear GraphQL), `node:child_process` (driving `docker`), `node:fs`
-  (logs + stop file). Tiny dep tree on purpose — this process holds real
-  credentials.
+- **Go 1.26+**, standard library only — zero module dependencies: `net/http`
+  (Linear GraphQL), `os/exec` (driving `docker`), `os`/`encoding/json` (logs +
+  stop file). No dep tree on purpose — this process holds real credentials.
+  Built with `go build`; the binary is self-contained (no runtime needed on the
+  host beyond `docker`).
 - Config: `agent-harness/.env` (`LINEAR_API_KEY`, `ANTHROPIC_API_KEY`,
   `GH_TOKEN`, `HERD_PATH`, bot identity, timeouts) + CLI flags (`--verbose`,
   `--once` for a single ticket then exit, label/timeout overrides).

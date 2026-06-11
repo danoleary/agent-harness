@@ -1,4 +1,6 @@
-node_modules/
 .env
 logs/
 STOP
+/bin/
+# Compiled binary built by `go build -o run-tdd ./cmd/run-tdd` (CI/Make use /bin/).
+/run-tdd

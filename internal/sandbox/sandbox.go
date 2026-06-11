@@ -1,0 +1,158 @@
+// Package sandbox builds the docker argv to run one sandboxed claude session.
+package sandbox
+
+import (
+	"fmt"
+	"regexp"
+	"strings"
+)
+
+// helpTrailerRE matches docker's generic "See 'docker run --help'." footer,
+// which it prints *after* the real error line — uninformative on its own.
+var helpTrailerRE = regexp.MustCompile(`^See '.*--help'\.?$`)
+
+// ExitCannotStart is Docker's reserved exit code for "the `docker run` command
+// itself failed" — daemon unreachable, image missing, or a bad flag — as
+// opposed to a code returned by the process inside the container.
+const ExitCannotStart = 125
+
+// DefaultMountPath is the fixed container path the herd checkout is bind-mounted
+// at in every sandbox (DESIGN.md).
+const DefaultMountPath = "/workspace/herd"
+
+// FindingsMountPath is the fixed container path the findings dropbox is mounted at.
+const FindingsMountPath = "/findings"
+
+// PnpmStoreMountPath is the fixed container path the persistent pnpm store is mounted at.
+const PnpmStoreMountPath = "/pnpm-store"
+
+// SecretEnv is the only set of secrets that ever cross the sandbox boundary
+// (ADR-0001). LINEAR_API_KEY is deliberately absent — Linear access never
+// enters the container. Both Claude credential vars are listed: an
+// `sk-ant-api03-` API key (ANTHROPIC_API_KEY, x-api-key auth) and an
+// `sk-ant-oat01-` subscription OAuth token (CLAUDE_CODE_OAUTH_TOKEN, Bearer
+// auth — an oat token passed as ANTHROPIC_API_KEY is rejected as an invalid
+// x-api-key). `docker -e NAME` forwards only host vars that are actually set,
+// so whichever one the operator configured flows through and the other is a
+// no-op (BEH-316).
+var SecretEnv = []string{"ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "GH_TOKEN"}
+
+// Config describes one sandboxed claude session.
+type Config struct {
+	// Image is the sandbox image tag.
+	Image string
+	// HerdPath is the host path to the herd checkout to bind-mount.
+	HerdPath string
+	// FindingsDir is the host path to this session's findings dropbox dir,
+	// mounted at /findings.
+	FindingsDir string
+	// PnpmStoreVolume is the Docker volume name for the persistent pnpm store.
+	PnpmStoreVolume string
+	// Prompt is the `-p` prompt to hand to claude.
+	Prompt string
+	// Model is the claude `--model` to pin the session to (e.g. "opus"). Empty
+	// omits the flag and lets the CLI fall back to its account default — which is
+	// not guaranteed to be Opus, so the harness always sets it (BEH-316).
+	Model string
+	// MountPath is the container path the checkout is mounted at; empty defaults
+	// to DefaultMountPath.
+	MountPath string
+	// ContainerName is an optional `--name` so the harness can `docker kill` the
+	// container on timeout.
+	ContainerName string
+}
+
+// BuildDockerRunArgs builds the argv (everything after `docker`) to run one
+// sandboxed claude session. Secrets are passed by name only (`-e NAME`, no
+// value) so they are read from the harness's own environment at spawn time and
+// never appear in the process table. The herd checkout is mounted at a single
+// fixed path so a worktree's container-relative `.git` pointer resolves
+// identically every run.
+func BuildDockerRunArgs(c Config) []string {
+	mountPath := c.MountPath
+	if mountPath == "" {
+		mountPath = DefaultMountPath
+	}
+
+	args := []string{"run", "--rm", "--init"}
+
+	if c.ContainerName != "" {
+		args = append(args, "--name", c.ContainerName)
+	}
+
+	for _, name := range SecretEnv {
+		args = append(args, "-e", name)
+	}
+
+	args = append(args,
+		"-v", c.HerdPath+":"+mountPath,
+		"-v", c.PnpmStoreVolume+":"+PnpmStoreMountPath,
+		"-v", c.FindingsDir+":"+FindingsMountPath,
+		"-w", mountPath,
+		c.Image,
+		"claude",
+		"-p", c.Prompt,
+		"--dangerously-skip-permissions",
+		"--output-format", "stream-json",
+		"--verbose",
+	)
+
+	if c.Model != "" {
+		args = append(args, "--model", c.Model)
+	}
+
+	return args
+}
+
+// Preflight verifies the harness can actually launch a sandbox before it commits
+// to a run (claiming the ticket, mutating Linear state) — first that the Docker
+// daemon is reachable, then that the sandbox image is present locally. Both
+// failures otherwise surface only as a bare exit 125 *after* the ticket is
+// already claimed with no worktree (BEH-316). run is injected so the check can
+// be unit-tested; production passes a CombinedOutput runner.
+func Preflight(image string, run func(name string, args ...string) ([]byte, error)) error {
+	// Daemon reachable? `docker info` is the cheapest call that actually
+	// round-trips to the daemon — `docker --version` is client-only and passes
+	// even when the daemon is down.
+	if out, err := run("docker", "info"); err != nil {
+		return fmt.Errorf(
+			"docker daemon not reachable — is Docker Desktop running? (%s)", reasonOr(out, err),
+		)
+	}
+
+	// Image present? A missing image makes `docker run` try to pull a private/
+	// nonexistent repo and die with exit 125; catch it here with a build hint.
+	if out, err := run("docker", "image", "inspect", image); err != nil {
+		return fmt.Errorf(
+			"sandbox image %q not found locally — build it first with `docker build -t %s .` (%s)",
+			image, image, reasonOr(out, err),
+		)
+	}
+
+	return nil
+}
+
+// reasonOr returns docker's own error line from out, falling back to err's text
+// when out carries nothing useful.
+func reasonOr(out []byte, err error) string {
+	if hint := DockerErrorReason(string(out)); hint != "" {
+		return hint
+	}
+	return err.Error()
+}
+
+// DockerErrorReason extracts the most informative line from docker's stderr: the
+// last non-blank line that isn't docker's generic "See '… --help'." trailer.
+// Surfaced on the console — otherwise docker's reason is teed only to the
+// transcript and the operator sees a bare exit code (BEH-316).
+func DockerErrorReason(stderr string) string {
+	lines := strings.Split(stderr, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		t := strings.TrimSpace(lines[i])
+		if t == "" || helpTrailerRE.MatchString(t) {
+			continue
+		}
+		return t
+	}
+	return ""
+}

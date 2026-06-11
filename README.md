@@ -23,10 +23,11 @@ decides *how*.
 ```bash
 cd agent-harness
 cp .env.example .env        # fill in the secrets below
-pnpm install
+go build ./...              # compile + sanity-check (no external deps)
 ```
 
-Requires Node **24+** and a working local `docker`.
+The harness is a Go program (stdlib only — no module dependencies). Requires Go
+**1.26+** and a working local `docker`.
 
 ### Phase 1 — `run-tdd` (current)
 
@@ -39,10 +40,13 @@ review, no PR, no loop (those are later phases).
 # build the sandbox image once
 docker build -t herd-agent-harness:latest .
 
-pnpm run-tdd BEH-362             # fetch + claim, run tdd in the sandbox, verify
-pnpm run-tdd BEH-362 --verbose   # also stream the raw agent transcript to the console
-pnpm run-tdd BEH-362 --dry-run   # print the prompt + docker command — no mutations, no container
+go run ./cmd/run-tdd BEH-362             # fetch + claim, run tdd in the sandbox, verify
+go run ./cmd/run-tdd BEH-362 --verbose   # also stream the raw agent transcript to the console
+go run ./cmd/run-tdd BEH-362 --dry-run   # print the prompt + docker command — no mutations, no container
 ```
+
+Or via the Makefile: `make run-tdd ARGS="BEH-362 --verbose"`. A compiled binary
+(`make build` → `bin/run-tdd`) works the same way: `bin/run-tdd BEH-362`.
 
 `--dry-run` still needs every secret in `.env` and makes one read-only Linear call
 (to fetch the ticket the prompt is built from); it does not claim the ticket, launch
@@ -56,10 +60,13 @@ Linear issues.
 ### Later phases (destination)
 
 ```bash
-tsx src/main.ts             # loop until queue empty / stopped
-tsx src/main.ts --once      # do a single ticket and exit
-tsx src/main.ts --verbose   # also stream the agent transcript to the console
+go run ./cmd/harness             # loop until queue empty / stopped
+go run ./cmd/harness --once      # do a single ticket and exit
+go run ./cmd/harness --verbose   # also stream the agent transcript to the console
 ```
+
+(`cmd/harness` — the selection + review + PR loop — is not built yet; Phase 1 is
+`cmd/run-tdd` above.)
 
 ### Secrets (`.env`)
 
@@ -84,6 +91,38 @@ tsx src/main.ts --verbose   # also stream the agent transcript to the console
 - Console: one concise line per harness event.
 - `logs/<run-id>/BEH-NNN-{tdd,review}.jsonl`: full agent transcripts.
 - `logs/<run-id>/run.jsonl`: structured event stream.
+
+## Layout
+
+```
+cmd/run-tdd/        Phase-1 CLI entrypoint (the orchestrator)
+internal/
+  config/           env → resolved HarnessConfig
+  ticket/           the Ticket shape
+  linear/           host-only Linear GraphQL client + transport (ADR-0001)
+  prompt/           builds the sandboxed /tdd prompt
+  sandbox/          builds the `docker run …` argv
+  stream/           claude stream-json → concise console narration
+  findings/         parses the /findings/out.json dropbox
+  verify/           ground-truth tdd success check
+  git/              gathers worktree + commit ground truth
+  runlog/           per-run log dir (console + jsonl + transcripts)
+Dockerfile,         the *sandbox* image (node-based: runs the claude CLI + herd's
+entrypoint.sh         pnpm build) — unrelated to the harness's own language
+```
+
+The harness is the **host** program; the `Dockerfile` builds the **sandbox** the
+agent runs inside. The sandbox stays node-based because it runs the `claude` CLI
+and herd's own `pnpm` build — that's independent of the harness being written in Go.
+
+## Develop
+
+```bash
+go test ./...     # full suite
+go vet ./...      # static checks
+gofmt -w .        # format
+make check        # fmt-check + vet + test (the pre-push gate)
+```
 
 See [`docs/DESIGN.md`](docs/DESIGN.md) for the full design, invariants, failure
 matrix, and the sandbox image.
