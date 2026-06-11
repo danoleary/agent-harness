@@ -1,0 +1,7 @@
+# Build-script approval moved here from the package.json `pnpm` field, which
+# newer pnpm no longer reads (it warns "pnpm field is no longer read" and then
+# fails install with ERR_PNPM_IGNORED_BUILDS for any undecided build script).
+# esbuild ships its platform binary via optional deps and doesn't need its
+# postinstall build in our test toolchain, so it's explicitly disallowed.
+allowBuilds:
+  esbuild: false

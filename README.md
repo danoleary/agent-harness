@@ -23,13 +23,43 @@ decides *how*.
 ```bash
 cd agent-harness
 cp .env.example .env        # fill in the secrets below
-pnpm install                # or: npm install
+pnpm install
+```
+
+Requires Node **24+** and a working local `docker`.
+
+### Phase 1 — `run-tdd` (current)
+
+The first slice is a manual, single-stage CLI: fetch + claim one hand-passed
+ticket, run **only** the `/tdd` session in the sandbox, then verify the worktree
++ handoff commit by ground truth and file any dropped findings. No selection, no
+review, no PR, no loop (those are later phases).
+
+```bash
+# build the sandbox image once
+docker build -t herd-agent-harness:latest .
+
+pnpm run-tdd BEH-362             # fetch + claim, run tdd in the sandbox, verify
+pnpm run-tdd BEH-362 --verbose   # also stream the raw agent transcript to the console
+pnpm run-tdd BEH-362 --dry-run   # print the prompt + docker command — no mutations, no container
+```
+
+`--dry-run` still needs every secret in `.env` and makes one read-only Linear call
+(to fetch the ticket the prompt is built from); it does not claim the ticket, launch
+the container, or write anything.
+
+After a run, verify by hand: the worktree exists at `.claude/worktrees/beh-362`,
+`feat/beh-362` has a commit ahead of `origin/main`, the transcript is at
+`agent-harness/logs/<run-id>/BEH-362-tdd.jsonl`, and any findings were filed as
+Linear issues.
+
+### Later phases (destination)
+
+```bash
 tsx src/main.ts             # loop until queue empty / stopped
 tsx src/main.ts --once      # do a single ticket and exit
 tsx src/main.ts --verbose   # also stream the agent transcript to the console
 ```
-
-Requires Node **24+** and a working local `docker`.
 
 ### Secrets (`.env`)
 
