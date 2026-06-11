@@ -1,11 +1,11 @@
 # Agent harness — Go toolchain shortcuts. Requires Go 1.26+.
-.PHONY: build image test run-tdd vet fmt fmt-check check tidy
+.PHONY: build image test implementation vet fmt fmt-check check tidy
 
-# Build all packages (and the run-tdd binary into ./bin).
+# Build all packages (and the implementation tool binary into ./bin).
 build:
-	go build -o bin/run-tdd ./cmd/run-tdd
+	go build -o bin/implementation ./cmd/implementation
 
-# Build the sandbox image run-tdd launches. Override the tag with IMAGE=...
+# Build the sandbox image the tools launch. Override the tag with IMAGE=...
 # (must match HARNESS_IMAGE if you set it).
 IMAGE ?= herd-agent-harness:latest
 image:
@@ -16,9 +16,9 @@ test:
 	go test ./...
 
 # Fetch + claim a ticket and run the sandboxed /tdd session. Pass the ticket id
-# (and optional flags) in ARGS, e.g.  make run-tdd ARGS="BEH-362 --verbose"
-run-tdd:
-	go run ./cmd/run-tdd $(ARGS)
+# (and optional flags) in ARGS, e.g.  make implementation ARGS="BEH-362 --verbose"
+implementation:
+	go run ./cmd/implementation $(ARGS)
 
 vet:
 	go vet ./...

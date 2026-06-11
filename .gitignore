@@ -2,5 +2,7 @@
 logs/
 STOP
 /bin/
-# Compiled binary built by `go build -o run-tdd ./cmd/run-tdd` (CI/Make use /bin/).
-/run-tdd
+# Compiled tool binaries built by `go build -o <name> ./cmd/<name>` (CI/Make use /bin/).
+/implementation
+/review
+/retrospective

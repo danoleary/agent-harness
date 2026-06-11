@@ -1,4 +1,5 @@
-// Package config resolves harness configuration for a Phase-1 run-tdd invocation.
+// Package config resolves harness configuration for a single tool invocation
+// (implementation, review, retrospective).
 package config
 
 import (
