@@ -1,12 +1,16 @@
-// Command implementation is the first of the three harness tools: fetch + claim
-// one hand-passed ticket, run only the /tdd session in a Docker sandbox, verify
-// the worktree + handoff commit by ground truth, and file any dropped findings.
-// No push, no PR (review owns those), no loop. See docs/DESIGN.md "Build order".
+// Command retrospective is the third and terminal harness tool: it runs the
+// /retrospective skill over a ticket's prior session transcripts (implementation
+// + review), then files whatever harness-improvement findings the session
+// dropped to Linear. Its ground truth is the *presence* of `/findings/out.json`:
+// an empty `[]` is success ("ran, found nothing"); an absent file means the step
+// never ran and is a failure (worktree kept as a breadcrumb). On a fully clean
+// ticket — the branch was pushed (review's host-side gate) and the retrospective
+// filed — it tears the worktree down host-side. See docs/DESIGN.md "Build order"
+// + "Harness-improvement findings".
 //
-// Its reusable plumbing lives in internal/ so review and retrospective share it:
-// container launch + transcript tee (internal/session), ground-truth verification
-// (internal/git + internal/verify), and findings filing (internal/filing). This
-// entrypoint stays a thin wrapper that wires them together.
+// Like cmd/implementation it stays a thin wrapper over internal/: container
+// launch + transcript tee (internal/session), the dropbox ground truth + filing
+// (internal/filing), and worktree teardown (internal/git).
 package main
 
 import (
@@ -33,7 +37,7 @@ var ticketRE = regexp.MustCompile(`^[A-Z]+-\d+$`)
 
 // sessionName prefixes this tool's transcript + findings dir under the ticket's
 // log dir (DESIGN.md "Logging": logs/BEH-NNN/<session>-<run-id>.jsonl).
-const sessionName = "implementation"
+const sessionName = "retrospective"
 
 type cliArgs struct {
 	identifier string
@@ -54,7 +58,7 @@ func parseArgs(argv []string) (cliArgs, error) {
 		}
 	}
 	if !ticketRE.MatchString(a.identifier) {
-		return a, fmt.Errorf("usage: implementation <TICKET-ID> [--dry-run] [--verbose]  (got: %q)", a.identifier)
+		return a, fmt.Errorf("usage: retrospective <TICKET-ID> [--dry-run] [--verbose]  (got: %q)", a.identifier)
 	}
 	return a, nil
 }
@@ -81,8 +85,9 @@ func run() (int, error) {
 	}
 
 	runID := runlog.MakeRunID(time.Now())
-	// Logs are keyed by ticket id, not run id, so review/retrospective can find
-	// this session's transcript later by globbing logs/BEH-NNN/ (DESIGN.md).
+	// Logs are keyed by ticket id, not run id: this lets retrospective find the
+	// implementation + review transcripts it studies by globbing logs/BEH-NNN/,
+	// and lands its own transcript in the same dir (DESIGN.md "Logging").
 	log, err := runlog.New(filepath.Join(cfg.HerdPath, "agent-harness", "logs"), args.identifier)
 	if err != nil {
 		return 1, err
@@ -93,27 +98,28 @@ func run() (int, error) {
 	if args.dryRun {
 		dry = " (dry-run)"
 	}
-	log.Event(fmt.Sprintf("run %s — implementation %s%s", runID, args.identifier, dry))
+	log.Event(fmt.Sprintf("run %s — retrospective %s%s", runID, args.identifier, dry))
 
 	client := linear.NewClient(linear.NewTransport(cfg.LinearAPIKey))
 
+	// The ticket is fetched for its team id (findings are filed back into it) and
+	// for narration. Retrospective runs *last* and never claims the ticket — the
+	// implementation tool already moved it to In Progress.
 	t, err := client.FetchTicket(args.identifier)
 	if err != nil {
 		return 1, err
 	}
-	priority := t.Priority
-	if priority == "" {
-		priority = "No priority"
-	}
-	log.Event(fmt.Sprintf("fetched %s (%s) — %s", t.Identifier, priority, t.Title))
+	log.Event(fmt.Sprintf("fetched %s — %s", t.Identifier, t.Title))
 
-	p := prompt.BuildTdd(t, slug)
+	p := prompt.BuildRetrospective(t, slug)
 	findingsDir := log.FindingsDir(sessionName)
 	if err := os.MkdirAll(findingsDir, 0o755); err != nil {
 		return 1, err
 	}
-	// Clear any stale dropbox from a prior run of this ticket before the session
-	// writes (the findings dir is reused across runs; a leftover would be re-filed).
+	// Clear any stale dropbox from a prior retrospective run of this ticket before
+	// the session writes. The dir is ticket+session keyed (reused across runs), so
+	// without this a previous run's out.json would both re-file as duplicates and
+	// make the "out.json present" ground truth pass even if this run never wrote.
 	if err := filing.ClearDropbox(findingsDir); err != nil {
 		return 1, err
 	}
@@ -132,7 +138,7 @@ func run() (int, error) {
 	})
 
 	if args.dryRun {
-		log.Event("dry-run — not claiming the ticket, not launching the container")
+		log.Event("dry-run — not launching the container")
 		fmt.Printf(
 			"\n--- prompt ---\n%s\n\n--- docker command ---\ndocker %s\n",
 			p, strings.Join(dockerArgs, " "),
@@ -140,17 +146,10 @@ func run() (int, error) {
 		return 0, nil
 	}
 
-	// Fail fast if Docker can't run the container, so we never claim a ticket we
-	// cannot actually work (the launch failure would otherwise leave it In
-	// Progress with no worktree — BEH-316's exit-125 footgun).
+	// Fail fast if Docker can't run the container before launching the session.
 	if err := sandbox.Preflight(cfg.Image, execCombinedOutput); err != nil {
 		return 1, err
 	}
-
-	if err := client.MoveToInProgress(args.identifier); err != nil {
-		return 1, err
-	}
-	log.Event(fmt.Sprintf("claimed %s → In Progress", args.identifier))
 
 	transcriptFile := runlog.TranscriptName(sessionName, runID)
 	log.Event(fmt.Sprintf("launching sandbox (cap %d min)", int(cfg.TddTimeout.Minutes())))
@@ -165,28 +164,41 @@ func run() (int, error) {
 		"session exited (code %d) — transcript at logs/%s/%s", exitCode, args.identifier, transcriptFile,
 	))
 
-	// Ground truth, never self-report.
-	truth := gitpkg.GatherTddGroundTruth(cfg.HerdPath, slug)
-	result := verify.Tdd(truth)
+	// Ground truth, never self-report: the retrospective ran iff it wrote the
+	// findings dropbox. An empty `[]` is still present → success; an absent file
+	// means the step never ran (DESIGN.md "Success is ground-truth").
+	result := verify.Retrospective(filing.DropboxExists(findingsDir))
 	if result.OK {
-		plural := "s"
-		if truth.CommitsAhead == 1 {
-			plural = ""
-		}
-		log.Event(fmt.Sprintf(
-			"tdd ✓ %s (%d commit%s ahead)", result.Reason, truth.CommitsAhead, plural,
-		))
+		log.Event("retrospective ✓ " + result.Reason)
 	} else {
-		log.Event("tdd ✗ " + result.Reason)
+		log.Event("retrospective ✗ " + result.Reason)
 	}
 
-	// File any harness-improvement findings the session dropped (after every session, per ADR-0001).
+	// File whatever the session dropped: one Linear issue per finding, `[]` files
+	// nothing. Safe to call even on failure — an absent dropbox files nothing.
 	filing.File(findingsDir, t.TeamID, args.identifier, client, log)
 
-	if result.OK {
-		return 0, nil
+	if !result.OK {
+		// Keep the worktree as a recoverable breadcrumb (DESIGN.md failure matrix).
+		return 1, nil
 	}
-	return 1, nil
+
+	// Clean ticket: retrospective filed AND the branch reached origin (review's
+	// host-side push gate). Only then is the worktree pure disk cost — the PR
+	// captures everything — so tear it down host-side (the real-path mount makes
+	// its .git pointer resolve from the main checkout). If the branch was never
+	// pushed, keep the worktree so unpushed work is never lost.
+	if gitpkg.BranchPushed(cfg.HerdPath, slug) {
+		if err := gitpkg.RemoveWorktree(cfg.HerdPath, slug); err != nil {
+			log.Event("worktree kept — removal failed: " + err.Error())
+		} else {
+			log.Event("worktree removed — ticket clean (branch pushed + retrospective filed)")
+		}
+	} else {
+		log.Event("worktree kept — branch not pushed to origin yet")
+	}
+
+	return 0, nil
 }
 
 // execCombinedOutput runs a command and returns its combined stdout+stderr,

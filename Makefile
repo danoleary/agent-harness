@@ -1,9 +1,10 @@
 # Agent harness — Go toolchain shortcuts. Requires Go 1.26+.
-.PHONY: build image test implementation vet fmt fmt-check check tidy
+.PHONY: build image test implementation retrospective vet fmt fmt-check check tidy
 
-# Build all packages (and the implementation tool binary into ./bin).
+# Build the tool binaries into ./bin.
 build:
 	go build -o bin/implementation ./cmd/implementation
+	go build -o bin/retrospective ./cmd/retrospective
 
 # Build the sandbox image the tools launch. Override the tag with IMAGE=...
 # (must match HARNESS_IMAGE if you set it).
@@ -19,6 +20,12 @@ test:
 # (and optional flags) in ARGS, e.g.  make implementation ARGS="BEH-362 --verbose"
 implementation:
 	go run ./cmd/implementation $(ARGS)
+
+# Run the sandboxed /retrospective session over a ticket's transcripts and file
+# any findings. Pass the ticket id (and optional flags) in ARGS, e.g.
+#   make retrospective ARGS="BEH-362 --verbose"
+retrospective:
+	go run ./cmd/retrospective $(ARGS)
 
 vet:
 	go vet ./...

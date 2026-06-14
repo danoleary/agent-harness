@@ -29,7 +29,7 @@ go build ./...              # compile + sanity-check (no external deps)
 The harness is a Go program (stdlib only — no module dependencies). Requires Go
 **1.26+** and a working local `docker`.
 
-### `implementation` — the first of three tools (current)
+### `implementation` — the first of three tools
 
 The build order is three single-role tools, each a thin `cmd/` wrapper over
 shared `internal/` plumbing (container launch + transcript tee, ground-truth
@@ -62,6 +62,32 @@ filed as Linear issues. The log dir is keyed by ticket id, so a second run of th
 same ticket adds a new `implementation-<run-id>.jsonl` rather than clobbering the
 first.
 
+### `retrospective` — the terminal tool (current)
+
+The third and last tool runs the `/retrospective` skill over a ticket's prior
+session transcripts (implementation + review, already visible in-container via
+the real-path mount) and files whatever harness-improvement findings the session
+drops to Linear. It runs **last** and never claims the ticket — the
+implementation tool already moved it to In Progress.
+
+```bash
+go run ./cmd/retrospective BEH-362             # run /retrospective over the ticket's transcripts, file findings
+go run ./cmd/retrospective BEH-362 --verbose   # also stream the raw agent transcript to the console
+go run ./cmd/retrospective BEH-362 --dry-run   # print the prompt + docker command — no container, nothing filed
+```
+
+Or via the Makefile: `make retrospective ARGS="BEH-362 --verbose"`, or the
+compiled `bin/retrospective BEH-362` (`make build`).
+
+**Ground truth is the presence of the findings dropbox.** After the session, the
+harness checks `logs/BEH-362/findings/retrospective/out.json`: an empty `[]` is
+success ("ran, found nothing", nothing filed); an **absent** file means the step
+never ran and is a failure (the worktree is kept as a breadcrumb). Each finding
+in a non-empty array is filed as a Linear issue referencing the worked ticket.
+On a fully clean ticket — the branch was pushed (review's host-side gate) *and*
+the retrospective filed — the worktree is torn down host-side; if the branch was
+never pushed, the worktree is kept so unpushed work is never lost.
+
 ### Later phases (destination)
 
 ```bash
@@ -70,9 +96,9 @@ go run ./cmd/harness --once      # do a single ticket and exit
 go run ./cmd/harness --verbose   # also stream the agent transcript to the console
 ```
 
-(`cmd/harness` — the selection + review + PR loop — is not built yet; the first
-tool is `cmd/implementation` above, with `cmd/review` and `cmd/retrospective` to
-follow.)
+(`cmd/harness` — the selection + review + PR loop — is not built yet;
+`cmd/implementation` and `cmd/retrospective` above are the runnable tools, with
+`cmd/review` — the middle tool — still to land.)
 
 ### Secrets (`.env`)
 
@@ -108,20 +134,21 @@ ticket's whole arc by globbing one dir:
 ## Layout
 
 ```
-cmd/implementation/ the first tool's CLI entrypoint — a thin wrapper (review +
-                      retrospective land beside it later)
+cmd/implementation/ the first tool's CLI entrypoint — a thin wrapper
+cmd/retrospective/  the terminal tool's CLI entrypoint — runs /retrospective,
+                      files findings, tears down a clean worktree (review still to land)
 internal/
-  config/           env → resolved HarnessConfig
+  config/           env → resolved HarnessConfig (+ shared .env loading)
   ticket/           the Ticket shape
   linear/           host-only Linear GraphQL client + transport (ADR-0001)
-  prompt/           builds the sandboxed /tdd prompt
+  prompt/           builds the sandboxed /tdd + /retrospective prompts
   sandbox/          builds the `docker run …` argv
   session/          launches the container + tees the transcript + narrates
   stream/           claude stream-json → concise console narration
   findings/         parses the /findings/out.json dropbox
-  filing/           files parsed findings to Linear (host-side, ADR-0001)
-  verify/           ground-truth tdd success check
-  git/              gathers worktree + commit ground truth
+  filing/           files parsed findings to Linear + dropbox ground truth (host-side, ADR-0001)
+  verify/           ground-truth tdd + retrospective success checks
+  git/              gathers worktree + commit ground truth; worktree teardown
   runlog/           ticket-keyed log dir (console + jsonl + transcripts)
 Dockerfile,         the *sandbox* image (node-based: runs the claude CLI + herd's
 entrypoint.sh         pnpm build) — unrelated to the harness's own language

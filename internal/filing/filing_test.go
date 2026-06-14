@@ -177,6 +177,21 @@ func TestClearDropboxIsNoOpWhenAbsent(t *testing.T) {
 	}
 }
 
+// DropboxExists is the retrospective tool's ground truth: it reports whether the
+// session wrote out.json at all. It owns the dropbox filename so the truth check
+// and the filer can never disagree on which file is the dropbox.
+func TestDropboxExistsReportsPresence(t *testing.T) {
+	dir := t.TempDir()
+	if DropboxExists(dir) {
+		t.Error("expected absent before the session writes the dropbox")
+	}
+
+	writeDropbox(t, dir, `[]`)
+	if !DropboxExists(dir) {
+		t.Error("expected present once out.json is written (even as [])")
+	}
+}
+
 var errBoom = boomError("boom")
 
 type boomError string

@@ -39,3 +39,27 @@ func GatherTddGroundTruth(herdPath, slug string) verify.GroundTruth {
 
 	return verify.GroundTruth{WorktreeExists: worktreeExists, CommitsAhead: commitsAhead}
 }
+
+// BranchPushed reports whether `feat/<slug>` reached origin, read from the main
+// checkout's remote-tracking ref (the review tool's host-side push sets it). It
+// is the safe gate on tearing down a worktree: the harness only removes a
+// worktree whose branch is on the remote, so a teardown can never lose work
+// that hasn't been pushed (DESIGN.md "On a clean run … git worktree remove").
+func BranchPushed(herdPath, slug string) bool {
+	err := exec.Command(
+		"git", "-C", herdPath, "rev-parse", "--verify", "--quiet", "refs/remotes/origin/feat/"+slug,
+	).Run()
+	return err == nil
+}
+
+// RemoveWorktree tears down the worktree at `.claude/worktrees/<slug>` from the
+// main checkout. The real-path bind mount (ADR-0002) makes the worktree's
+// absolute `.git` pointer resolve on the host, so no throwaway container is
+// needed. It is deliberately not forced: if the worktree still holds
+// uncommitted work, git refuses and the harness keeps it (a recoverable
+// artifact) rather than nuking unpushed changes.
+func RemoveWorktree(herdPath, slug string) error {
+	return exec.Command(
+		"git", "-C", herdPath, "worktree", "remove", WorktreePath(herdPath, slug),
+	).Run()
+}

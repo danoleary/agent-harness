@@ -1,6 +1,8 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -108,6 +110,39 @@ func TestLoadRequiresAClaudeCredential(t *testing.T) {
 			t.Errorf("error %q should mention %s", err.Error(), want)
 		}
 	}
+}
+
+// LoadDotEnv seeds the process env from a KEY=VALUE file for any key not already
+// set (mirrors `node --env-file-if-exists`), so the shared cmd entrypoints get
+// .env loading from one place.
+func TestLoadDotEnvSeedsUnsetKeysOnly(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".env")
+	contents := "# a comment\n" +
+		"HARNESS_TEST_FRESH=\"from-file\"\n" +
+		"\n" +
+		"HARNESS_TEST_PRESET=should-not-win\n"
+	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+		t.Fatalf("write .env: %v", err)
+	}
+
+	// A key already in the env must win over the file (file fills gaps only).
+	t.Setenv("HARNESS_TEST_PRESET", "already-set")
+
+	LoadDotEnv(path)
+
+	if got := os.Getenv("HARNESS_TEST_FRESH"); got != "from-file" {
+		t.Errorf("HARNESS_TEST_FRESH = %q, want from-file (quotes stripped, unset key seeded)", got)
+	}
+	if got := os.Getenv("HARNESS_TEST_PRESET"); got != "already-set" {
+		t.Errorf("HARNESS_TEST_PRESET = %q, want already-set (existing value preserved)", got)
+	}
+}
+
+// An absent file is a no-op, never an error (the common case in CI where config
+// comes from real env vars).
+func TestLoadDotEnvAbsentFileIsNoOp(t *testing.T) {
+	LoadDotEnv(filepath.Join(t.TempDir(), "does-not-exist.env"))
 }
 
 func TestLoadTimeoutFallback(t *testing.T) {

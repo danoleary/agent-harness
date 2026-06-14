@@ -3,8 +3,11 @@
 package config
 
 import (
+	"bufio"
 	"fmt"
+	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -82,6 +85,35 @@ func Load(get Getenv) (Config, error) {
 		TddTimeout:      parseTimeout(get("TDD_TIMEOUT_MS")),
 		Model:           orDefault(get("TDD_MODEL"), defaultModel),
 	}, nil
+}
+
+// LoadDotEnv loads KEY=VALUE pairs from a .env file into the process environment
+// for any key not already set (mirrors `node --env-file-if-exists`). An absent
+// file is a no-op. It is shared by the cmd entrypoints so each stays a thin
+// wrapper. Call it before Load so the file fills any gaps the real env leaves.
+func LoadDotEnv(path string) {
+	f, err := os.Open(path)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		key, val, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		key = strings.TrimSpace(key)
+		val = strings.Trim(strings.TrimSpace(val), `"'`)
+		if _, exists := os.LookupEnv(key); !exists {
+			_ = os.Setenv(key, val)
+		}
+	}
 }
 
 func orDefault(v, fallback string) string {

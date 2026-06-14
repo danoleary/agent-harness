@@ -35,6 +35,16 @@ func ClearDropbox(findingsDir string) error {
 	return nil
 }
 
+// DropboxExists reports whether a session wrote its findings dropbox
+// (`out.json`) in findingsDir. It is the retrospective tool's ground truth: an
+// absent file means the retrospective step never ran (DESIGN.md). It owns the
+// dropbox filename so the truth check and File can never disagree on which file
+// is the dropbox.
+func DropboxExists(findingsDir string) bool {
+	_, err := os.Stat(filepath.Join(findingsDir, dropboxFile))
+	return err == nil
+}
+
 // EventSink receives the concise narration filing emits (the runlog.Logger).
 type EventSink interface {
 	Event(msg string)
