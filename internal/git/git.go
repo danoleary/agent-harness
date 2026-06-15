@@ -8,9 +8,46 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/beherd/agent-harness/internal/verify"
 )
+
+// commandRunner runs a command to completion, returning only its error.
+// Production uses execRun; tests inject a fake to drive the retry logic
+// without touching a real remote (mirrors sandbox.Preflight's runner seam).
+type commandRunner func(name string, args ...string) error
+
+func execRun(name string, args ...string) error {
+	return exec.Command(name, args...).Run()
+}
+
+// remoteAttempts is how many times a git remote op (fetch/push) is tried before
+// giving up. Transient remote/auth blips — a momentary keychain lock, a network
+// hiccup — surface as `exit status 128`; a finished, gate-green worktree must
+// not be stranded by one of them (BEH-329 post-mortem: a single transient 128
+// on fetch+push aborted the pipeline and left the branch unpushed).
+const remoteAttempts = 3
+
+// remoteRetryDelay is the backoff between remote attempts. A var so tests can
+// drop it to zero.
+var remoteRetryDelay = 2 * time.Second
+
+// withRetry runs op up to remoteAttempts times, sleeping remoteRetryDelay
+// between tries; returns nil on the first success, else the last error. It does
+// not sleep after the final attempt.
+func withRetry(op func() error, sleep func(time.Duration)) error {
+	var err error
+	for attempt := 1; attempt <= remoteAttempts; attempt++ {
+		if err = op(); err == nil {
+			return nil
+		}
+		if attempt < remoteAttempts {
+			sleep(remoteRetryDelay)
+		}
+	}
+	return err
+}
 
 // WorktreePath is the host path of the worktree the tdd skill is told to create.
 func WorktreePath(herdPath, slug string) string {
@@ -24,9 +61,16 @@ func BranchName(slug string) string {
 
 // FetchMain fast-forwards the primary checkout's view of origin/main so commit
 // ranges and the PR base are current (DESIGN.md: pull origin/main after every
-// session). A fetch failure is returned for the caller to log, not fatal.
+// session). Retried against transient remote blips; a fetch failure is returned
+// for the caller to log, not fatal.
 func FetchMain(herdPath string) error {
-	return exec.Command("git", "-C", herdPath, "fetch", "-q", "origin", "main").Run()
+	return fetchMain(herdPath, execRun, time.Sleep)
+}
+
+func fetchMain(herdPath string, run commandRunner, sleep func(time.Duration)) error {
+	return withRetry(func() error {
+		return run("git", "-C", herdPath, "fetch", "-q", "origin", "main")
+	}, sleep)
 }
 
 // CommitSubjects returns the subject lines of the commits on the feature branch
@@ -67,8 +111,24 @@ func WorktreeClean(worktreePath string) bool {
 // Push pushes the feature branch to origin from the main checkout (ADR-0002: the
 // harness owns the push, host-side; the sandbox never reaches a remote). Run only
 // after the harness's own gate re-run is green.
+//
+// --no-verify deliberately skips the host lefthook pre-push hook: the harness has
+// already independently re-run the full gate in a throwaway Linux container
+// (review/main.go BuildGateRunArgs) — that container's exit code is the sole
+// authority for a push. The host hook is redundant duplication, and running it
+// here is actively wrong: the push happens from the main checkout (HEAD=main, not
+// the feature branch), so lefthook either silently skips every command (its
+// push-file set is empty) or, if it ran, would build the wrong tree against
+// host-platform node_modules the worktree doesn't have. Retried against transient
+// remote blips (BEH-329).
 func Push(herdPath, slug string) error {
-	return exec.Command("git", "-C", herdPath, "push", "origin", BranchName(slug)).Run()
+	return push(herdPath, slug, execRun, time.Sleep)
+}
+
+func push(herdPath, slug string, run commandRunner, sleep func(time.Duration)) error {
+	return withRetry(func() error {
+		return run("git", "-C", herdPath, "push", "--no-verify", "origin", BranchName(slug))
+	}, sleep)
 }
 
 // GatherTddGroundTruth reads the state a finished tdd session left behind. The
