@@ -56,6 +56,91 @@ func TestRunsClaudeWithPromptAndPrintFlags(t *testing.T) {
 	}
 }
 
+// Review emits no findings (retrospective owns them), so it passes no
+// FindingsDir — and the container must then mount no /findings dropbox at all,
+// keeping the "do not write findings" steering honest (there's nowhere to write).
+func TestOmitsFindingsMountWhenNoFindingsDir(t *testing.T) {
+	c := baseConfig()
+	c.FindingsDir = ""
+	args := BuildDockerRunArgs(c)
+
+	if slices.Contains(args, FindingsMountPath) {
+		t.Error("findings mount path must not appear when FindingsDir is empty")
+	}
+	for _, m := range valuesForFlag(args, "-v") {
+		if strings.HasSuffix(m, ":"+FindingsMountPath) {
+			t.Errorf("no /findings bind mount expected, got %q", m)
+		}
+	}
+}
+
+func TestMountsFindingsWhenFindingsDirGiven(t *testing.T) {
+	c := baseConfig() // FindingsDir is set
+	mounts := valuesForFlag(BuildDockerRunArgs(c), "-v")
+
+	if !slices.Contains(mounts, c.FindingsDir+":"+FindingsMountPath) {
+		t.Errorf("findings mount expected when FindingsDir is set, got mounts: %v", mounts)
+	}
+}
+
+// The throwaway gate-re-run container (DESIGN.md: harness re-runs `pnpm check &&
+// pnpm build` on the branch) carries NO secrets — not even the Claude credential
+// — and runs in the worktree, not the main checkout.
+func TestGateRunArgsCarryNoSecretsAndRunGatesInWorktree(t *testing.T) {
+	args := BuildGateRunArgs(GateConfig{
+		Image:           "herd-agent-harness:latest",
+		HerdPath:        "/Users/dan/herd",
+		WorktreePath:    "/Users/dan/herd/.claude/worktrees/beh-371",
+		PnpmStoreVolume: "herd-pnpm-store",
+		ContainerName:   "herd-harness-gate-1",
+	})
+	joined := strings.Join(args, " ")
+
+	// No credential of any kind crosses into the gate container.
+	for _, secret := range []string{"ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "GH_TOKEN", "LINEAR"} {
+		if regexp.MustCompile(`(?i)` + secret).MatchString(joined) {
+			t.Errorf("gate container must carry no secrets, but argv mentions %q: %v", secret, args)
+		}
+	}
+	// Runs the real gate commands.
+	if !strings.Contains(joined, "check") || !strings.Contains(joined, "build") {
+		t.Errorf("gate args must run `pnpm check && pnpm build`, got: %v", args)
+	}
+	// Working dir is the worktree (the branch under review), not the main checkout.
+	workdirs := valuesForFlag(args, "-w")
+	if len(workdirs) == 0 || !strings.HasPrefix(workdirs[len(workdirs)-1], "/Users/dan/herd/.claude/worktrees/beh-371") {
+		t.Errorf("gate must run in the worktree, got -w %v", workdirs)
+	}
+}
+
+func TestGateRunArgsMountCheckoutAndPnpmStore(t *testing.T) {
+	c := GateConfig{
+		Image:           "herd-agent-harness:latest",
+		HerdPath:        "/Users/dan/herd",
+		WorktreePath:    "/Users/dan/herd/.claude/worktrees/beh-371",
+		PnpmStoreVolume: "herd-pnpm-store",
+	}
+	mounts := valuesForFlag(BuildGateRunArgs(c), "-v")
+
+	// The whole checkout is bind-mounted at its real path so the worktree's
+	// absolute .git pointer resolves; the pnpm store keeps install near-instant.
+	for _, want := range []string{
+		c.HerdPath + ":" + c.HerdPath,
+		c.PnpmStoreVolume + ":" + PnpmStoreMountPath,
+	} {
+		if !slices.Contains(mounts, want) {
+			t.Errorf("gate mounts missing %q, got: %v", want, mounts)
+		}
+	}
+}
+
+func TestGateRunArgsNameContainerForKill(t *testing.T) {
+	args := BuildGateRunArgs(GateConfig{ContainerName: "herd-harness-gate-1"})
+	if !slices.Contains(valuesForFlag(args, "--name"), "herd-harness-gate-1") {
+		t.Error("gate container must be nameable so the harness can kill it on timeout")
+	}
+}
+
 func TestPinsModelWhenGiven(t *testing.T) {
 	c := baseConfig()
 	c.Model = "opus"

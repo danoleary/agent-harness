@@ -21,8 +21,10 @@ type Config struct {
 	HerdPath string
 	// PnpmStoreVolume is the Docker volume name for the persistent pnpm store.
 	PnpmStoreVolume string
-	// TddTimeout is the wall-clock cap for the tdd session.
+	// TddTimeout is the wall-clock cap for the tdd (implementation) session.
 	TddTimeout time.Duration
+	// ReviewTimeout is the wall-clock cap for the review session (DESIGN.md: 15 min).
+	ReviewTimeout time.Duration
 	// Model is the claude `--model` the tdd session runs on. Defaults to Opus —
 	// the CLI's own default is not guaranteed to be Opus and a past run silently
 	// fell back to Sonnet (BEH-316).
@@ -33,6 +35,7 @@ const (
 	defaultImage           = "herd-agent-harness:latest"
 	defaultPnpmStoreVolume = "herd-pnpm-store"
 	defaultTddTimeout      = 30 * time.Minute
+	defaultReviewTimeout   = 15 * time.Minute
 	defaultModel           = "opus"
 )
 
@@ -82,7 +85,8 @@ func Load(get Getenv) (Config, error) {
 		HerdPath:        herdPath,
 		Image:           orDefault(get("HARNESS_IMAGE"), defaultImage),
 		PnpmStoreVolume: orDefault(get("PNPM_STORE_VOLUME"), defaultPnpmStoreVolume),
-		TddTimeout:      parseTimeout(get("TDD_TIMEOUT_MS")),
+		TddTimeout:      parseTimeout(get("TDD_TIMEOUT_MS"), defaultTddTimeout),
+		ReviewTimeout:   parseTimeout(get("REVIEW_TIMEOUT_MS"), defaultReviewTimeout),
 		Model:           orDefault(get("TDD_MODEL"), defaultModel),
 	}, nil
 }
@@ -123,13 +127,13 @@ func orDefault(v, fallback string) string {
 	return v
 }
 
-func parseTimeout(raw string) time.Duration {
+func parseTimeout(raw string, fallback time.Duration) time.Duration {
 	if raw == "" {
-		return defaultTddTimeout
+		return fallback
 	}
 	ms, err := strconv.Atoi(raw)
 	if err != nil || ms <= 0 {
-		return defaultTddTimeout
+		return fallback
 	}
 	return time.Duration(ms) * time.Millisecond
 }

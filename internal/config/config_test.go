@@ -46,6 +46,9 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.Model != "opus" {
 		t.Errorf("Model = %q, want opus (tdd sessions must run on Opus)", cfg.Model)
 	}
+	if cfg.ReviewTimeout != 15*time.Minute {
+		t.Errorf("ReviewTimeout = %v, want 15m", cfg.ReviewTimeout)
+	}
 }
 
 func TestLoadHonoursOverrides(t *testing.T) {
@@ -53,10 +56,14 @@ func TestLoadHonoursOverrides(t *testing.T) {
 		"HARNESS_IMAGE":     "custom:tag",
 		"PNPM_STORE_VOLUME": "my-store",
 		"TDD_TIMEOUT_MS":    "60000",
+		"REVIEW_TIMEOUT_MS": "120000",
 		"TDD_MODEL":         "sonnet",
 	}))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.ReviewTimeout != 2*time.Minute {
+		t.Errorf("ReviewTimeout = %v, want 2m", cfg.ReviewTimeout)
 	}
 	if cfg.Image != "custom:tag" {
 		t.Errorf("Image = %q", cfg.Image)

@@ -17,6 +17,60 @@ func WorktreePath(herdPath, slug string) string {
 	return filepath.Join(herdPath, ".claude", "worktrees", slug)
 }
 
+// BranchName is the deterministic feature branch the tdd skill creates for a slug.
+func BranchName(slug string) string {
+	return "feat/" + slug
+}
+
+// FetchMain fast-forwards the primary checkout's view of origin/main so commit
+// ranges and the PR base are current (DESIGN.md: pull origin/main after every
+// session). A fetch failure is returned for the caller to log, not fatal.
+func FetchMain(herdPath string) error {
+	return exec.Command("git", "-C", herdPath, "fetch", "-q", "origin", "main").Run()
+}
+
+// CommitSubjects returns the subject lines of the commits on the feature branch
+// ahead of origin/main, newest last — the raw material for the templated PR body.
+// Read from the main checkout (the shared `.git` holds the branch's objects); an
+// empty result on any git failure keeps the caller crash-free.
+func CommitSubjects(herdPath, slug string) []string {
+	out, err := exec.Command(
+		"git", "-C", herdPath, "log", "--reverse", "--format=%s", "origin/main.."+BranchName(slug),
+	).Output()
+	if err != nil {
+		return nil
+	}
+	var subjects []string
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if s := strings.TrimSpace(line); s != "" {
+			subjects = append(subjects, s)
+		}
+	}
+	return subjects
+}
+
+// WorktreeClean reports whether the worktree has no uncommitted changes — the
+// guarantee that the tree the host-side gate validated is exactly the tree that
+// `Push` ships. The gate runs against the worktree's working files (committed +
+// uncommitted), but the push ships only the committed branch tip; a dirty worktree
+// (e.g. a review session that edited but never committed) would mean the gate
+// validated a different tree than would ship. Read host-side via the real-path
+// mount; any git failure is treated as not-clean (fail safe — never push on doubt).
+func WorktreeClean(worktreePath string) bool {
+	out, err := exec.Command("git", "-C", worktreePath, "status", "--porcelain").Output()
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(string(out)) == ""
+}
+
+// Push pushes the feature branch to origin from the main checkout (ADR-0002: the
+// harness owns the push, host-side; the sandbox never reaches a remote). Run only
+// after the harness's own gate re-run is green.
+func Push(herdPath, slug string) error {
+	return exec.Command("git", "-C", herdPath, "push", "origin", BranchName(slug)).Run()
+}
+
 // GatherTddGroundTruth reads the state a finished tdd session left behind. The
 // sandbox commits into the shared `.git` (bind-mounted), so the feature branch
 // ref + objects are visible here without touching the worktree itself — the

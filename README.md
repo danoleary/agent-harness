@@ -62,6 +62,30 @@ filed as Linear issues. The log dir is keyed by ticket id, so a second run of th
 same ticket adds a new `implementation-<run-id>.jsonl` rather than clobbering the
 first.
 
+### `review` — the second tool (current)
+
+Over the worktree the implementation slice left behind, `review` runs a **cold**
+`/review-worktree` session in the sandbox (it reconstructs intent from the
+branch/issue/diff, never the implementation transcript) and lands its fixes as a
+**local commit only**. The agent has no `GH_TOKEN` and is steered off pushing,
+`gh`, Linear, and findings. Then — host-side — the harness independently re-runs
+the quality gates (`pnpm check && pnpm build`) in a throwaway container on the
+branch. **Ground truth is the harness's own gate run, never the agent's
+self-report**, and it doubles as the push gate: green → `git push` (from the main
+checkout) + `gh pr create` with a templated title/body; red/crash → keep the
+worktree, push nothing.
+
+```bash
+go run ./cmd/review BEH-362             # cold review, host-side gate re-run, push + PR on green
+go run ./cmd/review BEH-362 --verbose   # also stream the raw agent + gate transcripts to the console
+go run ./cmd/review BEH-362 --dry-run   # print the prompt + review/gate docker commands — no container, no push
+```
+
+Or via the Makefile: `make review ARGS="BEH-362 --verbose"`; the compiled binary
+(`make build` → `bin/review`) works the same way. `review` requires that
+`implementation BEH-362` has already left a worktree at `.claude/worktrees/beh-362`;
+it does **not** claim or move the ticket (implementation owns that transition).
+
 ### `retrospective` — the terminal tool (current)
 
 The third and last tool runs the `/retrospective` skill over a ticket's prior
@@ -96,9 +120,9 @@ go run ./cmd/harness --once      # do a single ticket and exit
 go run ./cmd/harness --verbose   # also stream the agent transcript to the console
 ```
 
-(`cmd/harness` — the selection + review + PR loop — is not built yet;
-`cmd/implementation` and `cmd/retrospective` above are the runnable tools, with
-`cmd/review` — the middle tool — still to land.)
+(`cmd/harness` — the selection loop that chains the three tools — is not built
+yet; `cmd/implementation`, `cmd/review`, and `cmd/retrospective` above are all
+runnable by hand in pipeline order.)
 
 ### Secrets (`.env`)
 
@@ -135,20 +159,22 @@ ticket's whole arc by globbing one dir:
 
 ```
 cmd/implementation/ the first tool's CLI entrypoint — a thin wrapper
-cmd/retrospective/  the terminal tool's CLI entrypoint — runs /retrospective,
-                      files findings, tears down a clean worktree (review still to land)
+cmd/review/         the second tool — cold review + host-side gate re-run + push/PR
+cmd/retrospective/  the terminal tool — runs /retrospective, files findings,
+                      tears down a clean worktree
 internal/
   config/           env → resolved HarnessConfig (+ shared .env loading)
   ticket/           the Ticket shape
   linear/           host-only Linear GraphQL client + transport (ADR-0001)
-  prompt/           builds the sandboxed /tdd + /retrospective prompts
-  sandbox/          builds the `docker run …` argv
+  prompt/           builds the sandboxed /tdd + /review-worktree + /retrospective prompts
+  sandbox/          builds the `docker run …` argv (session + throwaway gate run)
   session/          launches the container + tees the transcript + narrates
   stream/           claude stream-json → concise console narration
   findings/         parses the /findings/out.json dropbox
   filing/           files parsed findings to Linear + dropbox ground truth (host-side, ADR-0001)
-  verify/           ground-truth tdd + retrospective success checks
-  git/              gathers worktree + commit ground truth; worktree teardown
+  verify/           ground-truth success checks (tdd commit; review gate → push; retrospective dropbox)
+  pr/               templated PR title + body for the harness-opened PR
+  git/              worktree + commit ground truth, fetch/push, worktree teardown (host-side, ADR-0002)
   runlog/           ticket-keyed log dir (console + jsonl + transcripts)
 Dockerfile,         the *sandbox* image (node-based: runs the claude CLI + herd's
 entrypoint.sh         pnpm build) — unrelated to the harness's own language

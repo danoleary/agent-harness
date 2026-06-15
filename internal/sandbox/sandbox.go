@@ -82,7 +82,17 @@ func BuildDockerRunArgs(c Config) []string {
 	args = append(args,
 		"-v", c.HerdPath+":"+c.HerdPath,
 		"-v", c.PnpmStoreVolume+":"+PnpmStoreMountPath,
-		"-v", c.FindingsDir+":"+FindingsMountPath,
+	)
+
+	// The findings dropbox is mounted only when the tool produces findings.
+	// Review emits none (retrospective owns findings, DESIGN.md), so it passes an
+	// empty FindingsDir and gets no /findings mount — there is nowhere to write,
+	// which keeps its "do not write findings" steering honest.
+	if c.FindingsDir != "" {
+		args = append(args, "-v", c.FindingsDir+":"+FindingsMountPath)
+	}
+
+	args = append(args,
 		"-w", c.HerdPath,
 		c.Image,
 		"claude",
@@ -95,6 +105,58 @@ func BuildDockerRunArgs(c Config) []string {
 	if c.Model != "" {
 		args = append(args, "--model", c.Model)
 	}
+
+	return args
+}
+
+// GateConfig describes the throwaway container that re-runs the quality gates on
+// a reviewed branch, host-side, after the review session exits.
+type GateConfig struct {
+	// Image is the sandbox image tag (reused — its entrypoint matches the runtime
+	// uid to the checkout owner and trusts the repo, which the gate run also needs).
+	Image string
+	// HerdPath is the host path to the herd checkout to bind-mount at its real path.
+	HerdPath string
+	// WorktreePath is the host path of the feature worktree the gates run against
+	// (the branch under review). It resolves into the mounted checkout.
+	WorktreePath string
+	// PnpmStoreVolume is the Docker volume name for the persistent pnpm store, so
+	// the gate run's `pnpm install` is a near-instant hardlink op, not a fetch.
+	PnpmStoreVolume string
+	// ContainerName is an optional `--name` so the harness can `docker kill` it on timeout.
+	ContainerName string
+}
+
+// gateCommand is the gate the harness re-runs as ground truth: a fresh install
+// (against the warm pnpm store) then the repo's own `check` + `build`. Run from
+// `web/`, the source of truth for the pnpm scripts (see herd CLAUDE.md).
+const gateCommand = "cd web && pnpm install --frozen-lockfile && pnpm run check && pnpm run build"
+
+// BuildGateRunArgs builds the argv (everything after `docker`) for the throwaway
+// container that re-runs `pnpm check && pnpm build` on the reviewed branch. This
+// is the harness's OWN ground truth — never the agent's self-report — and the
+// push gate (DESIGN.md). The container carries NO secrets at all (not even the
+// Claude credential): it runs no model, only the gates, so nothing needs to cross
+// the boundary. It runs in the worktree (the branch under review), not the main
+// checkout.
+func BuildGateRunArgs(c GateConfig) []string {
+	args := []string{"run", "--rm", "--init"}
+
+	if c.ContainerName != "" {
+		args = append(args, "--name", c.ContainerName)
+	}
+
+	// HERD_PATH lets the shared entrypoint stat the mount to match the runtime uid
+	// to the checkout owner. It is the mount path, not a secret — passed by value.
+	args = append(args, "-e", "HERD_PATH="+c.HerdPath)
+
+	args = append(args,
+		"-v", c.HerdPath+":"+c.HerdPath,
+		"-v", c.PnpmStoreVolume+":"+PnpmStoreMountPath,
+		"-w", c.WorktreePath,
+		c.Image,
+		"bash", "-lc", gateCommand,
+	)
 
 	return args
 }

@@ -41,3 +41,35 @@ func Retrospective(dropboxExists bool) Result {
 	}
 	return Result{OK: true, Reason: "findings dropbox out.json present"}
 }
+
+// ReviewOutcome is the result of the harness's OWN host-side gate re-run after a
+// review session — the only thing that may authorise a push (never the agent's
+// self-report). GatesGreen is true iff `pnpm check && pnpm build` passed in the
+// throwaway container on the feature branch (DESIGN.md: ground truth = the
+// harness's own gate run is green; this is also the push gate). WorktreeClean is
+// true iff the worktree had no uncommitted changes when the gate ran.
+type ReviewOutcome struct {
+	GatesGreen    bool
+	WorktreeClean bool
+}
+
+// Review decides whether a reviewed branch may ship. Green gates over a clean
+// worktree clear the push + PR; anything else blocks it (no branch reaches a PR
+// on a failing gate, and the worktree is kept for recovery). Because the only
+// inputs are the harness's own gate result and the worktree's git state, a branch
+// can never be pushed on the agent's say-so (AC: no push on self-report).
+//
+// WorktreeClean is checked first because it qualifies the gate result: the gate
+// runs against the worktree's working tree (committed + uncommitted), but the push
+// ships only the committed branch tip. A dirty worktree therefore means the gate
+// validated a different tree than would ship (e.g. a review session that edited
+// but never committed), so its green/red verdict can't be trusted as the push gate.
+func Review(outcome ReviewOutcome) Result {
+	if !outcome.WorktreeClean {
+		return Result{OK: false, Reason: "worktree has uncommitted changes — the gate validated a different tree than would ship; not pushing"}
+	}
+	if !outcome.GatesGreen {
+		return Result{OK: false, Reason: "harness gate re-run is red — not pushing"}
+	}
+	return Result{OK: true, Reason: "harness gate re-run is green — clear to push + open PR"}
+}

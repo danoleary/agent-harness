@@ -45,6 +45,14 @@ func TranscriptName(session, runID string) string {
 	return session + "-" + runID + ".jsonl"
 }
 
+// GateTranscriptName is the filename for the review tool's host-side gate re-run
+// log. Unlike a session transcript this is plain command output, not stream-json,
+// so it carries a ".log" suffix rather than ".jsonl" — but it shares the same
+// run-id-suffixed, non-clobbering naming as TranscriptName.
+func GateTranscriptName(runID string) string {
+	return "gate-" + runID + ".log"
+}
+
 // FindingsDir is the path of a session's findings dropbox dir, under the ticket
 // dir (logs/<ticket-id>/findings/<session>/). It is not created — the caller
 // mounts it and is responsible for MkdirAll.

@@ -1,4 +1,6 @@
-// Package prompt builds the `-p` prompt for the sandboxed /tdd session.
+// Package prompt builds the `-p` prompts for the sandboxed Claude sessions the
+// harness drives (/tdd for implementation, /review-worktree for review,
+// /retrospective for the terminal findings pass).
 package prompt
 
 import (
@@ -49,6 +51,38 @@ func BuildRetrospective(t ticket.Ticket, slug string) string {
 		"Write your findings to `/findings/out.json` as a JSON array of `{title, body, kind}` objects (kind is a free-form category). **Always write the file**, even when you found nothing — write an empty array `[]` in that case. An absent file means the step never ran, so never end without writing it.",
 		"",
 		"This session is read-only and reaches no remote. Make NO code changes, do NOT commit or push, and do NOT touch Linear — do not call any `mcp__linear-server__*` tool. The harness reads `out.json` after the session and files each finding to Linear itself.",
+	}
+	return strings.Join(lines, "\n")
+}
+
+// BuildReview builds the `-p` prompt for the sandboxed /review-worktree session
+// (the second tool). The implementation slice already left a worktree + handoff
+// commit; review reads that diff *cold* and applies fixes as a local commit. The
+// harness (host-side, holding GH_TOKEN) independently re-runs the gates and ships
+// it — so the prompt steers /review-worktree off every remote/exit step the skill
+// would otherwise take (push, `gh`, Linear, findings) and pins it to a local
+// commit only. See DESIGN.md "Build order" + ADR-0002.
+func BuildReview(t ticket.Ticket, slug, worktreePath string) string {
+	lines := []string{
+		"/review-worktree " + worktreePath,
+		"",
+		"You are reviewing the worktree on branch `feat/" + slug + "` for " + t.Identifier + ".",
+		"",
+		"Ticket context (the intent to review against — already fetched for you):",
+		"",
+		"# " + t.Identifier + ": " + t.Title,
+		"",
+		t.Description,
+		"",
+		"---",
+		"",
+		"This is a COLD review. Reconstruct the intent from the branch, this ticket, and the diff ONLY. Do NOT read the implementation session's transcript (under `agent-harness/logs/" + t.Identifier + "/`) — coldness is the point; an independent reviewer must not be anchored to the implementer's framing.",
+		"",
+		"Apply your review fixes as a LOCAL commit on `feat/" + slug + "` and stop there. Do NOT push, do NOT run `gh`, do NOT open or raise a PR. The harness owns all remote git I/O (ADR-0002): it independently re-runs the quality gates host-side and, only if they pass, pushes the branch and opens the PR itself.",
+		"",
+		"Do NOT touch Linear — do not call any `mcp__linear-server__*` tool, do not move the ticket, do not open or comment on issues. The harness owns all Linear I/O (ADR-0001).",
+		"",
+		"Do NOT emit or file any harness-improvement findings, and do NOT write `/findings/out.json`. The retrospective tool, running last over every transcript, owns findings now — this is a deliberate change from the skill's default. Your only outputs are review fixes committed locally.",
 	}
 	return strings.Join(lines, "\n")
 }

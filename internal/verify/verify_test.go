@@ -51,3 +51,33 @@ func TestRetrospectiveFailsWhenDropboxAbsent(t *testing.T) {
 		t.Errorf("reason %q does not point at the missing dropbox", r.Reason)
 	}
 }
+
+func TestReviewPushesWhenGatesGreenAndWorktreeClean(t *testing.T) {
+	r := Review(ReviewOutcome{GatesGreen: true, WorktreeClean: true})
+	if !r.OK {
+		t.Errorf("green gates over a clean worktree must clear the push gate, got %+v", r)
+	}
+}
+
+func TestReviewBlocksPushWhenGatesRed(t *testing.T) {
+	r := Review(ReviewOutcome{GatesGreen: false, WorktreeClean: true})
+	if r.OK {
+		t.Error("gates red must NOT clear the push gate — no branch ships on a failing gate")
+	}
+	if !regexp.MustCompile(`(?i)gate`).MatchString(r.Reason) {
+		t.Errorf("reason %q does not mention the gate result", r.Reason)
+	}
+}
+
+// A dirty worktree means the gate validated a different tree than would ship, so
+// the push is blocked even when the gate is green — the harness ships only what it
+// actually verified.
+func TestReviewBlocksPushWhenWorktreeDirty(t *testing.T) {
+	r := Review(ReviewOutcome{GatesGreen: true, WorktreeClean: false})
+	if r.OK {
+		t.Error("a dirty worktree must NOT clear the push gate even with green gates")
+	}
+	if !regexp.MustCompile(`(?i)uncommitted|worktree`).MatchString(r.Reason) {
+		t.Errorf("reason %q does not mention the dirty worktree", r.Reason)
+	}
+}

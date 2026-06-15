@@ -109,3 +109,62 @@ func TestBuildRetrospectiveForbidsRemoteAndCodeChanges(t *testing.T) {
 		t.Error("prompt does not forbid code changes/push/commit")
 	}
 }
+
+const sampleWorktree = "/Users/dan/herd/.claude/worktrees/beh-362"
+
+func TestBuildReviewInvokesSkillOnWorktreePath(t *testing.T) {
+	p := BuildReview(sample, "beh-362", sampleWorktree)
+
+	for _, want := range []string{"/review-worktree", sampleWorktree, "BEH-362"} {
+		if !strings.Contains(p, want) {
+			t.Errorf("prompt missing %q", want)
+		}
+	}
+}
+
+func TestBuildReviewInjectsTicketContextForIntent(t *testing.T) {
+	p := BuildReview(sample, "beh-362", sampleWorktree)
+
+	// Review reconstructs intent from the ticket; it needs the title + ACs.
+	for _, want := range []string{sample.Title, "Acceptance criteria", "fetch the ticket"} {
+		if !strings.Contains(p, want) {
+			t.Errorf("prompt missing %q", want)
+		}
+	}
+}
+
+func TestBuildReviewIsCold(t *testing.T) {
+	p := BuildReview(sample, "beh-362", sampleWorktree)
+
+	// Cold review: reconstruct from branch/issue/diff, never the implementation transcript.
+	if !regexp.MustCompile(`(?i)(do not|don't|never).{0,40}transcript`).MatchString(p) {
+		t.Error("prompt does not steer the review off the implementation transcript (coldness is the point)")
+	}
+}
+
+func TestBuildReviewCommitsLocallyOnly(t *testing.T) {
+	p := BuildReview(sample, "beh-362", sampleWorktree)
+
+	if !regexp.MustCompile(`(?i)commit.{0,30}local`).MatchString(p) {
+		t.Error("prompt does not tell review to commit fixes locally")
+	}
+	// The harness owns the push + PR (ADR-0002) — the agent must not.
+	if !regexp.MustCompile(`(?i)(do not|don't|never).{0,20}push`).MatchString(p) {
+		t.Error("prompt does not forbid pushing")
+	}
+	if !regexp.MustCompile(`(?i)(do not|don't|never).{0,20}(run )?gh\b|(do not|don't|never).{0,30}(open|raise).{0,20}PR`).MatchString(p) {
+		t.Error("prompt does not forbid running gh / opening the PR")
+	}
+}
+
+func TestBuildReviewForbidsLinearAndFindings(t *testing.T) {
+	p := BuildReview(sample, "beh-362", sampleWorktree)
+
+	if !regexp.MustCompile(`(?i)(do not|don't).*Linear`).MatchString(p) {
+		t.Error("prompt does not steer off Linear")
+	}
+	// Findings are retrospective's job now, not review's.
+	if !regexp.MustCompile(`(?i)(do not|don't|never).{0,30}finding`).MatchString(p) {
+		t.Error("prompt does not steer review off emitting findings (retrospective owns that)")
+	}
+}
