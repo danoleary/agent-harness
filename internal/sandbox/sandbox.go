@@ -5,7 +5,24 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
+
+	"github.com/beherd/agent-harness/internal/proc"
 )
+
+// PreflightTimeout bounds each Preflight docker probe. A wedged daemon (e.g. its
+// overlay2 store gone read-only) never returns from `docker info`; without a
+// deadline the probe — and the whole run — blocks forever (BEH-386: one such hang
+// stranded a run for two days). 30s is generous for a healthy daemon's round-trip
+// yet fails fast on a hung one, before the ticket is ever claimed.
+const PreflightTimeout = 30 * time.Second
+
+// ProbeRunner is the production runner for Preflight: each docker probe is bounded
+// by PreflightTimeout so a wedged daemon fails fast rather than hanging the run
+// (BEH-386). The three cmd/ tools all pass this; tests inject their own runner.
+func ProbeRunner(name string, args ...string) ([]byte, error) {
+	return proc.CombinedOutput(PreflightTimeout, name, args...)
+}
 
 // helpTrailerRE matches docker's generic "See 'docker run --help'." footer,
 // which it prints *after* the real error line — uninformative on its own.

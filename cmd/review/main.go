@@ -14,7 +14,6 @@ package main
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -24,12 +23,19 @@ import (
 	gitpkg "github.com/beherd/agent-harness/internal/git"
 	"github.com/beherd/agent-harness/internal/linear"
 	"github.com/beherd/agent-harness/internal/pr"
+	"github.com/beherd/agent-harness/internal/proc"
 	"github.com/beherd/agent-harness/internal/prompt"
 	"github.com/beherd/agent-harness/internal/runlog"
 	"github.com/beherd/agent-harness/internal/sandbox"
 	"github.com/beherd/agent-harness/internal/session"
 	"github.com/beherd/agent-harness/internal/verify"
 )
+
+// prCreateTimeout bounds the `gh pr create` network round-trip. Like the git
+// remote ops it is a remote call — a stalled network or a blocking gh auth prompt
+// would otherwise hang the harness at the very end of a run, stranding a finished,
+// already-pushed branch (BEH-386, same hang class as the git fetch/push bound).
+const prCreateTimeout = 2 * time.Minute
 
 var ticketRE = regexp.MustCompile(`^[A-Z]+-\d+$`)
 
@@ -148,7 +154,7 @@ func run() (int, error) {
 	}
 
 	// Fail fast if Docker can't run the container before we burn the session.
-	if err := sandbox.Preflight(cfg.Image, execCombinedOutput); err != nil {
+	if err := sandbox.Preflight(cfg.Image, sandbox.ProbeRunner); err != nil {
 		return 1, err
 	}
 
@@ -220,23 +226,16 @@ func run() (int, error) {
 // reads it from the harness env. Returns the created PR URL (gh prints it to
 // stdout).
 func createPR(herdPath, slug, title, body string) (string, error) {
-	cmd := exec.Command(
+	out, err := proc.CombinedOutputInDir(
+		prCreateTimeout, herdPath,
 		"gh", "pr", "create",
 		"--head", gitpkg.BranchName(slug),
 		"--base", "main",
 		"--title", title,
 		"--body", body,
 	)
-	cmd.Dir = herdPath
-	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("%s: %s", err, strings.TrimSpace(string(out)))
 	}
 	return strings.TrimSpace(string(out)), nil
-}
-
-// execCombinedOutput runs a command and returns its combined stdout+stderr,
-// matching the runner signature sandbox.Preflight expects.
-func execCombinedOutput(name string, args ...string) ([]byte, error) {
-	return exec.Command(name, args...).CombinedOutput()
 }

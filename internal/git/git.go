@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/beherd/agent-harness/internal/proc"
 	"github.com/beherd/agent-harness/internal/verify"
 )
 
@@ -18,8 +19,14 @@ import (
 // without touching a real remote (mirrors sandbox.Preflight's runner seam).
 type commandRunner func(name string, args ...string) error
 
+// remoteOpTimeout bounds a single git remote attempt (fetch/push). A stalled
+// remote — a black-hole network, a blocking credential prompt — would otherwise
+// hang an attempt forever, defeating the retry loop entirely (BEH-386). It is
+// per-attempt, so the wall-clock cap is at most remoteAttempts × this.
+const remoteOpTimeout = 2 * time.Minute
+
 func execRun(name string, args ...string) error {
-	return exec.Command(name, args...).Run()
+	return proc.Run(remoteOpTimeout, name, args...)
 }
 
 // remoteAttempts is how many times a git remote op (fetch/push) is tried before

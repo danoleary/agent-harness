@@ -16,7 +16,6 @@ package main
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -147,7 +146,7 @@ func run() (int, error) {
 	}
 
 	// Fail fast if Docker can't run the container before launching the session.
-	if err := sandbox.Preflight(cfg.Image, execCombinedOutput); err != nil {
+	if err := sandbox.Preflight(cfg.Image, sandbox.ProbeRunner); err != nil {
 		return 1, err
 	}
 
@@ -199,10 +198,4 @@ func run() (int, error) {
 	}
 
 	return 0, nil
-}
-
-// execCombinedOutput runs a command and returns its combined stdout+stderr,
-// matching the runner signature sandbox.Preflight expects.
-func execCombinedOutput(name string, args ...string) ([]byte, error) {
-	return exec.Command(name, args...).CombinedOutput()
 }
