@@ -154,7 +154,7 @@ func run() (int, error) {
 	}
 
 	// Fail fast if Docker can't run the container before we burn the session.
-	if err := sandbox.Preflight(cfg.Image, sandbox.ProbeRunner); err != nil {
+	if err := sandbox.Preflight(cfg.Image, filepath.Join(cfg.HerdPath, "agent-harness"), sandbox.ProbeRunner, sandbox.BuildImage); err != nil {
 		return 1, err
 	}
 

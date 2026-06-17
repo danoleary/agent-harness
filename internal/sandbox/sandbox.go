@@ -3,6 +3,8 @@ package sandbox
 
 import (
 	"fmt"
+	"os"
+	"os/exec"
 	"regexp"
 	"strings"
 	"time"
@@ -178,13 +180,34 @@ func BuildGateRunArgs(c GateConfig) []string {
 	return args
 }
 
+// BuildImage builds the sandbox image, streaming docker's progress so the
+// operator sees the (multi-minute) build rather than a silent hang. It is the
+// production builder; Preflight tests inject a fake. buildContext is the
+// directory holding the harness Dockerfile (the agent-harness dir).
+func BuildImage(image, buildContext string) error {
+	fmt.Fprintf(os.Stderr,
+		"sandbox image %q not present — building it now from %s (first run, or it was pruned; this takes a few minutes)…\n",
+		image, buildContext,
+	)
+	cmd := exec.Command("docker", "build", "-t", image, buildContext)
+	// Build chatter is diagnostic, not harness output — keep it off stdout so a
+	// caller parsing stdout (e.g. --dry-run) stays clean.
+	cmd.Stdout = os.Stderr
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
 // Preflight verifies the harness can actually launch a sandbox before it commits
 // to a run (claiming the ticket, mutating Linear state) — first that the Docker
-// daemon is reachable, then that the sandbox image is present locally. Both
-// failures otherwise surface only as a bare exit 125 *after* the ticket is
-// already claimed with no worktree (BEH-316). run is injected so the check can
-// be unit-tested; production passes a CombinedOutput runner.
-func Preflight(image string, run func(name string, args ...string) ([]byte, error)) error {
+// daemon is reachable, then that the sandbox image is present locally, building
+// it on miss. A bare missing image otherwise surfaces only as exit 125 *after*
+// the ticket is already claimed with no worktree (BEH-316); and because every
+// session runs `docker run --rm`, the image is left unreferenced between runs,
+// so a `docker system prune -a` (or Docker Desktop's "reclaim disk") quietly
+// deletes it — build-on-miss makes that self-healing instead of a hard failure.
+// run is injected so the check can be unit-tested; build is the (injected)
+// image builder. Production passes ProbeRunner and BuildImage.
+func Preflight(image, buildContext string, run func(name string, args ...string) ([]byte, error), build func(image, buildContext string) error) error {
 	// Daemon reachable? `docker info` is the cheapest call that actually
 	// round-trips to the daemon — `docker --version` is client-only and passes
 	// even when the daemon is down.
@@ -195,12 +218,22 @@ func Preflight(image string, run func(name string, args ...string) ([]byte, erro
 	}
 
 	// Image present? A missing image makes `docker run` try to pull a private/
-	// nonexistent repo and die with exit 125; catch it here with a build hint.
-	if out, err := run("docker", "image", "inspect", image); err != nil {
-		return fmt.Errorf(
-			"sandbox image %q not found locally — build it first with `docker build -t %s .` (%s)",
-			image, image, reasonOr(out, err),
-		)
+	// nonexistent repo and die with exit 125. Build it instead of failing.
+	if _, err := run("docker", "image", "inspect", image); err != nil {
+		if berr := build(image, buildContext); berr != nil {
+			return fmt.Errorf(
+				"sandbox image %q missing and the build failed — run `docker build -t %s %s` manually (%s)",
+				image, image, buildContext, berr,
+			)
+		}
+		// Re-verify: a build that "succeeded" but produced no such tag (wrong
+		// context, bad Dockerfile) would otherwise still die at `docker run`.
+		if out, err := run("docker", "image", "inspect", image); err != nil {
+			return fmt.Errorf(
+				"sandbox image %q still not present after build — check the Dockerfile in %s (%s)",
+				image, buildContext, reasonOr(out, err),
+			)
+		}
 	}
 
 	return nil

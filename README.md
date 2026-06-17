@@ -39,7 +39,10 @@ sandbox, then verify the worktree + handoff commit by ground truth and file any
 dropped findings. No push, no PR (review owns those), no loop.
 
 ```bash
-# build the sandbox image once
+# Optional: pre-build the sandbox image. If it's absent when a tool runs
+# (first run, or after a `docker system prune -a` reclaims it — every session
+# is `docker run --rm`, so the image sits unreferenced between runs), the tool
+# builds it automatically before launching. Pre-build only to control timing.
 docker build -t herd-agent-harness:latest .
 
 go run ./cmd/implementation BEH-362             # fetch + claim, run tdd in the sandbox, verify

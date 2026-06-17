@@ -275,17 +275,23 @@ func TestDockerErrorReason(t *testing.T) {
 	}
 }
 
-const testImage = "herd-agent-harness:latest"
+const (
+	testImage   = "herd-agent-harness:latest"
+	testContext = "/herd/agent-harness"
+)
 
-// fakeDocker routes by the docker sub-command so a test can fail just `info` or
-// just `image inspect` while letting the other pass. A reply of {nil,nil} means
-// "succeeds with no output".
+// reply is one canned docker response. A reply of {nil,nil} means "succeeds
+// with no output".
 type reply struct {
 	out []byte
 	err error
 }
 
-func fakeDocker(byVerb map[string]reply, calls *[]string) func(string, ...string) ([]byte, error) {
+// fakeDocker routes by the docker sub-command so a test can fail just `info` or
+// just `image inspect` while letting the other pass. The "image" verb accepts a
+// *sequence* of replies (popped per call) so a test can model "inspect fails,
+// then — after a build — succeeds"; a single reply is reused for every call.
+func fakeDocker(byVerb map[string][]reply, calls *[]string) func(string, ...string) ([]byte, error) {
 	return func(name string, args ...string) ([]byte, error) {
 		if calls != nil {
 			*calls = append(*calls, strings.Join(append([]string{name}, args...), " "))
@@ -294,29 +300,49 @@ func fakeDocker(byVerb map[string]reply, calls *[]string) func(string, ...string
 		if len(args) > 0 {
 			verb = args[0] // "info" or "image"
 		}
-		r := byVerb[verb]
+		seq := byVerb[verb]
+		if len(seq) == 0 {
+			return nil, nil
+		}
+		r := seq[0]
+		if len(seq) > 1 {
+			byVerb[verb] = seq[1:] // consume; last reply sticks
+		}
 		return r.out, r.err
 	}
 }
 
+// one wraps a single reply reused for every call to a verb.
+func one(out []byte, err error) []reply { return []reply{{out, err}} }
+
+// noBuild is a builder that fails the test if invoked — for the paths where the
+// image is already present and no build should happen.
+func noBuild(t *testing.T) func(string, string) error {
+	return func(image, _ string) error {
+		t.Helper()
+		t.Errorf("build should not be called when the image is present (image=%q)", image)
+		return nil
+	}
+}
+
 func TestPreflightOKWhenDaemonAndImagePresent(t *testing.T) {
-	run := fakeDocker(map[string]reply{
-		"info":  {[]byte("Server Version: 27.0.0"), nil},
-		"image": {[]byte(`[{"Id":"sha256:abc"}]`), nil},
+	run := fakeDocker(map[string][]reply{
+		"info":  one([]byte("Server Version: 27.0.0"), nil),
+		"image": one([]byte(`[{"Id":"sha256:abc"}]`), nil),
 	}, nil)
-	if err := Preflight(testImage, run); err != nil {
+	if err := Preflight(testImage, testContext, run, noBuild(t)); err != nil {
 		t.Errorf("Preflight should pass when daemon is up and image is present, got: %v", err)
 	}
 }
 
 func TestPreflightSurfacesDaemonDownReason(t *testing.T) {
-	run := fakeDocker(map[string]reply{
-		"info": {
+	run := fakeDocker(map[string][]reply{
+		"info": one(
 			[]byte("Client: Docker Engine\n\nCannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?\n"),
 			errFake,
-		},
+		),
 	}, nil)
-	err := Preflight(testImage, run)
+	err := Preflight(testImage, testContext, run, noBuild(t))
 	if err == nil {
 		t.Fatal("Preflight should fail when the daemon is unreachable")
 	}
@@ -328,29 +354,74 @@ func TestPreflightSurfacesDaemonDownReason(t *testing.T) {
 	}
 }
 
-func TestPreflightFailsWhenImageMissing(t *testing.T) {
-	run := fakeDocker(map[string]reply{
-		"info":  {[]byte("Server Version: 27.0.0"), nil},
-		"image": {[]byte("Error: No such image: herd-agent-harness:latest"), errFake},
-	}, nil)
-	err := Preflight(testImage, run)
-	if err == nil {
-		t.Fatal("Preflight should fail when the sandbox image is absent")
+func TestPreflightBuildsImageOnMiss(t *testing.T) {
+	var builtImage, builtContext string
+	builds := 0
+	build := func(image, buildContext string) error {
+		builds++
+		builtImage, builtContext = image, buildContext
+		return nil
 	}
-	if !strings.Contains(err.Error(), testImage) {
-		t.Errorf("error should name the missing image, got: %v", err)
+	// inspect fails first (missing), then succeeds (after the build).
+	run := fakeDocker(map[string][]reply{
+		"info": one([]byte("Server Version: 27.0.0"), nil),
+		"image": {
+			{[]byte("Error: No such image: herd-agent-harness:latest"), errFake},
+			{[]byte(`[{"Id":"sha256:abc"}]`), nil},
+		},
+	}, nil)
+	if err := Preflight(testImage, testContext, run, build); err != nil {
+		t.Fatalf("Preflight should build the image on miss and pass, got: %v", err)
+	}
+	if builds != 1 {
+		t.Errorf("build should be called exactly once, got %d", builds)
+	}
+	if builtImage != testImage || builtContext != testContext {
+		t.Errorf("build called with (%q, %q), want (%q, %q)", builtImage, builtContext, testImage, testContext)
+	}
+}
+
+func TestPreflightSurfacesBuildFailure(t *testing.T) {
+	run := fakeDocker(map[string][]reply{
+		"info":  one([]byte("Server Version: 27.0.0"), nil),
+		"image": one([]byte("Error: No such image: herd-agent-harness:latest"), errFake),
+	}, nil)
+	build := func(string, string) error { return errFake }
+	err := Preflight(testImage, testContext, run, build)
+	if err == nil {
+		t.Fatal("Preflight should fail when the build fails")
+	}
+	if !strings.Contains(err.Error(), testImage) || !strings.Contains(err.Error(), testContext) {
+		t.Errorf("error should name the image and build context, got: %v", err)
 	}
 	if !strings.Contains(err.Error(), "docker build") {
-		t.Errorf("error should tell the operator how to build it, got: %v", err)
+		t.Errorf("error should give the manual build command, got: %v", err)
+	}
+}
+
+func TestPreflightFailsWhenImageAbsentAfterBuild(t *testing.T) {
+	// A build that "succeeds" but produces no such tag (wrong context/Dockerfile)
+	// must still fail rather than fall through to a doomed `docker run`.
+	run := fakeDocker(map[string][]reply{
+		"info":  one([]byte("Server Version: 27.0.0"), nil),
+		"image": one([]byte("Error: No such image: herd-agent-harness:latest"), errFake),
+	}, nil)
+	build := func(string, string) error { return nil }
+	err := Preflight(testImage, testContext, run, build)
+	if err == nil {
+		t.Fatal("Preflight should fail when the image is still absent after a 'successful' build")
+	}
+	if !strings.Contains(err.Error(), "still not present after build") {
+		t.Errorf("error should flag the post-build absence, got: %v", err)
 	}
 }
 
 func TestPreflightDoesNotInspectImageWhenDaemonDown(t *testing.T) {
 	var calls []string
-	run := fakeDocker(map[string]reply{
-		"info": {nil, errFake},
+	run := fakeDocker(map[string][]reply{
+		"info": one(nil, errFake),
 	}, &calls)
-	_ = Preflight(testImage, run)
+	_ = Preflight(testImage, testContext, run, noBuild(t))
 	// A down daemon should short-circuit before the image check — no point
 	// inspecting an image we can't run anyway.
 	if len(calls) != 1 || calls[0] != "docker info" {
@@ -360,11 +431,11 @@ func TestPreflightDoesNotInspectImageWhenDaemonDown(t *testing.T) {
 
 func TestPreflightProbesDaemonNotClientVersion(t *testing.T) {
 	var calls []string
-	run := fakeDocker(map[string]reply{
-		"info":  {nil, nil},
-		"image": {nil, nil},
+	run := fakeDocker(map[string][]reply{
+		"info":  one(nil, nil),
+		"image": one(nil, nil),
 	}, &calls)
-	_ = Preflight(testImage, run)
+	_ = Preflight(testImage, testContext, run, noBuild(t))
 	// `docker info` round-trips to the daemon; `docker --version` is client-only
 	// and would pass even with the daemon down.
 	if len(calls) == 0 || calls[0] != "docker info" {
@@ -376,10 +447,10 @@ func TestPreflightProbesDaemonNotClientVersion(t *testing.T) {
 }
 
 func TestPreflightFallsBackToErrWhenNoOutput(t *testing.T) {
-	run := fakeDocker(map[string]reply{
-		"info": {nil, errFake},
+	run := fakeDocker(map[string][]reply{
+		"info": one(nil, errFake),
 	}, nil)
-	err := Preflight(testImage, run)
+	err := Preflight(testImage, testContext, run, noBuild(t))
 	if err == nil || !strings.Contains(err.Error(), errFake.Error()) {
 		t.Errorf("Preflight should fall back to the runner error when there is no output, got: %v", err)
 	}
