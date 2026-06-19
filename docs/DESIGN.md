@@ -131,6 +131,16 @@ loop:
   agent's say-so); *retrospective* = `/findings/out.json` exists on disk (an empty
   `[]` is a valid "ran, found nothing"; an *absent* file means the step never ran
   and is a failure). The agent's own "I'm done" is logged but never authoritative.
+- **A usage-policy refusal is retryable, not fatal ([BEH-389](https://linear.app/beherd/issue/BEH-389)).**
+  Claude Code's "unable to respond … violate our Usage Policy" refusal is a known
+  intermittent false-positive on long agentic sessions; it returns a terminal
+  `is_error` result that would otherwise sink an on-scope run. Because the diff
+  survives on disk (the real-path bind mount), *implementation* retries the tdd
+  session once on the same ticket when a refusal left no handoff commit, and on a
+  final failure surfaces that uncommitted work remains in the worktree so a
+  recoverable diff is never silently discarded. To keep refusals rare, the tdd
+  session is pinned to an exact Opus snapshot (`claude-opus-4-8`), not the floating
+  `opus` alias that once resolved to a stale, refusal-prone Opus 4.1.
 - **The harness owns all remote I/O — Linear ([ADR-0001](adr/0001-harness-owns-linear-integration.md))
   *and* git push / PR ([ADR-0002](adr/0002-harness-owns-remote-io.md)).** Agents
   commit only into the local shared `.git`; the harness pushes (via the main

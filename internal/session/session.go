@@ -46,27 +46,40 @@ type Options struct {
 // generic "See '… --help'." trailer, so one line isn't enough).
 const stderrTailLines = 10
 
+// Outcome is the result of a finished session: the container's exit code, plus
+// whether the stream ended on a terminal usage-policy refusal (BEH-389) — a
+// known intermittent false-positive the caller may choose to retry rather than
+// treat as a real failure.
+type Outcome struct {
+	// ExitCode is the container's exit code (1 on any launch failure).
+	ExitCode int
+	// UsagePolicyRefusal is true iff the stream carried the terminal usage-policy
+	// refusal result event. The diff survives on disk (ADR-0002 real-path mount),
+	// so the caller can retry the session rather than discard the run.
+	UsagePolicyRefusal bool
+}
+
 // Run launches the sandboxed session described by dockerArgs (everything after
 // `docker`), teeing the transcript and narrating progress. It returns the
-// container's exit code (1 on any launch failure). On a docker-cannot-start exit
-// (125) it surfaces docker's own reason on the console — otherwise the operator
-// sees a bare exit code (BEH-316).
-func Run(dockerArgs []string, opts Options) int {
+// container's exit code (1 on any launch failure) plus whether a usage-policy
+// refusal was seen. On a docker-cannot-start exit (125) it surfaces docker's own
+// reason on the console — otherwise the operator sees a bare exit code (BEH-316).
+func Run(dockerArgs []string, opts Options) Outcome {
 	cmd := exec.Command("docker", dockerArgs...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		opts.Log.Event("session ✗ failed to pipe docker stdout: " + err.Error())
-		return 1
+		return Outcome{ExitCode: 1}
 	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
 		opts.Log.Event("session ✗ failed to pipe docker stderr: " + err.Error())
-		return 1
+		return Outcome{ExitCode: 1}
 	}
 
 	if err := cmd.Start(); err != nil {
 		opts.Log.Event("session ✗ failed to launch docker: " + err.Error())
-		return 1
+		return Outcome{ExitCode: 1}
 	}
 
 	// Hard wall-clock cap: if the session overruns, kill the container out from under it.
@@ -77,13 +90,14 @@ func Run(dockerArgs []string, opts Options) int {
 	defer timer.Stop()
 
 	var (
-		wg   sync.WaitGroup
-		tail []string
+		wg              sync.WaitGroup
+		tail            []string
+		usagePolicyDeny bool
 	)
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		pumpStdout(stdout, opts.TranscriptFile, opts.Verbose, opts.Log, os.Stdout)
+		usagePolicyDeny = pumpStdout(stdout, opts.TranscriptFile, opts.Verbose, opts.Log, os.Stdout)
 	}()
 	go func() {
 		defer wg.Done()
@@ -111,19 +125,25 @@ func Run(dockerArgs []string, opts Options) int {
 		opts.Log.Event("session ✗ docker could not start the container (exit 125): " + hint)
 	}
 
-	return exitCode
+	return Outcome{ExitCode: exitCode, UsagePolicyRefusal: usagePolicyDeny}
 }
 
 // pumpStdout scans claude's stream-json stdout: it tees every line raw to the
 // transcript, then either echoes the raw line (verbose) or surfaces the concise
 // narration for narratable lines. A malformed line is teed but skipped for
-// narration so one bad chunk can't kill the run.
-func pumpStdout(r io.Reader, transcriptFile string, verbose bool, log Logger, echo io.Writer) {
+// narration so one bad chunk can't kill the run. It returns whether the stream
+// carried the terminal usage-policy refusal (BEH-389), checked on every line
+// regardless of --verbose so a retryable refusal is never missed.
+func pumpStdout(r io.Reader, transcriptFile string, verbose bool, log Logger, echo io.Writer) bool {
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	usagePolicyRefusal := false
 	for sc.Scan() {
 		line := sc.Text()
 		log.TeeLine(transcriptFile, line)
+		if stream.IsUsagePolicyRefusal(line) {
+			usagePolicyRefusal = true
+		}
 		if verbose {
 			fmt.Fprintln(echo, line)
 			continue
@@ -132,6 +152,7 @@ func pumpStdout(r io.Reader, transcriptFile string, verbose bool, log Logger, ec
 			log.Event(msg)
 		}
 	}
+	return usagePolicyRefusal
 }
 
 // pumpStderr tees every stderr line (forensic only) and returns a bounded tail of

@@ -25,9 +25,11 @@ type Config struct {
 	TddTimeout time.Duration
 	// ReviewTimeout is the wall-clock cap for the review session (DESIGN.md: 15 min).
 	ReviewTimeout time.Duration
-	// Model is the claude `--model` the tdd session runs on. Defaults to Opus —
-	// the CLI's own default is not guaranteed to be Opus and a past run silently
-	// fell back to Sonnet (BEH-316).
+	// Model is the claude `--model` the tdd session runs on. Pinned to an exact
+	// Opus snapshot, not the floating `opus` alias: the CLI's own default is not
+	// guaranteed to be Opus and a past run silently fell back to Sonnet (BEH-316),
+	// while the alias once resolved to a stale Opus 4.1 prone to a false-positive
+	// usage-policy refusal on long sessions (BEH-389).
 	Model string
 }
 
@@ -36,7 +38,7 @@ const (
 	defaultPnpmStoreVolume = "herd-pnpm-store"
 	defaultTddTimeout      = 30 * time.Minute
 	defaultReviewTimeout   = 15 * time.Minute
-	defaultModel           = "opus"
+	defaultModel           = "claude-opus-4-8"
 )
 
 // Getenv looks up an environment variable by name, returning "" when unset.

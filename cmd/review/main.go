@@ -161,7 +161,7 @@ func run() (int, error) {
 	// --- review session (cold /review-worktree; fixes committed locally) ---
 	transcriptFile := runlog.TranscriptName(sessionName, runID)
 	log.Event(fmt.Sprintf("launching review session (cap %d min)", int(cfg.ReviewTimeout.Minutes())))
-	reviewExit := session.Run(dockerArgs, session.Options{
+	reviewOutcome := session.Run(dockerArgs, session.Options{
 		ContainerName:  containerName,
 		TranscriptFile: transcriptFile,
 		Timeout:        cfg.ReviewTimeout,
@@ -169,7 +169,7 @@ func run() (int, error) {
 		Log:            log,
 	})
 	log.Event(fmt.Sprintf(
-		"review session exited (code %d) — transcript at logs/%s/%s", reviewExit, args.identifier, transcriptFile,
+		"review session exited (code %d) — transcript at logs/%s/%s", reviewOutcome.ExitCode, args.identifier, transcriptFile,
 	))
 
 	// --- ground truth + push gate (harness, host-side) ---
@@ -188,7 +188,7 @@ func run() (int, error) {
 		Timeout:        cfg.ReviewTimeout,
 		Verbose:        args.verbose,
 		Log:            log,
-	})
+	}).ExitCode
 
 	// The gate runs against the worktree's working tree (committed + uncommitted),
 	// but Push ships only the committed tip — so the push is authorised only when

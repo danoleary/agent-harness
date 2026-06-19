@@ -152,7 +152,7 @@ func run() (int, error) {
 
 	transcriptFile := runlog.TranscriptName(sessionName, runID)
 	log.Event(fmt.Sprintf("launching sandbox (cap %d min)", int(cfg.TddTimeout.Minutes())))
-	exitCode := session.Run(dockerArgs, session.Options{
+	outcome := session.Run(dockerArgs, session.Options{
 		ContainerName:  containerName,
 		TranscriptFile: transcriptFile,
 		Timeout:        cfg.TddTimeout,
@@ -160,7 +160,7 @@ func run() (int, error) {
 		Log:            log,
 	})
 	log.Event(fmt.Sprintf(
-		"session exited (code %d) — transcript at logs/%s/%s", exitCode, args.identifier, transcriptFile,
+		"session exited (code %d) — transcript at logs/%s/%s", outcome.ExitCode, args.identifier, transcriptFile,
 	))
 
 	// Ground truth, never self-report: the retrospective ran iff it wrote the

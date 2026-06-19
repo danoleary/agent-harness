@@ -33,6 +33,34 @@ func BuildTdd(t ticket.Ticket, slug string) string {
 	return strings.Join(lines, "\n")
 }
 
+// BuildTddResume builds the `-p` prompt for a *retry* of the tdd session after a
+// usage-policy refusal (BEH-389). The first attempt already created the worktree
+// and left its work uncommitted on disk (the real-path bind mount survives the
+// refusal), so this prompt steers the skill to RESUME that existing worktree and
+// commit the surviving work rather than recreate it — re-running the skill's
+// worktree-creation step would fail on the already-existing `feat/<slug>` branch.
+// Every other steer (Linear off, findings to the dropbox) is unchanged.
+func BuildTddResume(t ticket.Ticket, slug, worktreePath string) string {
+	lines := []string{
+		"/tdd Continue work on " + t.Identifier + ".",
+		"",
+		"IMPORTANT: a previous attempt was interrupted (a usage-policy refusal), but its work survives. The worktree ALREADY EXISTS at `" + worktreePath + "` on branch `feat/" + slug + "`, and it likely holds uncommitted changes from that attempt. Do NOT create a new worktree and do NOT run `new-worktree.sh` — that would fail on the already-existing branch. `cd` into the existing worktree, inspect what's there with `git status`/`git diff`, finish anything incomplete, run the gates, and commit the handoff. Recovering and committing that surviving diff is the whole point of this retry.",
+		"",
+		"Ticket context (already fetched for you — do not look it up):",
+		"",
+		"# " + t.Identifier + ": " + t.Title,
+		"",
+		t.Description,
+		"",
+		"---",
+		"",
+		t.Identifier + " is already claimed and moved to In Progress for you. Do NOT touch Linear — do not call any `mcp__linear-server__*` tool, do not move the ticket, do not open or comment on issues. The harness owns all Linear I/O.",
+		"",
+		"If you hit problems with the harness or environment itself (setup friction, systemic gaps, missing patterns) during your session retrospective, do NOT file Linear issues. Instead append them to `/findings/out.json` as a JSON array of `{title, body, kind}` objects (kind is a free-form category). The harness reads this file after the session and files the issues for you. If you have no findings, leave the file untouched.",
+	}
+	return strings.Join(lines, "\n")
+}
+
 // BuildRetrospective builds the `-p` prompt for the sandboxed /retrospective
 // session — the third, terminal tool. The retrospective studies the *sessions*,
 // so it reads every prior transcript for the ticket plus the diff and writes

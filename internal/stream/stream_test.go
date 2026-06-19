@@ -51,6 +51,64 @@ func TestNarrateSkipsUninterestingEvents(t *testing.T) {
 	}
 }
 
+// The terminal usage-policy refusal (BEH-389): an is_error result whose text is
+// the classifier's "unable to respond … violate our Usage Policy" message. This
+// is a known intermittent false-positive on long sessions, so the harness treats
+// it as retryable rather than a real failure.
+func TestIsUsagePolicyRefusalDetectsTheRefusalResult(t *testing.T) {
+	line := mustJSON(t, map[string]any{
+		"type":     "result",
+		"subtype":  "success",
+		"is_error": true,
+		"result":   "API Error: Claude Code is unable to respond to this request, which appears to violate our Usage Policy (https://www.anthropic.com/legal/aup). Please double press esc to edit your last message or start a new session for Claude Code to assist with a different task. If you are seeing this refusal repeatedly, try running /model claude-sonnet-4-20250514 to switch models.",
+	})
+	if !IsUsagePolicyRefusal(line) {
+		t.Error("expected the usage-policy refusal result to be detected")
+	}
+}
+
+// A genuine error result (is_error, but not the usage-policy refusal) must NOT be
+// treated as retryable — only the policy-refusal false-positive is.
+func TestIsUsagePolicyRefusalIgnoresOtherErrors(t *testing.T) {
+	line := mustJSON(t, map[string]any{
+		"type":     "result",
+		"subtype":  "error_during_execution",
+		"is_error": true,
+		"result":   "Error: command failed with exit code 1",
+	})
+	if IsUsagePolicyRefusal(line) {
+		t.Error("a non-refusal error result must not be treated as a usage-policy refusal")
+	}
+}
+
+// A successful result, a non-result event that merely mentions the policy text,
+// and a malformed line are all non-refusals.
+func TestIsUsagePolicyRefusalRejectsNonRefusals(t *testing.T) {
+	success := mustJSON(t, map[string]any{
+		"type": "result", "subtype": "success", "is_error": false, "result": "done",
+	})
+	// The refusal text also appears in an assistant text block earlier in the
+	// stream; only the terminal result event counts, never an assistant turn.
+	assistantEcho := mustJSON(t, map[string]any{
+		"type": "assistant",
+		"message": map[string]any{
+			"content": []any{
+				map[string]any{"type": "text", "text": "unable to respond to this request, which appears to violate our Usage Policy"},
+			},
+		},
+	})
+	for name, line := range map[string]string{
+		"success":        success,
+		"assistant echo": assistantEcho,
+		"malformed":      "{not json",
+		"empty":          "",
+	} {
+		if IsUsagePolicyRefusal(line) {
+			t.Errorf("%s should not be a usage-policy refusal", name)
+		}
+	}
+}
+
 func TestNarratesResultWithDuration(t *testing.T) {
 	line := mustJSON(t, map[string]any{
 		"type":        "result",

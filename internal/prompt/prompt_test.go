@@ -57,6 +57,42 @@ func TestBuildTddRedirectsFindingsToDropbox(t *testing.T) {
 	}
 }
 
+// On a retry after a usage-policy refusal (BEH-389), the worktree and branch
+// already exist with the surviving diff. The resume prompt must steer the agent
+// to continue in that existing worktree and commit the work — never to recreate
+// it (which would fail on the already-existing branch) — while keeping every
+// other steer (Linear off, findings to the dropbox).
+func TestBuildTddResumeSteersToExistingWorktree(t *testing.T) {
+	p := BuildTddResume(sample, "beh-362", sampleWorktree)
+
+	for _, want := range []string{"/tdd", "BEH-362", sampleWorktree, "feat/beh-362"} {
+		if !strings.Contains(p, want) {
+			t.Errorf("resume prompt missing %q", want)
+		}
+	}
+	// Must tell the agent the worktree already exists and to resume, NOT recreate.
+	if !regexp.MustCompile(`(?i)already exist`).MatchString(p) {
+		t.Error("resume prompt does not say the worktree already exists")
+	}
+	if !regexp.MustCompile(`(?i)(do not|don't|never).{0,40}(create|recreate|new-worktree)`).MatchString(p) {
+		t.Error("resume prompt does not forbid recreating the worktree")
+	}
+	if !regexp.MustCompile(`(?i)commit`).MatchString(p) {
+		t.Error("resume prompt does not tell the agent to commit the surviving work")
+	}
+}
+
+func TestBuildTddResumeStillSteersOffLinearAndToDropbox(t *testing.T) {
+	p := BuildTddResume(sample, "beh-362", sampleWorktree)
+
+	if !regexp.MustCompile(`(?i)(do not|don't).*Linear`).MatchString(p) {
+		t.Error("resume prompt does not steer off Linear")
+	}
+	if !strings.Contains(p, "/findings/out.json") {
+		t.Error("resume prompt missing the findings dropbox path")
+	}
+}
+
 func TestBuildRetrospectiveInvokesSkillOnTicket(t *testing.T) {
 	p := BuildRetrospective(sample, "beh-362")
 

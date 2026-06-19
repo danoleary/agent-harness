@@ -120,15 +120,22 @@ func run() (int, error) {
 	// runID is second-resolution; include the pid so two runs started in the same
 	// second still get distinct container names (and distinct `docker kill` targets).
 	containerName := fmt.Sprintf("herd-harness-%s-%d-%s", runID, os.Getpid(), sessionName)
-	dockerArgs := sandbox.BuildDockerRunArgs(sandbox.Config{
-		Image:           cfg.Image,
-		HerdPath:        cfg.HerdPath,
-		FindingsDir:     findingsDir,
-		PnpmStoreVolume: cfg.PnpmStoreVolume,
-		Prompt:          p,
-		Model:           cfg.Model,
-		ContainerName:   containerName,
-	})
+	// A closure so a retry (BEH-389) can re-launch under a distinct --name and a
+	// resume prompt: the name must match Options.ContainerName for the timeout
+	// `docker kill` to hit the right container, and the retry prompt differs from
+	// the first attempt's (it resumes the existing worktree rather than creating one).
+	buildArgs := func(name, prmpt string) []string {
+		return sandbox.BuildDockerRunArgs(sandbox.Config{
+			Image:           cfg.Image,
+			HerdPath:        cfg.HerdPath,
+			FindingsDir:     findingsDir,
+			PnpmStoreVolume: cfg.PnpmStoreVolume,
+			Prompt:          prmpt,
+			Model:           cfg.Model,
+			ContainerName:   name,
+		})
+	}
+	dockerArgs := buildArgs(containerName, p)
 
 	if args.dryRun {
 		log.Event("dry-run — not claiming the ticket, not launching the container")
@@ -151,22 +158,62 @@ func run() (int, error) {
 	}
 	log.Event(fmt.Sprintf("claimed %s → In Progress", args.identifier))
 
-	transcriptFile := runlog.TranscriptName(sessionName, runID)
-	log.Event(fmt.Sprintf("launching sandbox (cap %d min)", int(cfg.TddTimeout.Minutes())))
-	exitCode := session.Run(dockerArgs, session.Options{
-		ContainerName:  containerName,
-		TranscriptFile: transcriptFile,
-		Timeout:        cfg.TddTimeout,
-		Verbose:        args.verbose,
-		Log:            log,
-	})
-	log.Event(fmt.Sprintf(
-		"session exited (code %d) — transcript at logs/%s/%s", exitCode, args.identifier, transcriptFile,
-	))
+	// The tdd session runs at most twice. A terminal usage-policy refusal is a
+	// known intermittent false-positive that disproportionately strikes long
+	// agentic sessions (BEH-389); because the diff survives on disk (ADR-0002
+	// real-path mount), a refusal that left no handoff commit is retried once on
+	// the same ticket rather than discarded. Any other outcome — success, a real
+	// failure, a non-refusal error — is final on the first attempt.
+	const maxTddAttempts = 2
 
-	// Ground truth, never self-report.
-	truth := gitpkg.GatherTddGroundTruth(cfg.HerdPath, slug)
-	result := verify.Tdd(truth)
+	worktreePath := gitpkg.WorktreePath(cfg.HerdPath, slug)
+	var (
+		truth  verify.GroundTruth
+		result verify.Result
+	)
+	for attempt := 1; attempt <= maxTddAttempts; attempt++ {
+		attemptContainer := containerName
+		attemptArgs := dockerArgs
+		attemptTranscript := runlog.TranscriptName(sessionName, runID)
+		if attempt > 1 {
+			attemptContainer = fmt.Sprintf("%s-retry%d", containerName, attempt)
+			// The retry resumes the existing worktree (it already holds the surviving
+			// diff) rather than recreating it (BEH-389).
+			attemptArgs = buildArgs(attemptContainer, prompt.BuildTddResume(t, slug, worktreePath))
+			attemptTranscript = runlog.TranscriptName(fmt.Sprintf("%s-retry%d", sessionName, attempt), runID)
+			log.Event(fmt.Sprintf(
+				"tdd ↻ usage-policy refusal on attempt %d — retrying once on the same ticket (BEH-389); the worktree diff survives on disk",
+				attempt-1,
+			))
+		}
+
+		log.Event(fmt.Sprintf("launching sandbox (cap %d min)", int(cfg.TddTimeout.Minutes())))
+		outcome := session.Run(attemptArgs, session.Options{
+			ContainerName:  attemptContainer,
+			TranscriptFile: attemptTranscript,
+			Timeout:        cfg.TddTimeout,
+			Verbose:        args.verbose,
+			Log:            log,
+		})
+		log.Event(fmt.Sprintf(
+			"session exited (code %d) — transcript at logs/%s/%s", outcome.ExitCode, args.identifier, attemptTranscript,
+		))
+
+		// Ground truth, never self-report.
+		truth = gitpkg.GatherTddGroundTruth(cfg.HerdPath, slug)
+		result = verify.Tdd(truth)
+
+		// Retry only the usage-policy refusal, and only while it left no handoff
+		// commit but DID leave a worktree to resume — a refusal that struck before
+		// the worktree existed has no surviving diff to recover, and the resume
+		// prompt (which asserts the worktree already exists and forbids recreating
+		// it) would otherwise burn a whole session on a false premise. Everything
+		// else is the final verdict.
+		if result.OK || !outcome.UsagePolicyRefusal || !truth.WorktreeExists {
+			break
+		}
+	}
+
 	if result.OK {
 		plural := "s"
 		if truth.CommitsAhead == 1 {
@@ -177,6 +224,12 @@ func run() (int, error) {
 		))
 	} else {
 		log.Event("tdd ✗ " + result.Reason)
+		// Don't let a recoverable diff vanish silently: if the session left
+		// uncommitted work in the worktree (the refusal footgun — BEH-389), say so
+		// and where, so it can be recovered rather than treated as a total loss.
+		if truth.WorktreeExists && !gitpkg.WorktreeClean(worktreePath) {
+			log.Event("⚠ uncommitted work remains in the worktree at " + worktreePath + " — recover it before re-running")
+		}
 	}
 
 	// File any harness-improvement findings the session dropped (after every session, per ADR-0001).

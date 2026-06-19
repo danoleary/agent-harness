@@ -6,12 +6,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"strings"
 )
 
 type event struct {
 	Type       string   `json:"type"`
 	Subtype    string   `json:"subtype"`
 	IsError    bool     `json:"is_error"`
+	Result     string   `json:"result"`
 	DurationMS *float64 `json:"duration_ms"`
 	Message    struct {
 		Content []struct {
@@ -19,6 +21,27 @@ type event struct {
 			Name string `json:"name"`
 		} `json:"content"`
 	} `json:"message"`
+}
+
+// usagePolicyRefusalMarker is the stable core of Claude Code's usage-policy
+// refusal message. Matched as a substring so the surrounding remediation text
+// (which varies — it suggests a model to switch to) doesn't have to be exact.
+const usagePolicyRefusalMarker = "unable to respond to this request, which appears to violate our Usage Policy"
+
+// IsUsagePolicyRefusal reports whether a stream-json line is the terminal
+// usage-policy refusal *result* event (BEH-389): an `is_error` result whose
+// `result` text is the classifier's "unable to respond … violate our Usage
+// Policy" message. This is a known intermittent false-positive that
+// disproportionately strikes long agentic sessions; the harness treats it as
+// retryable rather than a real failure. Only the terminal result event counts —
+// the same text appearing in an earlier assistant turn is not a refusal — and a
+// malformed line is never a refusal (it just returns false).
+func IsUsagePolicyRefusal(line string) bool {
+	var e event
+	if err := json.Unmarshal([]byte(line), &e); err != nil {
+		return false
+	}
+	return e.Type == "result" && e.IsError && strings.Contains(e.Result, usagePolicyRefusalMarker)
 }
 
 // Narrate turns one line of claude's `--output-format stream-json` into a concise

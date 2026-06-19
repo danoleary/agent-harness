@@ -18,7 +18,26 @@ const (
 	lineSystem  = `{"type":"system","subtype":"init"}`
 	lineToolUse = `{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Edit"}]}}`
 	lineResult  = `{"type":"result","subtype":"success","duration_ms":1000}`
+	lineRefusal = `{"type":"result","subtype":"success","is_error":true,"result":"API Error: Claude Code is unable to respond to this request, which appears to violate our Usage Policy. If you are seeing this refusal repeatedly, try running /model to switch models."}`
 )
+
+// pumpStdout reports whether the stream carried a terminal usage-policy refusal
+// (BEH-389) so Run can flag the session as retryable. A stream without one
+// reports false even though it ends on a (benign) result.
+func TestPumpStdoutReportsUsagePolicyRefusal(t *testing.T) {
+	log := &fakeLog{}
+	var echo bytes.Buffer
+
+	refused := pumpStdout(strings.NewReader(lineToolUse+"\n"+lineRefusal), "x.jsonl", false, log, &echo)
+	if !refused {
+		t.Error("expected a usage-policy refusal to be reported")
+	}
+
+	clean := pumpStdout(strings.NewReader(lineToolUse+"\n"+lineResult), "x.jsonl", false, &fakeLog{}, &bytes.Buffer{})
+	if clean {
+		t.Error("a clean run must not report a usage-policy refusal")
+	}
+}
 
 // Non-verbose: every stdout line is teed raw, and narratable lines surface as
 // concise events (the default console view).

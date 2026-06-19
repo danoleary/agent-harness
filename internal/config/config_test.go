@@ -43,8 +43,8 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.TddTimeout != 30*time.Minute {
 		t.Errorf("TddTimeout = %v, want 30m", cfg.TddTimeout)
 	}
-	if cfg.Model != "opus" {
-		t.Errorf("Model = %q, want opus (tdd sessions must run on Opus)", cfg.Model)
+	if cfg.Model != "claude-opus-4-8" {
+		t.Errorf("Model = %q, want claude-opus-4-8 (tdd sessions pin the exact Opus snapshot, not the floating alias)", cfg.Model)
 	}
 	if cfg.ReviewTimeout != 15*time.Minute {
 		t.Errorf("ReviewTimeout = %v, want 15m", cfg.ReviewTimeout)
