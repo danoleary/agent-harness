@@ -1,5 +1,5 @@
 # Agent harness — Go toolchain shortcuts. Requires Go 1.26+.
-.PHONY: build image test implementation review retrospective vet fmt fmt-check check tidy
+.PHONY: build image test implementation review retrospective vet fmt fmt-check check-exec check tidy
 
 # Build the tool binaries into ./bin.
 build:
@@ -47,8 +47,12 @@ fmt-check:
 		echo "gofmt needs to run on:"; echo "$$unformatted"; exit 1; \
 	fi
 
-# The pre-push gate: format check, vet, and the full test suite.
-check: fmt-check vet test
+# Check for unbounded exec.Command calls to daemon/remote tools (BEH-388).
+check-exec:
+	@./scripts/check-exec-command.sh
+
+# The pre-push gate: format check, vet, exec guard, and the full test suite.
+check: fmt-check vet check-exec test
 
 tidy:
 	go mod tidy
