@@ -133,7 +133,12 @@ The guard is integrated into the Makefile's `check` target, which runs:
 3. `check-exec` - This exec.Command guard
 4. `check-bash3` - The bash 3.2 compatibility guard
 5. `check-buildvcs` - The -buildvcs=false guard (BEH-459)
-6. `test` - Full test suite
+6. `check-ci` - The CI-runs-check guard (BEH-462)
+7. `test` - Full test suite
+
+CI runs `make check` directly (then `make build`), so adding a guard to the
+`check` target above covers it in CI with no workflow edit. The `check-ci` guard
+enforces that — see below.
 
 ### Testing
 
@@ -156,3 +161,48 @@ proc.Run(30*time.Second, "docker", "info")
 ```
 
 See `internal/proc/proc.go` for available functions.
+
+## check-ci-runs-check.sh
+
+Guard against the harness CI workflow drifting from the Makefile `check` target
+(BEH-462).
+
+### Purpose
+
+The CI workflow (`.github/workflows/agent-harness.yaml`) used to run each `make
+check` sub-target as its own step (`make fmt-check`, `make vet`, `make
+check-exec`, …). That step list is a hand-maintained copy of the `check` target's
+prerequisites, and the two silently diverge: a guard wired into `check:` but
+never added to the YAML never runs in CI — exactly the CI-invisible-guard bug
+behind BEH-457/BEH-409 (`check-exec` was a no-op in CI for an unknown number of
+sessions). CI now runs `make check` directly (then `make build`), so the `check`
+target is the single source of truth and a new sub-target is covered for free.
+This guard enforces that arrangement so it can't regress, and is itself
+bash-3.2-safe.
+
+### What it checks
+
+Reads the `check` target's prerequisites straight from the Makefile, then scans
+the workflow's `make <target>` invocations (skipping comment lines) and fails if:
+
+- any `check` prerequisite is run as its own step (re-enumeration drift), or
+- the workflow never invokes `make check` at all.
+
+Because the prerequisite list is read from the Makefile, a sub-target added to
+`check:` is covered with no edit to this guard.
+
+### Usage
+
+```bash
+# Check the real workflow + Makefile (the make check-ci default)
+./scripts/check-ci-runs-check.sh
+
+# Check explicit files (used by the tests)
+./scripts/check-ci-runs-check.sh path/to/workflow.yaml path/to/Makefile
+```
+
+### Testing
+
+```bash
+./scripts/test-check-ci-runs-check.sh
+```

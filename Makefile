@@ -1,5 +1,5 @@
 # Agent harness — Go toolchain shortcuts. Requires Go 1.26+.
-.PHONY: build image test implementation review retrospective vet fmt fmt-check check-exec check-bash3 check-buildvcs check tidy
+.PHONY: build image test implementation review retrospective vet fmt fmt-check check-exec check-bash3 check-buildvcs check-ci check tidy
 
 # Build the tool binaries into ./bin.
 #
@@ -67,8 +67,15 @@ check-bash3:
 check-buildvcs:
 	@./scripts/check-buildvcs.sh
 
+# Fail if the CI workflow re-enumerates check's sub-targets instead of running
+# `make check` directly. Keeps a guard added to `check:` above from staying
+# CI-invisible (the BEH-457/BEH-409 divergence). It's a prerequisite of `check`,
+# so running `make check` in CI runs it for free (BEH-462).
+check-ci:
+	@./scripts/check-ci-runs-check.sh
+
 # The pre-push gate: format check, vet, the script guards, and the full test suite.
-check: fmt-check vet check-exec check-bash3 check-buildvcs test
+check: fmt-check vet check-exec check-bash3 check-buildvcs check-ci test
 
 tidy:
 	go mod tidy
