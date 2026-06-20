@@ -46,6 +46,26 @@ func TestBuildTddSteersOffLinear(t *testing.T) {
 	}
 }
 
+// The sandboxed Claude CLI intermittently mangles bash calls that chain a pipe
+// into head/tail with a command substitution like `cd "$(...)"`, producing
+// opaque errors (`head: invalid number of bytes`, `cd: too many arguments`) that
+// look like the agent's bug rather than an environment quirk and cost real turns
+// (BEH-401). The harness can't patch the upstream CLI, so it steers every
+// sandboxed session away from the trigger pattern via the prompt.
+func assertCarriesBashQuirkSteer(t *testing.T, p, label string) {
+	t.Helper()
+	if !regexp.MustCompile(`(?i)head`).MatchString(p) || !strings.Contains(p, `$(`) {
+		t.Errorf("%s does not name the bash-quirk trigger (pipe into head + `$(...)`)", label)
+	}
+	if !regexp.MustCompile(`(?i)one .{0,20}per (Bash )?call|single .{0,20}call`).MatchString(p) {
+		t.Errorf("%s does not give the one-command-per-call workaround", label)
+	}
+}
+
+func TestBuildTddCarriesBashQuirkSteer(t *testing.T) {
+	assertCarriesBashQuirkSteer(t, BuildTdd(sample, "beh-362"), "tdd prompt")
+}
+
 func TestBuildTddRedirectsFindingsToDropbox(t *testing.T) {
 	p := BuildTdd(sample, "beh-362")
 
@@ -80,6 +100,10 @@ func TestBuildTddResumeSteersToExistingWorktree(t *testing.T) {
 	if !regexp.MustCompile(`(?i)commit`).MatchString(p) {
 		t.Error("resume prompt does not tell the agent to commit the surviving work")
 	}
+}
+
+func TestBuildTddResumeCarriesBashQuirkSteer(t *testing.T) {
+	assertCarriesBashQuirkSteer(t, BuildTddResume(sample, "beh-362", sampleWorktree), "tdd resume prompt")
 }
 
 func TestBuildTddResumeStillSteersOffLinearAndToDropbox(t *testing.T) {
@@ -133,6 +157,10 @@ func TestBuildRetrospectiveCarriesDropboxContract(t *testing.T) {
 	if !strings.Contains(p, "[]") || !regexp.MustCompile(`(?i)always`).MatchString(p) {
 		t.Error("prompt must instruct always writing the file, even as []")
 	}
+}
+
+func TestBuildRetrospectiveCarriesBashQuirkSteer(t *testing.T) {
+	assertCarriesBashQuirkSteer(t, BuildRetrospective(sample, "beh-362"), "retrospective prompt")
 }
 
 func TestBuildRetrospectiveForbidsRemoteAndCodeChanges(t *testing.T) {
@@ -191,6 +219,10 @@ func TestBuildReviewCommitsLocallyOnly(t *testing.T) {
 	if !regexp.MustCompile(`(?i)(do not|don't|never).{0,20}(run )?gh\b|(do not|don't|never).{0,30}(open|raise).{0,20}PR`).MatchString(p) {
 		t.Error("prompt does not forbid running gh / opening the PR")
 	}
+}
+
+func TestBuildReviewCarriesBashQuirkSteer(t *testing.T) {
+	assertCarriesBashQuirkSteer(t, BuildReview(sample, "beh-362", sampleWorktree), "review prompt")
 }
 
 func TestBuildReviewForbidsLinearAndFindings(t *testing.T) {

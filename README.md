@@ -158,6 +158,28 @@ ticket's whole arc by globbing one dir:
 - `logs/BEH-NNN/run.jsonl`: structured event stream (shared across the ticket's sessions).
 - `logs/BEH-NNN/findings/<session>/out.json`: the findings dropbox.
 
+## Known sandbox quirk: mangled multi-arg bash (BEH-401)
+
+The pinned `claude` CLI inside the sandbox **intermittently mis-parses a single
+Bash call that both pipes into `head`/`tail` and uses a command substitution**
+like `cd "$(...)"`. The next command can get swallowed as an argument to the
+first, surfacing as opaque errors that look like the agent's own bug rather than
+an environment quirk:
+
+- `head: invalid number of bytes: 'set -euo pipefail; VIOLATIONS=()...'`
+- `/bin/bash: line 1: cd: too many arguments`
+- `cd: $(git rev-parse --show-toplevel): No such file or directory`
+
+It recurs across sessions and agents, and retrying the same command verbatim
+doesn't help — it cost a reviewer real turns before they split the command up.
+The bug is in the bundled CLI's bash wrapper, which the harness can't patch, so
+the mitigation is to **steer the sandboxed agent away from the trigger**: every
+prompt the harness builds carries `bashQuirkSteer` (`internal/prompt/prompt.go`)
+telling the agent to run one command per Bash call, prefer absolute paths over
+`cd "$(...)"`, and not tack `| head -n N` onto a compound command. Bump the
+pinned `CLAUDE_VERSION` (Dockerfile) if a newer release fixes it upstream, then
+the steer can be retired.
+
 ## Layout
 
 ```

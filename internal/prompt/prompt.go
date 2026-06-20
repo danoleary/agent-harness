@@ -9,6 +9,14 @@ import (
 	"github.com/beherd/agent-harness/internal/ticket"
 )
 
+// bashQuirkSteer warns the sandboxed agent off the command pattern that the
+// pinned Claude CLI's bash wrapper intermittently mangles (BEH-401): chaining a
+// pipe into `head`/`tail` together with a command substitution like `cd "$(...)"`
+// in a single Bash call gets misparsed into opaque errors (`head: invalid number
+// of bytes`, `cd: too many arguments`) that read like the agent's own bug. The
+// harness can't patch the upstream CLI, so it steers around the trigger instead.
+const bashQuirkSteer = "Sandbox bash quirk (BEH-401): the bundled Claude CLI intermittently mangles a single Bash call that BOTH pipes into `head`/`tail` AND uses a command substitution like `cd \"$(...)\"`, producing opaque errors (`head: invalid number of bytes: 'set -euo pipefail; ...'`, `cd: too many arguments`) that look like a bug in your command but are an environment quirk. Work around it: run one command per Bash call, prefer absolute paths over `cd \"$(...)\"`, and don't tack `| head -n N` onto a compound command — if a check misfires this way, retrying it verbatim won't help, so split it up."
+
 // BuildTdd builds the `-p` prompt for the sandboxed /tdd session. The harness
 // has already claimed the ticket and owns all Linear I/O (ADR-0001), so the
 // prompt steers the skill off `mcp__linear-server__*`, injects the ticket
@@ -29,6 +37,8 @@ func BuildTdd(t ticket.Ticket, slug string) string {
 		t.Identifier + " is already claimed and moved to In Progress for you. Do NOT touch Linear — do not call any `mcp__linear-server__*` tool, do not move the ticket, do not open or comment on issues. The harness owns all Linear I/O.",
 		"",
 		"If you hit problems with the harness or environment itself (setup friction, systemic gaps, missing patterns) during your session retrospective, do NOT file Linear issues. Instead append them to `/findings/out.json` as a JSON array of `{title, body, kind}` objects (kind is a free-form category). The harness reads this file after the session and files the issues for you. If you have no findings, leave the file untouched.",
+		"",
+		bashQuirkSteer,
 	}
 	return strings.Join(lines, "\n")
 }
@@ -57,6 +67,8 @@ func BuildTddResume(t ticket.Ticket, slug, worktreePath string) string {
 		t.Identifier + " is already claimed and moved to In Progress for you. Do NOT touch Linear — do not call any `mcp__linear-server__*` tool, do not move the ticket, do not open or comment on issues. The harness owns all Linear I/O.",
 		"",
 		"If you hit problems with the harness or environment itself (setup friction, systemic gaps, missing patterns) during your session retrospective, do NOT file Linear issues. Instead append them to `/findings/out.json` as a JSON array of `{title, body, kind}` objects (kind is a free-form category). The harness reads this file after the session and files the issues for you. If you have no findings, leave the file untouched.",
+		"",
+		bashQuirkSteer,
 	}
 	return strings.Join(lines, "\n")
 }
@@ -79,6 +91,8 @@ func BuildRetrospective(t ticket.Ticket, slug string) string {
 		"Write your findings to `/findings/out.json` as a JSON array of `{title, body, kind}` objects (kind is a free-form category). **Always write the file**, even when you found nothing — write an empty array `[]` in that case. An absent file means the step never ran, so never end without writing it.",
 		"",
 		"This session is read-only and reaches no remote. Make NO code changes, do NOT commit or push, and do NOT touch Linear — do not call any `mcp__linear-server__*` tool. The harness reads `out.json` after the session and files each finding to Linear itself.",
+		"",
+		bashQuirkSteer,
 	}
 	return strings.Join(lines, "\n")
 }
@@ -111,6 +125,8 @@ func BuildReview(t ticket.Ticket, slug, worktreePath string) string {
 		"Do NOT touch Linear — do not call any `mcp__linear-server__*` tool, do not move the ticket, do not open or comment on issues. The harness owns all Linear I/O (ADR-0001).",
 		"",
 		"Do NOT emit or file any harness-improvement findings, and do NOT write `/findings/out.json`. The retrospective tool, running last over every transcript, owns findings now — this is a deliberate change from the skill's default. Your only outputs are review fixes committed locally.",
+		"",
+		bashQuirkSteer,
 	}
 	return strings.Join(lines, "\n")
 }
