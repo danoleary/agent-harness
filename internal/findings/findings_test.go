@@ -46,8 +46,8 @@ func TestParseValidArray(t *testing.T) {
 		t.Fatalf("findings len = %d, want 2", len(r.Findings))
 	}
 	want := Finding{Title: "tokens:build missing", Body: "Storybook died until I ran it", Kind: "setup"}
-	if r.Findings[0] != want {
-		t.Errorf("findings[0] = %+v, want %+v", r.Findings[0], want)
+	if got := r.Findings[0]; got.Title != want.Title || got.Body != want.Body || got.Kind != want.Kind {
+		t.Errorf("findings[0] = %+v, want %+v", got, want)
 	}
 	if r.Findings[1].Kind != "" {
 		t.Errorf("findings[1].Kind = %q, want empty", r.Findings[1].Kind)
@@ -86,7 +86,7 @@ func TestParseSkipsIncompleteEntries(t *testing.T) {
 	if r.Error != "" {
 		t.Fatalf("unexpected error: %q", r.Error)
 	}
-	if len(r.Findings) != 1 || r.Findings[0] != (Finding{Title: "ok", Body: "valid"}) {
+	if len(r.Findings) != 1 || r.Findings[0].Title != "ok" || r.Findings[0].Body != "valid" {
 		t.Errorf("findings = %+v, want [{ok valid}]", r.Findings)
 	}
 }

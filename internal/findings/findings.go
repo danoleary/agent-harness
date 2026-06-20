@@ -13,6 +13,11 @@ type Finding struct {
 	Body  string `json:"body"`
 	// Kind is a free-form category the session tagged it with (e.g. "setup").
 	Kind string `json:"kind,omitempty"`
+	// LabelIDs are any per-finding Linear label UUIDs to apply on top of the
+	// always-present agent-harness label (BEH-409). The dropbox doesn't surface
+	// these today; the field is the seam so a future kind-derived label is added
+	// alongside agent-harness, not in place of it.
+	LabelIDs []string `json:"-"`
 }
 
 // Parsed is the result of reading the findings dropbox: the valid findings, plus

@@ -153,3 +153,77 @@ func TestFileFinding(t *testing.T) {
 		t.Errorf("description missing related id: %q", desc)
 	}
 }
+
+// Every finding the harness files is, by construction, about the harness itself,
+// so the create payload must carry the agent-harness label (BEH-409).
+func TestFileFindingLabelsWithAgentHarness(t *testing.T) {
+	var captured map[string]any
+	tr := func(_ string, variables map[string]any) (json.RawMessage, error) {
+		captured = variables
+		return json.Marshal(map[string]any{
+			"issueCreate": map[string]any{
+				"success": true,
+				"issue":   map[string]any{"identifier": "BEH-400", "url": "https://x/BEH-400"},
+			},
+		})
+	}
+
+	_, err := NewClient(tr).FileFinding(
+		findings.Finding{Title: "x", Body: "y"},
+		FileFindingOptions{TeamID: "team-uuid", RelatedIdentifier: "BEH-362"},
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	input, _ := captured["input"].(map[string]any)
+	if !labelIDsContain(input["labelIds"], agentHarnessLabelID) {
+		t.Errorf("labelIds = %v, want it to contain agent-harness label %q", input["labelIds"], agentHarnessLabelID)
+	}
+}
+
+// A finding that carries its own label keeps it: agent-harness is added
+// alongside, not in place of it (BEH-409).
+func TestFileFindingAddsAgentHarnessAlongsideFindingLabels(t *testing.T) {
+	var captured map[string]any
+	tr := func(_ string, variables map[string]any) (json.RawMessage, error) {
+		captured = variables
+		return json.Marshal(map[string]any{
+			"issueCreate": map[string]any{
+				"success": true,
+				"issue":   map[string]any{"identifier": "BEH-400", "url": "https://x/BEH-400"},
+			},
+		})
+	}
+
+	_, err := NewClient(tr).FileFinding(
+		findings.Finding{Title: "x", Body: "y", LabelIDs: []string{"own-label-uuid"}},
+		FileFindingOptions{TeamID: "team-uuid", RelatedIdentifier: "BEH-362"},
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	input, _ := captured["input"].(map[string]any)
+	if !labelIDsContain(input["labelIds"], "own-label-uuid") {
+		t.Errorf("labelIds = %v, want it to keep the finding's own label", input["labelIds"])
+	}
+	if !labelIDsContain(input["labelIds"], agentHarnessLabelID) {
+		t.Errorf("labelIds = %v, want it to also contain agent-harness label", input["labelIds"])
+	}
+}
+
+// labelIDsContain reports whether the issueCreate labelIds payload (a []string)
+// contains id.
+func labelIDsContain(labelIDs any, id string) bool {
+	ids, ok := labelIDs.([]string)
+	if !ok {
+		return false
+	}
+	for _, got := range ids {
+		if got == id {
+			return true
+		}
+	}
+	return false
+}

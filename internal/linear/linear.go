@@ -23,6 +23,14 @@ type FileFindingOptions struct {
 	RelatedIdentifier string
 }
 
+// agentHarnessLabelID is the BeHerd "agent-harness" label (team BeHerd). Every
+// finding the harness files is, by construction, about the harness/environment
+// itself (ADR-0001), so it always belongs under this label. The create API
+// (IssueCreateInput.labelIds) takes a UUID, not a name — resolving the name at
+// file-time would add a GraphQL round-trip per finding plus a failure mode that
+// could silently drop the label — so we reference the id directly (BEH-409).
+const agentHarnessLabelID = "788a5654-a4b3-4ac2-8483-a4d50408ebc0"
+
 // CreatedIssue is the result of filing a finding.
 type CreatedIssue struct {
 	Identifier string `json:"identifier"`
@@ -197,11 +205,17 @@ func (c *Client) FileFinding(f findings.Finding, opts FileFindingOptions) (Creat
 		kindLine, f.Body, opts.RelatedIdentifier,
 	)
 
+	// Always carry the agent-harness label, added alongside (not in place of)
+	// any future per-finding labels (BEH-409).
+	labelIDs := append([]string{}, f.LabelIDs...)
+	labelIDs = append(labelIDs, agentHarnessLabelID)
+
 	data, err := c.transport(fileFindingMutation, map[string]any{
 		"input": map[string]any{
 			"teamId":      opts.TeamID,
 			"title":       f.Title,
 			"description": description,
+			"labelIds":    labelIDs,
 		},
 	})
 	if err != nil {

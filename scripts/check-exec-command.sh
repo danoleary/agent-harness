@@ -28,15 +28,17 @@ fi
 # Track violations
 VIOLATIONS=()
 
-# Explicit allowlist for legitimate unbounded calls:
-# - internal/session/session.go:55 - main docker run with timer-based kill
-# - internal/session/session.go:75 - docker kill called by timeout handler
-# - internal/sandbox/sandbox.go:192 - docker build (can take minutes, user-visible progress)
-# Format: "path-suffix:line" where path-suffix matches the end of the file path
-declare -A ALLOWLIST=(
-    ["internal/session/session.go:55"]="main docker run with timer-based kill"
-    ["internal/session/session.go:75"]="docker kill called by timeout handler"
-    ["internal/sandbox/sandbox.go:192"]="docker build (can take minutes, user-visible progress)"
+# Explicit allowlist for legitimate unbounded calls. Plain indexed array (not an
+# associative array) so this runs under macOS's default bash 3.2 — `declare -A`
+# needs bash 4+ and fails opaquely ("unbound variable") on a stock Mac (BEH-409).
+# Format: "path-suffix:line" where path-suffix matches the end of the file path.
+#   - internal/session/session.go:68  - main docker run with timer-based kill
+#   - internal/session/session.go:88  - docker kill called by timeout handler
+#   - internal/sandbox/sandbox.go:192 - docker build (can take minutes, user-visible progress)
+ALLOWLIST=(
+    "internal/session/session.go:68"
+    "internal/session/session.go:88"
+    "internal/sandbox/sandbox.go:192"
 )
 
 # Find all Go files, excluding vendor and internal/proc
@@ -72,7 +74,7 @@ for file in $GO_FILES; do
         if [ -n "$cmd" ]; then
             # Check if this location matches an allowlist entry
             is_allowed=0
-            for allowed_key in "${!ALLOWLIST[@]}"; do
+            for allowed_key in "${ALLOWLIST[@]}"; do
                 # Check if file ends with the path pattern and line matches
                 if [[ "$file" == *"${allowed_key%:*}" ]] && [[ "${allowed_key##*:}" == "$line_num" ]]; then
                     is_allowed=1
