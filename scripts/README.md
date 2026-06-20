@@ -1,5 +1,52 @@
 # Agent Harness Scripts
 
+## check-buildvcs.sh
+
+Guard against VCS-stamping Go commands in Makefiles that omit `-buildvcs=false`
+(BEH-459).
+
+### Purpose
+
+The Go toolchain stamps VCS metadata into `main` packages and shells out to git
+to do it. Inside a linked git worktree (the `.claude/worktrees/<slug>` path the
+tdd/review skills create), that git call returns `exit status 128`, so
+`go build`/`go test` abort **before running anything**:
+
+```
+error obtaining VCS status: exit status 128
+        Use -buildvcs=false to disable VCS stamping.
+```
+
+`go vet` is unaffected (it doesn't stamp), which makes the failure look
+inconsistent and easy to misread as a code problem. Appending `-buildvcs=false`
+disables the stamping; it is a **no-op in a normal checkout** (CI), so it only
+unblocks worktree work. This guard fails the gate if a VCS-stamping go command
+appears in a Makefile recipe without the flag, so the fix can't silently
+regress. It is itself bash-3.2-safe.
+
+### What it checks
+
+Scans every `Makefile` / `*.mk` / `*.make` under the target dir and flags, in
+non-comment lines, any `go build` / `go install` / `go run` / `go test`
+invocation that lacks `-buildvcs=false`. Non-stamping go subcommands (`go vet`,
+`go mod tidy`, `gofmt`, `go version`) and `docker build` are not flagged.
+
+### Usage
+
+```bash
+# Check the whole harness (the make check-buildvcs default)
+./scripts/check-buildvcs.sh
+
+# Check a specific directory
+./scripts/check-buildvcs.sh /path/to/dir
+```
+
+### Testing
+
+```bash
+./scripts/test-check-buildvcs.sh
+```
+
 ## check-bash3-compat.sh
 
 Guard against bash-4-only syntax in bash scripts (BEH-457).
@@ -85,7 +132,8 @@ The guard is integrated into the Makefile's `check` target, which runs:
 2. `vet` - Go vet static analysis
 3. `check-exec` - This exec.Command guard
 4. `check-bash3` - The bash 3.2 compatibility guard
-5. `test` - Full test suite
+5. `check-buildvcs` - The -buildvcs=false guard (BEH-459)
+6. `test` - Full test suite
 
 ### Testing
 
