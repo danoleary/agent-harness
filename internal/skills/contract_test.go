@@ -49,13 +49,25 @@ func retrospectiveSkill(t *testing.T) string {
 	return string(b)
 }
 
-// TestRetrospectiveSkillIsDiscoverable is the tracer: the skill exists and
-// carries valid frontmatter (a `name: retrospective` and a description), so
-// Claude Code discovers it as `/retrospective` like `/tdd` and
-// `/review-worktree` (AC: "discoverable like /tdd and /review-worktree").
-func TestRetrospectiveSkillIsDiscoverable(t *testing.T) {
-	src := retrospectiveSkill(t)
+// reviewWorktreeFile reads a named file from the /review-worktree skill dir or
+// fails the test. The review skill is split across SKILL.md (workflow + lens
+// table) and DIMENSIONS.md (per-lens checklists), so callers name the part.
+func reviewWorktreeFile(t *testing.T, name string) string {
+	t.Helper()
+	path := filepath.Join(repoRoot(t), ".claude", "skills", "review-worktree", name)
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading %s: %v", path, err)
+	}
+	return string(b)
+}
 
+// frontmatter extracts the YAML frontmatter block (between the opening `---\n`
+// and the next `\n---`) from a SKILL.md body, or fails the test. Several skill
+// contracts assert against the frontmatter (the line Claude Code surfaces when
+// choosing a skill), so the extraction lives here once.
+func frontmatter(t *testing.T, src string) string {
+	t.Helper()
 	if !strings.HasPrefix(src, "---\n") {
 		t.Fatal("SKILL.md must open with a `---` frontmatter block")
 	}
@@ -63,13 +75,68 @@ func TestRetrospectiveSkillIsDiscoverable(t *testing.T) {
 	if end == -1 {
 		t.Fatal("SKILL.md frontmatter block is not closed with `---`")
 	}
-	frontmatter := src[4 : 4+end]
+	return src[4 : 4+end]
+}
 
-	if !regexp.MustCompile(`(?m)^name:\s*retrospective\s*$`).MatchString(frontmatter) {
-		t.Errorf("frontmatter must declare `name: retrospective`; got:\n%s", frontmatter)
+// TestReviewWorktreeSkillDocumentsSimplificationLens pins BEH-454: the review
+// skill must carry a Simplification lens in DIMENSIONS.md so the reviewer
+// actively flags incidental complexity (duplication, dead code, over-built
+// abstractions, bespoke code that an existing helper/primitive replaces) rather
+// than silently passing it. Without a pinned checklist the lens is one prose
+// edit away from being dropped, and the harness's only signal that review
+// covers simplification is this skill's text.
+func TestReviewWorktreeSkillDocumentsSimplificationLens(t *testing.T) {
+	src := reviewWorktreeFile(t, "DIMENSIONS.md")
+
+	if !regexp.MustCompile(`(?im)^##\s+Simplif`).MatchString(src) {
+		t.Error("DIMENSIONS.md must document a `## Simplification` lens section")
 	}
-	if !regexp.MustCompile(`(?m)^description:\s*\S`).MatchString(frontmatter) {
-		t.Errorf("frontmatter must declare a non-empty `description:`; got:\n%s", frontmatter)
+}
+
+// TestReviewWorktreeSkillListsSimplificationInLensTable pins that the
+// Simplification lens is wired into the workflow, not just the appendix: the
+// step-3 lens table in SKILL.md must carry a Simplification row. A lens the
+// reviewer never iterates (a DIMENSIONS section with no table entry) is dead
+// text — the table is the loop the review session actually walks.
+func TestReviewWorktreeSkillListsSimplificationInLensTable(t *testing.T) {
+	src := reviewWorktreeFile(t, "SKILL.md")
+
+	// A markdown table row naming the lens: `| **Simplification** | ... |`.
+	if !regexp.MustCompile(`(?im)^\|\s*\*\*Simplif\w*\*\*\s*\|`).MatchString(src) {
+		t.Error("SKILL.md step-3 lens table must include a **Simplification** row")
+	}
+}
+
+// TestReviewWorktreeFrontmatterNamesSimplificationLens pins that the
+// discoverable frontmatter description — the one line Claude Code surfaces when
+// choosing a skill — advertises the simplification lens and its now-seven-lens
+// count. The description previously hard-coded "six lenses (correctness, ...)";
+// if the count and parenthetical aren't updated alongside the table, the skill
+// under-sells its own coverage and the stale "six" silently contradicts the
+// workflow.
+func TestReviewWorktreeFrontmatterNamesSimplificationLens(t *testing.T) {
+	fm := frontmatter(t, reviewWorktreeFile(t, "SKILL.md"))
+
+	if !regexp.MustCompile(`(?i)simplif`).MatchString(fm) {
+		t.Error("frontmatter description must name the simplification lens")
+	}
+	if regexp.MustCompile(`(?i)six lenses`).MatchString(fm) {
+		t.Error("frontmatter still says `six lenses`; the simplification lens makes it seven")
+	}
+}
+
+// TestRetrospectiveSkillIsDiscoverable is the tracer: the skill exists and
+// carries valid frontmatter (a `name: retrospective` and a description), so
+// Claude Code discovers it as `/retrospective` like `/tdd` and
+// `/review-worktree` (AC: "discoverable like /tdd and /review-worktree").
+func TestRetrospectiveSkillIsDiscoverable(t *testing.T) {
+	fm := frontmatter(t, retrospectiveSkill(t))
+
+	if !regexp.MustCompile(`(?m)^name:\s*retrospective\s*$`).MatchString(fm) {
+		t.Errorf("frontmatter must declare `name: retrospective`; got:\n%s", fm)
+	}
+	if !regexp.MustCompile(`(?m)^description:\s*\S`).MatchString(fm) {
+		t.Errorf("frontmatter must declare a non-empty `description:`; got:\n%s", fm)
 	}
 }
 
