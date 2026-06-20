@@ -175,7 +175,7 @@ func run() (int, error) {
 
 	// File whatever the session dropped: one Linear issue per finding, `[]` files
 	// nothing. Safe to call even on failure — an absent dropbox files nothing.
-	filing.File(findingsDir, t.TeamID, args.identifier, client, log)
+	filing.File(findingsDir, t.TeamID, args.identifier, client, client, log)
 
 	if !result.OK {
 		// Keep the worktree as a recoverable breadcrumb (DESIGN.md failure matrix).

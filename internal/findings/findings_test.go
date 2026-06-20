@@ -54,6 +54,24 @@ func TestParseValidArray(t *testing.T) {
 	}
 }
 
+func TestParseReadsOptionalKey(t *testing.T) {
+	json := mustJSON(t, []any{
+		map[string]any{"title": "Playwright missing", "body": "no deps", "key": "sandbox-playwright-missing-deps"},
+		map[string]any{"title": "no key here", "body": "x"},
+	})
+
+	r := Parse(json)
+	if r.Error != "" {
+		t.Fatalf("unexpected error: %q", r.Error)
+	}
+	if r.Findings[0].Key != "sandbox-playwright-missing-deps" {
+		t.Errorf("findings[0].Key = %q, want the dedup key", r.Findings[0].Key)
+	}
+	if r.Findings[1].Key != "" {
+		t.Errorf("findings[1].Key = %q, want empty", r.Findings[1].Key)
+	}
+}
+
 func TestParseMalformedJSON(t *testing.T) {
 	r := Parse("{not json")
 	if len(r.Findings) != 0 {

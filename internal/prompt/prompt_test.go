@@ -72,8 +72,8 @@ func TestBuildTddRedirectsFindingsToDropbox(t *testing.T) {
 	if !strings.Contains(p, "/findings/out.json") {
 		t.Error("prompt missing the findings dropbox path")
 	}
-	if !regexp.MustCompile(`title.*body.*kind`).MatchString(p) {
-		t.Error("prompt missing the {title, body, kind} finding shape")
+	if !regexp.MustCompile(`title.*body.*kind.*key`).MatchString(p) {
+		t.Error("prompt missing the {title, body, kind, key} finding shape")
 	}
 }
 
@@ -151,11 +151,15 @@ func TestBuildRetrospectiveCarriesDropboxContract(t *testing.T) {
 	if !strings.Contains(p, "/findings/out.json") {
 		t.Error("prompt missing the findings dropbox path")
 	}
-	if !regexp.MustCompile(`title.*body.*kind`).MatchString(p) {
-		t.Error("prompt missing the {title, body, kind} finding shape")
+	if !regexp.MustCompile(`title.*body.*kind.*key`).MatchString(p) {
+		t.Error("prompt missing the {title, body, kind, key} finding shape")
 	}
 	if !strings.Contains(p, "[]") || !regexp.MustCompile(`(?i)always`).MatchString(p) {
 		t.Error("prompt must instruct always writing the file, even as []")
+	}
+	// The key drives cross-run dedup, so the prompt must explain its purpose.
+	if !regexp.MustCompile(`(?i)dedup`).MatchString(p) {
+		t.Error("prompt must explain the key's dedup purpose so re-runs converge to one issue")
 	}
 }
 

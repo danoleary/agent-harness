@@ -30,6 +30,21 @@ func (f *fakeFiler) FileFinding(fn findings.Finding, _ linear.FileFindingOptions
 	return linear.CreatedIssue{}, nil
 }
 
+// fakeSearcher replays a scripted set of already-filed findings (or an error).
+type fakeSearcher struct {
+	existing []linear.ExistingFinding
+	err      error
+	calls    int
+}
+
+func (s *fakeSearcher) SearchFindings(_ string) ([]linear.ExistingFinding, error) {
+	s.calls++
+	return s.existing, s.err
+}
+
+// noExisting is a searcher that finds nothing already tracked (the first-run case).
+func noExisting() *fakeSearcher { return &fakeSearcher{} }
+
 // recorder captures the narration events filing emits.
 type recorder struct{ events []string }
 
@@ -58,7 +73,7 @@ func TestFileFilesEachFindingAndNarrates(t *testing.T) {
 	}}
 	rec := &recorder{}
 
-	File(dir, "team-uuid", "BEH-370", filer, rec)
+	File(dir, "team-uuid", "BEH-370", filer, noExisting(), rec)
 
 	if len(filer.calls) != 2 {
 		t.Fatalf("expected 2 findings filed, got %d", len(filer.calls))
@@ -72,12 +87,122 @@ func TestFileFilesEachFindingAndNarrates(t *testing.T) {
 	}
 }
 
+// Dedup: a finding whose key already has an OPEN issue is not filed again —
+// it's narrated as already tracked instead. This is the core BEH-410 behaviour.
+func TestFileSkipsFindingAlreadyTrackedByOpenIssue(t *testing.T) {
+	dir := t.TempDir()
+	writeDropbox(t, dir, `[{"title":"Playwright can't run in sandbox","body":"missing deps","key":"sandbox-playwright-missing-deps"}]`)
+
+	filer := &fakeFiler{}
+	searcher := &fakeSearcher{existing: []linear.ExistingFinding{
+		{Identifier: "BEH-405", Title: "Storybook unrunnable", Key: "sandbox-playwright-missing-deps"},
+	}}
+	rec := &recorder{}
+
+	File(dir, "team-uuid", "BEH-370", filer, searcher, rec)
+
+	if len(filer.calls) != 0 {
+		t.Fatalf("expected the duplicate to be skipped, but %d were filed", len(filer.calls))
+	}
+	joined := strings.Join(rec.events, "\n")
+	if !strings.Contains(joined, "already tracked") || !strings.Contains(joined, "BEH-405") {
+		t.Errorf("expected an 'already tracked' narration naming BEH-405, got: %q", joined)
+	}
+}
+
+// Dedup keys off OPEN issues only: a closed/canceled match must NOT suppress a
+// re-file, or a wontfix would permanently mask a real regression after a fix ships.
+func TestFileRefilesWhenOnlyMatchIsClosed(t *testing.T) {
+	dir := t.TempDir()
+	writeDropbox(t, dir, `[{"title":"Playwright regressed again","body":"deps missing","key":"sandbox-playwright-missing-deps"}]`)
+
+	filer := &fakeFiler{results: []fakeResult{{issue: linear.CreatedIssue{Identifier: "BEH-500"}}}}
+	searcher := &fakeSearcher{existing: []linear.ExistingFinding{
+		{Identifier: "BEH-405", Title: "old one", Key: "sandbox-playwright-missing-deps", Closed: true},
+	}}
+	rec := &recorder{}
+
+	File(dir, "team-uuid", "BEH-370", filer, searcher, rec)
+
+	if len(filer.calls) != 1 {
+		t.Fatalf("expected the finding re-filed past the closed match, got %d filed", len(filer.calls))
+	}
+	joined := strings.Join(rec.events, "\n")
+	if !strings.Contains(joined, "BEH-500") {
+		t.Errorf("expected the new issue narrated, got: %q", joined)
+	}
+}
+
+// Fallback dedup: when a finding carries no explicit key, its normalized title
+// is the match key, so a re-surfaced finding with the same title still dedups.
+func TestFileDedupsOnTitleWhenNoKey(t *testing.T) {
+	dir := t.TempDir()
+	writeDropbox(t, dir, `[{"title":"Build OOM-killed at prerender","body":"exit 137"}]`)
+
+	filer := &fakeFiler{}
+	searcher := &fakeSearcher{existing: []linear.ExistingFinding{
+		{Identifier: "BEH-407", Title: "build oom-killed at prerender  "},
+	}}
+	rec := &recorder{}
+
+	File(dir, "team-uuid", "BEH-370", filer, searcher, rec)
+
+	if len(filer.calls) != 0 {
+		t.Fatalf("expected the same-title finding deduped, got %d filed", len(filer.calls))
+	}
+	if !strings.Contains(strings.Join(rec.events, "\n"), "already tracked") {
+		t.Errorf("expected an 'already tracked' narration, got: %v", rec.events)
+	}
+}
+
+// Dedup is best-effort (ADR-0001): a search failure must degrade to the
+// pre-dedup behaviour — file everything, narrate the degradation, never crash.
+func TestFileFilesAllWhenSearchFails(t *testing.T) {
+	dir := t.TempDir()
+	writeDropbox(t, dir, `[{"title":"a","body":"x"},{"title":"b","body":"y"}]`)
+
+	filer := &fakeFiler{}
+	searcher := &fakeSearcher{err: errBoom}
+	rec := &recorder{}
+
+	File(dir, "team-uuid", "BEH-370", filer, searcher, rec)
+
+	if len(filer.calls) != 2 {
+		t.Fatalf("expected both findings filed despite the search failure, got %d", len(filer.calls))
+	}
+	if !strings.Contains(strings.Join(rec.events, "\n"), "dedup search failed") {
+		t.Errorf("expected a degraded-dedup narration, got: %v", rec.events)
+	}
+}
+
+// Within a single dropbox, two findings sharing a key collapse to one filed
+// issue — the same dedup applies in-run, not just across runs.
+func TestFileDedupsWithinASingleRun(t *testing.T) {
+	dir := t.TempDir()
+	writeDropbox(t, dir, `[
+		{"title":"first wording","body":"a","key":"same-class"},
+		{"title":"second wording","body":"b","key":"same-class"}
+	]`)
+
+	filer := &fakeFiler{results: []fakeResult{{issue: linear.CreatedIssue{Identifier: "BEH-600"}}}}
+	rec := &recorder{}
+
+	File(dir, "team-uuid", "BEH-370", filer, noExisting(), rec)
+
+	if len(filer.calls) != 1 {
+		t.Fatalf("expected the two same-key findings collapsed to one filed, got %d", len(filer.calls))
+	}
+	if !strings.Contains(strings.Join(rec.events, "\n"), "already tracked") {
+		t.Errorf("expected the second to be narrated as already tracked, got: %v", rec.events)
+	}
+}
+
 // The common case: no session dropped a dropbox → file nothing, say nothing.
 func TestFileIsSilentWhenNoDropbox(t *testing.T) {
 	filer := &fakeFiler{}
 	rec := &recorder{}
 
-	File(t.TempDir(), "team-uuid", "BEH-370", filer, rec)
+	File(t.TempDir(), "team-uuid", "BEH-370", filer, noExisting(), rec)
 
 	if len(filer.calls) != 0 {
 		t.Errorf("expected nothing filed, got %d", len(filer.calls))
@@ -95,7 +220,7 @@ func TestFileSkipsWhenNoTeamID(t *testing.T) {
 	filer := &fakeFiler{}
 	rec := &recorder{}
 
-	File(dir, "", "BEH-370", filer, rec)
+	File(dir, "", "BEH-370", filer, noExisting(), rec)
 
 	if len(filer.calls) != 0 {
 		t.Errorf("expected nothing filed without a team id, got %d", len(filer.calls))
@@ -112,7 +237,7 @@ func TestFileNarratesUnreadableDropbox(t *testing.T) {
 	filer := &fakeFiler{}
 	rec := &recorder{}
 
-	File(dir, "team-uuid", "BEH-370", filer, rec)
+	File(dir, "team-uuid", "BEH-370", filer, noExisting(), rec)
 
 	if len(filer.calls) != 0 {
 		t.Errorf("expected nothing filed from a bad dropbox, got %d", len(filer.calls))
@@ -132,7 +257,7 @@ func TestFileContinuesPastAFilingError(t *testing.T) {
 	}}
 	rec := &recorder{}
 
-	File(dir, "team-uuid", "BEH-370", filer, rec)
+	File(dir, "team-uuid", "BEH-370", filer, noExisting(), rec)
 
 	if len(filer.calls) != 2 {
 		t.Fatalf("expected both findings attempted, got %d", len(filer.calls))
@@ -160,7 +285,7 @@ func TestClearDropboxPreventsRefilingStaleFindings(t *testing.T) {
 	// A second run that drops nothing must file nothing — not run 1's stale finding.
 	filer := &fakeFiler{}
 	rec := &recorder{}
-	File(dir, "team-uuid", "BEH-370", filer, rec)
+	File(dir, "team-uuid", "BEH-370", filer, noExisting(), rec)
 	if len(filer.calls) != 0 {
 		t.Errorf("expected nothing filed after clear, got %d", len(filer.calls))
 	}

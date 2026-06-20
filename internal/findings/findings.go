@@ -13,6 +13,10 @@ type Finding struct {
 	Body  string `json:"body"`
 	// Kind is a free-form category the session tagged it with (e.g. "setup").
 	Kind string `json:"kind,omitempty"`
+	// Key is a stable failure-class fingerprint (e.g. "sandbox-playwright-missing-deps")
+	// the session can set so re-runs that re-surface the same problem dedup to one
+	// issue. Optional: when empty, filing falls back to the normalized title.
+	Key string `json:"key,omitempty"`
 	// LabelIDs are any per-finding Linear label UUIDs to apply on top of the
 	// always-present agent-harness label (BEH-409). The dropbox doesn't surface
 	// these today; the field is the seam so a future kind-derived label is added
@@ -63,6 +67,9 @@ func Parse(text string) Parsed {
 		f := Finding{Title: title, Body: body}
 		if kind, kindOK := obj["kind"].(string); kindOK {
 			f.Kind = kind
+		}
+		if key, keyOK := obj["key"].(string); keyOK {
+			f.Key = key
 		}
 		out = append(out, f)
 	}

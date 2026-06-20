@@ -5,10 +5,32 @@ package linear
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
+	"strings"
 
 	"github.com/beherd/agent-harness/internal/findings"
 	"github.com/beherd/agent-harness/internal/ticket"
 )
+
+// findingKeyRe matches the machine-readable dedup marker embedded in a filed
+// finding's body: `<!-- finding-key: <key> -->`. The harness writes it on filing
+// and reads it back on search, so dedup is an exact-key lookup, not fuzzy text.
+var findingKeyRe = regexp.MustCompile(`<!--\s*finding-key:\s*(\S+)\s*-->`)
+
+// ExtractFindingKey pulls the dedup key out of a filed finding's body, or "" when
+// the body carries no marker.
+func ExtractFindingKey(body string) string {
+	m := findingKeyRe.FindStringSubmatch(body)
+	if m == nil {
+		return ""
+	}
+	return m[1]
+}
+
+// findingKeyMarker renders the body marker for a dedup key.
+func findingKeyMarker(key string) string {
+	return "<!-- finding-key: " + key + " -->"
+}
 
 // Transport sends a GraphQL operation and returns the `data` payload as raw JSON
 // (the transport handles auth + transport-level errors).
@@ -35,6 +57,19 @@ const agentHarnessLabelID = "788a5654-a4b3-4ac2-8483-a4d50408ebc0"
 type CreatedIssue struct {
 	Identifier string `json:"identifier"`
 	URL        string `json:"url"`
+}
+
+// ExistingFinding is an already-filed harness finding, returned by SearchFindings
+// so filing can skip duplicates. Key is the dedup fingerprint recovered from the
+// issue body's `<!-- finding-key: … -->` marker (empty when the issue carries
+// none). Closed is true when the issue is in a completed/canceled state — a
+// closed match must NOT suppress a re-file, so a wontfix can't permanently mask a
+// real regression.
+type ExistingFinding struct {
+	Identifier string
+	Title      string
+	Key        string
+	Closed     bool
 }
 
 // Client wraps a Transport with the harness's Linear operations.
@@ -94,6 +129,32 @@ const fileFindingMutation = `
 			issue {
 				identifier
 				url
+			}
+		}
+	}
+`
+
+// findingsLabel scopes filing + dedup to harness-surfaced findings: filed issues
+// carry it and SearchFindings filters on it, so dedup never trips over unrelated
+// team issues.
+const findingsLabel = "agent-harness"
+
+// searchFindingsQuery lists this team's OPEN harness findings. The query excludes
+// terminal (completed/canceled) states so closed findings don't consume the result
+// window — as the harness backlog grows, dedup coverage would otherwise silently
+// shrink. The caller still defensively skips any closed match it's handed (so the
+// open/closed policy stays unit-testable with a fake). Scoped by the agent-harness
+// label so it never returns unrelated issues.
+const searchFindingsQuery = `
+	query Findings($filter: IssueFilter!) {
+		issues(filter: $filter, first: 250) {
+			nodes {
+				identifier
+				title
+				description
+				state {
+					type
+				}
 			}
 		}
 	}
@@ -194,7 +255,11 @@ func (c *Client) MoveToInProgress(identifier string) error {
 }
 
 // FileFinding files a harness-improvement finding as a new issue referencing the
-// worked ticket.
+// worked ticket. It tags the issue with the agent-harness label (so dedup search
+// can find it) and, when the finding carries an explicit dedup key, embeds the
+// `<!-- finding-key: … -->` marker so a later run dedups on an exact-key lookup.
+// Label resolution is best-effort: if it fails, the issue is still filed (only
+// future dedup of this issue is weakened — never a crash).
 func (c *Client) FileFinding(f findings.Finding, opts FileFindingOptions) (CreatedIssue, error) {
 	kindLine := ""
 	if f.Kind != "" {
@@ -204,9 +269,13 @@ func (c *Client) FileFinding(f findings.Finding, opts FileFindingOptions) (Creat
 		"%s%s\n\n_Surfaced during %s by the agent harness._",
 		kindLine, f.Body, opts.RelatedIdentifier,
 	)
+	if key := strings.TrimSpace(f.Key); key != "" {
+		description += "\n\n" + findingKeyMarker(key)
+	}
 
 	// Always carry the agent-harness label, added alongside (not in place of)
-	// any future per-finding labels (BEH-409).
+	// any future per-finding labels (BEH-409). Filing with this label is what lets
+	// SearchFindings (BEH-410) find these issues again to dedup re-runs.
 	labelIDs := append([]string{}, f.LabelIDs...)
 	labelIDs = append(labelIDs, agentHarnessLabelID)
 
@@ -235,4 +304,55 @@ func (c *Client) FileFinding(f findings.Finding, opts FileFindingOptions) (Creat
 		return CreatedIssue{}, fmt.Errorf("failed to file finding: %s", f.Title)
 	}
 	return *resp.IssueCreate.Issue, nil
+}
+
+// SearchFindings lists the team's already-filed harness findings (scoped by the
+// agent-harness label), recovering each one's dedup key from its body marker and
+// whether it is closed. The caller decides the open/closed dedup policy.
+func (c *Client) SearchFindings(teamID string) ([]ExistingFinding, error) {
+	filter := map[string]any{
+		"team":   map[string]any{"id": map[string]any{"eq": teamID}},
+		"labels": map[string]any{"name": map[string]any{"eq": findingsLabel}},
+		// Exclude terminal states so closed findings don't eat into the result
+		// window; the caller still skips any closed match defensively.
+		"state": map[string]any{"type": map[string]any{"nin": []string{"completed", "canceled"}}},
+	}
+	data, err := c.transport(searchFindingsQuery, map[string]any{"filter": filter})
+	if err != nil {
+		return nil, err
+	}
+
+	var resp struct {
+		Issues struct {
+			Nodes []struct {
+				Identifier  string `json:"identifier"`
+				Title       string `json:"title"`
+				Description string `json:"description"`
+				State       struct {
+					Type string `json:"type"`
+				} `json:"state"`
+			} `json:"nodes"`
+		} `json:"issues"`
+	}
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return nil, err
+	}
+
+	out := make([]ExistingFinding, 0, len(resp.Issues.Nodes))
+	for _, n := range resp.Issues.Nodes {
+		out = append(out, ExistingFinding{
+			Identifier: n.Identifier,
+			Title:      n.Title,
+			Key:        ExtractFindingKey(n.Description),
+			Closed:     isClosedStateType(n.State.Type),
+		})
+	}
+	return out, nil
+}
+
+// isClosedStateType reports whether a Linear workflow state type is terminal —
+// completed or canceled. Dedup keys off open findings only, so a closed match
+// must not suppress a re-file.
+func isClosedStateType(stateType string) bool {
+	return stateType == "completed" || stateType == "canceled"
 }

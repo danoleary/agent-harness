@@ -112,19 +112,94 @@ func TestMoveToInProgress(t *testing.T) {
 	}
 }
 
-func TestFileFinding(t *testing.T) {
-	var captured map[string]any
-	tr := func(_ string, variables map[string]any) (json.RawMessage, error) {
-		captured = variables
+func TestSearchFindingsParsesIssuesAndKeys(t *testing.T) {
+	tr, calls := transportReturning(t, map[string]any{
+		"issues": map[string]any{
+			"nodes": []any{
+				map[string]any{
+					"identifier":  "BEH-405",
+					"title":       "Storybook unrunnable",
+					"description": "missing deps\n\n<!-- finding-key: sandbox-playwright-missing-deps -->",
+					"state":       map[string]any{"type": "unstarted"},
+				},
+				map[string]any{
+					"identifier":  "BEH-406",
+					"title":       "Old wontfix",
+					"description": "no marker here",
+					"state":       map[string]any{"type": "canceled"},
+				},
+			},
+		},
+	})
+
+	got, err := NewClient(tr).SearchFindings("team-uuid")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("findings len = %d, want 2", len(got))
+	}
+	if got[0] != (ExistingFinding{Identifier: "BEH-405", Title: "Storybook unrunnable", Key: "sandbox-playwright-missing-deps", Closed: false}) {
+		t.Errorf("findings[0] = %+v", got[0])
+	}
+	if !got[1].Closed {
+		t.Errorf("findings[1] should be Closed (canceled), got %+v", got[1])
+	}
+	if got[1].Key != "" {
+		t.Errorf("findings[1].Key = %q, want empty (no marker)", got[1].Key)
+	}
+
+	// The query must scope by team + the agent-harness label so it only sees
+	// harness findings, not every issue on the team.
+	if len(*calls) != 1 {
+		t.Fatalf("expected one query, got %d", len(*calls))
+	}
+	rawVars, err := json.Marshal((*calls)[0].variables)
+	if err != nil {
+		t.Fatalf("marshal variables: %v", err)
+	}
+	vars := string(rawVars)
+	if !strings.Contains(vars, "team-uuid") || !strings.Contains(vars, "agent-harness") {
+		t.Errorf("query variables missing team/label scope: %s", vars)
+	}
+	// The query must exclude terminal states so closed findings don't consume the
+	// result window — dedup coverage must not silently shrink as the backlog grows.
+	if !strings.Contains(vars, "completed") || !strings.Contains(vars, "canceled") {
+		t.Errorf("query variables missing terminal-state exclusion: %s", vars)
+	}
+}
+
+// fileFindingTransport answers both the label-resolution query and the
+// issueCreate mutation, capturing the mutation input.
+func fileFindingTransport(t *testing.T, captured *map[string]any) Transport {
+	t.Helper()
+	return func(query string, variables map[string]any) (json.RawMessage, error) {
+		if strings.Contains(query, "issueCreate") {
+			*captured = variables
+			return json.Marshal(map[string]any{
+				"issueCreate": map[string]any{
+					"success": true,
+					"issue":   map[string]any{"identifier": "BEH-400", "url": "https://x/BEH-400"},
+				},
+			})
+		}
+		// label-resolution query
 		return json.Marshal(map[string]any{
-			"issueCreate": map[string]any{
-				"success": true,
-				"issue":   map[string]any{"identifier": "BEH-400", "url": "https://x/BEH-400"},
+			"team": map[string]any{
+				"labels": map[string]any{
+					"nodes": []any{
+						map[string]any{"id": "label-other", "name": "bug"},
+						map[string]any{"id": "label-harness", "name": "agent-harness"},
+					},
+				},
 			},
 		})
 	}
+}
 
-	created, err := NewClient(tr).FileFinding(
+func TestFileFinding(t *testing.T) {
+	var captured map[string]any
+	created, err := NewClient(fileFindingTransport(t, &captured)).FileFinding(
 		findings.Finding{Title: "tokens:build missing", Body: "Storybook died", Kind: "setup"},
 		FileFindingOptions{TeamID: "team-uuid", RelatedIdentifier: "BEH-362"},
 	)
@@ -151,6 +226,29 @@ func TestFileFinding(t *testing.T) {
 	}
 	if !strings.Contains(desc, "BEH-362") {
 		t.Errorf("description missing related id: %q", desc)
+	}
+
+	// Filed findings must carry the agent-harness label so SearchFindings can find them.
+	labelIDs, _ := input["labelIds"].([]string)
+	if len(labelIDs) != 1 || labelIDs[0] != agentHarnessLabelID {
+		t.Errorf("labelIds = %v, want [%s]", input["labelIds"], agentHarnessLabelID)
+	}
+}
+
+// A finding with an explicit key gets the machine-readable marker embedded so a
+// later run can dedup on an exact-key lookup.
+func TestFileFindingEmbedsKeyMarker(t *testing.T) {
+	var captured map[string]any
+	_, err := NewClient(fileFindingTransport(t, &captured)).FileFinding(
+		findings.Finding{Title: "Playwright missing", Body: "no deps", Key: "sandbox-playwright-missing-deps"},
+		FileFindingOptions{TeamID: "team-uuid", RelatedIdentifier: "BEH-394"},
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	desc, _ := captured["input"].(map[string]any)["description"].(string)
+	if got := ExtractFindingKey(desc); got != "sandbox-playwright-missing-deps" {
+		t.Errorf("round-trip key = %q, want sandbox-playwright-missing-deps (desc: %q)", got, desc)
 	}
 }
 

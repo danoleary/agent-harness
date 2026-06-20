@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/beherd/agent-harness/internal/findings"
 	"github.com/beherd/agent-harness/internal/linear"
@@ -20,6 +21,12 @@ const dropboxFile = "out.json"
 // Filer files one finding to Linear. *linear.Client satisfies it; tests pass a fake.
 type Filer interface {
 	FileFinding(f findings.Finding, opts linear.FileFindingOptions) (linear.CreatedIssue, error)
+}
+
+// Searcher lists already-filed harness findings for a team so File can skip
+// duplicates. *linear.Client satisfies it; tests pass a fake.
+type Searcher interface {
+	SearchFindings(teamID string) ([]linear.ExistingFinding, error)
 }
 
 // ClearDropbox removes any stale dropbox left in findingsDir. The findings dir is
@@ -57,7 +64,7 @@ type EventSink interface {
 //   - No dropbox file → nothing to file (the common, friction-free case).
 //   - Dropbox present but unreadable/malformed → one narration line, nothing filed.
 //   - Findings present but no team id resolved → one narration line, nothing filed.
-func File(findingsDir, teamID, relatedIdentifier string, filer Filer, log EventSink) {
+func File(findingsDir, teamID, relatedIdentifier string, filer Filer, searcher Searcher, log EventSink) {
 	text, err := os.ReadFile(filepath.Join(findingsDir, dropboxFile))
 	if err != nil {
 		return // no dropbox file → nothing to file (the common, friction-free case)
@@ -79,7 +86,16 @@ func File(findingsDir, teamID, relatedIdentifier string, filer Filer, log EventS
 		return
 	}
 
+	// Look up findings already tracked so we don't re-file duplicates across runs.
+	// Best-effort (ADR-0001): a search failure degrades to filing everything, the
+	// pre-dedup behaviour — never a crash.
+	tracked := openTracked(teamID, searcher, log)
+
 	for _, f := range parsed.Findings {
+		if existing, ok := tracked[matchKey(f.Key, f.Title)]; ok {
+			log.Event(fmt.Sprintf("finding ↩ already tracked: %s — %s", existing.Identifier, existing.Title))
+			continue
+		}
 		created, err := filer.FileFinding(f, linear.FileFindingOptions{
 			TeamID: teamID, RelatedIdentifier: relatedIdentifier,
 		})
@@ -87,6 +103,37 @@ func File(findingsDir, teamID, relatedIdentifier string, filer Filer, log EventS
 			log.Event(fmt.Sprintf("finding ✗ failed to file %q: %s", f.Title, err.Error()))
 			continue
 		}
+		// Register what we just filed so a later finding in the same dropbox that
+		// shares its key dedups against it too, not just across runs.
+		tracked[matchKey(f.Key, f.Title)] = linear.ExistingFinding{Identifier: created.Identifier, Title: f.Title, Key: f.Key}
 		log.Event(fmt.Sprintf("finding filed: %s — %s", created.Identifier, f.Title))
 	}
+}
+
+// openTracked returns the already-filed harness findings keyed by match key,
+// limited to OPEN issues — a closed/canceled match must not suppress a re-file.
+// A search failure is narrated once and degrades to an empty map (file all).
+func openTracked(teamID string, searcher Searcher, log EventSink) map[string]linear.ExistingFinding {
+	tracked := map[string]linear.ExistingFinding{}
+	existing, err := searcher.SearchFindings(teamID)
+	if err != nil {
+		log.Event("findings ⚠ dedup search failed, filing without dedup: " + err.Error())
+		return tracked
+	}
+	for _, e := range existing {
+		if e.Closed {
+			continue
+		}
+		tracked[matchKey(e.Key, e.Title)] = e
+	}
+	return tracked
+}
+
+// matchKey is the dedup fingerprint: the explicit failure-class key when set,
+// else a normalized form of the title (lowercased, trimmed) as a fallback.
+func matchKey(key, title string) string {
+	if k := strings.TrimSpace(key); k != "" {
+		return "key:" + strings.ToLower(k)
+	}
+	return "title:" + strings.ToLower(strings.TrimSpace(title))
 }

@@ -233,7 +233,7 @@ func run() (int, error) {
 	}
 
 	// File any harness-improvement findings the session dropped (after every session, per ADR-0001).
-	filing.File(findingsDir, t.TeamID, args.identifier, client, log)
+	filing.File(findingsDir, t.TeamID, args.identifier, client, client, log)
 
 	if result.OK {
 		return 0, nil
