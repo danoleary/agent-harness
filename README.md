@@ -180,6 +180,21 @@ telling the agent to run one command per Bash call, prefer absolute paths over
 pinned `CLAUDE_VERSION` (Dockerfile) if a newer release fixes it upstream, then
 the steer can be retired.
 
+## Constraint: harness scripts must run under macOS bash 3.2
+
+Every `*.sh` here runs on developers' default shell, which on macOS is the
+stock **bash 3.2** (`/bin/bash`). A bash-4-only construct under a `#!/bin/bash`
+shebang — `declare -A` (associative arrays), `declare -n` (namerefs),
+`${var,,}`/`${var^^}` (case modification), `mapfile`/`readarray` — dies there
+with an opaque `unbound variable`, so the script **silently never runs**. That's
+exactly how `check-exec-command.sh` was a no-op for an unknown number of sessions
+before BEH-409. Write scripts in bash-3.2-safe style: indexed arrays, parallel
+arrays instead of maps, `tr`/`awk` for case folding.
+
+`scripts/check-bash3-compat.sh` (the `make check-bash3` sub-step) enforces this —
+it scans every bash-shebang script for those constructs and fails the gate
+(BEH-457). The guard itself is bash-3.2-safe and runs over its own tree.
+
 ## Layout
 
 ```

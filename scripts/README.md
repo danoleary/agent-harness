@@ -1,5 +1,48 @@
 # Agent Harness Scripts
 
+## check-bash3-compat.sh
+
+Guard against bash-4-only syntax in bash scripts (BEH-457).
+
+### Purpose
+
+Harness scripts run on developers' default shell — on macOS, the stock **bash
+3.2**. A bash-4-only construct under a `#!/bin/bash` shebang dies there with an
+opaque `unbound variable` and the script **silently never runs** (how
+`check-exec-command.sh` became a no-op before BEH-409). This guard fails the
+gate on those constructs so they can't ship. It is itself bash-3.2-safe.
+
+### What it checks
+
+Scans every regular file whose first line is a bash shebang (`#!/bin/bash` or
+`#!/usr/bin/env bash`) and flags, outside full-line comments:
+
+- `declare -A` / `local -A` / `typeset -A` — associative arrays (bash 4.0+)
+- `declare -n` / `local -n` / `typeset -n` — namerefs (bash 4.3+)
+- `${var,,}` / `${var^^}` / `${var,}` / `${var^}` — case modification (bash 4.0+)
+- `mapfile` / `readarray` — bash 4.0+
+
+Non-bash files (`#!/bin/sh`, plain text), full-line comments, and the guard's
+own files are not flagged. Indirect/array-index expansions like `${!arr[@]}` are
+deliberately **not** flagged — they are valid on bash 3.2 indexed arrays and
+would false-positive.
+
+### Usage
+
+```bash
+# Check the entire harness (the make check-bash3 default)
+./scripts/check-bash3-compat.sh
+
+# Check a specific directory
+./scripts/check-bash3-compat.sh /path/to/code
+```
+
+### Testing
+
+```bash
+./scripts/test-check-bash3-compat.sh
+```
+
 ## check-exec-command.sh
 
 Guard against unbounded `exec.Command` calls to daemon/remote tools (BEH-388).
@@ -41,7 +84,8 @@ The guard is integrated into the Makefile's `check` target, which runs:
 1. `fmt-check` - Go format verification
 2. `vet` - Go vet static analysis
 3. `check-exec` - This exec.Command guard
-4. `test` - Full test suite
+4. `check-bash3` - The bash 3.2 compatibility guard
+5. `test` - Full test suite
 
 ### Testing
 

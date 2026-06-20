@@ -1,5 +1,5 @@
 # Agent harness — Go toolchain shortcuts. Requires Go 1.26+.
-.PHONY: build image test implementation review retrospective vet fmt fmt-check check-exec check tidy
+.PHONY: build image test implementation review retrospective vet fmt fmt-check check-exec check-bash3 check tidy
 
 # Build the tool binaries into ./bin.
 build:
@@ -51,8 +51,13 @@ fmt-check:
 check-exec:
 	@./scripts/check-exec-command.sh
 
-# The pre-push gate: format check, vet, exec guard, and the full test suite.
-check: fmt-check vet check-exec test
+# Fail on bash-4-only syntax in bash scripts — they must run under macOS's stock
+# bash 3.2 or they silently no-op there (BEH-457).
+check-bash3:
+	@./scripts/check-bash3-compat.sh
+
+# The pre-push gate: format check, vet, the script guards, and the full test suite.
+check: fmt-check vet check-exec check-bash3 test
 
 tidy:
 	go mod tidy
