@@ -22,38 +22,60 @@ type commandRunner func(name string, args ...string) error
 // remoteOpTimeout bounds a single git remote attempt (fetch/push). A stalled
 // remote — a black-hole network, a blocking credential prompt — would otherwise
 // hang an attempt forever, defeating the retry loop entirely (BEH-386). It is
-// per-attempt, so the wall-clock cap is at most remoteAttempts × this.
+// per-attempt; the overall wall-clock cap is remoteRetryBudget plus at most one
+// in-flight attempt of this length.
 const remoteOpTimeout = 2 * time.Minute
 
 func execRun(name string, args ...string) error {
 	return proc.Run(remoteOpTimeout, name, args...)
 }
 
-// remoteAttempts is how many times a git remote op (fetch/push) is tried before
-// giving up. Transient remote/auth blips — a momentary keychain lock, a network
-// hiccup — surface as `exit status 128`; a finished, gate-green worktree must
-// not be stranded by one of them (BEH-329 post-mortem: a single transient 128
-// on fetch+push aborted the pipeline and left the branch unpushed).
-const remoteAttempts = 3
+// remoteRetryBudget caps the *total wall-clock* a git remote op (fetch/push) will
+// spend retrying transient failures before giving up. BEH-329's window (3 attempts
+// ~2s apart, ≈4s) was far too tight: a credential/network blip can last a minute
+// or two — a momentary keychain lock, a brief network hiccup — surfacing as
+// repeated `exit status 128`. In the BEH-403 post-mortem a fetch and a push failed
+// ~2 min apart and *both* fell entirely inside the disruption, so every attempt
+// failed and a green, gate-passed branch was left unpushed. A multi-minute budget
+// rides out that class of event; it stays bounded so a genuine outage can't hang
+// the pipeline (each attempt is independently capped by remoteOpTimeout). A var so
+// tests can tune it.
+var remoteRetryBudget = 5 * time.Minute
 
-// remoteRetryDelay is the backoff between remote attempts. A var so tests can
-// drop it to zero.
-var remoteRetryDelay = 2 * time.Second
+// remoteBaseDelay and remoteMaxDelay frame the exponential backoff between
+// attempts: start small so a sub-second flicker is ridden out cheaply, double each
+// time, and cap so late retries stay reasonably responsive within the budget.
+// Vars so tests can tune them.
+var (
+	remoteBaseDelay = 2 * time.Second
+	remoteMaxDelay  = 30 * time.Second
+)
 
-// withRetry runs op up to remoteAttempts times, sleeping remoteRetryDelay
-// between tries; returns nil on the first success, else the last error. It does
-// not sleep after the final attempt.
-func withRetry(op func() error, sleep func(time.Duration)) error {
+// withRetry runs op repeatedly with exponential backoff until it succeeds or the
+// wall-clock budget is spent, returning nil on success else the last error. It
+// always makes at least one attempt, and never sleeps toward a deadline the next
+// attempt couldn't beat. The clock (now) and sleeper are injected so the timing is
+// exercised deterministically in tests with no real waiting.
+func withRetry(op func() error, sleep func(time.Duration), now func() time.Time) error {
+	deadline := now().Add(remoteRetryBudget)
+	delay := remoteBaseDelay
 	var err error
-	for attempt := 1; attempt <= remoteAttempts; attempt++ {
+	for {
 		if err = op(); err == nil {
 			return nil
 		}
-		if attempt < remoteAttempts {
-			sleep(remoteRetryDelay)
+		// Stop once the next backoff would carry us to/past the budget — no point
+		// sleeping toward a deadline the following attempt couldn't beat.
+		if !now().Add(delay).Before(deadline) {
+			return err
+		}
+		sleep(delay)
+		if delay < remoteMaxDelay {
+			if delay *= 2; delay > remoteMaxDelay {
+				delay = remoteMaxDelay
+			}
 		}
 	}
-	return err
 }
 
 // WorktreePath is the host path of the worktree the tdd skill is told to create.
@@ -71,13 +93,13 @@ func BranchName(slug string) string {
 // session). Retried against transient remote blips; a fetch failure is returned
 // for the caller to log, not fatal.
 func FetchMain(herdPath string) error {
-	return fetchMain(herdPath, execRun, time.Sleep)
+	return fetchMain(herdPath, execRun, time.Sleep, time.Now)
 }
 
-func fetchMain(herdPath string, run commandRunner, sleep func(time.Duration)) error {
+func fetchMain(herdPath string, run commandRunner, sleep func(time.Duration), now func() time.Time) error {
 	return withRetry(func() error {
 		return run("git", "-C", herdPath, "fetch", "-q", "origin", "main")
-	}, sleep)
+	}, sleep, now)
 }
 
 // CommitSubjects returns the subject lines of the commits on the feature branch
@@ -127,15 +149,15 @@ func WorktreeClean(worktreePath string) bool {
 // the feature branch), so lefthook either silently skips every command (its
 // push-file set is empty) or, if it ran, would build the wrong tree against
 // host-platform node_modules the worktree doesn't have. Retried against transient
-// remote blips (BEH-329).
+// remote blips under a wall-clock budget (BEH-329, widened in BEH-403).
 func Push(herdPath, slug string) error {
-	return push(herdPath, slug, execRun, time.Sleep)
+	return push(herdPath, slug, execRun, time.Sleep, time.Now)
 }
 
-func push(herdPath, slug string, run commandRunner, sleep func(time.Duration)) error {
+func push(herdPath, slug string, run commandRunner, sleep func(time.Duration), now func() time.Time) error {
 	return withRetry(func() error {
 		return run("git", "-C", herdPath, "push", "--no-verify", "origin", BranchName(slug))
-	}, sleep)
+	}, sleep, now)
 }
 
 // GatherTddGroundTruth reads the state a finished tdd session left behind. The

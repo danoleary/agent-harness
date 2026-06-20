@@ -6,8 +6,15 @@ import (
 	"time"
 )
 
-// noSleep is the injected sleeper for tests — never actually waits.
-func noSleep(time.Duration) {}
+// fakeClock is a deterministic clock for retry tests: time advances only when the
+// injected sleeper is called, so the wall-clock backoff/budget logic is exercised
+// with zero real waiting (BEH-403). now() and sleep satisfy the withRetry seams.
+type fakeClock struct{ t time.Time }
+
+func newFakeClock() *fakeClock              { return &fakeClock{t: time.Unix(0, 0)} }
+func (c *fakeClock) now() time.Time         { return c.t }
+func (c *fakeClock) sleep(d time.Duration)  { c.t = c.t.Add(d) }
+func (c *fakeClock) elapsed() time.Duration { return c.t.Sub(time.Unix(0, 0)) }
 
 // scriptedRunner returns a commandRunner that fails for the first `failures`
 // calls (returning errEach) then succeeds, recording every argv it saw.
@@ -23,16 +30,33 @@ func scriptedRunner(failures int, errEach error) (commandRunner, *[][]string) {
 	return run, &calls
 }
 
+// blipRunner models a transient remote disruption: it fails while the clock reads
+// less than `clearAfter` past its first call, then succeeds — i.e. a blip of a
+// given wall-clock duration that the retry loop must ride out.
+func blipRunner(clock *fakeClock, clearAfter time.Duration, errEach error) (commandRunner, *int) {
+	calls := 0
+	start := clock.now()
+	run := func(string, ...string) error {
+		calls++
+		if clock.now().Sub(start) < clearAfter {
+			return errEach
+		}
+		return nil
+	}
+	return run, &calls
+}
+
 func TestPushUsesNoVerifyAndCorrectArgs(t *testing.T) {
+	clock := newFakeClock()
 	run, calls := scriptedRunner(0, nil)
-	if err := push("/herd", "beh-329", run, noSleep); err != nil {
+	if err := push("/herd", "beh-403", run, clock.sleep, clock.now); err != nil {
 		t.Fatalf("expected success, got %v", err)
 	}
 	if len(*calls) != 1 {
 		t.Fatalf("expected exactly one attempt, got %d", len(*calls))
 	}
 	got := (*calls)[0]
-	want := []string{"git", "-C", "/herd", "push", "--no-verify", "origin", "feat/beh-329"}
+	want := []string{"git", "-C", "/herd", "push", "--no-verify", "origin", "feat/beh-403"}
 	if len(got) != len(want) {
 		t.Fatalf("argv = %v, want %v", got, want)
 	}
@@ -45,8 +69,9 @@ func TestPushUsesNoVerifyAndCorrectArgs(t *testing.T) {
 
 func TestPushRetriesThenSucceeds(t *testing.T) {
 	// Two transient failures, then success — must not be stranded.
+	clock := newFakeClock()
 	run, calls := scriptedRunner(2, errors.New("exit status 128"))
-	if err := push("/herd", "beh-329", run, noSleep); err != nil {
+	if err := push("/herd", "beh-403", run, clock.sleep, clock.now); err != nil {
 		t.Fatalf("expected eventual success, got %v", err)
 	}
 	if len(*calls) != 3 {
@@ -54,21 +79,48 @@ func TestPushRetriesThenSucceeds(t *testing.T) {
 	}
 }
 
-func TestPushReturnsLastErrorAfterExhausting(t *testing.T) {
+// The core of BEH-403: a disruption lasting a couple of minutes (far beyond the
+// old ~4s window) must not strand a green branch — the loop keeps retrying until
+// the blip clears.
+func TestPushRidesOutMultiMinuteBlip(t *testing.T) {
+	clock := newFakeClock()
+	run, calls := blipRunner(clock, 2*time.Minute, errors.New("exit status 128"))
+	if err := push("/herd", "beh-403", run, clock.sleep, clock.now); err != nil {
+		t.Fatalf("expected eventual success once the blip cleared, got %v", err)
+	}
+	if *calls < 2 {
+		t.Fatalf("expected multiple attempts across the blip, got %d", *calls)
+	}
+	if clock.elapsed() < 2*time.Minute {
+		t.Fatalf("retry span %v did not ride out the 2-minute blip", clock.elapsed())
+	}
+}
+
+// An indefinite outage must terminate — but only after spending close to the full
+// budget, not after the old 4s window — and never exceed the budget.
+func TestPushGivesUpNearBudgetAfterPersistentFailure(t *testing.T) {
+	clock := newFakeClock()
 	boom := errors.New("exit status 128")
-	run, calls := scriptedRunner(remoteAttempts, boom)
-	err := push("/herd", "beh-329", run, noSleep)
+	run, calls := scriptedRunner(1<<30, boom) // always fails
+	err := push("/herd", "beh-403", run, clock.sleep, clock.now)
 	if !errors.Is(err, boom) {
 		t.Fatalf("expected the last error %v, got %v", boom, err)
 	}
-	if len(*calls) != remoteAttempts {
-		t.Fatalf("expected %d attempts, got %d", remoteAttempts, len(*calls))
+	if clock.elapsed() > remoteRetryBudget {
+		t.Fatalf("retry span %v exceeded the budget %v", clock.elapsed(), remoteRetryBudget)
+	}
+	if clock.elapsed() < remoteRetryBudget-remoteMaxDelay {
+		t.Fatalf("retry span %v gave up well before the budget %v", clock.elapsed(), remoteRetryBudget)
+	}
+	if len(*calls) < 2 {
+		t.Fatalf("expected many attempts within the budget, got %d", len(*calls))
 	}
 }
 
 func TestFetchMainRetriesThenSucceeds(t *testing.T) {
+	clock := newFakeClock()
 	run, calls := scriptedRunner(1, errors.New("exit status 128"))
-	if err := fetchMain("/herd", run, noSleep); err != nil {
+	if err := fetchMain("/herd", run, clock.sleep, clock.now); err != nil {
 		t.Fatalf("expected eventual success, got %v", err)
 	}
 	if len(*calls) != 2 {
@@ -86,23 +138,37 @@ func TestFetchMainRetriesThenSucceeds(t *testing.T) {
 	}
 }
 
-func TestWithRetrySleepsBetweenButNotAfterFinalAttempt(t *testing.T) {
-	sleeps := 0
-	count := func(time.Duration) { sleeps++ }
-	err := withRetry(func() error { return errors.New("always") }, count)
-	if err == nil {
+func TestWithRetryBackoffIsExponentialAndCapped(t *testing.T) {
+	clock := newFakeClock()
+	var delays []time.Duration
+	sleep := func(d time.Duration) { delays = append(delays, d); clock.sleep(d) }
+	if err := withRetry(func() error { return errors.New("always") }, sleep, clock.now); err == nil {
 		t.Fatal("expected an error when op always fails")
 	}
-	// remoteAttempts tries => remoteAttempts-1 sleeps (no trailing sleep).
-	if sleeps != remoteAttempts-1 {
-		t.Fatalf("expected %d sleeps, got %d", remoteAttempts-1, sleeps)
+	if len(delays) < 2 {
+		t.Fatalf("expected several backoff sleeps, got %d", len(delays))
+	}
+	if delays[0] != remoteBaseDelay {
+		t.Fatalf("first delay = %v, want base %v", delays[0], remoteBaseDelay)
+	}
+	if delays[1] != 2*remoteBaseDelay {
+		t.Fatalf("second delay = %v, want %v (doubled)", delays[1], 2*remoteBaseDelay)
+	}
+	for i, d := range delays {
+		if d > remoteMaxDelay {
+			t.Fatalf("delay[%d] = %v exceeds cap %v", i, d, remoteMaxDelay)
+		}
+	}
+	if last := delays[len(delays)-1]; last != remoteMaxDelay {
+		t.Fatalf("last delay = %v, want it to have grown to the cap %v", last, remoteMaxDelay)
 	}
 }
 
 func TestWithRetryNoSleepOnFirstSuccess(t *testing.T) {
+	clock := newFakeClock()
 	sleeps := 0
-	count := func(time.Duration) { sleeps++ }
-	if err := withRetry(func() error { return nil }, count); err != nil {
+	sleep := func(d time.Duration) { sleeps++; clock.sleep(d) }
+	if err := withRetry(func() error { return nil }, sleep, clock.now); err != nil {
 		t.Fatalf("expected success, got %v", err)
 	}
 	if sleeps != 0 {
