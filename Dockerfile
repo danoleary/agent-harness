@@ -10,6 +10,15 @@ ARG SUPABASE_VERSION=2.20.5
 
 ENV DEBIAN_FRONTEND=noninteractive
 
+# Advertise the sandbox identity so the herd build skips its memory-hungry,
+# post-`vite build` SPA-shell prerender/crawl step, which OOM-kills (exit 137)
+# in this ~3.8GiB container even when the compile succeeds (BEH-470). Baked into
+# the image so EVERY container from it — the agent session, the ground-truth gate
+# re-run, and any manual `docker run` — gets a clean `pnpm run build` exit on a
+# successful compile. `web/scripts/prerender-mode.ts` reads this; CI's full build
+# (with prerender) stays the SSR-shell backstop. Mirrors Codex's CODEX_SANDBOX.
+ENV HERD_SANDBOX=1
+
 # git, bash, curl already partly present on the node image; supabase added below.
 # No `gh`: the container never pushes or talks to GitHub (ADR-0002) — the harness
 # owns all remote git I/O host-side, so GH_TOKEN never enters the image.
