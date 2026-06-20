@@ -6,10 +6,12 @@
 package proc
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"os/exec"
+	"strings"
 	"time"
 )
 
@@ -38,13 +40,19 @@ func CombinedOutputInDir(timeout time.Duration, dir, name string, args ...string
 	return out, wrapTimeout(ctx, name, timeout, err)
 }
 
-// Run runs name+args under timeout, discarding output. Same deadline semantics
-// as CombinedOutput — used for git remote ops, where only success/failure matters.
+// Run runs name+args under timeout. On the happy path it stays quiet (stdout is
+// discarded, nil error); on a non-zero exit it captures stderr and folds its last
+// line into the returned error, so a git failure carries the actual `fatal: …`
+// cause instead of a bare `exit status 128` (BEH-404). Same deadline semantics as
+// CombinedOutput — used for git remote ops, where only success/failure matters.
 func Run(timeout time.Duration, name string, args ...string) error {
 	ctx, cancel := withTimeout(timeout)
 	defer cancel()
-	err := exec.CommandContext(ctx, name, args...).Run()
-	return wrapTimeout(ctx, name, timeout, err)
+	cmd := exec.CommandContext(ctx, name, args...)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	return wrapStderr(wrapTimeout(ctx, name, timeout, err), stderr.Bytes())
 }
 
 func withTimeout(timeout time.Duration) (context.Context, context.CancelFunc) {
@@ -61,4 +69,35 @@ func wrapTimeout(ctx context.Context, name string, timeout time.Duration, err er
 		return fmt.Errorf("%q did not respond within %s: %w", name, timeout, ErrTimeout)
 	}
 	return err
+}
+
+// wrapStderr appends stderr's last non-empty line to an ordinary command failure,
+// turning git's opaque `exit status 128` into the diagnostic it printed. Successes
+// (nil err) and deadline kills (already an ErrTimeout — keep its message intact)
+// pass through untouched, so the happy path stays quiet.
+func wrapStderr(err error, stderr []byte) error {
+	if err == nil || errors.Is(err, ErrTimeout) {
+		return err
+	}
+	if line := lastNonEmptyLine(stderr); line != "" {
+		return fmt.Errorf("%w: %s", err, line)
+	}
+	return err
+}
+
+// lastNonEmptyLine returns the final non-blank line of b, trimmed. git's fatal
+// cause is the last line it writes, so this is the one worth surfacing. Splits on
+// both \n and \r so a fatal that rides on a bare-\r progress segment (git
+// overwrites progress with \r, no \n) surfaces clean, without embedded carriage
+// returns or progress noise prefixed.
+func lastNonEmptyLine(b []byte) string {
+	lines := strings.FieldsFunc(string(b), func(r rune) bool {
+		return r == '\n' || r == '\r'
+	})
+	for i := len(lines) - 1; i >= 0; i-- {
+		if line := strings.TrimSpace(lines[i]); line != "" {
+			return line
+		}
+	}
+	return ""
 }
