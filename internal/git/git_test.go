@@ -2,6 +2,8 @@ package git
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -44,6 +46,64 @@ func blipRunner(clock *fakeClock, clearAfter time.Duration, errEach error) (comm
 		return nil
 	}
 	return run, &calls
+}
+
+// BEH-412: the implementation tool hands the worktree back to a reviewer who may
+// be on a non-Linux host. The sandbox-built `web/node_modules` carries Linux-only
+// native bindings that crash the macOS gates, and `pnpm install --frozen-lockfile`
+// won't repair them. Stripping the tree forces the reviewer to install fresh for
+// their own platform.
+func TestStripWorktreeNodeModulesRemovesIt(t *testing.T) {
+	wt := t.TempDir()
+	binding := filepath.Join(wt, "web", "node_modules", "@oxlint", "binding-linux-arm64-gnu")
+	if err := os.MkdirAll(binding, 0o755); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	if err := StripWorktreeNodeModules(wt); err != nil {
+		t.Fatalf("expected success, got %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(wt, "web", "node_modules")); !os.IsNotExist(err) {
+		t.Fatalf("web/node_modules should be gone, stat err = %v", err)
+	}
+}
+
+// Idempotent: a worktree that never ran `pnpm install` (or was already stripped)
+// must not be an error — the strip runs unconditionally on every handoff.
+func TestStripWorktreeNodeModulesIsNoOpWhenAbsent(t *testing.T) {
+	wt := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(wt, "web"), 0o755); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	if err := StripWorktreeNodeModules(wt); err != nil {
+		t.Fatalf("expected no error when node_modules is absent, got %v", err)
+	}
+}
+
+// The strip is surgical: only `web/node_modules` goes — the committed source the
+// reviewer is here to read (including everything else under `web/`) stays put.
+func TestStripWorktreeNodeModulesLeavesSourceIntact(t *testing.T) {
+	wt := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(wt, "web", "node_modules", "left-pad"), 0o755); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	src := filepath.Join(wt, "web", "src", "app.tsx")
+	if err := os.MkdirAll(filepath.Dir(src), 0o755); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	if err := os.WriteFile(src, []byte("export const App = () => null"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	if err := StripWorktreeNodeModules(wt); err != nil {
+		t.Fatalf("expected success, got %v", err)
+	}
+
+	if _, err := os.Stat(src); err != nil {
+		t.Fatalf("web/src/app.tsx should survive the strip, stat err = %v", err)
+	}
 }
 
 func TestPushUsesNoVerifyAndCorrectArgs(t *testing.T) {

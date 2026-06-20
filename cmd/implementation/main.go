@@ -222,6 +222,14 @@ func run() (int, error) {
 		log.Event(fmt.Sprintf(
 			"tdd ✓ %s (%d commit%s ahead)", result.Reason, truth.CommitsAhead, plural,
 		))
+		// The worktree now goes to a (possibly non-Linux) reviewer. Strip the
+		// sandbox-built `web/node_modules` so its Linux-only native bindings don't
+		// crash the reviewer's gates — they install fresh for their own platform
+		// (BEH-412). Warn-only: the handoff commit already landed, and a leftover
+		// node_modules is recoverable, so a strip failure must not fail the run.
+		if err := gitpkg.StripWorktreeNodeModules(worktreePath); err != nil {
+			log.Event("⚠ could not strip web/node_modules from the worktree (" + err.Error() + ") — reviewer should `rm -rf web/node_modules && pnpm install`")
+		}
 	} else {
 		log.Event("tdd ✗ " + result.Reason)
 		// Don't let a recoverable diff vanish silently: if the session left

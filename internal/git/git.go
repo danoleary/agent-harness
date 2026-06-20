@@ -195,6 +195,19 @@ func BranchPushed(herdPath, slug string) bool {
 	return err == nil
 }
 
+// StripWorktreeNodeModules removes `web/node_modules` from the worktree the
+// implementation tool hands back. The sandbox builds the worktree on linux-arm64
+// (ADR-0002), so that tree carries Linux-only native bindings (`@oxlint/...`,
+// `@oxfmt/...`, `@rolldown/...`); a reviewer running the gates on a non-Linux host
+// hits a cryptic `MODULE_NOT_FOUND` and `pnpm install --frozen-lockfile` won't
+// repair it (the platform-conditional optional deps look satisfied). Stripping the
+// tree means the reviewer always installs fresh for their own platform — the
+// review-worktree skill already treats a missing `node_modules` as "run install
+// first" (BEH-412). Idempotent: a no-op when the dir is already absent.
+func StripWorktreeNodeModules(worktreePath string) error {
+	return os.RemoveAll(filepath.Join(worktreePath, "web", "node_modules"))
+}
+
 // RemoveWorktree tears down the worktree at `.claude/worktrees/<slug>` from the
 // main checkout. The real-path bind mount (ADR-0002) makes the worktree's
 // absolute `.git` pointer resolve on the host, so no throwaway container is
