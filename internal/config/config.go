@@ -31,14 +31,27 @@ type Config struct {
 	// while the alias once resolved to a stale Opus 4.1 prone to a false-positive
 	// usage-policy refusal on long sessions (BEH-389).
 	Model string
+	// CIMaxFixAttempts caps how many diagnose+fix+push cycles the review tool runs
+	// against a red CI before giving up and leaving the PR for a human (BEH-414).
+	CIMaxFixAttempts int
+	// CIFixBudget is the overall wall-clock cap on the post-PR CI watch+fix loop.
+	CIFixBudget time.Duration
+	// CIPollInterval is how often CI checks are re-polled while still pending.
+	CIPollInterval time.Duration
+	// CIPollBudget caps a single wait for CI checks to reach a terminal state.
+	CIPollBudget time.Duration
 }
 
 const (
-	defaultImage           = "herd-agent-harness:latest"
-	defaultPnpmStoreVolume = "herd-pnpm-store"
-	defaultTddTimeout      = 30 * time.Minute
-	defaultReviewTimeout   = 15 * time.Minute
-	defaultModel           = "claude-opus-4-8"
+	defaultImage            = "herd-agent-harness:latest"
+	defaultPnpmStoreVolume  = "herd-pnpm-store"
+	defaultTddTimeout       = 30 * time.Minute
+	defaultReviewTimeout    = 15 * time.Minute
+	defaultModel            = "claude-opus-4-8"
+	defaultCIMaxFixAttempts = 2
+	defaultCIFixBudget      = 30 * time.Minute
+	defaultCIPollInterval   = 30 * time.Second
+	defaultCIPollBudget     = 20 * time.Minute
 )
 
 // Getenv looks up an environment variable by name, returning "" when unset.
@@ -90,6 +103,11 @@ func Load(get Getenv) (Config, error) {
 		TddTimeout:      parseTimeout(get("TDD_TIMEOUT_MS"), defaultTddTimeout),
 		ReviewTimeout:   parseTimeout(get("REVIEW_TIMEOUT_MS"), defaultReviewTimeout),
 		Model:           orDefault(get("TDD_MODEL"), defaultModel),
+
+		CIMaxFixAttempts: parsePositiveInt(get("CI_MAX_FIX_ATTEMPTS"), defaultCIMaxFixAttempts),
+		CIFixBudget:      parseTimeout(get("CI_FIX_BUDGET_MS"), defaultCIFixBudget),
+		CIPollInterval:   parseTimeout(get("CI_POLL_INTERVAL_MS"), defaultCIPollInterval),
+		CIPollBudget:     parseTimeout(get("CI_POLL_BUDGET_MS"), defaultCIPollBudget),
 	}, nil
 }
 
@@ -138,4 +156,17 @@ func parseTimeout(raw string, fallback time.Duration) time.Duration {
 		return fallback
 	}
 	return time.Duration(ms) * time.Millisecond
+}
+
+// parsePositiveInt parses a positive integer env value, falling back on anything
+// unparseable or non-positive (same lenient contract as parseTimeout).
+func parsePositiveInt(raw string, fallback int) int {
+	if raw == "" {
+		return fallback
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n <= 0 {
+		return fallback
+	}
+	return n
 }

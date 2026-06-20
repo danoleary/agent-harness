@@ -40,6 +40,34 @@ func CombinedOutputInDir(timeout time.Duration, dir, name string, args ...string
 	return out, wrapTimeout(ctx, name, timeout, err)
 }
 
+// Output runs name+args under timeout, returning stdout and stderr as separate
+// buffers plus the exit error. Unlike CombinedOutput it keeps the two streams
+// apart so a tool that writes machine-readable output to stdout AND exits
+// non-zero (notably `gh pr checks --json`, which exits non-zero when checks fail
+// but still prints the JSON) can be parsed: the caller reads stdout regardless
+// and only falls back to the error + stderr when stdout won't parse. The error
+// carries stderr's last line on an ordinary failure and wraps ErrTimeout on a
+// deadline kill, same as Run.
+func Output(timeout time.Duration, name string, args ...string) (stdout, stderr []byte, err error) {
+	return OutputInDir(timeout, "", name, args...)
+}
+
+// OutputInDir is Output with the command's working directory set to dir (empty
+// means the caller's cwd). Used for the host-side `gh` calls that infer their
+// target repo from the checkout they run in — `gh pr checks`, `gh run view
+// --log-failed`, `gh run rerun` all read the herd checkout, same as createPR.
+func OutputInDir(timeout time.Duration, dir, name string, args ...string) (stdout, stderr []byte, err error) {
+	ctx, cancel := withTimeout(timeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Dir = dir
+	var out, errBuf bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &errBuf
+	runErr := wrapStderr(wrapTimeout(ctx, name, timeout, cmd.Run()), errBuf.Bytes())
+	return out.Bytes(), errBuf.Bytes(), runErr
+}
+
 // Run runs name+args under timeout. On the happy path it stays quiet (stdout is
 // discarded, nil error); on a non-zero exit it captures stderr and folds its last
 // line into the returned error, so a git failure carries the actual `fatal: …`

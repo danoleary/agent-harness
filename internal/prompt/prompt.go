@@ -97,6 +97,47 @@ func BuildRetrospective(t ticket.Ticket, slug string) string {
 	return strings.Join(lines, "\n")
 }
 
+// BuildCIFix builds the `-p` prompt for a sandboxed session that diagnoses and
+// fixes a GitHub CI failure on the already-pushed PR (BEH-414). The PR is open
+// and red; local gates passed but CI didn't (env/toolchain/flake/lockfile skew),
+// so the harness fetched the failing job logs host-side and injects them here for
+// the agent to reproduce + fix over the SAME existing worktree. As with review,
+// the harness owns all remote I/O (ADR-0002): the agent commits the fix locally
+// and stops — the harness re-pushes and re-polls CI. Each fix is its own commit
+// (auditable trail; never a force-push over review history).
+func BuildCIFix(t ticket.Ticket, slug, worktreePath, ciLogs string) string {
+	lines := []string{
+		"A GitHub CI check is failing on the open PR for " + t.Identifier + ". The worktree already exists at `" + worktreePath + "` on branch `feat/" + slug + "` — work in it; do NOT create a new worktree.",
+		"",
+		"The branch already passed the harness's local gate re-run, but CI on GitHub went red. The cause is usually a CI-vs-local difference (a different toolchain/env, a lockfile or native-binding skew, or a flaky spec) rather than something the local gate could catch.",
+		"",
+		"Here are the failing CI job logs the harness fetched for you (host-side, via `gh run view --log-failed`):",
+		"",
+		"```",
+		ciLogs,
+		"```",
+		"",
+		"Your job: read those logs, reproduce/diagnose the failure locally in the worktree where you can, and apply a fix as a NEW LOCAL commit on `feat/" + slug + "`. Re-run the relevant gate locally (the specific test/lint/typecheck/check that failed) to verify the fix before you stop. Keep the fix to its own commit — do NOT amend or force-push over the existing history.",
+		"",
+		"Ticket context (the intent — already fetched for you):",
+		"",
+		"# " + t.Identifier + ": " + t.Title,
+		"",
+		t.Description,
+		"",
+		"---",
+		"",
+		"Commit the fix LOCALLY and stop there. Do NOT push, do NOT run `gh`, do NOT open or comment on a PR. The harness owns all remote git I/O (ADR-0002): after you commit, it re-pushes the branch and re-polls CI itself.",
+		"",
+		"Do NOT touch Linear — do not call any `mcp__linear-server__*` tool, do not move the ticket, do not open or comment on issues. The harness owns all Linear I/O (ADR-0001).",
+		"",
+		"Do NOT emit or file any harness-improvement findings, and do NOT write `/findings/out.json`. The retrospective tool owns findings — your only output is the fix commit.",
+		"",
+		bashQuirkSteer,
+	}
+	return strings.Join(lines, "\n")
+}
+
 // BuildReview builds the `-p` prompt for the sandboxed /review-worktree session
 // (the second tool). The implementation slice already left a worktree + handoff
 // commit; review reads that diff *cold* and applies fixes as a local commit. The

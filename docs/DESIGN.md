@@ -18,7 +18,10 @@ sandbox (so Claude can run with `--dangerously-skip-permissions` safely):
    steps) — a *cold* review of the worktree diff; applies fixes as a local commit.
    The **harness** (host-side, after the container exits) then independently
    re-runs the quality gates in a throwaway container and, **only if they pass,
-   pushes the branch and opens the PR** with `gh`.
+   pushes the branch and opens the PR** with `gh`. It then **watches GitHub CI**
+   for the PR and, on a red check, runs a bounded auto-fix loop (diagnose + fix in
+   the sandbox over the same worktree, push, re-poll) before reporting the terminal
+   CI result — local gates green is not CI green (BEH-414).
 3. **`retrospective`** (skill: `/retrospective`, new) — runs **last**; reads
    *every prior session's transcript* for the ticket plus the diff, and writes
    harness/environment findings to `/findings/out.json` (**always**, even `[]`).
@@ -88,6 +91,18 @@ loop:
                gh pr create --repo <origin> --head feat/beh-nnn --base main \
                             --title <templated> --body <templated: ticket id + commit subjects>
   if not OK -> log + Linear breadcrumb comment + KEEP worktree + record failure + continue
+
+  --- review CI watch + auto-fix (harness, host-side, BEH-414) ---
+  poll `gh pr checks feat/beh-nnn` until terminal (success/failure/cancelled), bounded by a poll budget
+  if green        -> done
+  else (red):
+    one re-run of the failed checks first (flake wash); re-poll
+    while still red AND attempts < N AND within wall-clock budget:
+      fetch failed-job logs (`gh run view <id> --log-failed`, host-side)
+      run sandboxed fix session over the worktree (diagnose + fix + LOCAL commit)
+      harness pushes the fix; re-poll
+    on green   -> done
+    on exhaust -> non-success: KEEP PR + worktree, print failing checks + logs pointer
 
   fetch + fast-forward origin/main
 
@@ -257,13 +272,18 @@ ships. The `agent-ready` label remains the human gate on *what* runs unattended.
 - Per-session wall-clock caps: **implementation 30 min, review 15 min,
   retrospective 10 min** (configurable). On expiry the harness kills the container
   and treats the session as failed.
+- **CI watch caps (BEH-414, all configurable):** poll interval 30 s, poll budget
+  20 min (one wait for checks to go terminal), auto-fix budget 30 min + max 2 fix
+  attempts (the flake re-run is separate and doesn't count). Each auto-fix session
+  reuses the review wall-clock cap. On exhaustion the PR + worktree are kept and
+  the failing checks are printed.
 - **Failure matrix:**
 
   | Outcome | implementation | review (+ harness gate/push/PR) | retrospective |
   |---|---|---|---|
-  | Clean success (ground-truth passes) | commit ahead → run review | gates green → push + PR created → run retrospective | `out.json` present → file findings → remove worktree, ticket done, next |
+  | Clean success (ground-truth passes) | commit ahead → run review | gates green → push + PR → CI watch → CI green → run retrospective | `out.json` present → file findings → remove worktree, ticket done, next |
   | Crash / non-zero exit / timeout | log + breadcrumb, skip rest, next | log + breadcrumb, keep worktree (no push), next | log + breadcrumb, keep worktree, next |
-  | Ran but ground-truth fails | no commit → skip + breadcrumb | gates **red** → no push, breadcrumb, keep worktree, next | `out.json` absent → breadcrumb, keep worktree, next |
+  | Ran but ground-truth fails | no commit → skip + breadcrumb | gates **red** → no push, breadcrumb, keep worktree, next; OR PR open but **CI red after auto-fix budget** → keep PR + worktree, print failing checks | `out.json` absent → breadcrumb, keep worktree, next |
 
 - **Circuit breaker:** 3 consecutive ticket failures → stop and report (assume
   something environmental broke, e.g. expired auth or a broken base build —

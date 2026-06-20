@@ -1,0 +1,173 @@
+package ci
+
+import (
+	"errors"
+	"strings"
+	"testing"
+	"time"
+)
+
+type pollResult struct {
+	v      Verdict
+	checks []Check
+	err    error
+}
+
+// fakeDriver scripts a sequence of Poll outcomes (the last repeats once the
+// script is exhausted) and records every effect, so WatchAndFix's control flow
+// is exercised without touching gh or the sandbox.
+type fakeDriver struct {
+	polls   []pollResult
+	pollIdx int
+
+	reruns, fixes, pushes int
+	rerunErr, fixErr      error
+
+	clock   *fakeClock
+	fixCost time.Duration
+}
+
+func (d *fakeDriver) Poll() (Verdict, []Check, error) {
+	r := d.polls[d.pollIdx]
+	if d.pollIdx < len(d.polls)-1 {
+		d.pollIdx++
+	}
+	return r.v, r.checks, r.err
+}
+func (d *fakeDriver) Rerun([]Check) error { d.reruns++; return d.rerunErr }
+func (d *fakeDriver) Fix([]Check) error {
+	d.fixes++
+	if d.clock != nil {
+		d.clock.sleep(d.fixCost)
+	}
+	return d.fixErr
+}
+func (d *fakeDriver) Push() error { d.pushes++; return nil }
+
+func failChecks() []Check { return []Check{{Name: "lint", Bucket: BucketFail}} }
+
+func testWatchCfg() Config { return Config{MaxFixAttempts: 2, Budget: time.Hour} }
+
+func TestWatchGreenOnFirstPoll(t *testing.T) {
+	d := &fakeDriver{polls: []pollResult{{v: Passed}}}
+	out := WatchAndFix(d, testWatchCfg(), newFakeClock().now)
+	if !out.OK {
+		t.Fatalf("expected OK, got %+v", out)
+	}
+	if d.reruns != 0 || d.fixes != 0 {
+		t.Fatalf("no rerun/fix expected on green CI; got rerun=%d fix=%d", d.reruns, d.fixes)
+	}
+}
+
+func TestWatchFlakeResolvedByRerun(t *testing.T) {
+	// Fail, then green after the single flake re-run — no code fix should happen.
+	d := &fakeDriver{polls: []pollResult{
+		{v: Failed, checks: failChecks()},
+		{v: Passed},
+	}}
+	out := WatchAndFix(d, testWatchCfg(), newFakeClock().now)
+	if !out.OK {
+		t.Fatalf("expected OK after flake re-run, got %+v", out)
+	}
+	if d.reruns != 1 {
+		t.Fatalf("reruns = %d, want exactly 1 flake re-run", d.reruns)
+	}
+	if d.fixes != 0 {
+		t.Fatalf("fixes = %d, want 0 (re-run resolved it)", d.fixes)
+	}
+}
+
+func TestWatchRealFailureFixedOnFirstAttempt(t *testing.T) {
+	// Fail, still fail after re-run (real), then green after one fix+push.
+	d := &fakeDriver{polls: []pollResult{
+		{v: Failed, checks: failChecks()},
+		{v: Failed, checks: failChecks()},
+		{v: Passed},
+	}}
+	out := WatchAndFix(d, testWatchCfg(), newFakeClock().now)
+	if !out.OK {
+		t.Fatalf("expected OK after fix, got %+v", out)
+	}
+	if d.reruns != 1 {
+		t.Fatalf("reruns = %d, want 1", d.reruns)
+	}
+	if d.fixes != 1 || d.pushes != 1 {
+		t.Fatalf("fix=%d push=%d, want 1/1", d.fixes, d.pushes)
+	}
+}
+
+func TestWatchExhaustsAttemptsAndReportsFailing(t *testing.T) {
+	// Never recovers — fix loop runs MaxFixAttempts then gives up, keeping the PR.
+	d := &fakeDriver{polls: []pollResult{{v: Failed, checks: failChecks()}}}
+	out := WatchAndFix(d, testWatchCfg(), newFakeClock().now)
+	if out.OK {
+		t.Fatalf("expected non-OK on exhaustion, got %+v", out)
+	}
+	if d.fixes != 2 {
+		t.Fatalf("fixes = %d, want MaxFixAttempts (2)", d.fixes)
+	}
+	if len(out.Failing) == 0 {
+		t.Fatal("expected the last failing checks reported for the operator")
+	}
+}
+
+func TestWatchStopsFixingWhenBudgetSpent(t *testing.T) {
+	// Budget only fits one fix attempt even though MaxFixAttempts is 5.
+	clock := newFakeClock()
+	d := &fakeDriver{
+		polls:   []pollResult{{v: Failed, checks: failChecks()}},
+		clock:   clock,
+		fixCost: 40 * time.Minute, // one fix overshoots the 30-min budget
+	}
+	out := WatchAndFix(d, Config{MaxFixAttempts: 5, Budget: 30 * time.Minute}, clock.now)
+	if out.OK {
+		t.Fatalf("expected non-OK, got %+v", out)
+	}
+	if d.fixes != 1 {
+		t.Fatalf("fixes = %d, want 1 (budget cut it short)", d.fixes)
+	}
+}
+
+func TestWatchReportsPollTimeout(t *testing.T) {
+	d := &fakeDriver{polls: []pollResult{{v: Pending, checks: []Check{{Name: "build", Bucket: BucketPending}}, err: ErrPollTimeout}}}
+	out := WatchAndFix(d, testWatchCfg(), newFakeClock().now)
+	if out.OK {
+		t.Fatalf("expected non-OK on poll timeout, got %+v", out)
+	}
+	if !strings.Contains(strings.ToLower(out.Reason), "terminal") && !strings.Contains(strings.ToLower(out.Reason), "settle") {
+		t.Fatalf("reason %q should explain CI never settled", out.Reason)
+	}
+}
+
+func TestWatchSurfacesRerunError(t *testing.T) {
+	boom := errors.New("gh run rerun: not found")
+	d := &fakeDriver{
+		polls:    []pollResult{{v: Failed, checks: failChecks()}},
+		rerunErr: boom,
+	}
+	out := WatchAndFix(d, testWatchCfg(), newFakeClock().now)
+	if out.OK {
+		t.Fatalf("expected non-OK, got %+v", out)
+	}
+	if d.fixes != 0 {
+		t.Fatalf("fixes = %d, want 0 (re-run errored before any fix)", d.fixes)
+	}
+	if len(out.Failing) == 0 {
+		t.Fatal("expected the failing checks reported")
+	}
+}
+
+func TestWatchSurfacesFixError(t *testing.T) {
+	boom := errors.New("sandbox fix session crashed")
+	d := &fakeDriver{
+		polls:  []pollResult{{v: Failed, checks: failChecks()}, {v: Failed, checks: failChecks()}},
+		fixErr: boom,
+	}
+	out := WatchAndFix(d, testWatchCfg(), newFakeClock().now)
+	if out.OK {
+		t.Fatalf("expected non-OK, got %+v", out)
+	}
+	if !strings.Contains(out.Reason, "sandbox fix session crashed") {
+		t.Fatalf("reason %q should surface the fix error", out.Reason)
+	}
+}

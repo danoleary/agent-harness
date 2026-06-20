@@ -19,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/beherd/agent-harness/internal/ci"
 	"github.com/beherd/agent-harness/internal/config"
 	gitpkg "github.com/beherd/agent-harness/internal/git"
 	"github.com/beherd/agent-harness/internal/linear"
@@ -28,6 +29,7 @@ import (
 	"github.com/beherd/agent-harness/internal/runlog"
 	"github.com/beherd/agent-harness/internal/sandbox"
 	"github.com/beherd/agent-harness/internal/session"
+	"github.com/beherd/agent-harness/internal/ticket"
 	"github.com/beherd/agent-harness/internal/verify"
 )
 
@@ -218,7 +220,83 @@ func run() (int, error) {
 	}
 	log.Event("review ✓ PR opened: " + url)
 
+	// --- post-PR: watch CI and auto-fix red checks (host-side, BEH-414) ---
+	// Local gates passing is not CI passing (env/toolchain/flake/lockfile skew).
+	// Poll the PR head's checks; on a real failure, run a sandboxed fix session
+	// over the same worktree, push the fix, and re-poll — bounded by attempts +
+	// wall-clock. The gh polling/log-fetch is host-side (ADR-0002); only the
+	// diagnose+fix happens in the sandbox.
+	ciCfg := ci.Config{
+		MaxFixAttempts: cfg.CIMaxFixAttempts,
+		Budget:         cfg.CIFixBudget,
+		PollInterval:   cfg.CIPollInterval,
+		PollBudget:     cfg.CIPollBudget,
+	}
+	driver := ci.NewGhDriver(
+		cfg.HerdPath, gitpkg.BranchName(slug), ciCfg, ciGhTimeout,
+		ciFixRunner(cfg, args, slug, worktreePath, runID, t, log),
+		func() error { return gitpkg.Push(cfg.HerdPath, slug) },
+	)
+	log.Event("watching CI for " + gitpkg.BranchName(slug) + " …")
+	ciResult := ci.WatchAndFix(driver, ciCfg, time.Now)
+	if !ciResult.OK {
+		log.Event("review ✗ CI did not go green: " + ciResult.Reason + " — keeping PR + worktree")
+		if s := ci.Summarize(ciResult.Failing); s != "" {
+			fmt.Fprintf(os.Stderr, "\nFailing CI checks for %s:\n%s", gitpkg.BranchName(slug), s)
+		}
+		return 1, nil
+	}
+	log.Event("review ✓ " + ciResult.Reason)
+
 	return 0, nil
+}
+
+// ciGhTimeout bounds each individual host-side `gh` call in the CI watch (checks,
+// run rerun, run view --log-failed). Generous because `--log-failed` can stream a
+// large failed-job log, but still bounded so a stalled gh can't hang the harness
+// (same hang class as prCreateTimeout, BEH-386).
+const ciGhTimeout = 5 * time.Minute
+
+// ciFixRunner returns the ci.GhDriver's fix callback: it launches a sandboxed
+// Claude session over the existing worktree, steered by BuildCIFix with the
+// fetched failing logs, then enforces ground truth — a non-zero session exit or
+// a worktree left dirty (the agent didn't commit) is a failure, so the harness
+// never pushes an unverified or self-reported-only fix. Each attempt gets a
+// unique container name + transcript.
+func ciFixRunner(cfg config.Config, args cliArgs, slug, worktreePath, runID string, t ticket.Ticket, log *runlog.Logger) func(string) error {
+	attempt := 0
+	return func(ciLogs string) error {
+		attempt++
+		fixPrompt := prompt.BuildCIFix(t, slug, worktreePath, ciLogs)
+		containerName := fmt.Sprintf("herd-harness-%s-%d-cifix-%d", runID, os.Getpid(), attempt)
+		fixArgs := sandbox.BuildDockerRunArgs(sandbox.Config{
+			Image:           cfg.Image,
+			HerdPath:        cfg.HerdPath,
+			FindingsDir:     "",
+			PnpmStoreVolume: cfg.PnpmStoreVolume,
+			Prompt:          fixPrompt,
+			Model:           cfg.Model,
+			ContainerName:   containerName,
+		})
+		transcript := runlog.TranscriptName(fmt.Sprintf("cifix-%d", attempt), runID)
+		log.Event(fmt.Sprintf("CI red — launching auto-fix session %d (cap %d min)", attempt, int(cfg.ReviewTimeout.Minutes())))
+		outcome := session.Run(fixArgs, session.Options{
+			ContainerName:  containerName,
+			TranscriptFile: transcript,
+			Timeout:        cfg.ReviewTimeout,
+			Verbose:        args.verbose,
+			Log:            log,
+		})
+		if outcome.ExitCode != 0 {
+			return fmt.Errorf("auto-fix session %d exited %d", attempt, outcome.ExitCode)
+		}
+		// Ground truth, never the agent's say-so: the fix must be committed (clean
+		// worktree) or the harness has nothing trustworthy to push.
+		if !gitpkg.WorktreeClean(worktreePath) {
+			return fmt.Errorf("auto-fix session %d left uncommitted changes — not pushing", attempt)
+		}
+		return nil
+	}
 }
 
 // createPR opens the pull request from the main checkout with `gh`, which infers
