@@ -30,6 +30,23 @@ RUN corepack enable
 # pinned claude CLI.
 RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_VERSION}"
 
+# Playwright Chromium + its OS libraries, baked in for the in-session Storybook /
+# a11y / E2E gates that drive a real browser (BEH-405). Without this a fresh
+# worktree dies twice: first on a missing browser binary, then — once that's
+# downloaded — on missing system libs (libnss3, libgbm1, libasound2, …) whose only
+# documented fix is `sudo playwright install-deps`, and the sandbox has no sudo.
+# Baking both into the image makes the gates runnable with no per-run download and
+# no privilege. `--with-deps` installs the apt libraries (root, build-time) and the
+# browser lands in PLAYWRIGHT_BROWSERS_PATH, which both the session and gate
+# containers inherit. PLAYWRIGHT_VERSION must track web's `@playwright/test`
+# (web/package.json) — bump it deliberately, like CLAUDE_VERSION above; a drift only
+# costs a one-time re-download into the node-owned browsers dir, never a failure.
+ARG PLAYWRIGHT_VERSION=1.60.0
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+RUN npx -y "playwright@${PLAYWRIGHT_VERSION}" install --with-deps chromium \
+	&& chown -R node:node /ms-playwright \
+	&& rm -rf /var/lib/apt/lists/*
+
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 

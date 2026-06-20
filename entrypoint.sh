@@ -48,6 +48,18 @@ if [ "$(id -u)" = "0" ]; then
 	# the pnpm-store volume, which mounts root-owned on its first use on Linux.
 	chown -R "$target_uid:$target_gid" /home/node /pnpm-store
 
+	# Re-own the baked Playwright browsers (PLAYWRIGHT_BROWSERS_PATH=/ms-playwright,
+	# chowned to the image's node uid 1000) so an in-session `playwright install`
+	# can write there — the heal path when the Dockerfile's PLAYWRIGHT_VERSION
+	# drifts from web's @playwright/test and the gates need the matching browser
+	# revision (BEH-405). Launching the baked browser needs no chown (its files are
+	# world-readable), so only pay the recursive walk of the ~GB tree when the uid
+	# actually changed (Linux host uid != 1000); on the macOS/uid-1000 path it stays
+	# node-owned and this is skipped.
+	if [ "$target_uid" != "1000" ] && [ -d /ms-playwright ]; then
+		chown -R "$target_uid:$target_gid" /ms-playwright
+	fi
+
 	exec gosu "$target_uid:$target_gid" "$0" "$@"
 fi
 
