@@ -40,6 +40,11 @@ func execRun(name string, args ...string) error {
 // rides out that class of event; it stays bounded so a genuine outage can't hang
 // the pipeline (each attempt is independently capped by remoteOpTimeout). A var so
 // tests can tune it.
+//
+// The budget covers *transient* failures only. Authentication/authorization
+// rejections (401/403) are explicitly out of scope — they are permanent and can't
+// clear on retry, so withRetry fails them fast via nonTransient rather than spend
+// the whole budget stalled, which reads as a hang to the operator (BEH-475).
 var remoteRetryBudget = 5 * time.Minute
 
 // remoteBaseDelay and remoteMaxDelay frame the exponential backoff between
@@ -51,11 +56,54 @@ var (
 	remoteMaxDelay  = 30 * time.Second
 )
 
+// authFailureMarkers are stderr fragments git (and GitHub) emit when a remote op
+// is rejected for *credentials*, not connectivity. proc.Run folds only git's *last*
+// non-empty stderr line into the returned error (BEH-404), so a marker matches in
+// production only when it lands on that final line. Over the HTTPS path the harness
+// uses, every real denial does — `…returned error: 40[13]`, `fatal: Authentication
+// failed`, `fatal: could not read Username`. The remaining markers (`write access…`,
+// the bare RPC `40[13]` forms) sit on a non-final line in some shapes and are kept
+// only as cheap belt-and-suspenders; don't count on them firing. Matched
+// case-insensitively. Kept deliberately tight to auth/authz so a transient class
+// (network, 5xx, lock) is never misclassified as permanent.
+var authFailureMarkers = []string{
+	"error: 401",                             // …returned error: 401
+	"error: 403",                             // …returned error: 403
+	"authentication failed",                  // fatal: Authentication failed for '…'
+	"could not read username",                // fatal: could not read Username … prompts disabled
+	"write access to repository not granted", // ERROR: Write access to repository not granted.
+	"403 forbidden",
+	"401 unauthorized",
+}
+
+// nonTransient reports whether err is a git failure that retrying cannot fix: an
+// authentication/authorization rejection (BEH-475). A 401/403 means the token is
+// wrong, expired, unauthorized, SSO-ungated, or lacks the repo grant — every retry
+// fails identically, so spending the whole remoteRetryBudget on it is pure dead
+// time that, worse, masquerades as a hang. Transient classes (network blips,
+// remoteOpTimeout kills, 5xx, lock contention) are not matched and keep their retry
+// budget (BEH-403).
+func nonTransient(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	for _, marker := range authFailureMarkers {
+		if strings.Contains(msg, marker) {
+			return true
+		}
+	}
+	return false
+}
+
 // withRetry runs op repeatedly with exponential backoff until it succeeds or the
 // wall-clock budget is spent, returning nil on success else the last error. It
 // always makes at least one attempt, and never sleeps toward a deadline the next
-// attempt couldn't beat. The clock (now) and sleeper are injected so the timing is
-// exercised deterministically in tests with no real waiting.
+// attempt couldn't beat. A non-transient failure (a 401/403 auth rejection — see
+// nonTransient) short-circuits the budget: it can't be ridden out, so retrying it
+// is dead time that looks like a hang (BEH-475). The clock (now) and sleeper are
+// injected so the timing is exercised deterministically in tests with no real
+// waiting.
 func withRetry(op func() error, sleep func(time.Duration), now func() time.Time) error {
 	deadline := now().Add(remoteRetryBudget)
 	delay := remoteBaseDelay
@@ -63,6 +111,11 @@ func withRetry(op func() error, sleep func(time.Duration), now func() time.Time)
 	for {
 		if err = op(); err == nil {
 			return nil
+		}
+		// A permanent auth failure can't clear on retry — return at once rather than
+		// spend the whole budget stalled, which reads as a hang to the operator.
+		if nonTransient(err) {
+			return err
 		}
 		// Stop once the next backoff would carry us to/past the budget — no point
 		// sleeping toward a deadline the following attempt couldn't beat.

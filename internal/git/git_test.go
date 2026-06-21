@@ -177,6 +177,65 @@ func TestPushGivesUpNearBudgetAfterPersistentFailure(t *testing.T) {
 	}
 }
 
+// BEH-475: a 401/403 is a permanent auth failure — the token is wrong, expired,
+// or lacks the repo grant, so every retry fails identically. Retrying it burns the
+// whole 5-min budget as dead time that, worse, looks like a hang. It must fail after
+// a single attempt with no backoff sleeps, surfacing the underlying error.
+func TestPushFailsFastOnPermanentAuthFailure(t *testing.T) {
+	clock := newFakeClock()
+	sleeps := 0
+	sleep := func(d time.Duration) { sleeps++; clock.sleep(d) }
+	authErr := errors.New("exit status 128: fatal: unable to access " +
+		"'https://github.com/org/herd.git/': The requested URL returned error: 403")
+	run, calls := scriptedRunner(1<<30, authErr) // would fail forever if retried
+	err := push("/herd", "beh-475", run, sleep, clock.now)
+	if !errors.Is(err, authErr) {
+		t.Fatalf("expected the underlying auth error preserved, got %v", err)
+	}
+	if len(*calls) != 1 {
+		t.Fatalf("expected exactly one attempt (no retry on permanent auth failure), got %d", len(*calls))
+	}
+	if sleeps != 0 {
+		t.Fatalf("expected no backoff sleeps on a permanent failure, got %d", sleeps)
+	}
+}
+
+// The classifier boundary (BEH-475): only credential rejections short-circuit the
+// retry budget. A transient class — DNS, 5xx, a timeout kill, or a bare exit-128
+// with no auth phrase — must stay retryable, or an over-broad marker would silently
+// turn every momentary blip into an instant give-up (the exact regression BEH-403
+// widened the budget to prevent).
+func TestNonTransientClassifiesOnlyAuthFailures(t *testing.T) {
+	permanent := []string{
+		"exit status 128: fatal: unable to access '…/herd.git/': The requested URL returned error: 403",
+		"exit status 128: fatal: unable to access '…/herd.git/': The requested URL returned error: 401",
+		"exit status 128: fatal: Authentication failed for 'https://github.com/org/herd.git/'",
+		"exit status 128: fatal: could not read Username for 'https://github.com': terminal prompts disabled",
+		"exit status 1: ERROR: Write access to repository not granted.",
+		"exit status 22: error: RPC failed; HTTP 403 Forbidden",
+	}
+	transient := []string{
+		"exit status 128",
+		"exit status 128: fatal: unable to access '…': Could not resolve host: github.com",
+		"exit status 128: error: RPC failed; HTTP 500 curl 22",
+		"exit status 128: error: cannot lock ref 'refs/remotes/origin/main': is at … but expected …",
+		`"git" did not respond within 2m0s: command timed out`,
+	}
+	for _, msg := range permanent {
+		if !nonTransient(errors.New(msg)) {
+			t.Errorf("expected non-transient (fail fast): %q", msg)
+		}
+	}
+	for _, msg := range transient {
+		if nonTransient(errors.New(msg)) {
+			t.Errorf("expected transient (keep retrying): %q", msg)
+		}
+	}
+	if nonTransient(nil) {
+		t.Error("nil error must not be classified non-transient")
+	}
+}
+
 func TestFetchMainRetriesThenSucceeds(t *testing.T) {
 	clock := newFakeClock()
 	run, calls := scriptedRunner(1, errors.New("exit status 128"))
