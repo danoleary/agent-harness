@@ -233,10 +233,19 @@ func run() (int, error) {
 	} else {
 		log.Event("tdd ✗ " + result.Reason)
 		// Don't let a recoverable diff vanish silently: if the session left
-		// uncommitted work in the worktree (the refusal footgun — BEH-389), say so
-		// and where, so it can be recovered rather than treated as a total loss.
+		// uncommitted work in the worktree (cap hit mid-verify — BEH-479; refusal
+		// footgun — BEH-389), capture it as a harness recovery checkpoint commit so
+		// the finished diff is a `git log` away on the feature branch instead of a
+		// bare worktree needing manual rescue. This does NOT flip the verdict: the
+		// work is unverified and the run still fails (exit 1); the checkpoint only
+		// makes recovery cheap. The commit subject loudly marks it a checkpoint so a
+		// reviewer never mistakes it for a verified handoff.
 		if truth.WorktreeExists && !gitpkg.WorktreeClean(worktreePath) {
-			log.Event("⚠ uncommitted work remains in the worktree at " + worktreePath + " — recover it before re-running")
+			if cErr := gitpkg.CheckpointCommit(worktreePath, args.identifier); cErr != nil {
+				log.Event("⚠ uncommitted work remains in the worktree at " + worktreePath + " and the recovery checkpoint commit failed (" + cErr.Error() + ") — recover it manually before re-running")
+			} else {
+				log.Event("✓ harness recovery checkpoint committed on " + gitpkg.BranchName(slug) + " — the session's uncommitted diff is preserved (unverified: finish or re-run, then amend, before opening a PR)")
+			}
 		}
 	}
 

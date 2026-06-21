@@ -261,6 +261,44 @@ func StripWorktreeNodeModules(worktreePath string) error {
 	return os.RemoveAll(filepath.Join(worktreePath, "web", "node_modules"))
 }
 
+// CheckpointCommit captures whatever uncommitted work a finished tdd session left
+// in the worktree as a recovery commit on the feature branch, so a session that
+// ended (wall-clock cap / usage-policy refusal / crash) before reaching its own
+// handoff commit leaves a recoverable commit instead of a bare worktree that needs
+// manual rescue (BEH-479: the cap fired during a final verification re-run and
+// discarded a finished diff). It is a SAFETY NET, not a verdict — the work is
+// unverified, so the commit subject loudly marks it a harness checkpoint. Staging
+// is `-A` (this is recovery: capture every change, tracked and untracked) and the
+// commit is `--no-verify` (the work may not pass hooks — that is precisely why it
+// is a checkpoint and not a handoff). A no-op success when the worktree is already
+// clean (nothing was left behind to recover). Run host-side against the worktree
+// via the real-path mount (ADR-0002), the same seam WorktreeClean uses.
+func CheckpointCommit(worktreePath, identifier string) error {
+	if WorktreeClean(worktreePath) {
+		return nil
+	}
+	return checkpointCommit(worktreePath, CheckpointMessage(identifier), execRun)
+}
+
+func checkpointCommit(worktreePath, message string, run commandRunner) error {
+	if err := run("git", "-C", worktreePath, "add", "-A"); err != nil {
+		return err
+	}
+	return run("git", "-C", worktreePath, "commit", "--no-verify", "-m", message)
+}
+
+// CheckpointMessage builds the commit message for a harness recovery checkpoint.
+// The subject is loudly prefixed so a reviewer (and a future verify step or
+// recovery script) can tell a salvaged-on-timeout diff apart from a real,
+// verified tdd handoff commit.
+func CheckpointMessage(identifier string) string {
+	return "checkpoint(harness): recover uncommitted session work (" + identifier + ")\n\n" +
+		"Harness-created safety net: the tdd session left this diff uncommitted in\n" +
+		"the worktree (wall-clock cap, usage-policy refusal, or crash) before it\n" +
+		"reached its own handoff commit. This is NOT a verified handoff — finish the\n" +
+		"work or re-run, then squash/amend, before opening a PR."
+}
+
 // RemoveWorktree tears down the worktree at `.claude/worktrees/<slug>` from the
 // main checkout. The real-path bind mount (ADR-0002) makes the worktree's
 // absolute `.git` pointer resolve on the host, so no throwaway container is

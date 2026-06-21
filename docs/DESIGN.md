@@ -152,8 +152,13 @@ loop:
   `is_error` result that would otherwise sink an on-scope run. Because the diff
   survives on disk (the real-path bind mount), *implementation* retries the tdd
   session once on the same ticket when a refusal left no handoff commit, and on a
-  final failure surfaces that uncommitted work remains in the worktree so a
-  recoverable diff is never silently discarded. To keep refusals rare, the tdd
+  final failure captures any uncommitted worktree work as a **harness recovery
+  checkpoint commit** ([BEH-479](https://linear.app/beherd/issue/BEH-479)) so a
+  finished-but-uncommitted diff (the wall-clock cap firing mid-verification, a
+  refusal, a crash) is a `git log` away on `feat/beh-nnn` rather than a bare
+  worktree needing manual rescue. The checkpoint does **not** flip the verdict —
+  the run still fails and its subject (`checkpoint(harness): …`) loudly marks it
+  unverified so a reviewer never mistakes it for a real handoff. To keep refusals rare, the tdd
   session is pinned to an exact Opus snapshot (`claude-opus-4-8`), not the floating
   `opus` alias that once resolved to a stale, refusal-prone Opus 4.1.
 - **The harness owns all remote I/O — Linear ([ADR-0001](adr/0001-harness-owns-linear-integration.md))
