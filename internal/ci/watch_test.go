@@ -23,6 +23,9 @@ type fakeDriver struct {
 	reruns, fixes, pushes int
 	rerunErr, fixErr      error
 
+	mergeState MergeVerdict // verdict d.MergeState() reports (zero = MergeUnknown)
+	mergeErr   error
+
 	clock   *fakeClock
 	fixCost time.Duration
 }
@@ -43,6 +46,9 @@ func (d *fakeDriver) Fix([]Check) error {
 	return d.fixErr
 }
 func (d *fakeDriver) Push() error { d.pushes++; return nil }
+func (d *fakeDriver) MergeState() (MergeVerdict, error) {
+	return d.mergeState, d.mergeErr
+}
 
 func failChecks() []Check { return []Check{{Name: "lint", Bucket: BucketFail}} }
 
@@ -56,6 +62,52 @@ func TestWatchGreenOnFirstPoll(t *testing.T) {
 	}
 	if d.reruns != 0 || d.fixes != 0 {
 		t.Fatalf("no rerun/fix expected on green CI; got rerun=%d fix=%d", d.reruns, d.fixes)
+	}
+}
+
+func TestWatchBlocksGreenCIOnMergeConflict(t *testing.T) {
+	// Green checks but the PR conflicts with base (main moved underneath it).
+	// The harness must report not-passing — distinct from a check failure — and
+	// must not try to auto-fix it (a merge conflict is a rebase problem).
+	d := &fakeDriver{
+		polls:      []pollResult{{v: Passed}},
+		mergeState: MergeConflicting,
+	}
+	out := WatchAndFix(d, testWatchCfg(), newFakeClock().now)
+	if out.OK {
+		t.Fatalf("expected non-OK on a merge conflict despite green CI, got %+v", out)
+	}
+	if d.reruns != 0 || d.fixes != 0 {
+		t.Fatalf("a merge conflict must not trigger rerun/fix; got rerun=%d fix=%d", d.reruns, d.fixes)
+	}
+	r := strings.ToLower(out.Reason)
+	if !strings.Contains(r, "conflict") && !strings.Contains(r, "merge") {
+		t.Fatalf("reason %q should name the merge conflict, distinct from a check failure", out.Reason)
+	}
+}
+
+func TestWatchGreenCIWithCleanMergePasses(t *testing.T) {
+	// Green checks and a clean merge → the existing pass, unchanged.
+	d := &fakeDriver{
+		polls:      []pollResult{{v: Passed}},
+		mergeState: MergeClean,
+	}
+	out := WatchAndFix(d, testWatchCfg(), newFakeClock().now)
+	if !out.OK {
+		t.Fatalf("expected OK on green CI + clean merge, got %+v", out)
+	}
+}
+
+func TestWatchGreenCIDegradesOnMergeStateError(t *testing.T) {
+	// An unreadable merge state must not fail an otherwise-green PR — it degrades
+	// to the green pass (mirrors the checks-unobservable degrade philosophy).
+	d := &fakeDriver{
+		polls:    []pollResult{{v: Passed}},
+		mergeErr: errors.New("gh pr view: boom"),
+	}
+	out := WatchAndFix(d, testWatchCfg(), newFakeClock().now)
+	if !out.OK {
+		t.Fatalf("expected OK (merge state unreadable, CI green), got %+v", out)
 	}
 }
 

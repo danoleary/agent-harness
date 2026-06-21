@@ -21,6 +21,13 @@ type Driver interface {
 	Fix(failed []Check) error
 	// Push pushes the new fix commit to the PR branch (no force, append-only).
 	Push() error
+	// MergeState reports the PR's mergeability against base, polling through
+	// GitHub's async UNKNOWN window. Green checks on a PR that conflicts with base
+	// (main moved underneath it) are not actually shippable, so WatchAndFix gates
+	// every green verdict on this. A persistently-UNKNOWN or unreadable state must
+	// not block a green PR — it returns MergeUnknown / an error and the watch
+	// degrades to passing rather than failing on something indeterminate.
+	MergeState() (MergeVerdict, error)
 }
 
 // Config bounds the whole CI watch: the auto-fix loop (used by WatchAndFix) and
@@ -65,7 +72,7 @@ func WatchAndFix(d Driver, cfg Config, now func() time.Time) Outcome {
 		return pollErrOutcome(err, checks)
 	}
 	if v == Passed {
-		return Outcome{OK: true, Reason: "CI is green"}
+		return greenOutcome(d, "CI is green")
 	}
 	failed := FailedChecks(checks)
 
@@ -80,7 +87,7 @@ func WatchAndFix(d Driver, cfg Config, now func() time.Time) Outcome {
 		return pollErrOutcome(err, checks)
 	}
 	if v == Passed {
-		return Outcome{OK: true, Reason: "CI green after re-running the failed checks (flake)"}
+		return greenOutcome(d, "CI green after re-running the failed checks (flake)")
 	}
 	failed = FailedChecks(checks)
 
@@ -104,7 +111,7 @@ func WatchAndFix(d Driver, cfg Config, now func() time.Time) Outcome {
 			return pollErrOutcome(err, checks)
 		}
 		if v == Passed {
-			return Outcome{OK: true, Reason: fmt.Sprintf("CI green after %d auto-fix attempt(s)", attempt)}
+			return greenOutcome(d, fmt.Sprintf("CI green after %d auto-fix attempt(s)", attempt))
 		}
 		failed = FailedChecks(checks)
 	}
@@ -113,6 +120,42 @@ func WatchAndFix(d Driver, cfg Config, now func() time.Time) Outcome {
 		OK:      false,
 		Reason:  fmt.Sprintf("CI still red after %d auto-fix attempt(s)", cfg.MaxFixAttempts),
 		Failing: failed,
+	}
+}
+
+// mergeConflictReason is the operator-facing summary when CI is green but the PR
+// conflicts with base. It is deliberately distinct from a check-failure reason:
+// this is a rebase/merge problem, not a test failure, so the human resolves it
+// by rebasing rather than chasing a red check (BEH-484).
+const mergeConflictReason = "CI is green but the PR conflicts with base (merge conflict — main moved underneath it); rebase the branch and re-push"
+
+// mergeUnconfirmedNote is appended to a green pass when the mergeability probe
+// could not resolve — a persistently-UNKNOWN window or an unreadable/errored
+// merge state. CI is green and was observed, so the run still passes; the
+// conflict-with-base guard simply could not run, and the operator is told to
+// eyeball mergeability rather than handed a bare "CI is green". This mirrors the
+// checks-unobservable degrade, which likewise surfaces a *distinct* reason
+// instead of silently passing (BEH-484/BEH-476).
+const mergeUnconfirmedNote = " — note: mergeability against base could not be confirmed; check the PR has no merge conflict before merging"
+
+// greenOutcome confirms the PR is also mergeable before declaring CI a pass.
+// Green checks on a PR that conflicts with base are not shippable, so a
+// MergeConflicting verdict turns the pass into a distinct non-OK outcome that is
+// never auto-fixed (a merge conflict is a rebase problem, not a code edit). An
+// unreadable or persistently-UNKNOWN merge state must not block an otherwise-green
+// PR, so it degrades to a green pass — but with the conflict guard flagged as
+// unrun (mergeUnconfirmedNote), mirroring the checks-unobservable degrade rather
+// than passing silently.
+func greenOutcome(d Driver, reason string) Outcome {
+	switch mv, err := d.MergeState(); {
+	case err == nil && mv == MergeConflicting:
+		return Outcome{OK: false, Reason: mergeConflictReason}
+	case err == nil && mv == MergeClean:
+		return Outcome{OK: true, Reason: reason}
+	default:
+		// Indeterminate (persistent UNKNOWN) or unreadable merge state: never block
+		// an otherwise-green PR, but flag that mergeability wasn't confirmed.
+		return Outcome{OK: true, Reason: reason + mergeUnconfirmedNote}
 	}
 }
 

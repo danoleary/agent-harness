@@ -118,6 +118,19 @@ func (d *GhDriver) Fix(failed []Check) error {
 // Push pushes the fix commit (delegated to the injected gitpkg.Push).
 func (d *GhDriver) Push() error { return d.push() }
 
+// MergeState polls `gh pr view <branch> --json mergeable,mergeStateStatus` until
+// GitHub's async mergeability computation settles, returning the verdict. UNKNOWN
+// is retried within the poll budget (not treated as terminal); a persistently
+// UNKNOWN window returns MergeUnknown so the watch degrades rather than blocking
+// a green PR (BEH-484).
+func (d *GhDriver) MergeState() (MergeVerdict, error) {
+	fetch := func() (MergeVerdict, error) {
+		stdout, stderr, err := proc.OutputInDir(d.ghTimeout, d.herdPath, "gh", "pr", "view", d.branch, "--json", mergeJSONFields)
+		return interpretMergeOutput(stdout, stderr, err)
+	}
+	return pollMergeState(fetch, d.pollCfg, d.sleep, d.now)
+}
+
 // fetchFailedLogs concatenates `gh run view <id> --log-failed` for each failing
 // run, truncated to the configured tail. gh's own error is folded into the text
 // (rather than aborting) so the agent still gets whatever logs were retrievable
