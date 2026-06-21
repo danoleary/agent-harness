@@ -4,6 +4,7 @@ import (
 	"errors"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -243,6 +244,59 @@ func TestSecretsPassedByNameOnly(t *testing.T) {
 	// `-e NAME` (docker reads the value from the harness env), not `-e NAME=value`.
 	if strings.Contains(strings.Join(args, " "), "ANTHROPIC_API_KEY=") {
 		t.Error("secret value must not be embedded in the argv")
+	}
+}
+
+// envValue pulls the value of a `-e NAME=value` pair from the argv, returning
+// "" if the var is absent or passed by name only (`-e NAME`).
+func envValue(args []string, name string) string {
+	for _, e := range valuesForFlag(args, "-e") {
+		if k, v, ok := strings.Cut(e, "="); ok && k == name {
+			return v
+		}
+	}
+	return ""
+}
+
+// The agent runs new-worktree.sh through Claude Code's Bash tool, whose
+// per-command deadline defaults to 2 min (BASH_DEFAULT_TIMEOUT_MS, per the CLI
+// docs) — too short for the first-run 1428-file checkout + frozen install +
+// Playwright Chromium on slow I/O, which spuriously timed out and burned a turn
+// on a re-run (BEH-486, follow-up to BEH-480, where this sandbox hit a ~3m20s
+// wall). The launcher raises that default by passing BASH_DEFAULT_TIMEOUT_MS into
+// the container, generous enough to finish setup in one shot. The 200_000ms bound
+// below is a conservative floor: above both the 2-min documented default and the
+// ~3m20s historically observed in-sandbox.
+func TestRaisesBashCommandDeadlineAboveTheTimingOutDefault(t *testing.T) {
+	v := envValue(BuildDockerRunArgs(baseConfig()), "BASH_DEFAULT_TIMEOUT_MS")
+	if v == "" {
+		t.Fatal("BASH_DEFAULT_TIMEOUT_MS must be passed into the agent container so new-worktree.sh gets a generous deadline")
+	}
+	ms, err := strconv.Atoi(v)
+	if err != nil {
+		t.Fatalf("BASH_DEFAULT_TIMEOUT_MS must be an integer ms value, got %q", v)
+	}
+	// Must comfortably exceed the short default that was timing out — 200_000ms is
+	// a conservative floor above both the 2-min documented default and the ~3m20s
+	// this sandbox historically hit (BEH-480).
+	if ms <= 200_000 {
+		t.Errorf("BASH_DEFAULT_TIMEOUT_MS = %d ms, want > 200000 (above the short default that timed out)", ms)
+	}
+}
+
+// The raised default is only honoured if the ceiling is at least as high —
+// Claude Code clamps a default above BASH_MAX_TIMEOUT_MS back down to the max,
+// which would silently defeat the fix. The launcher must lift the ceiling too.
+func TestBashTimeoutCeilingIsAtLeastTheRaisedDefault(t *testing.T) {
+	args := BuildDockerRunArgs(baseConfig())
+	def, err1 := strconv.Atoi(envValue(args, "BASH_DEFAULT_TIMEOUT_MS"))
+	max, err2 := strconv.Atoi(envValue(args, "BASH_MAX_TIMEOUT_MS"))
+	if err1 != nil || err2 != nil {
+		t.Fatalf("both BASH_*_TIMEOUT_MS must be integer ms values, got default=%q max=%q",
+			envValue(args, "BASH_DEFAULT_TIMEOUT_MS"), envValue(args, "BASH_MAX_TIMEOUT_MS"))
+	}
+	if max < def {
+		t.Errorf("BASH_MAX_TIMEOUT_MS (%d) must be >= BASH_DEFAULT_TIMEOUT_MS (%d), else the raised default is clamped away", max, def)
 	}
 }
 

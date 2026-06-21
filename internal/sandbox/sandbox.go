@@ -41,6 +41,20 @@ const FindingsMountPath = "/findings"
 // PnpmStoreMountPath is the fixed container path the persistent pnpm store is mounted at.
 const PnpmStoreMountPath = "/pnpm-store"
 
+// bashDefaultTimeoutMS / bashMaxTimeoutMS raise Claude Code's per-Bash-command
+// deadline inside the agent container. The agent's first act every session is
+// `new-worktree.sh`, whose 1428-file `git worktree add` checkout + frozen install
+// + Playwright Chromium runs for minutes on slow sandbox I/O — past the CLI's
+// short default (2 min documented; this sandbox historically hit a ~3m20s wall
+// per BEH-480), which fired mid-checkout and burned a turn on the re-run
+// (BEH-486, follow-up to BEH-480). 10 min comfortably covers setup in one shot;
+// the 20 min ceiling lets the agent set an even longer explicit deadline (a full
+// `build`/`test-storybook`) while staying under the session wall-clock cap.
+const (
+	bashDefaultTimeoutMS = "600000"  // 10 minutes
+	bashMaxTimeoutMS     = "1200000" // 20 minutes
+)
+
 // SecretEnv is the only set of secrets that ever cross the sandbox boundary
 // (ADR-0002): the Claude credential and nothing else. LINEAR_API_KEY and
 // GH_TOKEN are deliberately absent — Linear access never enters the container,
@@ -97,6 +111,15 @@ func BuildDockerRunArgs(c Config) []string {
 	// the runtime uid to the checkout's owner. It is not a secret, so pass it by
 	// value (unlike the `-e NAME` secrets read from the harness env).
 	args = append(args, "-e", "HERD_PATH="+c.HerdPath)
+
+	// Give the agent's Bash tool a generous per-command deadline so the first-run
+	// `new-worktree.sh` (multi-minute checkout + install on slow I/O) completes in
+	// one shot instead of hitting the CLI's short default mid-checkout (BEH-486).
+	// Not secrets — passed by value.
+	args = append(args,
+		"-e", "BASH_DEFAULT_TIMEOUT_MS="+bashDefaultTimeoutMS,
+		"-e", "BASH_MAX_TIMEOUT_MS="+bashMaxTimeoutMS,
+	)
 
 	args = append(args,
 		"-v", c.HerdPath+":"+c.HerdPath,

@@ -34,11 +34,11 @@ VIOLATIONS=()
 # Format: "path-suffix:line" where path-suffix matches the end of the file path.
 #   - internal/session/session.go:68  - main docker run with timer-based kill
 #   - internal/session/session.go:88  - docker kill called by timeout handler
-#   - internal/sandbox/sandbox.go:192 - docker build (can take minutes, user-visible progress)
+#   - internal/sandbox/sandbox.go:215 - docker build (can take minutes, user-visible progress)
 ALLOWLIST=(
     "internal/session/session.go:68"
     "internal/session/session.go:88"
-    "internal/sandbox/sandbox.go:192"
+    "internal/sandbox/sandbox.go:215"
 )
 
 # Find all Go files, excluding vendor and internal/proc
