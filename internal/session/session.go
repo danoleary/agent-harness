@@ -65,7 +65,7 @@ type Outcome struct {
 // refusal was seen. On a docker-cannot-start exit (125) it surfaces docker's own
 // reason on the console — otherwise the operator sees a bare exit code (BEH-316).
 func Run(dockerArgs []string, opts Options) Outcome {
-	cmd := exec.Command("docker", dockerArgs...)
+	cmd := exec.Command("docker", dockerArgs...) // allow-unbounded-exec: main docker run, bounded by the timer-based kill below
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		opts.Log.Event("session ✗ failed to pipe docker stdout: " + err.Error())
@@ -85,7 +85,7 @@ func Run(dockerArgs []string, opts Options) Outcome {
 	// Hard wall-clock cap: if the session overruns, kill the container out from under it.
 	timer := time.AfterFunc(opts.Timeout, func() {
 		opts.Log.Event("session ✗ wall-clock cap hit — killing " + opts.ContainerName)
-		_ = exec.Command("docker", "kill", opts.ContainerName).Run()
+		_ = exec.Command("docker", "kill", opts.ContainerName).Run() // allow-unbounded-exec: docker kill from the timeout handler itself
 	})
 	defer timer.Stop()
 

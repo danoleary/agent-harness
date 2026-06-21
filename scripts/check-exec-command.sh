@@ -28,18 +28,15 @@ fi
 # Track violations
 VIOLATIONS=()
 
-# Explicit allowlist for legitimate unbounded calls. Plain indexed array (not an
-# associative array) so this runs under macOS's default bash 3.2 — `declare -A`
-# needs bash 4+ and fails opaquely ("unbound variable") on a stock Mac (BEH-409).
-# Format: "path-suffix:line" where path-suffix matches the end of the file path.
-#   - internal/session/session.go:68  - main docker run with timer-based kill
-#   - internal/session/session.go:88  - docker kill called by timeout handler
-#   - internal/sandbox/sandbox.go:215 - docker build (can take minutes, user-visible progress)
-ALLOWLIST=(
-    "internal/session/session.go:68"
-    "internal/session/session.go:88"
-    "internal/sandbox/sandbox.go:215"
-)
+# Legitimate unbounded calls opt out with an inline marker comment on the call line:
+#
+#   cmd := exec.Command("docker", "build", ...) // allow-unbounded-exec: <reason>
+#
+# Keying the allowlist on a code marker (not a file:line tuple) means it travels
+# WITH the call — an edit that shifts the line, or a refactor that moves the call to
+# another file, can't silently break the guard or strip the exemption (BEH-490 retro:
+# a line-keyed allowlist failed on every insertion above an allowlisted call).
+ALLOW_MARKER='allow-unbounded-exec'
 
 # Find all Go files, excluding vendor and internal/proc
 GO_FILES=$(find "$BASE_DIR" -name "*.go" -not -path "*/vendor/*" -not -path "*/internal/proc/*" | sort)
@@ -72,18 +69,9 @@ for file in $GO_FILES; do
 
         # Check if it's a daemon/remote command that needs a deadline
         if [ -n "$cmd" ]; then
-            # Check if this location matches an allowlist entry
-            is_allowed=0
-            for allowed_key in "${ALLOWLIST[@]}"; do
-                # Check if file ends with the path pattern and line matches
-                if [[ "$file" == *"${allowed_key%:*}" ]] && [[ "${allowed_key##*:}" == "$line_num" ]]; then
-                    is_allowed=1
-                    break
-                fi
-            done
-
-            # Skip if this location is explicitly allowlisted
-            if [ "$is_allowed" -eq 1 ]; then
+            # Skip if the call line carries the inline allow marker (per-line, so an
+            # unmarked call elsewhere in the same file is still flagged).
+            if [[ "$line_content" == *"$ALLOW_MARKER"* ]]; then
                 continue
             fi
 

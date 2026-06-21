@@ -169,10 +169,16 @@ type GateConfig struct {
 	ContainerName string
 }
 
+// installCommand is the pre-session prep the review tool runs to repopulate the
+// worktree's web/node_modules — stripped on handoff (BEH-412) — against the warm
+// pnpm store, mirroring new-worktree.sh. A frozen install only, so the cold review
+// SESSION finds node_modules present instead of paying it mid-gate (BEH-490). Run
+// from `web/`, the source of truth for the pnpm scripts (see herd CLAUDE.md).
+const installCommand = "cd web && pnpm install --frozen-lockfile"
+
 // gateCommand is the gate the harness re-runs as ground truth: a fresh install
-// (against the warm pnpm store) then the repo's own `check` + `build`. Run from
-// `web/`, the source of truth for the pnpm scripts (see herd CLAUDE.md).
-const gateCommand = "cd web && pnpm install --frozen-lockfile && pnpm run check && pnpm run build"
+// (against the warm pnpm store) then the repo's own `check` + `build`.
+const gateCommand = installCommand + " && pnpm run check && pnpm run build"
 
 // BuildGateRunArgs builds the argv (everything after `docker`) for the throwaway
 // container that re-runs `pnpm check && pnpm build` on the reviewed branch. This
@@ -182,6 +188,24 @@ const gateCommand = "cd web && pnpm install --frozen-lockfile && pnpm run check 
 // the boundary. It runs in the worktree (the branch under review), not the main
 // checkout.
 func BuildGateRunArgs(c GateConfig) []string {
+	return buildWorktreeBashArgs(c, gateCommand)
+}
+
+// BuildInstallRunArgs builds the argv for the throwaway container that pre-populates
+// the worktree's web/node_modules before the cold review session. The implementation
+// tool strips node_modules on handoff (BEH-412) so a non-Linux host reviewer installs
+// fresh; in the always-Linux review sandbox that strip just means the session would
+// otherwise pay `pnpm install` mid-gate (BEH-490). This runs the install up front —
+// install ONLY (the later gate container owns check/build) — so the session opens
+// onto a ready worktree. Like the gate it carries NO secrets and runs in the worktree.
+func BuildInstallRunArgs(c GateConfig) []string {
+	return buildWorktreeBashArgs(c, installCommand)
+}
+
+// buildWorktreeBashArgs is the shared skeleton for the throwaway worktree containers
+// (install prep + ground-truth gate): a secret-free container that bind-mounts the
+// checkout and the warm pnpm store and runs `command` in the worktree via bash.
+func buildWorktreeBashArgs(c GateConfig, command string) []string {
 	args := []string{"run", "--rm", "--init"}
 
 	if c.ContainerName != "" {
@@ -197,7 +221,7 @@ func BuildGateRunArgs(c GateConfig) []string {
 		"-v", c.PnpmStoreVolume+":"+PnpmStoreMountPath,
 		"-w", c.WorktreePath,
 		c.Image,
-		"bash", "-lc", gateCommand,
+		"bash", "-lc", command,
 	)
 
 	return args
@@ -212,7 +236,7 @@ func BuildImage(image, buildContext string) error {
 		"sandbox image %q not present — building it now from %s (first run, or it was pruned; this takes a few minutes)…\n",
 		image, buildContext,
 	)
-	cmd := exec.Command("docker", "build", "-t", image, buildContext)
+	cmd := exec.Command("docker", "build", "-t", image, buildContext) // allow-unbounded-exec: docker build can take minutes, streams user-visible progress
 	// Build chatter is diagnostic, not harness output — keep it off stdout so a
 	// caller parsing stdout (e.g. --dry-run) stays clean.
 	cmd.Stdout = os.Stderr

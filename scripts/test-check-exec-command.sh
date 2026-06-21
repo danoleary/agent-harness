@@ -200,5 +200,56 @@ else
     exit 1
 fi
 
+# Test 9: A daemon call carrying an inline allow-marker comment is allowed.
+# The allowlist is keyed on a code marker, NOT a line number, so it survives edits
+# that shift the call's line (BEH-490 retro: a line-keyed allowlist breaks on any
+# insertion above an allowlisted call).
+echo -n "Test 9: Inline allow-marker permits a daemon call... "
+mkdir -p "$TEST_DIR/test9"
+cat > "$TEST_DIR/test9/marked.go" << 'EOF'
+package main
+
+import "os/exec"
+
+func test() {
+    exec.Command("docker", "build", "-t", "img", ".").Run() // allow-unbounded-exec: user-visible build
+}
+EOF
+
+if "$SCRIPT_PATH" "$TEST_DIR/test9" > /dev/null 2>&1; then
+    echo -e "${GREEN}PASS${NC}"
+else
+    echo -e "${RED}FAIL${NC} - a call with an allow-unbounded-exec marker should be allowed"
+    exit 1
+fi
+
+# Test 10: The marker is per-line — an UNmarked daemon call in the same file is
+# still flagged (the marker doesn't whitelist the whole file).
+echo -n "Test 10: Allow-marker is per-line, not per-file... "
+mkdir -p "$TEST_DIR/test10"
+cat > "$TEST_DIR/test10/mixed.go" << 'EOF'
+package main
+
+import "os/exec"
+
+func test() {
+    exec.Command("docker", "build", "-t", "img", ".").Run() // allow-unbounded-exec: user-visible build
+    exec.Command("docker", "ps").Run()
+}
+EOF
+
+if "$SCRIPT_PATH" "$TEST_DIR/test10" > /dev/null 2>&1; then
+    echo -e "${RED}FAIL${NC} - an unmarked daemon call must still be flagged"
+    exit 1
+else
+    output=$("$SCRIPT_PATH" "$TEST_DIR/test10" 2>&1 | grep -c "unbounded docker call" || true)
+    if [ "$output" -eq 1 ]; then
+        echo -e "${GREEN}PASS${NC}"
+    else
+        echo -e "${RED}FAIL${NC} - expected exactly 1 unmarked violation but got $output"
+        exit 1
+    fi
+fi
+
 echo
 echo -e "${GREEN}All tests passed!${NC}"

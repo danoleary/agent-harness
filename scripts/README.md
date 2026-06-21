@@ -111,9 +111,18 @@ Prevents re-introducing the "wedged dependency hangs a run forever" bug by detec
 - Anything in `internal/proc/` (the bounded execution package)
 
 **Allowlisted exceptions:**
-- `internal/session/session.go:55` - Main docker run with timer-based kill
-- `internal/session/session.go:75` - Docker kill called by timeout handler
-- `internal/sandbox/sandbox.go:192` - Docker build with visible progress
+
+A legitimately-unbounded call opts out with an inline marker comment on the call line:
+
+```go
+cmd := exec.Command("docker", "build", "-t", image, ctx) // allow-unbounded-exec: <reason>
+```
+
+The marker travels *with* the call, so an edit that shifts its line — or a refactor
+that moves it to another file — can't silently break the guard or strip the
+exemption (the old `file:line` allowlist failed on every insertion above an
+allowlisted call; BEH-490 retro). Current opt-outs: the two session docker calls
+(run + timeout kill) and the sandbox docker build.
 
 ### Usage
 

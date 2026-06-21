@@ -139,11 +139,24 @@ func run() (int, error) {
 		ContainerName:   gateName,
 	})
 
+	// The implementation tool strips web/node_modules on handoff (BEH-412), so the
+	// cold review session would otherwise discover it missing and pay a full
+	// `pnpm install` mid-gate (BEH-490). Pre-populate it with a throwaway install
+	// container before the session, mirroring new-worktree.sh.
+	installName := fmt.Sprintf("herd-harness-%s-%d-install", runID, os.Getpid())
+	installArgs := sandbox.BuildInstallRunArgs(sandbox.GateConfig{
+		Image:           cfg.Image,
+		HerdPath:        cfg.HerdPath,
+		WorktreePath:    worktreePath,
+		PnpmStoreVolume: cfg.PnpmStoreVolume,
+		ContainerName:   installName,
+	})
+
 	if args.dryRun {
-		log.Event("dry-run — not launching the review or gate containers")
+		log.Event("dry-run — not launching the install, review, or gate containers")
 		fmt.Printf(
-			"\n--- prompt ---\n%s\n\n--- review docker command ---\ndocker %s\n\n--- gate docker command ---\ndocker %s\n",
-			p, strings.Join(dockerArgs, " "), strings.Join(gateArgs, " "),
+			"\n--- prompt ---\n%s\n\n--- install docker command ---\ndocker %s\n\n--- review docker command ---\ndocker %s\n\n--- gate docker command ---\ndocker %s\n",
+			p, strings.Join(installArgs, " "), strings.Join(dockerArgs, " "), strings.Join(gateArgs, " "),
 		)
 		return 0, nil
 	}
@@ -169,6 +182,24 @@ func run() (int, error) {
 	}); !ok {
 		log.Event("review … warning: " + detail)
 		fmt.Fprintln(os.Stderr, detail)
+	}
+
+	// --- prep: repopulate web/node_modules before the cold session (BEH-490) ---
+	// The handoff strip (BEH-412) leaves the worktree without node_modules; install
+	// it up front against the warm pnpm store so the session opens onto a ready
+	// worktree instead of paying it mid-gate. Warn-only: the review-worktree skill
+	// already treats a missing node_modules as "install first", so a transient prep
+	// failure degrades to the agent installing in-session rather than aborting.
+	installTranscript := runlog.TranscriptName("install", runID)
+	log.Event("prepping worktree (pnpm install --frozen-lockfile) before the review session")
+	if installExit := session.Run(installArgs, session.Options{
+		ContainerName:  installName,
+		TranscriptFile: installTranscript,
+		Timeout:        cfg.ReviewTimeout,
+		Verbose:        args.verbose,
+		Log:            log,
+	}).ExitCode; installExit != 0 {
+		log.Event(fmt.Sprintf("review … warning: worktree prep install exited %d — session will install in-session if needed", installExit))
 	}
 
 	// --- review session (cold /review-worktree; fixes committed locally) ---

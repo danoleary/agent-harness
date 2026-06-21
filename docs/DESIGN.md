@@ -80,6 +80,10 @@ loop:
 
   fetch + fast-forward origin/main           // "pull main after every session"
 
+  --- review prep: repopulate web/node_modules before the cold session (BEH-490) ---
+  throwaway install container: `pnpm install --frozen-lockfile` in the worktree
+  # handoff strips node_modules (BEH-412); pre-install so the session doesn't pay it mid-gate. warn-only.
+
   --- review: /review-worktree (sandbox, 15 min cap) ---
   run: claude -p "/review-worktree <worktree-path>  <injected ticket context + 'do not touch Linear; commit locally ONLY — do NOT push, do NOT run gh; do NOT emit findings (retrospective owns that)'>"
   # agent has no GH_TOKEN; it can only commit into the shared local .git
@@ -249,8 +253,8 @@ ships. The `agent-ready` label remains the human gate on *what* runs unattended.
   does **not** run `gh auth setup-git` or wire HTTPS push — the container has no
   `GH_TOKEN` and never pushes.
 - **Persistent pnpm content-addressed store** mounted as a Docker volume so the
-  per-worktree `pnpm install` (run twice per ticket on fresh worktrees) is a
-  near-instant hardlink op instead of a network fetch.
+  per-worktree `pnpm install` (run several times per ticket — worktree create,
+  review prep, gate re-run) is a near-instant hardlink op instead of a network fetch.
 - **Commit identity:** `Herd Agent Harness <agent-harness@beherd.co>`. The
   skills' existing `Co-Authored-By: Claude` trailer stays.
 

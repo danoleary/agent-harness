@@ -142,6 +142,59 @@ func TestGateRunArgsNameContainerForKill(t *testing.T) {
 	}
 }
 
+// The implementation tool strips web/node_modules from the worktree on handoff
+// (BEH-412), so the cold review SESSION would otherwise discover it missing and
+// pay a full `pnpm install` mid-gate (BEH-490). The harness pre-populates it with
+// a throwaway install container before the session: a frozen install in the
+// worktree against the warm pnpm store — install ONLY, no check/build (that's the
+// later ground-truth gate's job) — carrying no secrets.
+func TestInstallRunArgsRunsFrozenInstallOnlyInWorktree(t *testing.T) {
+	args := BuildInstallRunArgs(GateConfig{
+		Image:           "herd-agent-harness:latest",
+		HerdPath:        "/Users/dan/herd",
+		WorktreePath:    "/Users/dan/herd/.claude/worktrees/beh-490",
+		PnpmStoreVolume: "herd-pnpm-store",
+		ContainerName:   "herd-harness-install-1",
+	})
+	joined := strings.Join(args, " ")
+
+	// A frozen install (reproducible, lockfile-pinned), mirroring new-worktree.sh.
+	if !strings.Contains(joined, "pnpm install --frozen-lockfile") {
+		t.Errorf("install args must run `pnpm install --frozen-lockfile`, got: %v", args)
+	}
+	// Install ONLY — check/build belong to the separate ground-truth gate, not the
+	// pre-session prep. Running them here would duplicate the slow gate needlessly.
+	if strings.Contains(joined, "pnpm run check") || strings.Contains(joined, "pnpm run build") {
+		t.Errorf("install prep must not run check/build, got: %v", args)
+	}
+	// No credential of any kind crosses into the prep container — it runs no model.
+	for _, secret := range []string{"ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "GH_TOKEN", "LINEAR"} {
+		if regexp.MustCompile(`(?i)` + secret).MatchString(joined) {
+			t.Errorf("install container must carry no secrets, but argv mentions %q: %v", secret, args)
+		}
+	}
+	// Installs into the worktree (the branch under review), not the main checkout.
+	workdirs := valuesForFlag(args, "-w")
+	if len(workdirs) == 0 || workdirs[len(workdirs)-1] != "/Users/dan/herd/.claude/worktrees/beh-490" {
+		t.Errorf("install must run in the worktree, got -w %v", workdirs)
+	}
+	// Mounts the checkout (so the worktree's .git pointer resolves) and the warm
+	// pnpm store (so the install is a near-instant hardlink op, not a fetch).
+	mounts := valuesForFlag(args, "-v")
+	for _, want := range []string{
+		"/Users/dan/herd:/Users/dan/herd",
+		"herd-pnpm-store:" + PnpmStoreMountPath,
+	} {
+		if !slices.Contains(mounts, want) {
+			t.Errorf("install mounts missing %q, got: %v", want, mounts)
+		}
+	}
+	// Nameable so the harness can kill it on timeout.
+	if !slices.Contains(valuesForFlag(args, "--name"), "herd-harness-install-1") {
+		t.Error("install container must be nameable so the harness can kill it on timeout")
+	}
+}
+
 func TestPinsModelWhenGiven(t *testing.T) {
 	c := baseConfig()
 	c.Model = "opus"
