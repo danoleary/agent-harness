@@ -36,6 +36,24 @@ RUN arch="$(dpkg --print-architecture)" \
 # pnpm via corepack (matches herd's package manager).
 RUN corepack enable
 
+# Point pnpm's content-addressed store at the persistent /pnpm-store volume the
+# harness mounts into every sandbox + gate container. Without this the volume is
+# dead weight: pnpm defaults its store under HOME, which is ephemeral in a `--rm`
+# container, so each session (implementation install, review-session install,
+# gate install, ci-fix) re-downloads every dependency from a cold store — the
+# multi-minute "full pnpm install" tax (BEH-481). Set as a `pnpm_config_*` env
+# rather than a global rc file because the entrypoint re-execs under gosu onto the
+# checkout owner's uid; an env var is uid/HOME-independent and survives that switch,
+# where a build-time rc under a fixed home would not. The prefix MUST be
+# `pnpm_config_` (snake_cased `storeDir`), not `npm_config_`: pnpm 11 (herd pins
+# pnpm@11.1.3, run via corepack) dropped reading npm-style config env/files, so an
+# `npm_config_store_dir` would be silently ignored and the volume would stay dead
+# weight. The store volume and the bind-mounted node_modules live on different
+# filesystems, so pnpm copies rather than hard-links (it warns) — that's expected
+# and still kills the network re-fetch, which is the cost that matters. Mirrors
+# pnpm's official Docker guide (separate volume for the store).
+ENV pnpm_config_store_dir=/pnpm-store
+
 # pinned claude CLI.
 RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_VERSION}"
 
