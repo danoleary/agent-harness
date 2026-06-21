@@ -133,11 +133,22 @@ runnable by hand in pipeline order.)
 |---|---|---|
 | `LINEAR_API_KEY` | host only | ticket selection, claiming, breadcrumbs, filing findings |
 | `ANTHROPIC_API_KEY` | passed into sandbox | running `claude` |
-| `GH_TOKEN` | host only | harness's own `git push` + `gh pr create`; never enters the sandbox |
+| `GH_TOKEN` | host only | harness's own `git push` + `gh pr create` + the post-PR CI-watch; never enters the sandbox |
 | `HERD_PATH` | host (also passed into sandbox as the mount path) | path to the herd checkout, bind-mounted at its real path |
 
 `LINEAR_API_KEY` and `GH_TOKEN` never enter the sandbox: the container holds only
 the Claude credential and no longer pushes (ADR-0002).
+
+> **`GH_TOKEN` must be a classic PAT with `repo` scope, SSO-authorized for the
+> `Herd-Video-Call-Limited` org.** A fine-grained PAT — however carefully scoped
+> (Contents, Pull requests, Actions, Commit statuses, Metadata) — **cannot read
+> check runs**: there is no "Checks" repository permission for fine-grained PATs
+> (only GitHub Apps have it; "Actions" read governs *workflow runs*, a different
+> resource). Such a token will fetch, push, open the PR, and read commit statuses,
+> then **403 on `gh pr checks`**, so the BEH-414 post-PR CI-watch / auto-fix loop
+> can't observe CI. The review tool preflights this and warns at startup, and the
+> watch degrades gracefully (the PR still ships — you just check CI by hand), but
+> only a classic `repo`-scoped PAT enables the watch (BEH-476).
 
 ## Stopping it
 

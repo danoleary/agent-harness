@@ -157,6 +157,23 @@ func TestWatchSurfacesRerunError(t *testing.T) {
 	}
 }
 
+func TestWatchDegradesWhenChecksUnobservable(t *testing.T) {
+	// The token opened the PR but can't read check runs (fine-grained PAT). The
+	// PR shipped, so this is a success that degrades — not a failure to auto-fix:
+	// no rerun, no fix, OK, and a reason that points the operator at manual CI.
+	d := &fakeDriver{polls: []pollResult{{v: Pending, err: errChecksUnobservable}}}
+	out := WatchAndFix(d, testWatchCfg(), newFakeClock().now)
+	if !out.OK {
+		t.Fatalf("expected OK (PR shipped, CI just unobservable), got %+v", out)
+	}
+	if d.reruns != 0 || d.fixes != 0 {
+		t.Fatalf("unobservable CI must not trigger rerun/fix; got rerun=%d fix=%d", d.reruns, d.fixes)
+	}
+	if !strings.Contains(strings.ToLower(out.Reason), "unobservable") {
+		t.Fatalf("reason %q should explain CI is unobservable with this token", out.Reason)
+	}
+}
+
 func TestWatchSurfacesFixError(t *testing.T) {
 	boom := errors.New("sandbox fix session crashed")
 	d := &fakeDriver{

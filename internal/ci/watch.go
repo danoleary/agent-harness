@@ -116,10 +116,20 @@ func WatchAndFix(d Driver, cfg Config, now func() time.Time) Outcome {
 	}
 }
 
-// pollErrOutcome turns a poll error into a non-success outcome. A timeout means
-// CI never settled (report the still-non-green checks); any other error is a real
-// gh failure surfaced verbatim.
+// unobservableReason is the operator-facing summary when the token cannot read
+// CI: the PR is open and gates passed host-side, so the run succeeds — a human
+// just has to eyeball CI manually because the harness can't (BEH-476).
+const unobservableReason = "CI status unobservable with this token — skipping watch/auto-fix; PR is open, check CI manually"
+
+// pollErrOutcome turns a poll error into an outcome. An unobservable-checks error
+// is a *success* that degrades — the PR shipped, the token just can't read CI, so
+// leave it for a human rather than abort or auto-fix. A timeout means CI never
+// settled (report the still-non-green checks); any other error is a real gh
+// failure surfaced verbatim.
 func pollErrOutcome(err error, checks []Check) Outcome {
+	if errors.Is(err, errChecksUnobservable) {
+		return Outcome{OK: true, Reason: unobservableReason}
+	}
 	if errors.Is(err, ErrPollTimeout) {
 		return Outcome{
 			OK:      false,

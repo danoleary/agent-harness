@@ -160,6 +160,17 @@ func run() (int, error) {
 		return 1, err
 	}
 
+	// Heads-up if GH_TOKEN can't read check runs: the post-PR CI-watch needs a
+	// classic repo-scoped PAT (fine-grained PATs lack the Checks permission). Not
+	// fatal — the PR still ships and the watch degrades gracefully (BEH-476); this
+	// just warns at the start instead of only surfacing after the PR is open.
+	if ok, detail := ci.ChecksReadable(func(name string, args ...string) ([]byte, error) {
+		return proc.CombinedOutputInDir(ciGhTimeout, cfg.HerdPath, name, args...)
+	}); !ok {
+		log.Event("review … warning: " + detail)
+		fmt.Fprintln(os.Stderr, detail)
+	}
+
 	// --- review session (cold /review-worktree; fixes committed locally) ---
 	transcriptFile := runlog.TranscriptName(sessionName, runID)
 	log.Event(fmt.Sprintf("launching review session (cap %d min)", int(cfg.ReviewTimeout.Minutes())))

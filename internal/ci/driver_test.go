@@ -59,6 +59,19 @@ func TestInterpretChecksOutputTreatsNoChecksYetAsTransient(t *testing.T) {
 	}
 }
 
+func TestInterpretChecksOutputFlagsUnreadableChecksAsUnobservable(t *testing.T) {
+	// A fine-grained PAT can fetch/push/open the PR but cannot read check runs:
+	// `gh pr checks` 403s with "Resource not accessible by personal access token".
+	// That is a *permission* failure (the token will never see CI), distinct from
+	// a real gh failure (auth required, bad branch) or a transient pending window —
+	// it must surface as errChecksUnobservable so the watch can degrade, not abort.
+	stderr := []byte("GraphQL: Resource not accessible by personal access token (repository.pullRequest.statusCheckRollup.contexts)")
+	_, err := interpretChecksOutput([]byte(""), stderr, errors.New("exit status 1"))
+	if !errors.Is(err, errChecksUnobservable) {
+		t.Fatalf("err = %v, want errChecksUnobservable", err)
+	}
+}
+
 func TestTruncateLogsKeepsTailWhenOverLimit(t *testing.T) {
 	// CI failures show at the end of the log, so truncation keeps the tail.
 	body := strings.Repeat("x", 100) + "THE ACTUAL ERROR"

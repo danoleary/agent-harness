@@ -15,6 +15,22 @@ import (
 // the hard failure a real gh error (auth, bad branch) would be.
 var errNoChecksYet = errors.New("no CI checks reported yet")
 
+// errChecksUnobservable marks the case where the GH_TOKEN can fetch/push/open the
+// PR but cannot read the Checks API — a fine-grained PAT has no "Checks"
+// permission, so `gh pr checks` 403s with "Resource not accessible by personal
+// access token". This is a permission ceiling, not a real CI failure: the watch
+// must degrade (leave the open PR for a human) rather than abort or auto-fix.
+// Only a classic `repo`-scoped PAT can read check runs (BEH-476).
+var errChecksUnobservable = errors.New("CI checks not observable with this token (needs a classic repo-scoped PAT)")
+
+// isUnobservableErr reports whether gh's stderr carries GitHub's permission-denied
+// signature for the Checks API. GitHub returns "Resource not accessible by …" for
+// a token lacking the permission — distinct from "authentication required" / "Bad
+// credentials" (a missing/invalid token) or "no checks reported" (transient).
+func isUnobservableErr(stderr string) bool {
+	return strings.Contains(strings.ToLower(stderr), "resource not accessible")
+}
+
 // checksJSONFields is the `gh pr checks --json` field set the driver reads: the
 // name + coarse bucket to classify, plus state/link for diagnostics and run-id
 // extraction.
@@ -137,6 +153,11 @@ func interpretChecksOutput(stdout, stderr []byte, runErr error) ([]Check, error)
 		// registers the run — transient, not a real failure.
 		if strings.Contains(strings.ToLower(s), "no checks reported") {
 			return nil, errNoChecksYet
+		}
+		// A 403 "Resource not accessible" means the token cannot read check runs
+		// at all (fine-grained PAT) — degrade, don't surface as a real failure.
+		if isUnobservableErr(s) {
+			return nil, errChecksUnobservable
 		}
 		if s != "" {
 			return nil, fmt.Errorf("gh pr checks failed: %w: %s", runErr, s)
