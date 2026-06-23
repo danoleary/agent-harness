@@ -43,7 +43,24 @@ const (
 	lineResult  = `{"type":"result","subtype":"success","duration_ms":1000}`
 	lineRefusal = `{"type":"result","subtype":"success","is_error":true,"result":"API Error: Claude Code is unable to respond to this request, which appears to violate our Usage Policy. If you are seeing this refusal repeatedly, try running /model to switch models."}`
 	lineCap     = `{"type":"result","subtype":"success","is_error":true,"result":"Spending cap reached resets 8:20am"}`
+	lineVerdict = `{"type":"assistant","message":{"content":[{"type":"text","text":"## Review: feat/x  (BEH-1 — intent)   2 files, +5/-1"}]}}`
 )
+
+// pumpStdout reports whether the review session emitted its seven-lens verdict
+// (the "## Review:" report header — BEH-525), so Run can tell a completed review
+// from one cut short before the report (e.g. an OOM mid-gate). A stream that never
+// reaches the report reports false even though it ends on a benign result.
+func TestPumpStdoutReportsReviewVerdict(t *testing.T) {
+	reviewed := pumpStdout(strings.NewReader(lineToolUse+"\n"+lineVerdict+"\n"+lineResult), "x.jsonl", false, &fakeLog{}, &bytes.Buffer{})
+	if !reviewed.reviewVerdictEmitted {
+		t.Error("expected the review verdict to be reported when the report header appears")
+	}
+
+	clean := pumpStdout(strings.NewReader(lineToolUse+"\n"+lineResult), "x.jsonl", false, &fakeLog{}, &bytes.Buffer{})
+	if clean.reviewVerdictEmitted {
+		t.Error("a stream that never emitted the report header must not report a verdict")
+	}
+}
 
 // pumpStdout reports whether the stream carried a terminal usage-policy refusal
 // (BEH-389) so Run can flag the session as retryable. A stream without one

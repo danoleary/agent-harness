@@ -153,6 +153,56 @@ func TestIsSpendingCapAbortRejectsNonCaps(t *testing.T) {
 	}
 }
 
+// The review verdict (BEH-525): the /review-worktree session emits its seven-lens
+// report as an assistant text block led by the "## Review:" header. The harness
+// keys off that header to tell whether the qualitative review actually ran — so a
+// session OOM-killed mid-gate (which emits no report) isn't silently treated as a
+// full review once the host-side gates pass.
+func TestIsReviewVerdictDetectsTheReportHeader(t *testing.T) {
+	line := mustJSON(t, map[string]any{
+		"type": "assistant",
+		"message": map[string]any{
+			"content": []any{
+				map[string]any{"type": "text", "text": "## Review: feat/beh-499  (BEH-499 — FormField aria-describedby)   3 files, +40/-2\n\nGates: lint ✓"},
+			},
+		},
+	})
+	if !IsReviewVerdict(line) {
+		t.Error("expected the review report header to be detected as a verdict")
+	}
+}
+
+// A session that never reached the report — tool_use, a bare result, a non-review
+// assistant turn, or a malformed line — has emitted no verdict.
+func TestIsReviewVerdictRejectsNonVerdicts(t *testing.T) {
+	toolUse := mustJSON(t, map[string]any{
+		"type": "assistant",
+		"message": map[string]any{
+			"content": []any{map[string]any{"type": "tool_use", "name": "Bash"}},
+		},
+	})
+	otherText := mustJSON(t, map[string]any{
+		"type": "assistant",
+		"message": map[string]any{
+			"content": []any{map[string]any{"type": "text", "text": "Running pnpm run lint first."}},
+		},
+	})
+	result := mustJSON(t, map[string]any{
+		"type": "result", "subtype": "success", "is_error": false, "result": "done",
+	})
+	for name, line := range map[string]string{
+		"tool use":   toolUse,
+		"other text": otherText,
+		"result":     result,
+		"malformed":  "{not json",
+		"empty":      "",
+	} {
+		if IsReviewVerdict(line) {
+			t.Errorf("%s should not be a review verdict", name)
+		}
+	}
+}
+
 func TestNarratesResultWithDuration(t *testing.T) {
 	line := mustJSON(t, map[string]any{
 		"type":        "result",

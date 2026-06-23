@@ -167,6 +167,8 @@ func BuildReview(t ticket.Ticket, slug, worktreePath string) string {
 		"",
 		"Do NOT emit or file any harness-improvement findings, and do NOT write `/findings/out.json`. The retrospective tool, running last over every transcript, owns findings now — this is a deliberate change from the skill's default. Your only outputs are review fixes committed locally.",
 		"",
+		"Do the diff-reading + seven-lens review FIRST, before running the memory-heavy gates (`pnpm run lint`/`build`/`test-storybook`/`typecheck`). This sandbox is memory-constrained and those gates routinely OOM-kill the session (exit 137); the harness re-runs every gate host-side anyway, so running them in-session mostly risks aborting the review before the lenses are applied. Whatever else happens, ALWAYS emit your `## Review:` report once the lenses are done — even though you don't push or open the PR, the harness keys off that report header to confirm the qualitative review actually ran, and otherwise flags the ticket as 'gates green but review incomplete'.",
+		"",
 		bashQuirkSteer,
 	}
 	return strings.Join(lines, "\n")

@@ -103,3 +103,47 @@ func TestReviewBlocksPushWhenWorktreeDirty(t *testing.T) {
 		t.Errorf("reason %q does not mention the dirty worktree", r.Reason)
 	}
 }
+
+// BEH-525: completeness of the qualitative review is independent of the push gate.
+// When the review session emitted its verdict (the "## Review:" report), the
+// seven-lens pass ran — complete, regardless of how the container exited.
+func TestReviewQualitativeCompleteWhenVerdictEmitted(t *testing.T) {
+	r := ReviewQualitative(0, true)
+	if !r.Complete {
+		t.Errorf("a verdict-emitting session is a complete review, got %+v", r)
+	}
+}
+
+// The BEH-499 scenario: the review session was OOM-killed (exit 137) mid-gate
+// before reaching the report. The host-side gate re-run may still be green, but
+// the qualitative review never ran — it must be flagged incomplete, naming the OOM
+// so a log reader isn't misled into thinking the green gate was a full review.
+func TestReviewQualitativeFlagsOomBeforeVerdict(t *testing.T) {
+	r := ReviewQualitative(137, false)
+	if r.Complete {
+		t.Error("an OOM before the verdict is NOT a complete review")
+	}
+	if !regexp.MustCompile(`(?i)137|oom`).MatchString(r.Reason) {
+		t.Errorf("reason %q does not name the OOM/exit-137 cause", r.Reason)
+	}
+	if !regexp.MustCompile(`(?i)incomplete`).MatchString(r.Reason) {
+		t.Errorf("reason %q does not flag the review as incomplete", r.Reason)
+	}
+}
+
+// Any other end before the verdict (a non-OOM crash, or even a clean exit that
+// never produced the report) is still an incomplete review — the report is the
+// only proof the lenses ran. The exit code is named so the cause is traceable, but
+// it must NOT be mislabelled as an OOM when it isn't.
+func TestReviewQualitativeFlagsNonOomEndBeforeVerdict(t *testing.T) {
+	r := ReviewQualitative(1, false)
+	if r.Complete {
+		t.Error("ending before the verdict is not a complete review, whatever the exit code")
+	}
+	if !regexp.MustCompile(`(?i)incomplete`).MatchString(r.Reason) {
+		t.Errorf("reason %q does not flag the review as incomplete", r.Reason)
+	}
+	if regexp.MustCompile(`(?i)137|oom`).MatchString(r.Reason) {
+		t.Errorf("a non-137 exit must not be labelled an OOM, got %q", r.Reason)
+	}
+}

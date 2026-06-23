@@ -73,13 +73,21 @@ type Outcome struct {
 	// abort result event (BEH-494) — the session was killed by a billing/usage cap
 	// before doing any work. A distinct retry-after-reset class, not a real failure.
 	SpendingCapAbort bool
+	// ReviewVerdictEmitted is true iff the stream carried the /review-worktree
+	// verdict — the "## Review:" report header (BEH-525). The caller uses it to tell
+	// a completed qualitative review from one cut short before the report (e.g. an
+	// OOM mid-gate), so a green host-side gate re-run isn't mistaken for a full
+	// review. Only meaningful for review sessions.
+	ReviewVerdictEmitted bool
 }
 
-// streamFlags are the retryable pre-work aborts pumpStdout detects while scanning
-// the stdout transcript, surfaced onto Outcome.
+// streamFlags are the notable stream signals pumpStdout detects while scanning the
+// stdout transcript, surfaced onto Outcome: the retryable pre-work aborts plus
+// whether the review session reached its verdict.
 type streamFlags struct {
-	usagePolicyRefusal bool
-	spendingCapAbort   bool
+	usagePolicyRefusal   bool
+	spendingCapAbort     bool
+	reviewVerdictEmitted bool
 }
 
 // realNow returns the current wall-clock time with the monotonic reading stripped
@@ -233,7 +241,7 @@ func Run(dockerArgs []string, opts Options) Outcome {
 		opts.Log.Event("session ✗ docker could not start the container (exit 125): " + hint)
 	}
 
-	return Outcome{ExitCode: exitCode, UsagePolicyRefusal: flags.usagePolicyRefusal, SpendingCapAbort: flags.spendingCapAbort}
+	return Outcome{ExitCode: exitCode, UsagePolicyRefusal: flags.usagePolicyRefusal, SpendingCapAbort: flags.spendingCapAbort, ReviewVerdictEmitted: flags.reviewVerdictEmitted}
 }
 
 // pumpStdout scans claude's stream-json stdout: it tees every line raw to the
@@ -255,6 +263,9 @@ func pumpStdout(r io.Reader, transcriptFile string, verbose bool, log Logger, ec
 		}
 		if stream.IsSpendingCapAbort(line) {
 			flags.spendingCapAbort = true
+		}
+		if stream.IsReviewVerdict(line) {
+			flags.reviewVerdictEmitted = true
 		}
 		if verbose {
 			fmt.Fprintln(echo, line)

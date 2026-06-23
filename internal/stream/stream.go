@@ -19,6 +19,7 @@ type event struct {
 		Content []struct {
 			Type string `json:"type"`
 			Name string `json:"name"`
+			Text string `json:"text"`
 		} `json:"content"`
 	} `json:"message"`
 }
@@ -62,6 +63,36 @@ func IsSpendingCapAbort(line string) bool {
 		return false
 	}
 	return e.Type == "result" && e.IsError && strings.Contains(e.Result, spendingCapAbortMarker)
+}
+
+// reviewVerdictMarker is the stable lead of the /review-worktree report (step 5 of
+// the skill: "## Review: <branch> …"). The qualitative seven-lens review ends in
+// this report, so its presence in an assistant turn is the signal that the review
+// actually ran — keyed off the header prefix so the variable branch/intent/diff
+// stats that follow don't have to match.
+const reviewVerdictMarker = "## Review:"
+
+// IsReviewVerdict reports whether a stream-json line is the /review-worktree
+// session emitting its verdict — an assistant turn carrying a text block led by
+// the "## Review:" report header (BEH-525). The harness uses this to tell whether
+// the qualitative review completed: a session OOM-killed mid-gate (exit 137) emits
+// no report, so the harness must not let a green host-side gate re-run masquerade
+// as a full review. Only an assistant text block counts (the agent's own output,
+// not a result event or tool call); a malformed line is never a verdict.
+func IsReviewVerdict(line string) bool {
+	var e event
+	if err := json.Unmarshal([]byte(line), &e); err != nil {
+		return false
+	}
+	if e.Type != "assistant" {
+		return false
+	}
+	for _, block := range e.Message.Content {
+		if block.Type == "text" && strings.Contains(block.Text, reviewVerdictMarker) {
+			return true
+		}
+	}
+	return false
 }
 
 // Narrate turns one line of claude's `--output-format stream-json` into a concise

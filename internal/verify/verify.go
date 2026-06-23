@@ -2,6 +2,13 @@
 // judged against git ground truth rather than the agent's self-report.
 package verify
 
+import "fmt"
+
+// oomExitCode is the container exit code for a SIGKILL (128+9), which the sandbox
+// memory-pressure OOM-killer produces — the kill that struck the BEH-499 review
+// session mid-gate (BEH-407/477/491/519 document the same class for build/typecheck).
+const oomExitCode = 137
+
 // GroundTruth is the state of a finished tdd session, gathered from git.
 type GroundTruth struct {
 	// WorktreeExists reports whether `.claude/worktrees/<slug>` exists.
@@ -81,4 +88,33 @@ func Review(outcome ReviewOutcome) Result {
 		return Result{OK: false, Reason: "harness gate re-run is red — not pushing"}
 	}
 	return Result{OK: true, Reason: "harness gate re-run is green — clear to push + open PR"}
+}
+
+// ReviewCompleteness reports whether the in-sandbox /review-worktree session
+// actually performed its qualitative seven-lens pass. It is deliberately separate
+// from Review (the push gate): the push is authorised by the harness's own host-
+// side gate re-run, but a green gate only proves the diff compiles/lints — it says
+// nothing about whether the human-style review ran. Both must be reported so a
+// review killed before its verdict isn't silently treated as a full review pass.
+type ReviewCompleteness struct {
+	Complete bool
+	Reason   string
+}
+
+// ReviewQualitative classifies whether the review session emitted its verdict —
+// the "## Review:" report that ends the seven-lens pass (BEH-525). The verdict is
+// the only proof the lenses ran, so its presence means complete regardless of how
+// the container exited; its absence means incomplete regardless of a green host-
+// side gate. The OOM case (exit 137) is the one the BEH-499 review hit — killed
+// mid-gate before reaching the report — so it gets a distinct, named reason; any
+// other end before the verdict is reported with its exit code but not mislabelled
+// as an OOM.
+func ReviewQualitative(exitCode int, verdictEmitted bool) ReviewCompleteness {
+	if verdictEmitted {
+		return ReviewCompleteness{Complete: true, Reason: "review session emitted its seven-lens verdict"}
+	}
+	if exitCode == oomExitCode {
+		return ReviewCompleteness{Complete: false, Reason: "review session OOM-killed (exit 137) before emitting a verdict — gates green but qualitative review incomplete"}
+	}
+	return ReviewCompleteness{Complete: false, Reason: fmt.Sprintf("review session exited %d before emitting a verdict — qualitative review incomplete", exitCode)}
 }

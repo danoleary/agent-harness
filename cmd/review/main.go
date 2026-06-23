@@ -263,6 +263,20 @@ func run() (int, error) {
 		log.Event("review ↻ session aborted before running — spending cap reached, retry after reset (BEH-494)")
 	}
 
+	// Did the qualitative seven-lens review actually run? The host-side gate re-run
+	// below authorises the push, but a green gate only proves the diff compiles — it
+	// is NOT a review. A session OOM-killed mid-gate (exit 137) emits no "## Review:"
+	// verdict, and silently shipping it on green gates loses exactly the review that
+	// matters most on a risky diff (BEH-525, from the BEH-499 OOM). Flag that here so
+	// the run log carries the signal rather than masquerading as a full review pass.
+	completeness := verify.ReviewQualitative(reviewOutcome.ExitCode, reviewOutcome.ReviewVerdictEmitted)
+	if !completeness.Complete {
+		log.Event("review ⚠ " + completeness.Reason)
+		fmt.Fprintln(os.Stderr, "warning: "+completeness.Reason)
+	} else {
+		log.Event("review ✓ " + completeness.Reason)
+	}
+
 	// --- ground truth + push gate (harness, host-side) ---
 	// Refresh origin/main so the commit range + PR base are current.
 	if err := gitpkg.FetchMain(cfg.HerdPath); err != nil {

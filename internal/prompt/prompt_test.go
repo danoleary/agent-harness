@@ -229,6 +229,22 @@ func TestBuildReviewCarriesBashQuirkSteer(t *testing.T) {
 	assertCarriesBashQuirkSteer(t, BuildReview(sample, "beh-362", sampleWorktree), "review prompt")
 }
 
+// BEH-525: the review session runs in a memory-constrained sandbox where the heavy
+// gates OOM-kill it. Because the prompt strips the skill's push/PR/findings steps,
+// the agent might think emitting the report is pointless and skip it — so the prompt
+// must reinforce: do the lenses FIRST and ALWAYS emit the "## Review:" report (the
+// harness keys off it to tell a real review from one cut short by an OOM mid-gate).
+func TestBuildReviewSteersLensesFirstAndEmitsVerdict(t *testing.T) {
+	p := BuildReview(sample, "beh-362", sampleWorktree)
+
+	if !regexp.MustCompile(`(?i)(lens|review).{0,60}(before|first).{0,60}(gate|build|lint|storybook)`).MatchString(p) {
+		t.Error("prompt does not steer the lenses to run before the memory-heavy gates")
+	}
+	if !strings.Contains(p, "## Review:") {
+		t.Error("prompt does not tell the agent to emit the \"## Review:\" verdict report (the harness's completeness signal)")
+	}
+}
+
 func TestBuildReviewForbidsLinearAndFindings(t *testing.T) {
 	p := BuildReview(sample, "beh-362", sampleWorktree)
 
