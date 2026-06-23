@@ -68,6 +68,13 @@ func Narrate(line string) (string, bool) {
 		if subtype == "" {
 			subtype = "ended"
 		}
+		// An is_error result that still carries subtype "success" (the cap/limit
+		// aborts ship exactly this shape — BEH-495) would narrate the
+		// contradictory "✗ session success". Coerce the word so it agrees with the
+		// ✗ mark.
+		if e.IsError && subtype == "success" {
+			subtype = "error"
+		}
 		return fmt.Sprintf("%s session %s%s", mark, subtype, secs), true
 	}
 

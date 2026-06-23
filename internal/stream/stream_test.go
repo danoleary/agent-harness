@@ -128,3 +128,30 @@ func TestNarratesResultWithDuration(t *testing.T) {
 		t.Errorf("result narration %q lacks rounded duration", out)
 	}
 }
+
+// An is_error result whose subtype is "success" (the shape the spending-cap and
+// other limit aborts ship — BEH-495) must not narrate the contradictory
+// "✗ session success": the cross says fail, the word says success. The mark and
+// the text have to agree, so the success word is coerced to an error word.
+func TestNarratesErrorResultWithSuccessSubtypeIsNotContradictory(t *testing.T) {
+	line := mustJSON(t, map[string]any{
+		"type":        "result",
+		"subtype":     "success",
+		"is_error":    true,
+		"duration_ms": 2000,
+	})
+
+	out, ok := Narrate(line)
+	if !ok {
+		t.Fatal("expected a narration")
+	}
+	if !strings.Contains(out, "✗") {
+		t.Errorf("error result narration %q lacks the ✗ error mark", out)
+	}
+	if strings.Contains(out, "success") {
+		t.Errorf("error result narration %q echoes the contradictory \"success\" subtype", out)
+	}
+	if !strings.Contains(out, "(2s)") {
+		t.Errorf("error result narration %q lacks rounded duration", out)
+	}
+}
