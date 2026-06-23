@@ -35,6 +35,15 @@ var helpTrailerRE = regexp.MustCompile(`^See '.*--help'\.?$`)
 // opposed to a code returned by the process inside the container.
 const ExitCannotStart = 125
 
+// ExitOOMKill is the exit code of a container killed by SIGKILL (128 + 9). Under
+// host memory pressure this is the Linux OOM-killer reaping the container (or a
+// `docker kill`). Unlike a non-zero code the process itself returns — a real
+// failure such as a typecheck error or a failing test — a 137 is environmental
+// and transient: the same `pnpm install --frozen-lockfile` that 137'd under
+// memory pressure completed in ~4s on a bare retry once memory freed (BEH-524).
+// So a 137 is worth retrying; a genuine failure is not.
+const ExitOOMKill = 137
+
 // FindingsMountPath is the fixed container path the findings dropbox is mounted at.
 const FindingsMountPath = "/findings"
 

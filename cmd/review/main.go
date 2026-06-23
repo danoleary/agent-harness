@@ -39,6 +39,16 @@ import (
 // already-pushed branch (BEH-386, same hang class as the git fetch/push bound).
 const prCreateTimeout = 2 * time.Minute
 
+// oomMaxAttempts / oomRetryBackoff bound the OOM-kill retry of the throwaway
+// install + gate containers (BEH-524). A 137 under host memory pressure is
+// transient — the same frozen install succeeded in ~4s on a bare retry once
+// memory freed — so a couple of attempts with a short beat between them (to let
+// the starved Docker VM recover) is enough; a persistent OOM still falls through.
+const (
+	oomMaxAttempts  = 3
+	oomRetryBackoff = 10 * time.Second
+)
+
 var ticketRE = regexp.MustCompile(`^[A-Z]+-\d+$`)
 
 // sessionName prefixes this tool's transcript under the ticket's log dir
@@ -130,27 +140,35 @@ func run() (int, error) {
 		ContainerName:   containerName,
 	})
 
-	gateName := fmt.Sprintf("herd-harness-%s-%d-gate", runID, os.Getpid())
-	gateArgs := sandbox.BuildGateRunArgs(sandbox.GateConfig{
+	// Closures so an OOM-retry (BEH-524) can re-launch under a distinct --name: the
+	// name must match Options.ContainerName for the timeout `docker kill` to target
+	// the right container, and a retry must not collide with the killed attempt's.
+	gateConfig := sandbox.GateConfig{
 		Image:           cfg.Image,
 		HerdPath:        cfg.HerdPath,
 		WorktreePath:    worktreePath,
 		PnpmStoreVolume: cfg.PnpmStoreVolume,
-		ContainerName:   gateName,
-	})
+	}
+	buildGateArgs := func(name string) []string {
+		c := gateConfig
+		c.ContainerName = name
+		return sandbox.BuildGateRunArgs(c)
+	}
+	buildInstallArgs := func(name string) []string {
+		c := gateConfig
+		c.ContainerName = name
+		return sandbox.BuildInstallRunArgs(c)
+	}
+
+	gateName := fmt.Sprintf("herd-harness-%s-%d-gate", runID, os.Getpid())
+	gateArgs := buildGateArgs(gateName)
 
 	// The implementation tool strips web/node_modules on handoff (BEH-412), so the
 	// cold review session would otherwise discover it missing and pay a full
 	// `pnpm install` mid-gate (BEH-490). Pre-populate it with a throwaway install
 	// container before the session, mirroring new-worktree.sh.
 	installName := fmt.Sprintf("herd-harness-%s-%d-install", runID, os.Getpid())
-	installArgs := sandbox.BuildInstallRunArgs(sandbox.GateConfig{
-		Image:           cfg.Image,
-		HerdPath:        cfg.HerdPath,
-		WorktreePath:    worktreePath,
-		PnpmStoreVolume: cfg.PnpmStoreVolume,
-		ContainerName:   installName,
-	})
+	installArgs := buildInstallArgs(installName)
 
 	if args.dryRun {
 		log.Event("dry-run — not launching the install, review, or gate containers")
@@ -190,16 +208,37 @@ func run() (int, error) {
 	// worktree instead of paying it mid-gate. Warn-only: the review-worktree skill
 	// already treats a missing node_modules as "install first", so a transient prep
 	// failure degrades to the agent installing in-session rather than aborting.
+	//
+	// Retry on an OOM-kill (exit 137) before that fallback (BEH-524): under host
+	// memory pressure this install gets SIGKILLed, and degrading to warn-and-continue
+	// dumped the ~10-min recovery install into the capped review session, starving it
+	// of time to actually review. The OOM is transient (it succeeded in ~4s on a bare
+	// retry once memory freed), so a short backoff-and-retry recovers it up front.
 	installTranscript := runlog.TranscriptName("install", runID)
 	log.Event("prepping worktree (pnpm install --frozen-lockfile) before the review session")
-	if installExit := session.Run(installArgs, session.Options{
-		ContainerName:  installName,
-		TranscriptFile: installTranscript,
-		Timeout:        cfg.ReviewTimeout,
-		Verbose:        args.verbose,
-		Log:            log,
-	}).ExitCode; installExit != 0 {
-		log.Event(fmt.Sprintf("review … warning: worktree prep install exited %d — session will install in-session if needed", installExit))
+	installOutcome, installAttempts := session.RetryOnOOMKill(oomMaxAttempts, oomRetryBackoff, time.Sleep, func(attempt int) session.Outcome {
+		name, transcript := installName, installTranscript
+		if attempt > 1 {
+			name = fmt.Sprintf("%s-retry%d", installName, attempt)
+			transcript = runlog.TranscriptName(fmt.Sprintf("install-retry%d", attempt), runID)
+			log.Event(fmt.Sprintf(
+				"review ↻ prep install OOM-killed (exit 137) — retry %d/%d after %s (BEH-524)",
+				attempt-1, oomMaxAttempts-1, oomRetryBackoff,
+			))
+		}
+		return session.Run(buildInstallArgs(name), session.Options{
+			ContainerName:  name,
+			TranscriptFile: transcript,
+			Timeout:        cfg.ReviewTimeout,
+			Verbose:        args.verbose,
+			Log:            log,
+		})
+	})
+	if installOutcome.ExitCode != 0 {
+		log.Event(fmt.Sprintf(
+			"review … warning: worktree prep install exited %d after %d attempt(s) — session will install in-session if needed",
+			installOutcome.ExitCode, installAttempts,
+		))
 	}
 
 	// --- review session (cold /review-worktree; fixes committed locally) ---
@@ -232,16 +271,34 @@ func run() (int, error) {
 
 	// Re-run `pnpm check && pnpm build` in a throwaway container. The gate's exit
 	// code is the ONLY thing that authorises a push — never the agent's report.
+	//
+	// Retry on an OOM-kill (exit 137) here too (BEH-524): the gate's own
+	// `pnpm install` (and the build) can be SIGKILLed under memory pressure, which
+	// would flip a genuinely green branch red and push nothing. A 137 is
+	// environmental, never the diff — a real gate failure (typecheck/test/build
+	// error) returns a non-137 code and is final on the first attempt.
 	gateTranscript := runlog.GateTranscriptName(runID)
 	log.Event(fmt.Sprintf("re-running gates host-side (cap %d min)", int(cfg.ReviewTimeout.Minutes())))
-	gateExit := session.Run(gateArgs, session.Options{
-		ContainerName:  gateName,
-		TranscriptFile: gateTranscript,
-		Timeout:        cfg.ReviewTimeout,
-		IdleTimeout:    cfg.SessionIdleTimeout,
-		Verbose:        args.verbose,
-		Log:            log,
-	}).ExitCode
+	gateOutcome, _ := session.RetryOnOOMKill(oomMaxAttempts, oomRetryBackoff, time.Sleep, func(attempt int) session.Outcome {
+		name, transcript := gateName, gateTranscript
+		if attempt > 1 {
+			name = fmt.Sprintf("%s-retry%d", gateName, attempt)
+			transcript = runlog.GateTranscriptName(fmt.Sprintf("%s-retry%d", runID, attempt))
+			log.Event(fmt.Sprintf(
+				"review ↻ host-side gate OOM-killed (exit 137) — retry %d/%d after %s (BEH-524)",
+				attempt-1, oomMaxAttempts-1, oomRetryBackoff,
+			))
+		}
+		return session.Run(buildGateArgs(name), session.Options{
+			ContainerName:  name,
+			TranscriptFile: transcript,
+			Timeout:        cfg.ReviewTimeout,
+			IdleTimeout:    cfg.SessionIdleTimeout,
+			Verbose:        args.verbose,
+			Log:            log,
+		})
+	})
+	gateExit := gateOutcome.ExitCode
 
 	// The gate runs against the worktree's working tree (committed + uncommitted),
 	// but Push ships only the committed tip — so the push is authorised only when
