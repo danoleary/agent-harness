@@ -1,5 +1,5 @@
 # Agent harness — Go toolchain shortcuts. Requires Go 1.26+.
-.PHONY: build image test implementation review retrospective vet fmt fmt-check check-exec check-bash3 check-buildvcs check-ci check tidy
+.PHONY: build image smoke test implementation review retrospective vet fmt fmt-check check-exec check-bash3 check-buildvcs check-ci check tidy
 
 # Build the tool binaries into ./bin.
 #
@@ -18,6 +18,16 @@ build:
 IMAGE ?= herd-agent-harness:latest
 image:
 	docker build -t $(IMAGE) .
+
+# Behavioral smoke check: run pnpm inside the built image and assert it resolves
+# its store under the mounted pnpm-store volume (BEH-487). Unlike the
+# Dockerfile-text invariant in `make test`, this measures the runtime effect, so
+# it catches a `store-dir` line that is present but wired with a prefix the
+# image's pnpm doesn't honour. Needs Docker; HARNESS_DOCKER_SMOKE=1 opts the
+# otherwise-skipped test in (and it builds the image on miss). Override the tag
+# with IMAGE=... (exported as HARNESS_IMAGE so the test sees it).
+smoke:
+	HARNESS_DOCKER_SMOKE=1 HARNESS_IMAGE=$(IMAGE) go test -buildvcs=false -count=1 -run TestPnpmStoreResolvesUnderMountedVolumeInImage ./internal/sandbox
 
 # Run the full test suite. -buildvcs=false: see the build target (BEH-459).
 test:
