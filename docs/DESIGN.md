@@ -59,6 +59,64 @@ are layered on only once the tools work correctly by hand. The three binaries
 share their plumbing (container launch, transcript tee, ground-truth verify,
 findings filing) via `internal/` so each `cmd/` entry stays thin.
 
+## The pipeline
+
+The **pipeline** is the single-ticket chain that sits between the three
+hand-tools and **The loop**: `pipeline BEH-NNN` runs implementation → review →
+retrospective over *one* hand-passed ticket, then exits. It has no ticket
+selection, no stop control, and no circuit breaker — those belong to the loop,
+which is "select a ticket, run the pipeline, repeat." The three standalone tools
+stay exactly as they are; the pipeline is an addition, not a replacement.
+
+```
+pipeline BEH-NNN:
+  fetch + fast-forward origin/main on the primary checkout   // once, at the top — not per stage
+
+  --- implementation ---
+  run the implementation stage (claim, /tdd, ground-truth verify)
+  if not OK -> record failure; SKIP review (nothing to review)
+
+  --- review (only if implementation OK) ---
+  run the review stage (cold /review-worktree, host-side gate + push + PR)
+  if not OK -> record failure
+
+  --- retrospective (ALWAYS, even if a prior stage failed) ---
+  run the retrospective stage (/retrospective over logs/BEH-NNN/, file findings)
+  # its value is highest on a failed slice — that's the run worth mining for findings
+
+  exit 0 iff every stage that RAN succeeded; non-zero otherwise
+```
+
+Design decisions, and why:
+
+- **In-process, not subprocesses.** Each tool's `run()` body moves out of its
+  `cmd/<tool>/main.go` into `internal/stages`, returning a typed result; both the
+  existing `cmd/` wrappers *and* `cmd/pipeline` call it. This completes the
+  established "thin `cmd/` over shared `internal/`" shape — the pipeline shares
+  one config load and one `runlog`, gets real per-stage results instead of opaque
+  exit codes, and stays a single process for clean Ctrl-C / timeout handling.
+  Shelling out to `bin/*` would re-parse args, re-load `.env`, couple the pipeline
+  to built binaries on `PATH`, and reduce each stage to an exit code.
+- **Fast-forward `main` once, at the top — not per stage.** The three stages run
+  seconds apart in one uninterrupted run, so `main` won't meaningfully move
+  mid-pipeline; one fetch+ff keeps the worktree's merge-base honest for impl's
+  "commits ahead of merge-base" check and review's gates. The loop's *per-session*
+  ff exists because it runs many tickets over a long span — that rationale does
+  not transfer to a single quick pipeline.
+- **Retrospective always runs** (see the stop/skip rule above) — this is the one
+  place the pipeline deliberately diverges from the loop's `if not OK -> skip
+  rest`, because a failed slice is exactly the run whose transcripts are worth
+  mining.
+- **`--verbose`** forwards to all stages. **`--dry-run`** is pipeline-level: it
+  prints the *plan* (ordered stages + each stage's resolved prompt/docker command
+  as best it can be computed) and explicitly notes that the review/retro commands
+  assume impl's worktree/transcripts, which don't exist under dry-run. It claims
+  nothing, launches nothing, touches no Linear. No subset/`--only`/resume flags —
+  independence is already served by the three standalone binaries.
+- **Exit code is plain `0`/`1`.** Per-stage verdicts are already logged loudly via
+  `runlog`; the loop will read the structured stage results, not the exit code, so
+  encoding which stage failed into the code buys nothing.
+
 ## The loop
 
 ```
