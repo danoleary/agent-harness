@@ -48,7 +48,11 @@ runnable by hand against a ticket id before the next is added:
 
 1. **`implementation BEH-NNN`** (was `run-tdd`) — fetch + claim the ticket, run
    *only* `/tdd` in the sandbox, verify by ground truth that the worktree exists
-   and a handoff commit landed.
+   and a handoff commit landed. Before claiming or launching, it skips a ticket
+   whose work already merged on `main` (`git.TicketAlreadyOnMain` greps recent
+   `origin/main` history for the key, fetching first) — re-dispatching it would
+   burn a worktree + install to discover an empty diff and wrongly flip a done
+   ticket to In Progress (BEH-528). `--force` overrides for a false positive.
 2. **`review BEH-NNN`** — run `/review-worktree` over the existing worktree, then
    host-side re-run the gates and, if green, push + open the PR.
 3. **`retrospective BEH-NNN`** — run `/retrospective` over the ticket's

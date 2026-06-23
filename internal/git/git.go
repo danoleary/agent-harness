@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -129,6 +130,45 @@ func withRetry(op func() error, sleep func(time.Duration), now func() time.Time)
 			}
 		}
 	}
+}
+
+// mainHistoryLookback bounds how far back the dispatch guard scans origin/main
+// for a prior merge of the ticket. 50 commits is generous headroom over the
+// finding's example (the merge was the 2nd commit back) while keeping the read
+// trivial; work that merged further back than this is not something the harness
+// is at risk of freshly re-dispatching.
+const mainHistoryLookback = 50
+
+// TicketAlreadyOnMain reports whether the ticket key already appears in recent
+// origin/main history — i.e. its work merged, so dispatching a fresh tdd session
+// would burn a whole worktree + install only to discover an empty diff and raise
+// no PR (BEH-528). It first refreshes origin/main with a single best-effort fetch
+// (the host checkout's remote-tracking ref can lag a just-merged PR), then scans.
+//
+// It fails OPEN: any git error (no remote, detached/corrupt checkout, a fetch
+// blip) returns false so a flaky read never blocks a legitimate dispatch. The
+// asymmetry is deliberate — a false negative costs one session (the pre-guard
+// status quo), whereas a false positive would silently drop real work.
+func TicketAlreadyOnMain(herdPath, identifier string) bool {
+	// Best-effort refresh; an offline/blipping remote just means we scan whatever
+	// origin/main we already have rather than block dispatch behind the network.
+	_ = execRun("git", "-C", herdPath, "fetch", "-q", "origin", "main")
+	out, err := exec.Command(
+		"git", "-C", herdPath, "log", "--oneline", "-"+strconv.Itoa(mainHistoryLookback), "origin/main",
+	).Output()
+	if err != nil {
+		return false
+	}
+	return mainHistoryReferences(string(out), identifier)
+}
+
+// mainHistoryReferences reports whether `git log` output contains a commit
+// referencing the exact ticket key. Matched on word boundaries so BEH-52 never
+// matches BEH-521 and BEH-521 never matches BEH-5210 (a substring grep — what
+// the finding literally proposed — would conflate those), and case-insensitively
+// because a subject sometimes lower-cases the key.
+func mainHistoryReferences(logOutput, identifier string) bool {
+	return regexp.MustCompile(`(?i)\b` + regexp.QuoteMeta(identifier) + `\b`).MatchString(logOutput)
 }
 
 // WorktreePath is the host path of the worktree the tdd skill is told to create.

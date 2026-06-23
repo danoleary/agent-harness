@@ -38,6 +38,7 @@ type cliArgs struct {
 	identifier string
 	dryRun     bool
 	verbose    bool
+	force      bool
 }
 
 func parseArgs(argv []string) (cliArgs, error) {
@@ -48,12 +49,14 @@ func parseArgs(argv []string) (cliArgs, error) {
 			a.dryRun = true
 		case arg == "--verbose":
 			a.verbose = true
+		case arg == "--force":
+			a.force = true
 		case !strings.HasPrefix(arg, "-") && a.identifier == "":
 			a.identifier = strings.ToUpper(arg)
 		}
 	}
 	if !ticketRE.MatchString(a.identifier) {
-		return a, fmt.Errorf("usage: implementation <TICKET-ID> [--dry-run] [--verbose]  (got: %q)", a.identifier)
+		return a, fmt.Errorf("usage: implementation <TICKET-ID> [--dry-run] [--verbose] [--force]  (got: %q)", a.identifier)
 	}
 	return a, nil
 }
@@ -143,6 +146,21 @@ func run() (int, error) {
 			"\n--- prompt ---\n%s\n\n--- docker command ---\ndocker %s\n",
 			p, strings.Join(dockerArgs, " "),
 		)
+		return 0, nil
+	}
+
+	// Skip a ticket whose work already merged on main: re-dispatching it spends a
+	// whole worktree + install only to discover an empty diff and raise no PR, and
+	// (worse) flips a done ticket back to In Progress (BEH-528). This runs before
+	// the image build, the claim, and the launch so none of those costs are paid.
+	// --force overrides for the rare false positive — a key that only coincidentally
+	// appears in an unrelated downstream commit. (Deliberately after the dry-run
+	// branch above: --dry-run stays a pure prompt/command inspector.)
+	if !args.force && gitpkg.TicketAlreadyOnMain(cfg.HerdPath, args.identifier) {
+		log.Event(fmt.Sprintf(
+			"skipped %s — already merged on main (a recent commit references it); re-run with --force to dispatch anyway",
+			args.identifier,
+		))
 		return 0, nil
 	}
 
