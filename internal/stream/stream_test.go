@@ -109,6 +109,50 @@ func TestIsUsagePolicyRefusalRejectsNonRefusals(t *testing.T) {
 	}
 }
 
+// The terminal spending-cap abort (BEH-494): an is_error result whose text is
+// the billing/usage-cap message ("Spending cap reached resets 8:20am"). The
+// session is killed before doing any real work, so the harness must surface it
+// as a distinct retry-after-reset class — not the generic "never ran" failure.
+func TestIsSpendingCapAbortDetectsTheCapResult(t *testing.T) {
+	line := mustJSON(t, map[string]any{
+		"type":     "result",
+		"subtype":  "success",
+		"is_error": true,
+		"result":   "Spending cap reached resets 8:20am",
+	})
+	if !IsSpendingCapAbort(line) {
+		t.Error("expected the spending-cap abort result to be detected")
+	}
+}
+
+// The cap detector must not fire on a non-cap error, on the sibling usage-policy
+// refusal (the two retryable classes stay distinct), on a success, or on a
+// malformed line.
+func TestIsSpendingCapAbortRejectsNonCaps(t *testing.T) {
+	otherError := mustJSON(t, map[string]any{
+		"type": "result", "subtype": "error_during_execution", "is_error": true,
+		"result": "Error: command failed with exit code 1",
+	})
+	usagePolicyRefusal := mustJSON(t, map[string]any{
+		"type": "result", "subtype": "success", "is_error": true,
+		"result": "API Error: Claude Code is unable to respond to this request, which appears to violate our Usage Policy.",
+	})
+	success := mustJSON(t, map[string]any{
+		"type": "result", "subtype": "success", "is_error": false, "result": "done",
+	})
+	for name, line := range map[string]string{
+		"other error":          otherError,
+		"usage-policy refusal": usagePolicyRefusal,
+		"success":              success,
+		"malformed":            "{not json",
+		"empty":                "",
+	} {
+		if IsSpendingCapAbort(line) {
+			t.Errorf("%s should not be a spending-cap abort", name)
+		}
+	}
+}
+
 func TestNarratesResultWithDuration(t *testing.T) {
 	line := mustJSON(t, map[string]any{
 		"type":        "result",

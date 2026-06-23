@@ -42,6 +42,7 @@ const (
 	lineToolUse = `{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Edit"}]}}`
 	lineResult  = `{"type":"result","subtype":"success","duration_ms":1000}`
 	lineRefusal = `{"type":"result","subtype":"success","is_error":true,"result":"API Error: Claude Code is unable to respond to this request, which appears to violate our Usage Policy. If you are seeing this refusal repeatedly, try running /model to switch models."}`
+	lineCap     = `{"type":"result","subtype":"success","is_error":true,"result":"Spending cap reached resets 8:20am"}`
 )
 
 // pumpStdout reports whether the stream carried a terminal usage-policy refusal
@@ -52,13 +53,31 @@ func TestPumpStdoutReportsUsagePolicyRefusal(t *testing.T) {
 	var echo bytes.Buffer
 
 	refused := pumpStdout(strings.NewReader(lineToolUse+"\n"+lineRefusal), "x.jsonl", false, log, &echo)
-	if !refused {
+	if !refused.usagePolicyRefusal {
 		t.Error("expected a usage-policy refusal to be reported")
 	}
 
 	clean := pumpStdout(strings.NewReader(lineToolUse+"\n"+lineResult), "x.jsonl", false, &fakeLog{}, &bytes.Buffer{})
-	if clean {
+	if clean.usagePolicyRefusal {
 		t.Error("a clean run must not report a usage-policy refusal")
+	}
+}
+
+// pumpStdout reports whether the stream carried a terminal spending-cap abort
+// (BEH-494) so Run can flag it as a distinct retry-after-reset class. A clean run
+// (and a usage-policy refusal) reports no cap abort.
+func TestPumpStdoutReportsSpendingCapAbort(t *testing.T) {
+	capped := pumpStdout(strings.NewReader(lineToolUse+"\n"+lineCap), "x.jsonl", false, &fakeLog{}, &bytes.Buffer{})
+	if !capped.spendingCapAbort {
+		t.Error("expected a spending-cap abort to be reported")
+	}
+	if capped.usagePolicyRefusal {
+		t.Error("a spending-cap abort must not be reported as a usage-policy refusal")
+	}
+
+	clean := pumpStdout(strings.NewReader(lineToolUse+"\n"+lineResult), "x.jsonl", false, &fakeLog{}, &bytes.Buffer{})
+	if clean.spendingCapAbort {
+		t.Error("a clean run must not report a spending-cap abort")
 	}
 }
 

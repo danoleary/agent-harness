@@ -59,9 +59,9 @@ const watchdogPollInterval = 15 * time.Second
 const stderrTailLines = 10
 
 // Outcome is the result of a finished session: the container's exit code, plus
-// whether the stream ended on a terminal usage-policy refusal (BEH-389) — a
-// known intermittent false-positive the caller may choose to retry rather than
-// treat as a real failure.
+// whether the stream ended on a terminal usage-policy refusal (BEH-389) or a
+// spending-cap abort (BEH-494) — pre-work aborts the caller may choose to retry
+// rather than treat as a real failure.
 type Outcome struct {
 	// ExitCode is the container's exit code (1 on any launch failure).
 	ExitCode int
@@ -69,6 +69,17 @@ type Outcome struct {
 	// refusal result event. The diff survives on disk (ADR-0002 real-path mount),
 	// so the caller can retry the session rather than discard the run.
 	UsagePolicyRefusal bool
+	// SpendingCapAbort is true iff the stream carried the terminal spending-cap
+	// abort result event (BEH-494) — the session was killed by a billing/usage cap
+	// before doing any work. A distinct retry-after-reset class, not a real failure.
+	SpendingCapAbort bool
+}
+
+// streamFlags are the retryable pre-work aborts pumpStdout detects while scanning
+// the stdout transcript, surfaced onto Outcome.
+type streamFlags struct {
+	usagePolicyRefusal bool
+	spendingCapAbort   bool
 }
 
 // realNow returns the current wall-clock time with the monotonic reading stripped
@@ -187,14 +198,14 @@ func Run(dockerArgs []string, opts Options) Outcome {
 	defer close(watchdogDone)
 
 	var (
-		wg              sync.WaitGroup
-		tail            []string
-		usagePolicyDeny bool
+		wg    sync.WaitGroup
+		tail  []string
+		flags streamFlags
 	)
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		usagePolicyDeny = pumpStdout(tappedStdout, opts.TranscriptFile, opts.Verbose, opts.Log, os.Stdout)
+		flags = pumpStdout(tappedStdout, opts.TranscriptFile, opts.Verbose, opts.Log, os.Stdout)
 	}()
 	go func() {
 		defer wg.Done()
@@ -222,24 +233,28 @@ func Run(dockerArgs []string, opts Options) Outcome {
 		opts.Log.Event("session ✗ docker could not start the container (exit 125): " + hint)
 	}
 
-	return Outcome{ExitCode: exitCode, UsagePolicyRefusal: usagePolicyDeny}
+	return Outcome{ExitCode: exitCode, UsagePolicyRefusal: flags.usagePolicyRefusal, SpendingCapAbort: flags.spendingCapAbort}
 }
 
 // pumpStdout scans claude's stream-json stdout: it tees every line raw to the
 // transcript, then either echoes the raw line (verbose) or surfaces the concise
 // narration for narratable lines. A malformed line is teed but skipped for
-// narration so one bad chunk can't kill the run. It returns whether the stream
-// carried the terminal usage-policy refusal (BEH-389), checked on every line
-// regardless of --verbose so a retryable refusal is never missed.
-func pumpStdout(r io.Reader, transcriptFile string, verbose bool, log Logger, echo io.Writer) bool {
+// narration so one bad chunk can't kill the run. It returns the retryable
+// pre-work aborts the stream carried — the terminal usage-policy refusal
+// (BEH-389) and the spending-cap abort (BEH-494) — checked on every line
+// regardless of --verbose so a retryable abort is never missed.
+func pumpStdout(r io.Reader, transcriptFile string, verbose bool, log Logger, echo io.Writer) streamFlags {
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
-	usagePolicyRefusal := false
+	var flags streamFlags
 	for sc.Scan() {
 		line := sc.Text()
 		log.TeeLine(transcriptFile, line)
 		if stream.IsUsagePolicyRefusal(line) {
-			usagePolicyRefusal = true
+			flags.usagePolicyRefusal = true
+		}
+		if stream.IsSpendingCapAbort(line) {
+			flags.spendingCapAbort = true
 		}
 		if verbose {
 			fmt.Fprintln(echo, line)
@@ -249,7 +264,7 @@ func pumpStdout(r io.Reader, transcriptFile string, verbose bool, log Logger, ec
 			log.Event(msg)
 		}
 	}
-	return usagePolicyRefusal
+	return flags
 }
 
 // pumpStderr tees every stderr line (forensic only) and returns a bounded tail of

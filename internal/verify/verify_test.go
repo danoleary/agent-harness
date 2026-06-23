@@ -36,19 +36,41 @@ func TestTddFailsWhenNoCommitAhead(t *testing.T) {
 // empty `[]` is a valid "ran, found nothing" (still present → success); an
 // absent file means the step never ran and is a failure (DESIGN.md).
 func TestRetrospectivePassesWhenDropboxPresent(t *testing.T) {
-	r := Retrospective(true)
+	r := Retrospective(true, false)
 	if !r.OK {
 		t.Errorf("expected OK when dropbox present, got %+v", r)
 	}
 }
 
 func TestRetrospectiveFailsWhenDropboxAbsent(t *testing.T) {
-	r := Retrospective(false)
+	r := Retrospective(false, false)
 	if r.OK {
 		t.Error("expected failure when dropbox absent")
 	}
 	if !regexp.MustCompile(`(?i)out\.json|dropbox|findings`).MatchString(r.Reason) {
 		t.Errorf("reason %q does not point at the missing dropbox", r.Reason)
+	}
+	if !regexp.MustCompile(`(?i)never ran`).MatchString(r.Reason) {
+		t.Errorf("a plain missing dropbox should read as 'never ran', got %q", r.Reason)
+	}
+}
+
+// BEH-494: a spending-cap abort killed the session before it could write the
+// dropbox. The reason must be the distinct retry-after-reset class — NOT the
+// misleading generic "never ran" (which reads as the agent misbehaving).
+func TestRetrospectiveReportsSpendingCapAbort(t *testing.T) {
+	r := Retrospective(false, true)
+	if r.OK {
+		t.Error("a spending-cap abort wrote no dropbox — still a failure")
+	}
+	if !regexp.MustCompile(`(?i)spending cap`).MatchString(r.Reason) {
+		t.Errorf("reason %q does not name the spending-cap abort", r.Reason)
+	}
+	if !regexp.MustCompile(`(?i)retry after reset`).MatchString(r.Reason) {
+		t.Errorf("reason %q does not signal retry-after-reset", r.Reason)
+	}
+	if regexp.MustCompile(`(?i)never ran`).MatchString(r.Reason) {
+		t.Errorf("a cap abort must NOT use the misleading 'never ran' wording, got %q", r.Reason)
 	}
 }
 

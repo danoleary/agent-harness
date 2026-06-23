@@ -35,11 +35,20 @@ func Tdd(truth GroundTruth) Result {
 // is still present → success); an absent file means the step never ran and is a
 // failure — the rule that stops a silently-skipped retrospective from
 // masquerading as "no issues found" (DESIGN.md "Success is ground-truth").
-func Retrospective(dropboxExists bool) Result {
-	if !dropboxExists {
-		return Result{OK: false, Reason: "findings dropbox out.json was not written — retrospective never ran"}
+//
+// spendingCapAbort distinguishes the failure class when the dropbox is absent
+// (BEH-494): a session killed by a billing/usage cap before doing any work never
+// gets the chance to write the dropbox, so the generic "never ran" message is
+// actively misleading (it reads as the agent misbehaving). When the cap fired,
+// report the distinct retry-after-reset class instead.
+func Retrospective(dropboxExists, spendingCapAbort bool) Result {
+	if dropboxExists {
+		return Result{OK: true, Reason: "findings dropbox out.json present"}
 	}
-	return Result{OK: true, Reason: "findings dropbox out.json present"}
+	if spendingCapAbort {
+		return Result{OK: false, Reason: "session aborted before running — spending cap reached, retry after reset"}
+	}
+	return Result{OK: false, Reason: "findings dropbox out.json was not written — retrospective never ran"}
 }
 
 // ReviewOutcome is the result of the harness's OWN host-side gate re-run after a

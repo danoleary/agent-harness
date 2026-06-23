@@ -168,8 +168,9 @@ func run() (int, error) {
 
 	worktreePath := gitpkg.WorktreePath(cfg.HerdPath, slug)
 	var (
-		truth  verify.GroundTruth
-		result verify.Result
+		truth      verify.GroundTruth
+		result     verify.Result
+		capAborted bool
 	)
 	for attempt := 1; attempt <= maxTddAttempts; attempt++ {
 		attemptContainer := containerName
@@ -203,6 +204,7 @@ func run() (int, error) {
 		// Ground truth, never self-report.
 		truth = gitpkg.GatherTddGroundTruth(cfg.HerdPath, slug)
 		result = verify.Tdd(truth)
+		capAborted = outcome.SpendingCapAbort
 
 		// Retry only the usage-policy refusal, and only while it left no handoff
 		// commit but DID leave a worktree to resume — a refusal that struck before
@@ -232,7 +234,16 @@ func run() (int, error) {
 			log.Event("⚠ could not strip web/node_modules from the worktree (" + err.Error() + ") — reviewer should `rm -rf web/node_modules && pnpm install`")
 		}
 	} else {
-		log.Event("tdd ✗ " + result.Reason)
+		// A spending-cap abort (BEH-494) killed the session before it did any work,
+		// so the failure isn't the agent's — surface it as a distinct
+		// retry-after-reset class (↻) rather than the generic verdict (✗). The
+		// recovery-checkpoint pass below is still a safe no-op (a capped session
+		// leaves a clean worktree).
+		if capAborted {
+			log.Event("tdd ↻ session aborted before running — spending cap reached, retry after reset (BEH-494)")
+		} else {
+			log.Event("tdd ✗ " + result.Reason)
+		}
 		// Don't let a recoverable diff vanish silently: if the session left
 		// uncommitted work in the worktree (cap hit mid-verify — BEH-479; refusal
 		// footgun — BEH-389), capture it as a harness recovery checkpoint commit so

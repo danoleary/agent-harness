@@ -166,11 +166,17 @@ func run() (int, error) {
 
 	// Ground truth, never self-report: the retrospective ran iff it wrote the
 	// findings dropbox. An empty `[]` is still present → success; an absent file
-	// means the step never ran (DESIGN.md "Success is ground-truth").
-	result := verify.Retrospective(filing.DropboxExists(findingsDir))
-	if result.OK {
+	// means the step never ran (DESIGN.md "Success is ground-truth"). A
+	// spending-cap abort (BEH-494) is the one absent-dropbox case that isn't the
+	// agent's fault — surface it as a distinct retry-after-reset class (↻), not the
+	// misleading generic "never ran" (✗).
+	result := verify.Retrospective(filing.DropboxExists(findingsDir), outcome.SpendingCapAbort)
+	switch {
+	case result.OK:
 		log.Event("retrospective ✓ " + result.Reason)
-	} else {
+	case outcome.SpendingCapAbort:
+		log.Event("retrospective ↻ " + result.Reason)
+	default:
 		log.Event("retrospective ✗ " + result.Reason)
 	}
 

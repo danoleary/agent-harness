@@ -216,6 +216,13 @@ func run() (int, error) {
 	log.Event(fmt.Sprintf(
 		"review session exited (code %d) — transcript at logs/%s/%s", reviewOutcome.ExitCode, args.identifier, transcriptFile,
 	))
+	// A spending-cap abort (BEH-494) killed the review session before it could
+	// review anything — name that distinct retry-after-reset class so a log reader
+	// isn't misled by the host-side gate result below (which still runs against the
+	// committed TDD handoff regardless of whether the review agent did any work).
+	if reviewOutcome.SpendingCapAbort {
+		log.Event("review ↻ session aborted before running — spending cap reached, retry after reset (BEH-494)")
+	}
 
 	// --- ground truth + push gate (harness, host-side) ---
 	// Refresh origin/main so the commit range + PR base are current.

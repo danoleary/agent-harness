@@ -44,6 +44,26 @@ func IsUsagePolicyRefusal(line string) bool {
 	return e.Type == "result" && e.IsError && strings.Contains(e.Result, usagePolicyRefusalMarker)
 }
 
+// spendingCapAbortMarker is the stable core of the billing/usage spending-cap
+// abort result ("Spending cap reached resets 8:20am"). Matched as a substring so
+// the trailing reset time (which varies) doesn't have to be exact.
+const spendingCapAbortMarker = "Spending cap reached"
+
+// IsSpendingCapAbort reports whether a stream-json line is the terminal
+// spending-cap abort *result* event (BEH-494): an `is_error` result whose
+// `result` text is the billing/usage-cap message. The session is killed before
+// doing any real work, so — like a usage-policy refusal — the harness treats it
+// as a distinct, retry-after-reset class rather than the generic "never ran"
+// failure. Only the terminal result event counts; a malformed line is never a
+// cap abort (it just returns false).
+func IsSpendingCapAbort(line string) bool {
+	var e event
+	if err := json.Unmarshal([]byte(line), &e); err != nil {
+		return false
+	}
+	return e.Type == "result" && e.IsError && strings.Contains(e.Result, spendingCapAbortMarker)
+}
+
 // Narrate turns one line of claude's `--output-format stream-json` into a concise
 // console narration string, returning ok=false to skip it. The full raw stream
 // is teed to the per-run jsonl regardless; this is only the human-friendly
