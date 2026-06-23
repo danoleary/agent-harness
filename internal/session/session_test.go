@@ -4,7 +4,30 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+	"time"
 )
+
+// The wall-clock cap must count time the host spent asleep. We model a sleep as a
+// large forward jump in the wall clock between start and the watchdog tick (Go's
+// monotonic timers freeze during macOS sleep, so the old time.AfterFunc cap never
+// fired for a container that lost its API stream mid-sleep — the bug this fixes).
+// watchReason reads wall-clock times only, so the jump counts and the cap trips.
+func TestWatchReasonFiresCapAcrossSleepJump(t *testing.T) {
+	start := time.Date(2026, 6, 21, 15, 0, 0, 0, time.UTC)
+	cap := 30 * time.Minute
+	// Only ~2 min of awake time elapsed, then the host slept ~2h: wall clock is now
+	// well past the cap even though a monotonic timer would have advanced ~2 min.
+	now := start.Add(2*time.Hour + 2*time.Minute)
+	lastActivity := now // stream still "live" — isolate the cap path
+
+	reason := watchReason(now, start, lastActivity, cap, 0)
+	if reason == "" {
+		t.Fatal("expected the wall-clock cap to fire after a sleep jump past it")
+	}
+	if !strings.Contains(reason, "cap") {
+		t.Errorf("expected a cap reason, got: %q", reason)
+	}
+}
 
 type fakeLog struct {
 	teed   []string
@@ -36,6 +59,76 @@ func TestPumpStdoutReportsUsagePolicyRefusal(t *testing.T) {
 	clean := pumpStdout(strings.NewReader(lineToolUse+"\n"+lineResult), "x.jsonl", false, &fakeLog{}, &bytes.Buffer{})
 	if clean {
 		t.Error("a clean run must not report a usage-policy refusal")
+	}
+}
+
+// The idle heartbeat must fire when the stream stops producing output for longer
+// than the idle limit, even though the hard cap is nowhere near. This is the path
+// that catches a dead API stream after the host wakes from sleep: the cap may
+// have hours left, but no bytes have arrived, so the container is killed.
+func TestWatchReasonFiresIdleWhenStreamSilent(t *testing.T) {
+	start := time.Date(2026, 6, 21, 15, 0, 0, 0, time.UTC)
+	cap := 2 * time.Hour     // plenty of cap left
+	idle := 10 * time.Minute // heartbeat window
+	lastActivity := start.Add(1 * time.Minute)
+	now := lastActivity.Add(11 * time.Minute) // 11 min since last byte
+
+	reason := watchReason(now, start, lastActivity, cap, idle)
+	if reason == "" {
+		t.Fatal("expected the idle heartbeat to fire on a silent stream")
+	}
+	if !strings.Contains(reason, "activity") {
+		t.Errorf("expected an idle/activity reason, got: %q", reason)
+	}
+}
+
+// The watchdog contract: no kill when both limits have headroom; each limit is
+// disabled by a non-positive value (so a caller can opt out of either); and when
+// both are breached at once the cap is reported (it is the harder guarantee).
+func TestWatchReasonContract(t *testing.T) {
+	start := time.Date(2026, 6, 21, 15, 0, 0, 0, time.UTC)
+
+	// Both within limits → no kill.
+	now := start.Add(5 * time.Minute)
+	if r := watchReason(now, start, now, 30*time.Minute, 10*time.Minute); r != "" {
+		t.Errorf("expected no kill with headroom, got: %q", r)
+	}
+
+	// cap disabled (<=0): a huge elapsed must not trip the cap; idle still governs.
+	farPast := start.Add(100 * time.Hour)
+	if r := watchReason(farPast, start, farPast, 0, 10*time.Minute); r != "" {
+		t.Errorf("cap<=0 must disable the cap, got: %q", r)
+	}
+
+	// idle disabled (<=0): a long silence must not trip idle; cap still governs.
+	silent := start.Add(20 * time.Minute)
+	if r := watchReason(silent, start, start, 30*time.Minute, 0); r != "" {
+		t.Errorf("idle<=0 must disable the heartbeat, got: %q", r)
+	}
+
+	// Both breached → cap wins.
+	if r := watchReason(farPast, start, start, 30*time.Minute, 10*time.Minute); !strings.Contains(r, "cap") {
+		t.Errorf("expected cap to take precedence when both breach, got: %q", r)
+	}
+}
+
+// heartbeatReader is the liveness tap on the docker stdout stream: every read
+// that returns bytes counts as a heartbeat, and a read that returns no bytes
+// (EOF / empty) must not — so a dead stream (which only ever returns 0/EOF or
+// blocks) produces no heartbeats and the idle watchdog can kill it.
+func TestHeartbeatReaderBeatsOnDataNotOnEmptyRead(t *testing.T) {
+	var beats int
+	hr := heartbeatReader{r: strings.NewReader("ab"), beat: func() { beats++ }}
+
+	buf := make([]byte, 1)
+	for {
+		if _, err := hr.Read(buf); err != nil {
+			break // io.EOF on the read past "ab"
+		}
+	}
+
+	if beats != 2 {
+		t.Errorf("expected one beat per non-empty read (2), got %d", beats)
 	}
 }
 

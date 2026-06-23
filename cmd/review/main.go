@@ -209,6 +209,7 @@ func run() (int, error) {
 		ContainerName:  containerName,
 		TranscriptFile: transcriptFile,
 		Timeout:        cfg.ReviewTimeout,
+		IdleTimeout:    cfg.SessionIdleTimeout,
 		Verbose:        args.verbose,
 		Log:            log,
 	})
@@ -230,6 +231,7 @@ func run() (int, error) {
 		ContainerName:  gateName,
 		TranscriptFile: gateTranscript,
 		Timeout:        cfg.ReviewTimeout,
+		IdleTimeout:    cfg.SessionIdleTimeout,
 		Verbose:        args.verbose,
 		Log:            log,
 	}).ExitCode
@@ -326,6 +328,7 @@ func ciFixRunner(cfg config.Config, args cliArgs, slug, worktreePath, runID stri
 			ContainerName:  containerName,
 			TranscriptFile: transcript,
 			Timeout:        cfg.ReviewTimeout,
+			IdleTimeout:    cfg.SessionIdleTimeout,
 			Verbose:        args.verbose,
 			Log:            log,
 		})

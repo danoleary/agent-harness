@@ -156,6 +156,7 @@ func run() (int, error) {
 		ContainerName:  containerName,
 		TranscriptFile: transcriptFile,
 		Timeout:        cfg.TddTimeout,
+		IdleTimeout:    cfg.SessionIdleTimeout,
 		Verbose:        args.verbose,
 		Log:            log,
 	})

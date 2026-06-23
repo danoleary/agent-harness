@@ -33,13 +33,25 @@ type Options struct {
 	// TranscriptFile is the filename (under the ticket's log dir) the stream-json
 	// transcript is teed to.
 	TranscriptFile string
-	// Timeout is the wall-clock cap; on expiry the container is killed.
+	// Timeout is the hard wall-clock cap; on expiry the container is killed. It is
+	// measured against the wall clock (not a monotonic timer), so time the host
+	// spent asleep counts toward it.
 	Timeout time.Duration
+	// IdleTimeout is the heartbeat window: if no bytes arrive on the stream for this
+	// long, the stream is treated as dead (e.g. an API connection silently severed
+	// while the host slept) and the container is killed even though the hard cap may
+	// have time left. Non-positive disables the heartbeat.
+	IdleTimeout time.Duration
 	// Verbose echoes the raw agent stream to the console instead of the concise narration.
 	Verbose bool
 	// Log is the narration + transcript sink.
 	Log Logger
 }
+
+// watchdogPollInterval is how often the watchdog re-evaluates the wall-clock cap
+// and idle window. After a host wake the ticker resumes and the next tick (within
+// this interval) observes the full elapsed wall time and reaps a dead container.
+const watchdogPollInterval = 15 * time.Second
 
 // stderrTailLines is how many trailing non-empty stderr lines to keep so a launch
 // failure can be explained on the console (docker prints the real cause then a
@@ -57,6 +69,70 @@ type Outcome struct {
 	// refusal result event. The diff survives on disk (ADR-0002 real-path mount),
 	// so the caller can retry the session rather than discard the run.
 	UsagePolicyRefusal bool
+}
+
+// realNow returns the current wall-clock time with the monotonic reading stripped
+// (time.Now().Round(0)). The watchdog must compare wall-clock instants so a host
+// sleep — during which the monotonic clock freezes — still counts toward the cap
+// and the idle window.
+func realNow() time.Time { return time.Now().Round(0) }
+
+// heartbeat is a concurrency-safe holder for the wall-clock instant of the last
+// observed stream activity, written by the stdout reader and read by the watchdog.
+type heartbeat struct {
+	mu   sync.Mutex
+	last time.Time
+}
+
+func (h *heartbeat) beat(t time.Time) {
+	h.mu.Lock()
+	h.last = t
+	h.mu.Unlock()
+}
+
+func (h *heartbeat) at() time.Time {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.last
+}
+
+// heartbeatReader wraps the docker stdout reader so every read that yields bytes
+// records a heartbeat. A read returning no bytes (EOF / empty) does not — a dead
+// stream only ever blocks or returns 0/EOF, so it produces no heartbeats and the
+// idle watchdog can reap it.
+type heartbeatReader struct {
+	r    io.Reader
+	beat func()
+}
+
+func (h heartbeatReader) Read(p []byte) (int, error) {
+	n, err := h.r.Read(p)
+	if n > 0 {
+		h.beat()
+	}
+	return n, err
+}
+
+// watchReason reports the first wall-clock limit the session has crossed, with a
+// human reason for the kill log, or "" if neither limit is breached yet. Both
+// limits are measured against wall-clock times the caller passes in (never a
+// monotonic duration), so time the host spent asleep counts: Go's monotonic
+// timers freeze during macOS sleep, so a frozen time.AfterFunc let a container
+// that lost its API stream mid-sleep hang indefinitely (BEH-386-class).
+//
+//   - hardCap bounds total elapsed since start (the hard wall-clock cap). hardCap <= 0 disables it.
+//   - idle    bounds time since the last stream activity (the heartbeat: a dead
+//     stream stops producing output). idle <= 0 disables it.
+//
+// The cap is checked first so an overrun is reported as a cap, not as idleness.
+func watchReason(now, start, lastActivity time.Time, hardCap, idle time.Duration) string {
+	if hardCap > 0 && now.Sub(start) >= hardCap {
+		return fmt.Sprintf("wall-clock cap %s hit", hardCap)
+	}
+	if idle > 0 && now.Sub(lastActivity) >= idle {
+		return fmt.Sprintf("no stream activity for %s (stream appears dead)", idle)
+	}
+	return ""
 }
 
 // Run launches the sandboxed session described by dockerArgs (everything after
@@ -82,12 +158,33 @@ func Run(dockerArgs []string, opts Options) Outcome {
 		return Outcome{ExitCode: 1}
 	}
 
-	// Hard wall-clock cap: if the session overruns, kill the container out from under it.
-	timer := time.AfterFunc(opts.Timeout, func() {
-		opts.Log.Event("session ✗ wall-clock cap hit — killing " + opts.ContainerName)
-		_ = exec.Command("docker", "kill", opts.ContainerName).Run() // allow-unbounded-exec: docker kill from the timeout handler itself
-	})
-	defer timer.Stop()
+	// Wall-clock watchdog: enforce the hard cap and the idle heartbeat against the
+	// real clock (so host-sleep time counts) and kill the container out from under a
+	// session that overruns or whose stream has gone dead. The heartbeat is tapped
+	// off the stdout reader — every read that yields bytes is a sign of life.
+	start := realNow()
+	hb := &heartbeat{}
+	hb.beat(start)
+	tappedStdout := heartbeatReader{r: stdout, beat: func() { hb.beat(realNow()) }}
+
+	watchdogDone := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(watchdogPollInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-watchdogDone:
+				return
+			case <-ticker.C:
+				if reason := watchReason(realNow(), start, hb.at(), opts.Timeout, opts.IdleTimeout); reason != "" {
+					opts.Log.Event("session ✗ " + reason + " — killing " + opts.ContainerName)
+					_ = exec.Command("docker", "kill", opts.ContainerName).Run() // allow-unbounded-exec: docker kill from the watchdog itself
+					return
+				}
+			}
+		}
+	}()
+	defer close(watchdogDone)
 
 	var (
 		wg              sync.WaitGroup
@@ -97,7 +194,7 @@ func Run(dockerArgs []string, opts Options) Outcome {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		usagePolicyDeny = pumpStdout(stdout, opts.TranscriptFile, opts.Verbose, opts.Log, os.Stdout)
+		usagePolicyDeny = pumpStdout(tappedStdout, opts.TranscriptFile, opts.Verbose, opts.Log, os.Stdout)
 	}()
 	go func() {
 		defer wg.Done()

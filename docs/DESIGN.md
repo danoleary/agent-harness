@@ -280,7 +280,21 @@ ships. The `agent-ready` label remains the human gate on *what* runs unattended.
 
 - Per-session wall-clock caps: **implementation 30 min, review 15 min,
   retrospective 10 min** (configurable). On expiry the harness kills the container
-  and treats the session as failed.
+  and treats the session as failed. The cap is enforced against the **wall clock**,
+  not a monotonic timer, so time the host spent asleep counts toward it — a Go
+  `time.AfterFunc` freezes during macOS sleep and once let a container that lost
+  its API stream mid-sleep hang for two days (BEH-386 class).
+- **Idle heartbeat (`SESSION_IDLE_TIMEOUT_MS`, default 20 min):** alongside the
+  hard cap, every session is watched for stream silence. The watchdog taps the
+  docker stdout reader; if no bytes arrive for the idle window the stream is
+  treated as dead (e.g. the Anthropic connection silently severed while the host
+  slept) and the container is killed even though the hard cap may have time left.
+  The default is deliberately generous: the agent's stream emits nothing between a
+  `tool_use` and its `tool_result`, so one long quiet tool call (a `pnpm run build`
+  or `test-storybook` run) is legitimately silent for minutes — set the window too
+  low and it reaps a healthy session mid-build. The wall-clock hard cap is the
+  backstop, so the heartbeat only needs to detect a dead stream sooner than the cap
+  would. Set to 0 to disable.
 - **CI watch caps (BEH-414, all configurable):** poll interval 30 s, poll budget
   20 min (one wait for checks to go terminal), auto-fix budget 30 min + max 2 fix
   attempts (the flake re-run is separate and doesn't count). Each auto-fix session

@@ -49,21 +49,28 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.ReviewTimeout != 15*time.Minute {
 		t.Errorf("ReviewTimeout = %v, want 15m", cfg.ReviewTimeout)
 	}
+	if cfg.SessionIdleTimeout != 20*time.Minute {
+		t.Errorf("SessionIdleTimeout = %v, want 20m", cfg.SessionIdleTimeout)
+	}
 }
 
 func TestLoadHonoursOverrides(t *testing.T) {
 	cfg, err := Load(fullEnv(map[string]string{
-		"HARNESS_IMAGE":     "custom:tag",
-		"PNPM_STORE_VOLUME": "my-store",
-		"TDD_TIMEOUT_MS":    "60000",
-		"REVIEW_TIMEOUT_MS": "120000",
-		"TDD_MODEL":         "sonnet",
+		"HARNESS_IMAGE":           "custom:tag",
+		"PNPM_STORE_VOLUME":       "my-store",
+		"TDD_TIMEOUT_MS":          "60000",
+		"REVIEW_TIMEOUT_MS":       "120000",
+		"SESSION_IDLE_TIMEOUT_MS": "300000",
+		"TDD_MODEL":               "sonnet",
 	}))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if cfg.ReviewTimeout != 2*time.Minute {
 		t.Errorf("ReviewTimeout = %v, want 2m", cfg.ReviewTimeout)
+	}
+	if cfg.SessionIdleTimeout != 5*time.Minute {
+		t.Errorf("SessionIdleTimeout = %v, want 5m", cfg.SessionIdleTimeout)
 	}
 	if cfg.Image != "custom:tag" {
 		t.Errorf("Image = %q", cfg.Image)

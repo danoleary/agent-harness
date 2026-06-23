@@ -192,6 +192,7 @@ func run() (int, error) {
 			ContainerName:  attemptContainer,
 			TranscriptFile: attemptTranscript,
 			Timeout:        cfg.TddTimeout,
+			IdleTimeout:    cfg.SessionIdleTimeout,
 			Verbose:        args.verbose,
 			Log:            log,
 		})

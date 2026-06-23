@@ -25,6 +25,17 @@ type Config struct {
 	TddTimeout time.Duration
 	// ReviewTimeout is the wall-clock cap for the review session (DESIGN.md: 15 min).
 	ReviewTimeout time.Duration
+	// SessionIdleTimeout is the heartbeat window passed to every sandboxed session:
+	// if the docker stream produces no output for this long the stream is treated as
+	// dead (e.g. an API connection silently severed while the host slept) and the
+	// container is killed. Distinct from the per-session hard caps above, which bound
+	// total runtime; this bounds silence. It must stay comfortably ABOVE the slowest
+	// single silent in-sandbox command: the agent's stream emits nothing between a
+	// tool_use and its tool_result, so one long quiet tool call (a `pnpm run build`
+	// or `test-storybook` run) is legitimately silent for minutes — set too low it
+	// reaps a healthy session mid-build. The wall-clock hard cap is the backstop, so
+	// this only needs to detect a dead stream faster than the cap, not race it.
+	SessionIdleTimeout time.Duration
 	// Model is the claude `--model` the tdd session runs on. Pinned to an exact
 	// Opus snapshot, not the floating `opus` alias: the CLI's own default is not
 	// guaranteed to be Opus and a past run silently fell back to Sonnet (BEH-316),
@@ -47,6 +58,7 @@ const (
 	defaultPnpmStoreVolume  = "herd-pnpm-store"
 	defaultTddTimeout       = 30 * time.Minute
 	defaultReviewTimeout    = 15 * time.Minute
+	defaultSessionIdle      = 20 * time.Minute
 	defaultModel            = "claude-opus-4-8"
 	defaultCIMaxFixAttempts = 2
 	defaultCIFixBudget      = 30 * time.Minute
@@ -96,13 +108,14 @@ func Load(get Getenv) (Config, error) {
 	}
 
 	return Config{
-		LinearAPIKey:    linearKey,
-		HerdPath:        herdPath,
-		Image:           orDefault(get("HARNESS_IMAGE"), defaultImage),
-		PnpmStoreVolume: orDefault(get("PNPM_STORE_VOLUME"), defaultPnpmStoreVolume),
-		TddTimeout:      parseTimeout(get("TDD_TIMEOUT_MS"), defaultTddTimeout),
-		ReviewTimeout:   parseTimeout(get("REVIEW_TIMEOUT_MS"), defaultReviewTimeout),
-		Model:           orDefault(get("TDD_MODEL"), defaultModel),
+		LinearAPIKey:       linearKey,
+		HerdPath:           herdPath,
+		Image:              orDefault(get("HARNESS_IMAGE"), defaultImage),
+		PnpmStoreVolume:    orDefault(get("PNPM_STORE_VOLUME"), defaultPnpmStoreVolume),
+		TddTimeout:         parseTimeout(get("TDD_TIMEOUT_MS"), defaultTddTimeout),
+		ReviewTimeout:      parseTimeout(get("REVIEW_TIMEOUT_MS"), defaultReviewTimeout),
+		SessionIdleTimeout: parseTimeout(get("SESSION_IDLE_TIMEOUT_MS"), defaultSessionIdle),
+		Model:              orDefault(get("TDD_MODEL"), defaultModel),
 
 		CIMaxFixAttempts: parsePositiveInt(get("CI_MAX_FIX_ATTEMPTS"), defaultCIMaxFixAttempts),
 		CIFixBudget:      parseTimeout(get("CI_FIX_BUDGET_MS"), defaultCIFixBudget),
