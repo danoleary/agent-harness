@@ -20,8 +20,8 @@ type fakeDriver struct {
 	polls   []pollResult
 	pollIdx int
 
-	reruns, fixes, pushes int
-	rerunErr, fixErr      error
+	reruns, fixes, pushes, awaits int
+	rerunErr, fixErr, awaitErr    error
 
 	mergeState MergeVerdict // verdict d.MergeState() reports (zero = MergeUnknown)
 	mergeErr   error
@@ -45,7 +45,8 @@ func (d *fakeDriver) Fix([]Check) error {
 	}
 	return d.fixErr
 }
-func (d *fakeDriver) Push() error { d.pushes++; return nil }
+func (d *fakeDriver) Push() error         { d.pushes++; return nil }
+func (d *fakeDriver) AwaitHeadRun() error { d.awaits++; return d.awaitErr }
 func (d *fakeDriver) MergeState() (MergeVerdict, error) {
 	return d.mergeState, d.mergeErr
 }
@@ -238,5 +239,75 @@ func TestWatchSurfacesFixError(t *testing.T) {
 	}
 	if !strings.Contains(out.Reason, "sandbox fix session crashed") {
 		t.Fatalf("reason %q should surface the fix error", out.Reason)
+	}
+}
+
+func TestWatchDoesNotRefixWhileCIRunPredatesFix(t *testing.T) {
+	// Real failure → fix → push, but CI hasn't started a run for the new commit yet
+	// (AwaitHeadRun times out → the only red still showing is the prior run's stale
+	// one). The loop must NOT launch a second fix against that stale failure; it stops
+	// and keeps the PR for a human. This is the BEH-493 regression: a fast fix landing
+	// before CI re-evaluates used to burn a whole no-op fix session.
+	d := &fakeDriver{
+		polls: []pollResult{
+			{v: Failed, checks: failChecks()}, // initial
+			{v: Failed, checks: failChecks()}, // still red after the flake re-run → real
+		},
+		awaitErr: ErrCIRerunTimeout,
+	}
+	out := WatchAndFix(d, testWatchCfg(), newFakeClock().now)
+	if out.OK {
+		t.Fatalf("expected non-OK when CI hasn't re-run for the fix, got %+v", out)
+	}
+	if d.fixes != 1 {
+		t.Fatalf("fixes = %d, want 1 (must not re-fix against a stale CI run)", d.fixes)
+	}
+	if d.awaits != 1 {
+		t.Fatalf("awaits = %d, want 1 (loop must wait for CI to re-run after pushing)", d.awaits)
+	}
+}
+
+func TestWatchWaitsForCIRerunThenPasses(t *testing.T) {
+	// Real failure → fix → push → wait for CI to start the run for the new commit →
+	// re-poll green. The wait must happen (awaits == 1) before the post-push poll.
+	d := &fakeDriver{
+		polls: []pollResult{
+			{v: Failed, checks: failChecks()},
+			{v: Failed, checks: failChecks()},
+			{v: Passed},
+		},
+	}
+	out := WatchAndFix(d, testWatchCfg(), newFakeClock().now)
+	if !out.OK {
+		t.Fatalf("expected OK after waiting for the re-run, got %+v", out)
+	}
+	if d.fixes != 1 || d.pushes != 1 {
+		t.Fatalf("fix=%d push=%d, want 1/1", d.fixes, d.pushes)
+	}
+	if d.awaits != 1 {
+		t.Fatalf("awaits = %d, want 1 (must wait for CI before the post-push poll)", d.awaits)
+	}
+}
+
+func TestWatchSurfacesAwaitHeadRunError(t *testing.T) {
+	// A non-timeout AwaitHeadRun failure (a real gh/git failure while confirming the
+	// re-run, not ErrCIRerunTimeout) is surfaced verbatim — the non-timeout branch of
+	// ciRerunErrOutcome, distinct from the "CI never started a run" outcome.
+	d := &fakeDriver{
+		polls: []pollResult{
+			{v: Failed, checks: failChecks()}, // initial
+			{v: Failed, checks: failChecks()}, // still red after the flake re-run → real
+		},
+		awaitErr: errors.New("git rev-parse: boom"),
+	}
+	out := WatchAndFix(d, testWatchCfg(), newFakeClock().now)
+	if out.OK {
+		t.Fatalf("expected non-OK when confirming the re-run errors, got %+v", out)
+	}
+	if d.fixes != 1 {
+		t.Fatalf("fixes = %d, want 1 (must not re-fix when the re-run check errors)", d.fixes)
+	}
+	if !strings.Contains(out.Reason, "boom") {
+		t.Fatalf("reason %q should surface the await error", out.Reason)
 	}
 }

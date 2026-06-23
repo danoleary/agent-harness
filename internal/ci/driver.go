@@ -118,6 +118,37 @@ func (d *GhDriver) Fix(failed []Check) error {
 // Push pushes the fix commit (delegated to the injected gitpkg.Push).
 func (d *GhDriver) Push() error { return d.push() }
 
+// AwaitHeadRun polls `gh run list --branch <branch> -L 1 --json headSha` until the
+// latest run's head commit matches the branch HEAD (resolved with git rev-parse) —
+// i.e. CI has actually started a run for the commit the just-pushed fix produced.
+// This stops the loop re-acting on the prior run's stale red when a fix lands before
+// CI re-evaluates (BEH-493). The branch ref + objects live in the shared .git visible
+// from the main checkout, so both reads run against herdPath, never inside a worktree.
+func (d *GhDriver) AwaitHeadRun() error {
+	head, err := d.branchHead()
+	if err != nil {
+		return err
+	}
+	ciHead := func() (string, error) {
+		stdout, stderr, err := proc.OutputInDir(d.ghTimeout, d.herdPath, "gh", "run", "list", "--branch", d.branch, "-L", "1", "--json", runHeadJSONField)
+		return interpretRunHead(stdout, stderr, err)
+	}
+	return awaitHeadRun(head, ciHead, d.pollCfg, d.sleep, d.now)
+}
+
+// branchHead resolves the PR branch's local HEAD commit — the fix the sandbox just
+// committed and Push pushed — via `git rev-parse <branch>` against the main checkout.
+func (d *GhDriver) branchHead() (string, error) {
+	stdout, stderr, err := proc.OutputInDir(d.ghTimeout, d.herdPath, "git", "rev-parse", d.branch)
+	if err != nil {
+		if s := strings.TrimSpace(string(stderr)); s != "" {
+			return "", fmt.Errorf("git rev-parse %s: %w: %s", d.branch, err, s)
+		}
+		return "", fmt.Errorf("git rev-parse %s: %w", d.branch, err)
+	}
+	return strings.TrimSpace(string(stdout)), nil
+}
+
 // MergeState polls `gh pr view <branch> --json mergeable,mergeStateStatus` until
 // GitHub's async mergeability computation settles, returning the verdict. UNKNOWN
 // is retried within the poll budget (not treated as terminal); a persistently

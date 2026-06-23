@@ -21,6 +21,13 @@ type Driver interface {
 	Fix(failed []Check) error
 	// Push pushes the new fix commit to the PR branch (no force, append-only).
 	Push() error
+	// AwaitHeadRun blocks until CI has registered a run whose head commit matches the
+	// branch HEAD — the commit the just-pushed fix produced — so the following Poll
+	// reads the new commit's checks instead of the prior run's stale red. Without it a
+	// fast fix lands before CI re-evaluates and the immediate re-poll re-acts on the
+	// predating run, burning another fix session on an already-fixed problem (BEH-493).
+	// It returns ErrCIRerunTimeout if CI never picks up the new HEAD within the budget.
+	AwaitHeadRun() error
 	// MergeState reports the PR's mergeability against base, polling through
 	// GitHub's async UNKNOWN window. Green checks on a PR that conflicts with base
 	// (main moved underneath it) are not actually shippable, so WatchAndFix gates
@@ -39,8 +46,9 @@ type Config struct {
 	MaxFixAttempts int
 	// Budget is the overall wall-clock cap across the whole watch; no new fix
 	// attempt starts once it is spent. It is a soft bound: it gates only the start
-	// of each fix attempt, not the poll waits (each ≤ PollBudget), so the real
-	// elapsed time of a watch can reach roughly Budget + PollBudget.
+	// of each fix attempt, not the per-attempt waits — the poll waits and the
+	// post-push wait-for-CI-rerun (AwaitHeadRun) are each ≤ PollBudget — so the real
+	// elapsed time of a watch can overrun Budget by several PollBudget-bounded waits.
 	Budget time.Duration
 	// PollInterval is how often the GhDriver re-checks CI while it is pending.
 	PollInterval time.Duration
@@ -105,6 +113,14 @@ func WatchAndFix(d Driver, cfg Config, now func() time.Time) Outcome {
 		}
 		if err := d.Push(); err != nil {
 			return Outcome{OK: false, Reason: "pushing the fix failed: " + err.Error(), Failing: failed}
+		}
+		// Don't re-poll until CI has actually started a run for the commit we just
+		// pushed. A fast fix routinely lands before CI re-evaluates; the prior run's
+		// red is still showing, and an immediate re-poll would re-act on that stale
+		// failure — launching another fix session against an already-fixed problem
+		// (BEH-493). Wait for CI to catch up to the new HEAD first.
+		if err := d.AwaitHeadRun(); err != nil {
+			return ciRerunErrOutcome(err, failed)
 		}
 		v, checks, err = d.Poll()
 		if err != nil {
@@ -181,6 +197,22 @@ func pollErrOutcome(err error, checks []Check) Outcome {
 		}
 	}
 	return Outcome{OK: false, Reason: "polling CI failed: " + err.Error(), Failing: FailedChecks(checks)}
+}
+
+// ciRerunErrOutcome turns an AwaitHeadRun failure into an outcome. The fix was
+// pushed, but the harness could not confirm CI re-ran for it: ErrCIRerunTimeout
+// means CI never started a run for the new HEAD within the budget (don't keep
+// guessing — leave the PR for a human to re-run); any other error is a real gh/git
+// failure surfaced verbatim. Either way the PR + worktree are kept (BEH-493).
+func ciRerunErrOutcome(err error, failed []Check) Outcome {
+	if errors.Is(err, ErrCIRerunTimeout) {
+		return Outcome{
+			OK:      false,
+			Reason:  "pushed the auto-fix but CI never started a new run for it within the budget — re-run CI / check the PR manually",
+			Failing: failed,
+		}
+	}
+	return Outcome{OK: false, Reason: "confirming CI re-ran for the fix failed: " + err.Error(), Failing: failed}
 }
 
 // notGreen returns every check that is not passing or skipping — i.e. the
