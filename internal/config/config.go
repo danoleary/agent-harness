@@ -23,7 +23,12 @@ type Config struct {
 	PnpmStoreVolume string
 	// TddTimeout is the wall-clock cap for the tdd (implementation) session.
 	TddTimeout time.Duration
-	// ReviewTimeout is the wall-clock cap for the review session (DESIGN.md: 15 min).
+	// ReviewTimeout is the wall-clock cap for every review-family session (the prep
+	// install, the qualitative review, the host-side gate re-run, and each CI-fix
+	// cycle). It is kept above SessionIdleTimeout so a stalled review session is
+	// reaped by the idle/no-progress watchdog before this hard cap, not at it; a
+	// 15m cap once sat below the 20m idle window, so the idle watchdog was inert for
+	// the whole family and memory-pressured sessions burned to the cap (BEH-535/538).
 	ReviewTimeout time.Duration
 	// RetrospectiveTimeout is the wall-clock cap for the retrospective session. It
 	// is deliberately larger than the tdd cap (which it used to borrow): the
@@ -63,7 +68,7 @@ const (
 	defaultImage            = "herd-agent-harness:latest"
 	defaultPnpmStoreVolume  = "herd-pnpm-store"
 	defaultTddTimeout       = 30 * time.Minute
-	defaultReviewTimeout    = 15 * time.Minute
+	defaultReviewTimeout    = 25 * time.Minute
 	defaultRetroTimeout     = 45 * time.Minute
 	defaultSessionIdle      = 20 * time.Minute
 	defaultModel            = "claude-opus-4-8"

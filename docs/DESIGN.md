@@ -146,7 +146,7 @@ loop:
   throwaway install container: `pnpm install --frozen-lockfile` in the worktree
   # handoff strips node_modules (BEH-412); pre-install so the session doesn't pay it mid-gate. warn-only.
 
-  --- review: /review-worktree (sandbox, 15 min cap) ---
+  --- review: /review-worktree (sandbox, 25 min cap) ---
   run: claude -p "/review-worktree <worktree-path>  <injected ticket context + 'do not touch Linear; commit locally ONLY — do NOT push, do NOT run gh; do NOT emit findings (retrospective owns that)'>"
   # agent has no GH_TOKEN; it can only commit into the shared local .git
 
@@ -351,11 +351,16 @@ ships. The `agent-ready` label remains the human gate on *what* runs unattended.
 
 ## Timeouts & failure handling
 
-- Per-session wall-clock caps: **implementation 30 min, review 15 min,
+- Per-session wall-clock caps: **implementation 30 min, review 25 min,
   retrospective 45 min** (configurable via `RETROSPECTIVE_TIMEOUT_MS`). The
   retrospective gets the largest cap of the three because it is a read-heavy step
   that parses several large jsonl transcripts; it previously borrowed the 30 min
-  tdd cap and was killed mid-read before it could write findings (BEH-536). On
+  tdd cap and was killed mid-read before it could write findings (BEH-536). Every
+  cap is kept **above the 20 min idle window** (below), so the idle/no-progress
+  watchdog can reap a stalled session before the hard cap rather than at it — the
+  review family's old 15 min cap sat below the idle window, leaving its idle
+  watchdog inert so memory-pressured review/install/gate sessions burned to the
+  cap (BEH-535/538). On
   expiry the harness kills the container and treats the session as failed. The cap is enforced against the **wall clock**,
   not a monotonic timer, so time the host spent asleep counts toward it — a Go
   `time.AfterFunc` freezes during macOS sleep and once let a container that lost

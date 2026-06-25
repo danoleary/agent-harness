@@ -187,8 +187,12 @@ func Review(cfg config.Config, log *runlog.Logger, runID string, args Args) Resu
 			ContainerName:  name,
 			TranscriptFile: transcript,
 			Timeout:        cfg.ReviewTimeout,
-			Verbose:        args.Verbose,
-			Log:            log,
+			// A memory-pressured install thrashes silently before it 137s, so give the
+			// idle watchdog the same early-reap as the rest of the review family rather
+			// than waiting out the full hard cap (BEH-535).
+			IdleTimeout: cfg.SessionIdleTimeout,
+			Verbose:     args.Verbose,
+			Log:         log,
 		})
 		// This is a raw-stdout step log, not a stream-json transcript — pnpm output
 		// just stops at the kill point. Stamp the exit so a reader sees the verdict

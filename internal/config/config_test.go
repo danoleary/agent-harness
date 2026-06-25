@@ -46,8 +46,10 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.Model != "claude-opus-4-8" {
 		t.Errorf("Model = %q, want claude-opus-4-8 (tdd sessions pin the exact Opus snapshot, not the floating alias)", cfg.Model)
 	}
-	if cfg.ReviewTimeout != 15*time.Minute {
-		t.Errorf("ReviewTimeout = %v, want 15m", cfg.ReviewTimeout)
+	// The review family's cap is kept above the 20m idle window so the idle
+	// watchdog can reap a stalled session before this hard cap (BEH-535/538).
+	if cfg.ReviewTimeout != 25*time.Minute {
+		t.Errorf("ReviewTimeout = %v, want 25m", cfg.ReviewTimeout)
 	}
 	if cfg.SessionIdleTimeout != 20*time.Minute {
 		t.Errorf("SessionIdleTimeout = %v, want 20m", cfg.SessionIdleTimeout)
@@ -57,6 +59,32 @@ func TestLoadDefaults(t *testing.T) {
 	// own so a slow read pass isn't killed before it can write findings (BEH-536).
 	if cfg.RetrospectiveTimeout != 45*time.Minute {
 		t.Errorf("RetrospectiveTimeout = %v, want 45m", cfg.RetrospectiveTimeout)
+	}
+}
+
+// Every per-session hard cap must stay strictly above the idle/no-progress window.
+// The idle watchdog only reaps a dead-stream session if the cap leaves it room to
+// fire first; a cap at or below the idle window is always reached first, silently
+// disabling dead-stream detection for that session class. The review family had a
+// 15m cap under a 20m idle window, so its idle watchdog never fired and a stalled
+// review session burned to the hard cap instead of being reaped early (BEH-535/538).
+func TestHardCapsExceedIdleWindow(t *testing.T) {
+	cfg, err := Load(fullEnv(nil))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	caps := map[string]time.Duration{
+		"TddTimeout":           cfg.TddTimeout,
+		"ReviewTimeout":        cfg.ReviewTimeout,
+		"RetrospectiveTimeout": cfg.RetrospectiveTimeout,
+	}
+	for name, hardCap := range caps {
+		if hardCap <= cfg.SessionIdleTimeout {
+			t.Errorf(
+				"%s = %v must exceed SessionIdleTimeout = %v, else the idle/no-progress watchdog can never fire before the hard cap",
+				name, hardCap, cfg.SessionIdleTimeout,
+			)
+		}
 	}
 }
 
