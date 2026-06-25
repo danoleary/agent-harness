@@ -171,25 +171,30 @@ func Review(cfg config.Config, log *runlog.Logger, runID string, args Args) Resu
 	// dumped the ~10-min recovery install into the capped review session, starving it
 	// of time to actually review. The OOM is transient (it succeeded in ~4s on a bare
 	// retry once memory freed), so a short backoff-and-retry recovers it up front.
-	installTranscript := runlog.TranscriptName("install", runID)
+	installTranscript := runlog.StepLogName("install", runID)
 	log.Event("prepping worktree (pnpm install --frozen-lockfile) before the review session")
 	installOutcome, installAttempts := session.RetryOnOOMKill(oomMaxAttempts, session.ConstantBackoff(oomRetryBackoff), time.Sleep, func(attempt int) session.Outcome {
 		name, transcript := installName, installTranscript
 		if attempt > 1 {
 			name = fmt.Sprintf("%s-retry%d", installName, attempt)
-			transcript = runlog.TranscriptName(fmt.Sprintf("install-retry%d", attempt), runID)
+			transcript = runlog.StepLogName(fmt.Sprintf("install-retry%d", attempt), runID)
 			log.Event(fmt.Sprintf(
 				"review ↻ prep install OOM-killed (exit 137) — retry %d/%d after %s (BEH-524)",
 				attempt-1, oomMaxAttempts-1, oomRetryBackoff,
 			))
 		}
-		return session.Run(buildInstallArgs(name), session.Options{
+		out := session.Run(buildInstallArgs(name), session.Options{
 			ContainerName:  name,
 			TranscriptFile: transcript,
 			Timeout:        cfg.ReviewTimeout,
 			Verbose:        args.Verbose,
 			Log:            log,
 		})
+		// This is a raw-stdout step log, not a stream-json transcript — pnpm output
+		// just stops at the kill point. Stamp the exit so a reader sees the verdict
+		// instead of an opaque truncation (BEH-537).
+		log.TeeLine(transcript, runlog.StepFooter(out.ExitCode))
+		return out
 	})
 	if installOutcome.ExitCode != 0 {
 		log.Event(fmt.Sprintf(
@@ -264,7 +269,7 @@ func Review(cfg config.Config, log *runlog.Logger, runID string, args Args) Resu
 				attempt-1, gateOOMMaxAttempts-1, gateBackoff(attempt-1),
 			))
 		}
-		return session.Run(buildGateArgs(name), session.Options{
+		out := session.Run(buildGateArgs(name), session.Options{
 			ContainerName:  name,
 			TranscriptFile: transcript,
 			Timeout:        cfg.ReviewTimeout,
@@ -272,6 +277,11 @@ func Review(cfg config.Config, log *runlog.Logger, runID string, args Args) Resu
 			Verbose:        args.Verbose,
 			Log:            log,
 		})
+		// Raw-stdout step log: the gate's `pnpm install`/`tsgo` just stops mid-output
+		// on an OOM-kill. Stamp the exit so the abrupt end is self-describing rather
+		// than needing a run.jsonl cross-reference to confirm the 137 (BEH-537).
+		log.TeeLine(transcript, runlog.StepFooter(out.ExitCode))
+		return out
 	})
 	gateExit := gateOutcome.ExitCode
 

@@ -45,12 +45,37 @@ func TranscriptName(session, runID string) string {
 	return session + "-" + runID + ".jsonl"
 }
 
+// StepLogName is the filename for a raw-stdout step log — the install/gate
+// commands the review tool runs around the agent session. Their content is piped
+// tool stdout (pnpm install / pnpm check), NOT a stream-json event stream, so
+// they carry a ".log" suffix rather than ".jsonl": a reader who sees ".jsonl"
+// expects parseable JSON and wastes turns discovering it is plain text (BEH-537).
+// Naming is step-prefixed and run-id-suffixed, non-clobbering like TranscriptName.
+func StepLogName(step, runID string) string {
+	return step + "-" + runID + ".log"
+}
+
 // GateTranscriptName is the filename for the review tool's host-side gate re-run
-// log. Unlike a session transcript this is plain command output, not stream-json,
-// so it carries a ".log" suffix rather than ".jsonl" — but it shares the same
-// run-id-suffixed, non-clobbering naming as TranscriptName.
+// log — a raw-stdout step log (see StepLogName).
 func GateTranscriptName(runID string) string {
-	return "gate-" + runID + ".log"
+	return StepLogName("gate", runID)
+}
+
+// StepFooter is the self-describing terminal line appended to a raw-stdout step
+// log (install/gate) once the step exits. Those logs are piped tool stdout that
+// truncates at the kill point with no marker, so without this an OOM-kill is
+// indistinguishable from a clean finish unless you cross-reference run.jsonl
+// (BEH-537). 137 is a SIGKILL (128+9) — under the harness that is almost always
+// an OOM-kill or a wall-clock/spend-cap reap, so call it out by name.
+func StepFooter(exitCode int) string {
+	switch exitCode {
+	case 0:
+		return "-- step exited 0 (ok) --"
+	case 137:
+		return "-- step exited 137 (SIGKILL — likely OOM-kill or wall-clock/spend cap) --"
+	default:
+		return fmt.Sprintf("-- step exited %d --", exitCode)
+	}
 }
 
 // FindingsDir is the path of a session's findings dropbox dir, under the ticket

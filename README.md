@@ -166,6 +166,9 @@ ticket's whole arc by globbing one dir:
 - `logs/BEH-NNN/<session>-<run-id>.jsonl`: full agent transcript per session
   (`implementation-…`, later `review-…`, `retrospective-…`). The run-id suffix
   keeps a re-run from clobbering the first.
+- `logs/BEH-NNN/<step>-<run-id>.log`: raw-stdout step log for the review tool's
+  non-agent commands (`install-…`, `gate-…`) — piped `pnpm` output, so `.log`
+  not `.jsonl`, ending in a `-- step exited <code> … --` footer (BEH-537).
 - `logs/BEH-NNN/run.jsonl`: structured event stream (shared across the ticket's sessions).
 - `logs/BEH-NNN/findings/<session>/out.json`: the findings dropbox.
 

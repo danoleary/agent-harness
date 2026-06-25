@@ -56,6 +56,52 @@ func TestTranscriptNameIsSessionPrefixedRunIDSuffixed(t *testing.T) {
 	}
 }
 
+// A raw-stdout step log (install/gate) is truncated at the kill point with no
+// terminal marker, so a reader can't tell an OOM from a clean finish without
+// cross-referencing run.jsonl. StepFooter is the self-describing last line each
+// step log gets; a 137 must read as a SIGKILL/OOM, not an opaque code.
+func TestStepFooterFlags137AsSigkillOOM(t *testing.T) {
+	got := StepFooter(137)
+	if !strings.HasPrefix(got, "-- step exited 137") {
+		t.Errorf("StepFooter(137) = %q, want a `-- step exited 137 …` marker", got)
+	}
+	for _, want := range []string{"SIGKILL", "OOM"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("StepFooter(137) = %q, want it to mention %q", got, want)
+		}
+	}
+}
+
+// A clean exit must read as clean, and an arbitrary non-zero code is surfaced
+// verbatim rather than silently dropped.
+func TestStepFooterDistinguishesCleanFromFailing(t *testing.T) {
+	if got := StepFooter(0); !strings.Contains(got, "0") || !strings.Contains(got, "ok") {
+		t.Errorf("StepFooter(0) = %q, want a clean-exit marker mentioning 0/ok", got)
+	}
+	if got := StepFooter(1); got != "-- step exited 1 --" {
+		t.Errorf("StepFooter(1) = %q, want `-- step exited 1 --`", got)
+	}
+}
+
+// Raw-stdout step logs (install/gate) must NOT carry a .jsonl extension — a
+// reader who sees .jsonl expects a parseable event stream (BEH-537).
+func TestStepLogNameIsLogNotJsonl(t *testing.T) {
+	got := StepLogName("install", "20260611-140805")
+	if want := "install-20260611-140805.log"; got != want {
+		t.Errorf("StepLogName = %q, want %q", got, want)
+	}
+	if strings.HasSuffix(got, ".jsonl") {
+		t.Errorf("StepLogName must not end in .jsonl, got %q", got)
+	}
+}
+
+// GateTranscriptName is a raw-stdout step log too — keep its .log naming.
+func TestGateTranscriptNameIsRunIDSuffixedLog(t *testing.T) {
+	if got := GateTranscriptName("20260611-140805"); got != "gate-20260611-140805.log" {
+		t.Errorf("GateTranscriptName = %q, want gate-20260611-140805.log", got)
+	}
+}
+
 func TestFindingsDirIsUnderTicketDirBySession(t *testing.T) {
 	log := &Logger{Dir: "/logs/BEH-370"}
 	got := log.FindingsDir("implementation")

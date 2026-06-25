@@ -388,6 +388,14 @@ ships. The `agent-ready` label remains the human gate on *what* runs unattended.
     and uniqueness when a ticket is worked more than once. This is what lets
     `retrospective BEH-NNN`, invoked separately, locate the implementation and
     review transcripts.
+  - `agent-harness/logs/BEH-NNN/<step>-<run-id>.log` — a **raw-stdout step log**
+    for the non-agent commands the review tool runs around the session: the
+    `install-…` worktree prep and the host-side `gate-…` re-run. These are piped
+    `pnpm` output (NOT a stream-json event stream), hence `.log`, never `.jsonl`,
+    so a reader doesn't expect parseable JSON. Each ends with a self-describing
+    `-- step exited <code> … --` footer (`runlog.StepFooter`) so an OOM-kill is
+    visible at the tail rather than an opaque truncation needing a `run.jsonl`
+    cross-reference (BEH-537).
   - `agent-harness/logs/BEH-NNN/findings/retrospective/out.json` — the dropbox.
   - `agent-harness/logs/BEH-NNN/run.jsonl` — the structured event stream
     (machine-readable mirror of the console).
