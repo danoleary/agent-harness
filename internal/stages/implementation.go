@@ -47,6 +47,17 @@ func Implementation(cfg config.Config, log *runlog.Logger, runID string, args Ar
 	}
 	log.Event(fmt.Sprintf("fetched %s (%s) — %s", t.Identifier, priority, t.Title))
 
+	// Advisory only: warn (don't skip) when the ticket cites code symbols that no
+	// longer exist in web/src — the BEH-544 signal that the work likely already
+	// merged, often under a *sibling* ticket the own-key TicketAlreadyOnMain scan
+	// can't catch. Unlike that high-confidence exact-key skip below, the symbol
+	// signal is heuristic (a cited symbol can be absent because the ticket asks to
+	// *create* it), so it only surfaces for the human + the in-session agent
+	// (steered by premiseCheckSteer) to act on — never drops the dispatch itself.
+	if adv := gitpkg.ResolvedAdvisory(filepath.Join(cfg.HerdPath, "web", "src"), t.Identifier, t.Description); adv != "" {
+		log.Event(adv)
+	}
+
 	p := prompt.BuildTdd(t, slug)
 	findingsDir := log.FindingsDir(implementationSession)
 	if err := os.MkdirAll(findingsDir, 0o755); err != nil {

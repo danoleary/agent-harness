@@ -62,6 +62,28 @@ func assertCarriesBashQuirkSteer(t *testing.T, p, label string) {
 	}
 }
 
+// BEH-544: a ticket can be dispatched as live work after its fix already merged
+// (often under a *sibling* ticket the host-side own-key guard can't catch). The
+// prompt must steer the agent to verify the ticket's cited symbols/premise still
+// hold before planning, and — if a grep shows the work already landed — to NOT
+// fabricate a no-op change but record "already resolved, recommend close".
+func TestBuildTddSteersToVerifyPremiseBeforePlanning(t *testing.T) {
+	p := BuildTdd(sample, "beh-362")
+
+	if !regexp.MustCompile(`(?i)(verify|confirm|check).*(still|already)`).MatchString(p) {
+		t.Error("prompt does not steer the agent to verify the premise still holds")
+	}
+	if !regexp.MustCompile(`(?i)already (resolved|fixed|landed|merged)`).MatchString(p) {
+		t.Error("prompt does not mention the already-resolved outcome")
+	}
+	if !regexp.MustCompile(`(?i)(recommend|suggest) clos`).MatchString(p) {
+		t.Error("prompt does not tell the agent to recommend close when the work has landed")
+	}
+	if !regexp.MustCompile(`(?i)no-?op|do not (fabricate|invent|manufacture)`).MatchString(p) {
+		t.Error("prompt does not warn against fabricating a no-op change")
+	}
+}
+
 func TestBuildTddCarriesBashQuirkSteer(t *testing.T) {
 	assertCarriesBashQuirkSteer(t, BuildTdd(sample, "beh-362"), "tdd prompt")
 }

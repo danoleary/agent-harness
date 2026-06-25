@@ -53,6 +53,13 @@ runnable by hand against a ticket id before the next is added:
    `origin/main` history for the key, fetching first) — re-dispatching it would
    burn a worktree + install to discover an empty diff and wrongly flip a done
    ticket to In Progress (BEH-528). `--force` overrides for a false positive.
+   It also logs an *advisory* (never a skip) when the ticket cites code symbols
+   that no longer exist in `web/src` (`git.ResolvedAdvisory`) — the BEH-544
+   signal that the work likely already merged, often under a *sibling* ticket the
+   own-key scan above can't catch. This stays advisory because the symbol signal
+   is heuristic (a cited symbol can be absent because the ticket asks to *create*
+   it); the `/tdd` prompt separately steers the in-session agent to verify the
+   premise still holds and recommend close rather than fabricate a no-op change.
 2. **`review BEH-NNN`** — run `/review-worktree` over the existing worktree, then
    host-side re-run the gates and, if green, push + open the PR.
 3. **`retrospective BEH-NNN`** — run `/retrospective` over the ticket's

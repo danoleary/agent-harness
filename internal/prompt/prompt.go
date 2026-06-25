@@ -34,6 +34,8 @@ func BuildTdd(t ticket.Ticket, slug string) string {
 		"",
 		"---",
 		"",
+		premiseCheckSteer,
+		"",
 		t.Identifier + " is already claimed and moved to In Progress for you. Do NOT touch Linear — do not call any `mcp__linear-server__*` tool, do not move the ticket, do not open or comment on issues. The harness owns all Linear I/O.",
 		"",
 		"If you hit problems with the harness or environment itself (setup friction, systemic gaps, missing patterns) during your session retrospective, do NOT file Linear issues. Instead append them to `/findings/out.json` as a JSON array of `{title, body, kind, key}` objects (kind is a free-form category; key is a stable, lowercase failure-class slug like `sandbox-playwright-missing-deps` used to dedup re-runs — pick the same key any session would for this class of problem). The harness reads this file after the session and files the issues for you, skipping any whose key already has an open issue. If you have no findings, leave the file untouched.",
@@ -42,6 +44,14 @@ func BuildTdd(t ticket.Ticket, slug string) string {
 	}
 	return strings.Join(lines, "\n")
 }
+
+// premiseCheckSteer guards against the BEH-544 footgun: a ticket can be
+// dispatched as live work after its fix already merged — sometimes under a
+// *sibling* ticket, which the host-side own-key dispatch guard can't catch. The
+// agent has the whole repo in front of it, so before planning it should confirm
+// the ticket's premise still holds, and bail loudly rather than invent work if
+// it doesn't.
+const premiseCheckSteer = "Before you plan, verify the ticket's premise still holds: grep the worktree for the code symbols / file references it names (line/column refs in older tickets drift, and the cited work may already have landed — possibly under a different ticket). If the change has already been made — the dead code is gone, the behaviour is already present, the symbols no longer exist — do NOT fabricate a no-op change to look productive. Instead say so plainly: record \"already resolved — recommend close\" in your handoff commit (and stop there), so a wasted implementation session becomes an early signal."
 
 // BuildTddResume builds the `-p` prompt for a *retry* of the tdd session after a
 // usage-policy refusal (BEH-389). The first attempt already created the worktree
