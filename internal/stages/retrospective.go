@@ -87,11 +87,11 @@ func Retrospective(cfg config.Config, log *runlog.Logger, runID string, args Arg
 	}
 
 	transcriptFile := runlog.TranscriptName(retrospectiveSession, runID)
-	log.Event(fmt.Sprintf("launching sandbox (cap %d min)", int(cfg.TddTimeout.Minutes())))
+	log.Event(fmt.Sprintf("launching sandbox (cap %d min)", int(cfg.RetrospectiveTimeout.Minutes())))
 	outcome := session.Run(dockerArgs, session.Options{
 		ContainerName:  containerName,
 		TranscriptFile: transcriptFile,
-		Timeout:        cfg.TddTimeout,
+		Timeout:        cfg.RetrospectiveTimeout,
 		IdleTimeout:    cfg.SessionIdleTimeout,
 		Verbose:        args.Verbose,
 		Log:            log,
@@ -102,15 +102,16 @@ func Retrospective(cfg config.Config, log *runlog.Logger, runID string, args Arg
 
 	// Ground truth, never self-report: the retrospective ran iff it wrote the
 	// findings dropbox. An empty `[]` is still present → success; an absent file
-	// means the step never ran (DESIGN.md "Success is ground-truth"). A
-	// spending-cap abort (BEH-494) is the one absent-dropbox case that isn't the
-	// agent's fault — surface it as a distinct retry-after-reset class (↻), not the
-	// misleading generic "never ran" (✗).
-	result := verify.Retrospective(filing.DropboxExists(findingsDir), outcome.SpendingCapAbort)
+	// means the step never ran (DESIGN.md "Success is ground-truth"). Two
+	// absent-dropbox cases aren't the agent's fault and get the retry class (↻),
+	// not the misleading generic "never ran" (✗): a spending-cap abort (BEH-494)
+	// and a 137 kill — OOM or wall-clock cap — that struck after the read-heavy
+	// analysis but before the write (BEH-536).
+	result := verify.Retrospective(filing.DropboxExists(findingsDir), outcome.SpendingCapAbort, outcome.ExitCode)
 	switch {
 	case result.OK:
 		log.Event("retrospective ✓ " + result.Reason)
-	case outcome.SpendingCapAbort:
+	case outcome.SpendingCapAbort, outcome.ExitCode == sandbox.ExitOOMKill:
 		log.Event("retrospective ↻ " + result.Reason)
 	default:
 		log.Event("retrospective ✗ " + result.Reason)

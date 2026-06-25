@@ -25,6 +25,12 @@ type Config struct {
 	TddTimeout time.Duration
 	// ReviewTimeout is the wall-clock cap for the review session (DESIGN.md: 15 min).
 	ReviewTimeout time.Duration
+	// RetrospectiveTimeout is the wall-clock cap for the retrospective session. It
+	// is deliberately larger than the tdd cap (which it used to borrow): the
+	// retrospective is a read-heavy step that parses several large jsonl
+	// transcripts, and borrowing the 30m tdd cap killed it mid-read before it
+	// could write findings (BEH-536).
+	RetrospectiveTimeout time.Duration
 	// SessionIdleTimeout is the heartbeat window passed to every sandboxed session:
 	// if the docker stream produces no output for this long the stream is treated as
 	// dead (e.g. an API connection silently severed while the host slept) and the
@@ -58,6 +64,7 @@ const (
 	defaultPnpmStoreVolume  = "herd-pnpm-store"
 	defaultTddTimeout       = 30 * time.Minute
 	defaultReviewTimeout    = 15 * time.Minute
+	defaultRetroTimeout     = 45 * time.Minute
 	defaultSessionIdle      = 20 * time.Minute
 	defaultModel            = "claude-opus-4-8"
 	defaultCIMaxFixAttempts = 2
@@ -108,14 +115,15 @@ func Load(get Getenv) (Config, error) {
 	}
 
 	return Config{
-		LinearAPIKey:       linearKey,
-		HerdPath:           herdPath,
-		Image:              orDefault(get("HARNESS_IMAGE"), defaultImage),
-		PnpmStoreVolume:    orDefault(get("PNPM_STORE_VOLUME"), defaultPnpmStoreVolume),
-		TddTimeout:         parseTimeout(get("TDD_TIMEOUT_MS"), defaultTddTimeout),
-		ReviewTimeout:      parseTimeout(get("REVIEW_TIMEOUT_MS"), defaultReviewTimeout),
-		SessionIdleTimeout: parseTimeout(get("SESSION_IDLE_TIMEOUT_MS"), defaultSessionIdle),
-		Model:              orDefault(get("TDD_MODEL"), defaultModel),
+		LinearAPIKey:         linearKey,
+		HerdPath:             herdPath,
+		Image:                orDefault(get("HARNESS_IMAGE"), defaultImage),
+		PnpmStoreVolume:      orDefault(get("PNPM_STORE_VOLUME"), defaultPnpmStoreVolume),
+		TddTimeout:           parseTimeout(get("TDD_TIMEOUT_MS"), defaultTddTimeout),
+		ReviewTimeout:        parseTimeout(get("REVIEW_TIMEOUT_MS"), defaultReviewTimeout),
+		RetrospectiveTimeout: parseTimeout(get("RETROSPECTIVE_TIMEOUT_MS"), defaultRetroTimeout),
+		SessionIdleTimeout:   parseTimeout(get("SESSION_IDLE_TIMEOUT_MS"), defaultSessionIdle),
+		Model:                orDefault(get("TDD_MODEL"), defaultModel),
 
 		CIMaxFixAttempts: parsePositiveInt(get("CI_MAX_FIX_ATTEMPTS"), defaultCIMaxFixAttempts),
 		CIFixBudget:      parseTimeout(get("CI_FIX_BUDGET_MS"), defaultCIFixBudget),

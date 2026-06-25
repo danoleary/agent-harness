@@ -173,6 +173,37 @@ func TestRetrospectiveSkillDocumentsDropboxContract(t *testing.T) {
 	}
 }
 
+// TestRetrospectiveSkillWritesDropboxIncrementally pins BEH-536: the skill must
+// write the findings dropbox *incrementally* — as soon as it has findings, then
+// append/rewrite as it goes — and must NOT defer the only write to the very end.
+// The retrospective is a long, read-heavy step prone to the same environmental
+// OOM/cap-kill as the rest of the pipeline; a session that finished its analysis
+// but was killed before a single deferred write loses everything and the
+// absent-file contract mislabels it as "never ran" (the BEH-536 incident). The
+// skill text is the only place this ordering lives, so drift back to
+// "write it last" must fail a test.
+func TestRetrospectiveSkillWritesDropboxIncrementally(t *testing.T) {
+	src := retrospectiveSkill(t)
+	lower := strings.ToLower(src)
+
+	// Must instruct incremental writing (write-then-append/update), not a single
+	// final write.
+	if !regexp.MustCompile(`(?i)incremental|append|as you (go|find)|keep (it )?updat`).MatchString(src) {
+		t.Error("skill must instruct writing the dropbox incrementally (write early, then append/update) — not deferring the only write to the end")
+	}
+	// Must name the motivation: a deferred/late write loses work to an OOM/kill.
+	// `\bkill` (not bare `kill`) so the word "skill" — which appears throughout —
+	// does not satisfy the check; it must be a real kill/killed/OOM mention.
+	if !regexp.MustCompile(`(?i)\boom\b|\bkill`).MatchString(src) {
+		t.Error("skill must explain WHY (a late OOM/kill loses a deferred write), so the ordering isn't silently reverted")
+	}
+	// Must not still carry the old "write it last" instruction that this fix
+	// reverses (the exact prose the BEH-536 incident traced to).
+	if strings.Contains(lower, "write it last") {
+		t.Error("skill must no longer instruct writing the dropbox LAST — that is the BEH-536 regression being fixed")
+	}
+}
+
 // TestRetrospectiveSkillDocumentsInputs pins the input contract: the skill
 // studies the *sessions*, so it must read every prior transcript for the
 // ticket (implementation + review) plus the diff. The transcripts live at the

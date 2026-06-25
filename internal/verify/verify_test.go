@@ -36,14 +36,14 @@ func TestTddFailsWhenNoCommitAhead(t *testing.T) {
 // empty `[]` is a valid "ran, found nothing" (still present → success); an
 // absent file means the step never ran and is a failure (DESIGN.md).
 func TestRetrospectivePassesWhenDropboxPresent(t *testing.T) {
-	r := Retrospective(true, false)
+	r := Retrospective(true, false, 0)
 	if !r.OK {
 		t.Errorf("expected OK when dropbox present, got %+v", r)
 	}
 }
 
 func TestRetrospectiveFailsWhenDropboxAbsent(t *testing.T) {
-	r := Retrospective(false, false)
+	r := Retrospective(false, false, 0)
 	if r.OK {
 		t.Error("expected failure when dropbox absent")
 	}
@@ -55,11 +55,43 @@ func TestRetrospectiveFailsWhenDropboxAbsent(t *testing.T) {
 	}
 }
 
+// BEH-536: the retrospective is a long, read-heavy step that hit its wall-clock
+// cap (exit 137) mid-investigation — after doing the analysis but before its
+// (deferred) write. An absent dropbox caused by a 137 kill must read as the
+// distinct "killed before writing — retry" class, NOT the misleading "never ran"
+// (which reads as the agent skipping the step). This mirrors the spending-cap
+// handling below and ReviewQualitative's OOM branch.
+func TestRetrospectiveReportsKilledBeforeWrite(t *testing.T) {
+	r := Retrospective(false, false, 137)
+	if r.OK {
+		t.Error("a 137-killed session wrote no dropbox — still a failure")
+	}
+	if !regexp.MustCompile(`(?i)137|kill`).MatchString(r.Reason) {
+		t.Errorf("reason %q should name the kill (exit 137)", r.Reason)
+	}
+	if !regexp.MustCompile(`(?i)retry`).MatchString(r.Reason) {
+		t.Errorf("reason %q should signal a retry, not a permanent failure", r.Reason)
+	}
+	if regexp.MustCompile(`(?i)never ran`).MatchString(r.Reason) {
+		t.Errorf("a 137 kill must NOT use the misleading 'never ran' wording, got %q", r.Reason)
+	}
+}
+
+// A spending-cap abort that also carries a 137 exit must still report the
+// spending-cap class — the more specific, actionable cause (retry after the
+// billing window resets, not just re-run now).
+func TestRetrospectiveSpendingCapWinsOverExitCode(t *testing.T) {
+	r := Retrospective(false, true, 137)
+	if !regexp.MustCompile(`(?i)spending cap`).MatchString(r.Reason) {
+		t.Errorf("spending-cap abort must take precedence over the generic 137 kill, got %q", r.Reason)
+	}
+}
+
 // BEH-494: a spending-cap abort killed the session before it could write the
 // dropbox. The reason must be the distinct retry-after-reset class — NOT the
 // misleading generic "never ran" (which reads as the agent misbehaving).
 func TestRetrospectiveReportsSpendingCapAbort(t *testing.T) {
-	r := Retrospective(false, true)
+	r := Retrospective(false, true, 0)
 	if r.OK {
 		t.Error("a spending-cap abort wrote no dropbox — still a failure")
 	}

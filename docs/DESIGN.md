@@ -172,9 +172,9 @@ loop:
 
   fetch + fast-forward origin/main
 
-  --- retrospective: /retrospective (sandbox, 10 min cap) ---
-  run: claude -p "/retrospective for BEH-NNN. Read every transcript under logs/BEH-NNN/ + the diff. Append harness/environment findings to /findings/out.json (ALWAYS write the file, even as []). Touch no code, no Linear."
-  retro OK <=> /findings/out.json EXISTS          // absent => the step never ran => failure
+  --- retrospective: /retrospective (sandbox, 45 min cap) ---
+  run: claude -p "/retrospective for BEH-NNN. Read every transcript under logs/BEH-NNN/ + the diff. Append harness/environment findings to /findings/out.json (ALWAYS write the file, even as []; write it EARLY and update as you go so a late OOM/kill can't lose it). Touch no code, no Linear."
+  retro OK <=> /findings/out.json EXISTS          // absent & not killed => never ran; absent after a 137 kill => killed-before-write, retry
   collectFindings(/findings/out.json) -> harness files one Linear issue per finding (or none, for [])
   if not OK -> log + Linear breadcrumb comment + KEEP worktree + record failure
 
@@ -341,8 +341,11 @@ ships. The `agent-ready` label remains the human gate on *what* runs unattended.
 ## Timeouts & failure handling
 
 - Per-session wall-clock caps: **implementation 30 min, review 15 min,
-  retrospective 10 min** (configurable). On expiry the harness kills the container
-  and treats the session as failed. The cap is enforced against the **wall clock**,
+  retrospective 45 min** (configurable via `RETROSPECTIVE_TIMEOUT_MS`). The
+  retrospective gets the largest cap of the three because it is a read-heavy step
+  that parses several large jsonl transcripts; it previously borrowed the 30 min
+  tdd cap and was killed mid-read before it could write findings (BEH-536). On
+  expiry the harness kills the container and treats the session as failed. The cap is enforced against the **wall clock**,
   not a monotonic timer, so time the host spent asleep counts toward it — a Go
   `time.AfterFunc` freezes during macOS sleep and once let a container that lost
   its API stream mid-sleep hang for two days (BEH-386 class).

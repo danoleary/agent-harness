@@ -43,17 +43,30 @@ func Tdd(truth GroundTruth) Result {
 // failure — the rule that stops a silently-skipped retrospective from
 // masquerading as "no issues found" (DESIGN.md "Success is ground-truth").
 //
-// spendingCapAbort distinguishes the failure class when the dropbox is absent
-// (BEH-494): a session killed by a billing/usage cap before doing any work never
-// gets the chance to write the dropbox, so the generic "never ran" message is
-// actively misleading (it reads as the agent misbehaving). When the cap fired,
-// report the distinct retry-after-reset class instead.
-func Retrospective(dropboxExists, spendingCapAbort bool) Result {
+// Two parameters distinguish the failure class when the dropbox is absent, so a
+// kill the agent couldn't avoid isn't mislabelled as the agent skipping the step:
+//
+//   - spendingCapAbort (BEH-494): a session killed by a billing/usage cap before
+//     doing any work never gets the chance to write the dropbox, so the generic
+//     "never ran" reads as the agent misbehaving. When the cap fired, report the
+//     distinct retry-after-reset class instead. It is the most specific cause, so
+//     it takes precedence over the exit code.
+//   - exitCode (BEH-536): the retrospective is a long, read-heavy step that hit
+//     its wall-clock cap (exit 137) mid-investigation — after the analysis but
+//     before its write. A 137 kill with no dropbox is "killed before writing —
+//     retry", NOT "never ran" (mirrors ReviewQualitative's OOM branch). Combined
+//     with the skill's incremental write, this leaves a clear, actionable signal.
+//
+// Only a genuinely absent-and-not-killed dropbox keeps the "never ran" wording.
+func Retrospective(dropboxExists, spendingCapAbort bool, exitCode int) Result {
 	if dropboxExists {
 		return Result{OK: true, Reason: "findings dropbox out.json present"}
 	}
 	if spendingCapAbort {
 		return Result{OK: false, Reason: "session aborted before running — spending cap reached, retry after reset"}
+	}
+	if exitCode == oomExitCode {
+		return Result{OK: false, Reason: "session killed (exit 137) before writing findings — likely OOM or wall-clock cap, retry"}
 	}
 	return Result{OK: false, Reason: "findings dropbox out.json was not written — retrospective never ran"}
 }
