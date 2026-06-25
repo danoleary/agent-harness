@@ -151,7 +151,7 @@ loop:
   # agent has no GH_TOKEN; it can only commit into the shared local .git
 
   --- review ground truth + push gate (harness, host-side) ---
-  re-run gates in a throwaway container: `pnpm check && pnpm build` on feat/beh-nnn
+  re-run gates in a throwaway container: `pnpm check && pnpm typecheck` on feat/beh-nnn
   review OK <=> gates are GREEN          // never the agent's self-report
   if OK     -> git -C $HERD_PATH push origin feat/beh-nnn
                gh pr create --repo <origin> --head feat/beh-nnn --base main \

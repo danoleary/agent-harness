@@ -228,14 +228,17 @@ func Review(cfg config.Config, log *runlog.Logger, runID string, args Args) Resu
 		log.Event("review … warning: could not fetch origin/main: " + err.Error())
 	}
 
-	// Re-run `pnpm check && pnpm build` in a throwaway container. The gate's exit
-	// code is the ONLY thing that authorises a push — never the agent's report.
+	// Re-run `pnpm check && pnpm typecheck` in a throwaway container. The gate's
+	// exit code is the ONLY thing that authorises a push — never the agent's report.
+	// It deliberately runs `typecheck`, not the full memory-heavy `pnpm run build`,
+	// which OOM-kills correct diffs in the sandbox (BEH-529); CI's full build is the
+	// SSR-shell backstop (this stage watches CI post-PR via ci.WatchAndFix).
 	//
 	// Retry on an OOM-kill (exit 137) here too (BEH-524): the gate's own
-	// `pnpm install` (and the build) can be SIGKILLed under memory pressure, which
-	// would flip a genuinely green branch red and push nothing. A 137 is
-	// environmental, never the diff — a real gate failure (typecheck/test/build
-	// error) returns a non-137 code and is final on the first attempt.
+	// `pnpm install` (and even typecheck) can be SIGKILLed under memory pressure,
+	// which would flip a genuinely green branch red and push nothing. A 137 is
+	// environmental, never the diff — a real gate failure (check/typecheck error)
+	// returns a non-137 code and is final on the first attempt.
 	gateTranscript := runlog.GateTranscriptName(runID)
 	log.Event(fmt.Sprintf("re-running gates host-side (cap %d min)", int(cfg.ReviewTimeout.Minutes())))
 	gateOutcome, _ := session.RetryOnOOMKill(oomMaxAttempts, oomRetryBackoff, time.Sleep, func(attempt int) session.Outcome {

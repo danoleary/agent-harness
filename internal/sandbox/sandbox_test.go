@@ -85,7 +85,7 @@ func TestMountsFindingsWhenFindingsDirGiven(t *testing.T) {
 }
 
 // The throwaway gate-re-run container (DESIGN.md: harness re-runs `pnpm check &&
-// pnpm build` on the branch) carries NO secrets — not even the Claude credential
+// pnpm typecheck` on the branch) carries NO secrets — not even the Claude credential
 // — and runs in the worktree, not the main checkout.
 func TestGateRunArgsCarryNoSecretsAndRunGatesInWorktree(t *testing.T) {
 	args := BuildGateRunArgs(GateConfig{
@@ -103,9 +103,17 @@ func TestGateRunArgsCarryNoSecretsAndRunGatesInWorktree(t *testing.T) {
 			t.Errorf("gate container must carry no secrets, but argv mentions %q: %v", secret, args)
 		}
 	}
-	// Runs the real gate commands.
-	if !strings.Contains(joined, "check") || !strings.Contains(joined, "build") {
-		t.Errorf("gate args must run `pnpm check && pnpm build`, got: %v", args)
+	// Runs the real gate commands: lint+format (`check`) and `typecheck`. It must
+	// NOT run the full `pnpm run build` — its vite bundling + prerender crawl is
+	// memory-heavy and gets OOM-killed (exit 137) in the sandbox even on a correct
+	// diff (BEH-407/477/491/519/529), which once blocked a green, reviewed branch
+	// from shipping. `typecheck` (tsgo --noEmit) is the accepted in-sandbox diff-
+	// validation signal; CI's full `build` is the SSR-shell backstop.
+	if !strings.Contains(joined, "check") || !strings.Contains(joined, "typecheck") {
+		t.Errorf("gate args must run `pnpm check && pnpm typecheck`, got: %v", args)
+	}
+	if strings.Contains(joined, "run build") {
+		t.Errorf("gate must not run the OOM-prone `pnpm run build`, got: %v", args)
 	}
 	// Working dir is the worktree (the branch under review), not the main checkout.
 	workdirs := valuesForFlag(args, "-w")

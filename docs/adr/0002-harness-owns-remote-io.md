@@ -40,7 +40,7 @@ only Anthropic.** Concretely:
   the `entrypoint.sh` HTTPS-push wiring is removed. Agents **commit locally only**,
   into the shared `.git`.
 - **The harness pushes and opens the PR, host-side.** After the `review` container
-  exits, the harness re-runs the quality gates (`pnpm check && pnpm build`) on the
+  exits, the harness re-runs the quality gates (`pnpm check && pnpm typecheck`) on the
   branch in a throwaway container. **Only if they pass** does it
   `git -C $HERD_PATH push origin feat/beh-nnn` and `gh pr create`. The gate re-run
   is therefore both review's ground truth *and* the push gate — no branch reaches

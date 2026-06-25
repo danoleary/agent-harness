@@ -72,7 +72,7 @@ Over the worktree the implementation slice left behind, `review` runs a **cold**
 branch/issue/diff, never the implementation transcript) and lands its fixes as a
 **local commit only**. The agent has no `GH_TOKEN` and is steered off pushing,
 `gh`, Linear, and findings. Then — host-side — the harness independently re-runs
-the quality gates (`pnpm check && pnpm build`) in a throwaway container on the
+the quality gates (`pnpm check && pnpm typecheck`) in a throwaway container on the
 branch. **Ground truth is the harness's own gate run, never the agent's
 self-report**, and it doubles as the push gate: green → `git push` (from the main
 checkout) + `gh pr create` with a templated title/body; red/crash → keep the

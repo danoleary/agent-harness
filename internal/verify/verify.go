@@ -60,7 +60,7 @@ func Retrospective(dropboxExists, spendingCapAbort bool) Result {
 
 // ReviewOutcome is the result of the harness's OWN host-side gate re-run after a
 // review session — the only thing that may authorise a push (never the agent's
-// self-report). GatesGreen is true iff `pnpm check && pnpm build` passed in the
+// self-report). GatesGreen is true iff `pnpm check && pnpm typecheck` passed in the
 // throwaway container on the feature branch (DESIGN.md: ground truth = the
 // harness's own gate run is green; this is also the push gate). WorktreeClean is
 // true iff the worktree had no uncommitted changes when the gate ran.
