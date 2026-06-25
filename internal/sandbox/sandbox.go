@@ -44,6 +44,26 @@ const ExitCannotStart = 125
 // So a 137 is worth retrying; a genuine failure is not.
 const ExitOOMKill = 137
 
+// transientStartReasonRE matches the docker stderr reasons for the environmental,
+// transient class of exit-125 launch failure: the overlay2 store gone read-only
+// under host disk/IO pressure — the kernel's EROFS ("read-only file system"),
+// e.g. `driver "overlay2" failed to remove root filesystem: unlinkat …: read-only
+// file system` (BEH-542, the same daemon-wedge the PreflightTimeout note above
+// documents). Like the 137 OOM-kill (ExitOOMKill), this is the host momentarily
+// wedging, not a code/config fault — the same `docker run` succeeds on a bare
+// retry once the daemon recovers — so it is worth retrying.
+var transientStartReasonRE = regexp.MustCompile(`(?i)read-only file system`)
+
+// IsRetryableStartFailure reports whether a docker "cannot start" (exit 125)
+// reason line is the transient overlay2/read-only-filesystem class worth retrying,
+// mirroring the ExitOOMKill (137) precedent. reason is docker's own error line
+// (DockerErrorReason). An empty or unrecognised reason is NOT retryable: only the
+// known transient signatures match, so a genuine 125 (daemon down, image missing,
+// bad flag) still fails fast and terminal.
+func IsRetryableStartFailure(reason string) bool {
+	return transientStartReasonRE.MatchString(reason)
+}
+
 // FindingsMountPath is the fixed container path the findings dropbox is mounted at.
 const FindingsMountPath = "/findings"
 

@@ -390,6 +390,35 @@ func TestDockerErrorReason(t *testing.T) {
 	}
 }
 
+func TestIsRetryableStartFailure(t *testing.T) {
+	cases := []struct {
+		name, reason string
+		want         bool
+	}{
+		// The reported BEH-542 signature: overlay2 teardown failing because the
+		// store went read-only under disk/IO pressure — environmental & transient.
+		{
+			"overlay2 read-only teardown",
+			`driver "overlay2" failed to remove root filesystem: unlinkat /var/lib/docker/overlay2/abc/merged: read-only file system`,
+			true,
+		},
+		{"bare read-only file system", "write /var/lib/docker/...: read-only file system", true},
+		{"mixed case EROFS", "Read-Only File System", true},
+		// Genuine, terminal 125s carry none of the transient signatures.
+		{"daemon down", "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?", false},
+		{"image missing", "Unable to find image 'herd-agent-harness:latest' locally", false},
+		{"bad flag", "unknown flag: --nope", false},
+		{"empty", "", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := IsRetryableStartFailure(c.reason); got != c.want {
+				t.Errorf("IsRetryableStartFailure(%q) = %v, want %v", c.reason, got, c.want)
+			}
+		})
+	}
+}
+
 const (
 	testImage   = "herd-agent-harness:latest"
 	testContext = "/herd/agent-harness"

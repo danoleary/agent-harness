@@ -1,9 +1,34 @@
 package stages
 
 import (
+	"errors"
+	"os"
 	"strings"
+	"syscall"
 	"testing"
 )
+
+// isDiskFull recognises the ENOSPC a findings-dir mkdir returns when the host disk
+// is full (BEH-540), so the stage can degrade to a clear warning instead of an
+// opaque hard error. It must see through os.PathError's wrapping and ignore other
+// errno values.
+func TestIsDiskFull(t *testing.T) {
+	if !isDiskFull(&os.PathError{Op: "mkdir", Path: "/x/findings", Err: syscall.ENOSPC}) {
+		t.Error("ENOSPC PathError should be disk-full")
+	}
+	if !isDiskFull(syscall.ENOSPC) {
+		t.Error("bare ENOSPC should be disk-full")
+	}
+	if isDiskFull(&os.PathError{Op: "mkdir", Path: "/x", Err: syscall.EACCES}) {
+		t.Error("EACCES (permission) is not disk-full")
+	}
+	if isDiskFull(errors.New("boom")) {
+		t.Error("a generic error is not disk-full")
+	}
+	if isDiskFull(nil) {
+		t.Error("nil is not disk-full")
+	}
+}
 
 func TestParseArgsValidIdentifierUppercases(t *testing.T) {
 	got, err := ParseArgs("implementation", []string{"beh-527"})

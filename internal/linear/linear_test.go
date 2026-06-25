@@ -112,6 +112,73 @@ func TestMoveToInProgress(t *testing.T) {
 	}
 }
 
+// pickState prefers the canonically-named state of the right type, falling back
+// to the first state of that type, and returns "" when none matches.
+func TestPickState(t *testing.T) {
+	states := []issueState{
+		{ID: "s-todo", Name: "Todo", Type: "unstarted"},
+		{ID: "s-backlog", Name: "Backlog", Type: "backlog"},
+		{ID: "s-prog", Name: "In Progress", Type: "started"},
+		{ID: "s-review", Name: "In Review", Type: "started"},
+	}
+	if got := pickState(states, "started", "In Progress"); got != "s-prog" {
+		t.Errorf("pickState started/In Progress = %q, want s-prog", got)
+	}
+	if got := pickState(states, "unstarted", "Todo"); got != "s-todo" {
+		t.Errorf("pickState unstarted/Todo = %q, want s-todo", got)
+	}
+	// Name miss falls back to the first state of the requested type.
+	if got := pickState(states, "started", "Doing"); got != "s-prog" {
+		t.Errorf("pickState fallback by type = %q, want s-prog (first started)", got)
+	}
+	// No state of that type → empty.
+	if got := pickState(states, "completed", "Done"); got != "" {
+		t.Errorf("pickState no-match = %q, want empty", got)
+	}
+}
+
+// ReleaseToTodo moves the ticket back to its team's unstarted "Todo" state,
+// undoing an In-Progress claim that yielded nothing (BEH-543).
+func TestReleaseToTodo(t *testing.T) {
+	var calls []call
+	tr := func(query string, variables map[string]any) (json.RawMessage, error) {
+		calls = append(calls, call{query: query, variables: variables})
+		if strings.Contains(query, "states") {
+			return json.Marshal(map[string]any{
+				"issue": map[string]any{
+					"id": "issue-uuid",
+					"team": map[string]any{
+						"states": map[string]any{
+							"nodes": []any{
+								map[string]any{"id": "state-todo", "name": "Todo", "type": "unstarted"},
+								map[string]any{"id": "state-progress", "name": "In Progress", "type": "started"},
+							},
+						},
+					},
+				},
+			})
+		}
+		return json.Marshal(map[string]any{"issueUpdate": map[string]any{"success": true}})
+	}
+
+	if err := NewClient(tr).ReleaseToTodo("BEH-324"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var update *call
+	for i := range calls {
+		if strings.Contains(calls[i].query, "issueUpdate") {
+			update = &calls[i]
+		}
+	}
+	if update == nil {
+		t.Fatal("no issueUpdate mutation issued")
+	}
+	if update.variables["stateId"] != "state-todo" {
+		t.Errorf("update stateId = %v, want state-todo", update.variables["stateId"])
+	}
+}
+
 func TestSearchFindingsParsesIssuesAndKeys(t *testing.T) {
 	tr, calls := transportReturning(t, map[string]any{
 		"issues": map[string]any{

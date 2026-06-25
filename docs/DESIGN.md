@@ -234,15 +234,43 @@ loop:
   unverified so a reviewer never mistakes it for a real handoff. To keep refusals rare, the tdd
   session is pinned to an exact Opus snapshot (`claude-opus-4-8`), not the floating
   `opus` alias that once resolved to a stale, refusal-prone Opus 4.1.
+- **A transient sandbox failure is retried, not charged to the ticket ([BEH-542](https://linear.app/beherd/issue/BEH-542)).**
+  Two environmental failures look like a session result but aren't the diff's fault:
+  a **137 OOM-kill** under host memory pressure, and a **transient exit-125 launch
+  failure** — docker's overlay2 store gone read-only (`… read-only file system`)
+  when the host disk/IO wedges momentarily. `session.Outcome.Retryable` folds both
+  into one predicate, and `session.RetryTransient` (formerly `RetryOnOOMKill`) retries
+  them with a backoff. *implementation* wraps its launch in it, so a crash at the
+  worktree-creation step — the session's first and heaviest host I/O — recovers on a
+  bare retry (a fresh `--name`, the same create prompt: the wedged container's `--rm`
+  teardown may have left the name taken, and a creation-time 125 left no worktree to
+  resume). A *genuine* 125 (daemon down, image missing, bad flag) stays terminal.
+- **A first-stage crash that leaves no worktree releases the claim ([BEH-543](https://linear.app/beherd/issue/BEH-543)).**
+  When implementation fails with **no worktree ever created** (the transient retries
+  above exhausted, or a kill before any work) there is nothing to salvage, so leaving
+  the ticket *In Progress* just strands it. The stage releases the claim back to
+  **Todo** (`linear.ReleaseToTodo`) so a later run re-grabs it. This is the one
+  deliberate exception to "failure never mutates Linear state" below — and it's
+  safe precisely because there's no partial state. (A worktree that *does* exist is
+  kept + checkpoint-committed, never released.)
+- **A full host disk degrades to a warning, not a hard error ([BEH-540](https://linear.app/beherd/issue/BEH-540)).**
+  A findings-dir `mkdir` that fails with ENOSPC (the disk filled) is recognised
+  (`isDiskFull`) and logged as a clear, actionable warning pointing at `pnpm store
+  prune` / pruning merged worktrees — rather than surfacing as an opaque `mkdir …:
+  no space left on device` hard pipeline error that masquerades as a stage crash and
+  forces a manual re-run. (Prevention — a host-side free-space precondition + auto-prune
+  *before* `docker run` — remains the open half of BEH-540.)
 - **The harness owns all remote I/O — Linear ([ADR-0001](adr/0001-harness-owns-linear-integration.md))
   *and* git push / PR ([ADR-0002](adr/0002-harness-owns-remote-io.md)).** Agents
   commit only into the local shared `.git`; the harness pushes (via the main
   checkout) and opens the PR host-side. The sandbox is air-gapped except for
   Anthropic: the **only** secret in the container is the Claude credential
   (`ANTHROPIC_API_KEY` *or* `CLAUDE_CODE_OAUTH_TOKEN`). No `GH_TOKEN`, no Linear.
-- **Failure never mutates Linear state and never deletes a worktree.** It logs,
-  drops a Linear breadcrumb comment, and continues. Worktrees are the recoverable
-  artifact.
+- **Failure never mutates Linear state and never deletes a worktree** — with one
+  narrow exception: an implementation crash that left **no worktree at all** releases
+  the claim back to Todo (BEH-543 above), because there is no recoverable artifact to
+  protect. Otherwise it logs, drops a Linear breadcrumb comment, and continues;
+  worktrees are the recoverable artifact and are never deleted on failure.
 - **Pull `origin/main` at startup and after every session.**
 
 ## Ticket selection (Linear GraphQL, harness-owned)

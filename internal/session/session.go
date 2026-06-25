@@ -79,6 +79,25 @@ type Outcome struct {
 	// OOM mid-gate), so a green host-side gate re-run isn't mistaken for a full
 	// review. Only meaningful for review sessions.
 	ReviewVerdictEmitted bool
+	// DockerReason is docker's own error line on a launch failure (exit 125 —
+	// sandbox.ExitCannotStart), extracted from the stderr tail. It lets the caller
+	// tell a transient launch failure (overlay2/read-only-fs, BEH-542) from a
+	// genuine one (daemon down, image missing) so only the former is retried. Empty
+	// when the container started.
+	DockerReason string
+}
+
+// Retryable reports whether this outcome is an environmental, transient failure
+// worth a bare retry — the 137 OOM-kill (sandbox.ExitOOMKill, BEH-524) or a
+// transient exit-125 launch failure (overlay2/read-only-fs, BEH-542). Both are the
+// host momentarily wedging, not a code/config fault; the same `docker run`
+// succeeds once it recovers. A genuine 125 (daemon down, image missing, bad flag)
+// and any real non-zero code the process itself returned stay terminal.
+func (o Outcome) Retryable() bool {
+	if o.ExitCode == sandbox.ExitOOMKill {
+		return true
+	}
+	return o.ExitCode == sandbox.ExitCannotStart && sandbox.IsRetryableStartFailure(o.DockerReason)
 }
 
 // streamFlags are the notable stream signals pumpStdout detects while scanning the
@@ -233,15 +252,17 @@ func Run(dockerArgs []string, opts Options) Outcome {
 	// Exit 125 means docker couldn't start the container at all (daemon down,
 	// image missing, bad flag). The reason is teed only to the transcript, so
 	// echo the real cause to the console (BEH-316).
+	dockerReason := ""
 	if exitCode == sandbox.ExitCannotStart {
-		hint := sandbox.DockerErrorReason(strings.Join(tail, "\n"))
+		dockerReason = sandbox.DockerErrorReason(strings.Join(tail, "\n"))
+		hint := dockerReason
 		if hint == "" {
 			hint = "see transcript for docker's error"
 		}
 		opts.Log.Event("session ✗ docker could not start the container (exit 125): " + hint)
 	}
 
-	return Outcome{ExitCode: exitCode, UsagePolicyRefusal: flags.usagePolicyRefusal, SpendingCapAbort: flags.spendingCapAbort, ReviewVerdictEmitted: flags.reviewVerdictEmitted}
+	return Outcome{ExitCode: exitCode, UsagePolicyRefusal: flags.usagePolicyRefusal, SpendingCapAbort: flags.spendingCapAbort, ReviewVerdictEmitted: flags.reviewVerdictEmitted, DockerReason: dockerReason}
 }
 
 // pumpStdout scans claude's stream-json stdout: it tees every line raw to the

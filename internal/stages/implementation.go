@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/beherd/agent-harness/internal/config"
 	"github.com/beherd/agent-harness/internal/filing"
@@ -61,6 +62,12 @@ func Implementation(cfg config.Config, log *runlog.Logger, runID string, args Ar
 	p := prompt.BuildTdd(t, slug)
 	findingsDir := log.FindingsDir(implementationSession)
 	if err := os.MkdirAll(findingsDir, 0o755); err != nil {
+		// Degrade a full-disk ENOSPC to a clear warning instead of an opaque hard
+		// error (BEH-540); this runs before the claim, so nothing is left stranded.
+		if isDiskFull(err) {
+			log.Event("implementation ⚠ disk full — cannot create findings dir (" + err.Error() + "); free space (`pnpm store prune`, prune merged worktrees) and re-run")
+			return Result{OK: false}
+		}
 		return Result{Err: err}
 	}
 	// Clear any stale dropbox from a prior run of this ticket before the session
@@ -141,14 +148,14 @@ func Implementation(cfg config.Config, log *runlog.Logger, runID string, args Ar
 	)
 	for attempt := 1; attempt <= maxTddAttempts; attempt++ {
 		attemptContainer := containerName
-		attemptArgs := dockerArgs
-		attemptTranscript := runlog.TranscriptName(implementationSession, runID)
+		attemptPrompt := p
+		attemptLabel := implementationSession
 		if attempt > 1 {
 			attemptContainer = fmt.Sprintf("%s-retry%d", containerName, attempt)
 			// The retry resumes the existing worktree (it already holds the surviving
 			// diff) rather than recreating it (BEH-389).
-			attemptArgs = buildArgs(attemptContainer, prompt.BuildTddResume(t, slug, worktreePath))
-			attemptTranscript = runlog.TranscriptName(fmt.Sprintf("%s-retry%d", implementationSession, attempt), runID)
+			attemptPrompt = prompt.BuildTddResume(t, slug, worktreePath)
+			attemptLabel = fmt.Sprintf("%s-retry%d", implementationSession, attempt)
 			log.Event(fmt.Sprintf(
 				"tdd ↻ usage-policy refusal on attempt %d — retrying once on the same ticket (BEH-389); the worktree diff survives on disk",
 				attempt-1,
@@ -156,13 +163,33 @@ func Implementation(cfg config.Config, log *runlog.Logger, runID string, args Ar
 		}
 
 		log.Event(fmt.Sprintf("launching sandbox (cap %d min)", int(cfg.TddTimeout.Minutes())))
-		outcome := session.Run(attemptArgs, session.Options{
-			ContainerName:  attemptContainer,
-			TranscriptFile: attemptTranscript,
-			Timeout:        cfg.TddTimeout,
-			IdleTimeout:    cfg.SessionIdleTimeout,
-			Verbose:        args.Verbose,
-			Log:            log,
+		// Retry a transient launch failure (overlay2/read-only-fs exit 125, or a 137
+		// OOM-kill) before it becomes the verdict (BEH-542). Such a crash at the
+		// worktree-creation step — the session's very first heavy host I/O — otherwise
+		// discards the whole ticket with no commit and strands it In Progress (BEH-543).
+		// Each launch retry uses a fresh --name (a wedged container's `--rm` teardown
+		// may have failed, leaving the old name taken) and re-runs the SAME prompt: a
+		// creation-time 125 left no worktree, so recreating is the correct recovery.
+		var attemptTranscript string
+		outcome, _ := session.RetryTransient(oomMaxAttempts, session.ConstantBackoff(oomRetryBackoff), time.Sleep, func(launch int) session.Outcome {
+			name, label := attemptContainer, attemptLabel
+			if launch > 1 {
+				name = fmt.Sprintf("%s-launch%d", attemptContainer, launch)
+				label = fmt.Sprintf("%s-launch%d", attemptLabel, launch)
+				log.Event(fmt.Sprintf(
+					"tdd ↻ transient launch failure — retry %d/%d after %s (BEH-542)",
+					launch-1, oomMaxAttempts-1, oomRetryBackoff,
+				))
+			}
+			attemptTranscript = runlog.TranscriptName(label, runID)
+			return session.Run(buildArgs(name, attemptPrompt), session.Options{
+				ContainerName:  name,
+				TranscriptFile: attemptTranscript,
+				Timeout:        cfg.TddTimeout,
+				IdleTimeout:    cfg.SessionIdleTimeout,
+				Verbose:        args.Verbose,
+				Log:            log,
+			})
 		})
 		log.Event(fmt.Sprintf(
 			"session exited (code %d) — transcript at logs/%s/%s", outcome.ExitCode, args.Identifier, attemptTranscript,
@@ -224,6 +251,20 @@ func Implementation(cfg config.Config, log *runlog.Logger, runID string, args Ar
 				log.Event("⚠ uncommitted work remains in the worktree at " + worktreePath + " and the recovery checkpoint commit failed (" + cErr.Error() + ") — recover it manually before re-running")
 			} else {
 				log.Event("✓ harness recovery checkpoint committed on " + gitpkg.BranchName(slug) + " — the session's uncommitted diff is preserved (unverified: finish or re-run, then amend, before opening a PR)")
+			}
+		} else if !truth.WorktreeExists && !capAborted {
+			// The session crashed environmentally before it ever created a worktree —
+			// the transient launch failures retried above (125/137) were exhausted, an
+			// idle/cap kill struck pre-work, or the like. There is no partial state to
+			// salvage, so leaving the ticket In Progress just strands it (BEH-543, from
+			// the BEH-324 run that yielded nothing and sat claimed). Release the claim
+			// back to Todo so a later run re-grabs it instead. Best-effort: a Linear
+			// hiccup here must not crash the stage — warn and leave it claimed. (The
+			// spending-cap abort is excluded: it's its own retry-after-reset class above.)
+			if rErr := client.ReleaseToTodo(args.Identifier); rErr != nil {
+				log.Event("⚠ no worktree was created and releasing the claim back to Todo failed (" + rErr.Error() + ") — move " + args.Identifier + " out of In Progress manually")
+			} else {
+				log.Event("↩ released claim — no worktree was created (environmental crash before any work); " + args.Identifier + " back to Todo for a later run to re-grab (BEH-543)")
 			}
 		}
 	}

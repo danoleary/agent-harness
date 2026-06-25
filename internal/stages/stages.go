@@ -7,11 +7,13 @@
 package stages
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/beherd/agent-harness/internal/config"
@@ -19,6 +21,17 @@ import (
 )
 
 var ticketRE = regexp.MustCompile(`^[A-Z]+-\d+$`)
+
+// isDiskFull reports whether err is the host-disk-full ENOSPC — surfaced when a
+// findings-dir mkdir fails because the disk filled (BEH-540: the BEH-336
+// retrospective hard-errored with `mkdir … findings/…: no space left on device`,
+// forcing a manual re-run). The disk being full is not the stage's fault and the
+// in-sandbox agent can't fix it, so the caller degrades to a clear, actionable
+// warning instead of an opaque hard error. errors.Is sees through os.PathError's
+// wrapping; other errno values (e.g. EACCES) are not disk-full.
+func isDiskFull(err error) bool {
+	return errors.Is(err, syscall.ENOSPC)
+}
 
 // Args is the parsed CLI surface shared by all three tools and the pipeline:
 // a ticket identifier plus the universal flags. Force overrides the

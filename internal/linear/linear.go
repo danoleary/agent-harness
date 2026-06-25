@@ -202,8 +202,36 @@ func (c *Client) FetchTicket(identifier string) (ticket.Ticket, error) {
 	return t, nil
 }
 
-// MoveToInProgress moves a ticket into its team's started "In Progress" state.
-func (c *Client) MoveToInProgress(identifier string) error {
+// issueState is one Linear workflow state (id/name/type) as returned by
+// fetchIssueStatesQuery.
+type issueState struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Type string `json:"type"`
+}
+
+// pickState returns the id of the team state to move to: the one matching both
+// type and canonical name, falling back to the first state of that type (teams
+// may rename "In Progress"/"Todo" but the type is stable). "" means no state of
+// the requested type exists.
+func pickState(states []issueState, typ, name string) string {
+	for _, s := range states {
+		if s.Type == typ && s.Name == name {
+			return s.ID
+		}
+	}
+	for _, s := range states {
+		if s.Type == typ {
+			return s.ID
+		}
+	}
+	return ""
+}
+
+// moveToState fetches the issue's team states, picks a target via pick, and moves
+// the issue there. what names the target for the error message. Shared by
+// MoveToInProgress and ReleaseToTodo so the fetch/parse/mutate plumbing lives once.
+func (c *Client) moveToState(identifier, what string, pick func([]issueState) string) error {
 	data, err := c.transport(fetchIssueStatesQuery, map[string]any{"id": identifier})
 	if err != nil {
 		return err
@@ -214,11 +242,7 @@ func (c *Client) MoveToInProgress(identifier string) error {
 			ID   string `json:"id"`
 			Team struct {
 				States struct {
-					Nodes []struct {
-						ID   string `json:"id"`
-						Name string `json:"name"`
-						Type string `json:"type"`
-					} `json:"nodes"`
+					Nodes []issueState `json:"nodes"`
 				} `json:"states"`
 			} `json:"team"`
 		} `json:"issue"`
@@ -230,28 +254,30 @@ func (c *Client) MoveToInProgress(identifier string) error {
 		return fmt.Errorf("Linear issue not found: %s", identifier)
 	}
 
-	states := resp.Issue.Team.States.Nodes
-	target := ""
-	for _, s := range states {
-		if s.Type == "started" && s.Name == "In Progress" {
-			target = s.ID
-			break
-		}
-	}
+	target := pick(resp.Issue.Team.States.Nodes)
 	if target == "" {
-		for _, s := range states {
-			if s.Type == "started" {
-				target = s.ID
-				break
-			}
-		}
-	}
-	if target == "" {
-		return fmt.Errorf("no started \"In Progress\" state for %s", identifier)
+		return fmt.Errorf("no %s state for %s", what, identifier)
 	}
 
 	_, err = c.transport(moveIssueMutation, map[string]any{"id": resp.Issue.ID, "stateId": target})
 	return err
+}
+
+// MoveToInProgress moves a ticket into its team's started "In Progress" state.
+func (c *Client) MoveToInProgress(identifier string) error {
+	return c.moveToState(identifier, `started "In Progress"`, func(s []issueState) string {
+		return pickState(s, "started", "In Progress")
+	})
+}
+
+// ReleaseToTodo moves a ticket back to its team's unstarted "Todo" state, undoing
+// an In-Progress claim that yielded nothing — used when an implementation session
+// crashed environmentally before creating a worktree or commit (BEH-543), so a
+// later run re-grabs the ticket rather than finding it stranded In Progress.
+func (c *Client) ReleaseToTodo(identifier string) error {
+	return c.moveToState(identifier, `unstarted "Todo"`, func(s []issueState) string {
+		return pickState(s, "unstarted", "Todo")
+	})
 }
 
 // FileFinding files a harness-improvement finding as a new issue referencing the

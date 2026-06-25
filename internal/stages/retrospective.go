@@ -62,6 +62,14 @@ func Retrospective(cfg config.Config, log *runlog.Logger, runID string, args Arg
 
 	findingsDir := log.FindingsDir(retrospectiveSession)
 	if err := os.MkdirAll(findingsDir, 0o755); err != nil {
+		// A full host disk fails this mkdir with ENOSPC. The disk being full isn't the
+		// retrospective's fault and the in-sandbox agent can't fix it, so degrade to a
+		// clear, actionable warning rather than a hard pipeline error that masquerades
+		// as a stage crash and forces a manual re-run (BEH-540).
+		if isDiskFull(err) {
+			log.Event("retrospective ⚠ disk full — cannot create findings dir (" + err.Error() + "); free space (`pnpm store prune`, prune merged worktrees) and re-run")
+			return Result{OK: false}
+		}
 		return Result{Err: err}
 	}
 	// Gather the finding classes a prior pipeline run already filed (the team's

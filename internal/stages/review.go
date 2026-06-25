@@ -173,7 +173,7 @@ func Review(cfg config.Config, log *runlog.Logger, runID string, args Args) Resu
 	// retry once memory freed), so a short backoff-and-retry recovers it up front.
 	installTranscript := runlog.StepLogName("install", runID)
 	log.Event("prepping worktree (pnpm install --frozen-lockfile) before the review session")
-	installOutcome, installAttempts := session.RetryOnOOMKill(oomMaxAttempts, session.ConstantBackoff(oomRetryBackoff), time.Sleep, func(attempt int) session.Outcome {
+	installOutcome, installAttempts := session.RetryTransient(oomMaxAttempts, session.ConstantBackoff(oomRetryBackoff), time.Sleep, func(attempt int) session.Outcome {
 		name, transcript := installName, installTranscript
 		if attempt > 1 {
 			name = fmt.Sprintf("%s-retry%d", installName, attempt)
@@ -263,7 +263,7 @@ func Review(cfg config.Config, log *runlog.Logger, runID string, args Args) Resu
 	gateTranscript := runlog.GateTranscriptName(runID)
 	gateBackoff := session.ExponentialBackoff(gateOOMBackoffBase, gateOOMBackoffCap)
 	log.Event(fmt.Sprintf("re-running gates host-side (cap %d min)", int(cfg.ReviewTimeout.Minutes())))
-	gateOutcome, _ := session.RetryOnOOMKill(gateOOMMaxAttempts, gateBackoff, time.Sleep, func(attempt int) session.Outcome {
+	gateOutcome, _ := session.RetryTransient(gateOOMMaxAttempts, gateBackoff, time.Sleep, func(attempt int) session.Outcome {
 		name, transcript := gateName, gateTranscript
 		if attempt > 1 {
 			name = fmt.Sprintf("%s-retry%d", gateName, attempt)

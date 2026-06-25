@@ -9,10 +9,10 @@ import (
 
 // A 137 (OOM-kill) on the first attempt is transient (BEH-524): the helper must
 // sleep the backoff and retry, surfacing the eventual success.
-func TestRetryOnOOMKill_RetriesThenSucceeds(t *testing.T) {
+func TestRetryTransient_RetriesThenSucceeds(t *testing.T) {
 	var slept []time.Duration
 	codes := []int{sandbox.ExitOOMKill, 0}
-	out, attempts := RetryOnOOMKill(3, ConstantBackoff(2*time.Second), func(d time.Duration) { slept = append(slept, d) },
+	out, attempts := RetryTransient(3, ConstantBackoff(2*time.Second), func(d time.Duration) { slept = append(slept, d) },
 		func(attempt int) Outcome { return Outcome{ExitCode: codes[attempt-1]} })
 
 	if out.ExitCode != 0 {
@@ -26,12 +26,44 @@ func TestRetryOnOOMKill_RetriesThenSucceeds(t *testing.T) {
 	}
 }
 
+// A transient exit-125 launch failure (overlay2/read-only-fs, BEH-542) is
+// environmental like the 137 OOM, so the helper retries it the same way.
+func TestRetryTransient_RetriesTransient125(t *testing.T) {
+	var slept []time.Duration
+	transient := Outcome{ExitCode: sandbox.ExitCannotStart, DockerReason: "unlinkat /var/lib/docker/overlay2/x: read-only file system"}
+	outs := []Outcome{transient, {ExitCode: 0}}
+	out, attempts := RetryTransient(3, ConstantBackoff(time.Second), func(d time.Duration) { slept = append(slept, d) },
+		func(attempt int) Outcome { return outs[attempt-1] })
+
+	if out.ExitCode != 0 || attempts != 2 {
+		t.Fatalf("ExitCode=%d attempts=%d, want 0/2 (retried the transient 125)", out.ExitCode, attempts)
+	}
+	if len(slept) != 1 {
+		t.Fatalf("slept %d times, want 1 backoff between the two attempts", len(slept))
+	}
+}
+
+// A genuine exit-125 (daemon down — not the transient read-only class) is a real
+// launch failure: never retried, fails fast.
+func TestRetryTransient_Genuine125NotRetried(t *testing.T) {
+	calls := 0
+	out, attempts := RetryTransient(3, ConstantBackoff(time.Second), func(time.Duration) { t.Fatal("must not sleep on a genuine 125") },
+		func(attempt int) Outcome {
+			calls++
+			return Outcome{ExitCode: sandbox.ExitCannotStart, DockerReason: "Cannot connect to the Docker daemon"}
+		})
+
+	if out.ExitCode != sandbox.ExitCannotStart || attempts != 1 || calls != 1 {
+		t.Fatalf("ExitCode=%d attempts=%d calls=%d, want 125/1/1 (genuine 125 is terminal)", out.ExitCode, attempts, calls)
+	}
+}
+
 // A persistent OOM exhausts the retries and surfaces the 137 (the caller then
 // degrades to warn-and-continue / red gate) — with a backoff only *between*
 // attempts, never after the last.
-func TestRetryOnOOMKill_ExhaustsThenSurfaces137(t *testing.T) {
+func TestRetryTransient_ExhaustsThenSurfaces137(t *testing.T) {
 	var slept []time.Duration
-	out, attempts := RetryOnOOMKill(3, ConstantBackoff(time.Second), func(d time.Duration) { slept = append(slept, d) },
+	out, attempts := RetryTransient(3, ConstantBackoff(time.Second), func(d time.Duration) { slept = append(slept, d) },
 		func(attempt int) Outcome { return Outcome{ExitCode: sandbox.ExitOOMKill} })
 
 	if out.ExitCode != sandbox.ExitOOMKill {
@@ -48,9 +80,9 @@ func TestRetryOnOOMKill_ExhaustsThenSurfaces137(t *testing.T) {
 // With an exponential schedule the sleeps GROW across retries — the gate's fix
 // (BEH-530): each successive OOM waits longer for the Docker VM to reclaim memory,
 // rather than the old fixed beat that compounded pressure across rapid retries.
-func TestRetryOnOOMKill_AppliesGrowingSchedule(t *testing.T) {
+func TestRetryTransient_AppliesGrowingSchedule(t *testing.T) {
 	var slept []time.Duration
-	out, attempts := RetryOnOOMKill(4, ExponentialBackoff(30*time.Second, 120*time.Second),
+	out, attempts := RetryTransient(4, ExponentialBackoff(30*time.Second, 120*time.Second),
 		func(d time.Duration) { slept = append(slept, d) },
 		func(attempt int) Outcome { return Outcome{ExitCode: sandbox.ExitOOMKill} })
 
@@ -70,9 +102,9 @@ func TestRetryOnOOMKill_AppliesGrowingSchedule(t *testing.T) {
 
 // A real failure (a non-137 code the process itself returned) is final — never
 // retried, so a genuine typecheck/test error fails fast.
-func TestRetryOnOOMKill_RealFailureNotRetried(t *testing.T) {
+func TestRetryTransient_RealFailureNotRetried(t *testing.T) {
 	calls := 0
-	out, attempts := RetryOnOOMKill(3, ConstantBackoff(time.Second), func(time.Duration) { t.Fatal("must not sleep on a real failure") },
+	out, attempts := RetryTransient(3, ConstantBackoff(time.Second), func(time.Duration) { t.Fatal("must not sleep on a real failure") },
 		func(attempt int) Outcome { calls++; return Outcome{ExitCode: 1} })
 
 	if out.ExitCode != 1 || attempts != 1 || calls != 1 {
@@ -81,8 +113,8 @@ func TestRetryOnOOMKill_RealFailureNotRetried(t *testing.T) {
 }
 
 // A first-attempt success returns immediately with no backoff.
-func TestRetryOnOOMKill_SuccessFirstTry(t *testing.T) {
-	out, attempts := RetryOnOOMKill(3, ConstantBackoff(time.Second), func(time.Duration) { t.Fatal("must not sleep on first-try success") },
+func TestRetryTransient_SuccessFirstTry(t *testing.T) {
+	out, attempts := RetryTransient(3, ConstantBackoff(time.Second), func(time.Duration) { t.Fatal("must not sleep on first-try success") },
 		func(attempt int) Outcome { return Outcome{ExitCode: 0} })
 
 	if out.ExitCode != 0 || attempts != 1 {
