@@ -118,7 +118,7 @@ func TestBuildTddResumeStillSteersOffLinearAndToDropbox(t *testing.T) {
 }
 
 func TestBuildRetrospectiveInvokesSkillOnTicket(t *testing.T) {
-	p := BuildRetrospective(sample, "beh-362")
+	p := BuildRetrospective(sample, "beh-362", nil)
 
 	for _, want := range []string{"/retrospective", "BEH-362"} {
 		if !strings.Contains(p, want) {
@@ -130,7 +130,7 @@ func TestBuildRetrospectiveInvokesSkillOnTicket(t *testing.T) {
 // The retrospective studies the *sessions*, so the prompt must point it at the
 // ticket-keyed transcripts and the diff.
 func TestBuildRetrospectivePointsAtTranscriptsAndDiff(t *testing.T) {
-	p := BuildRetrospective(sample, "beh-362")
+	p := BuildRetrospective(sample, "beh-362", nil)
 
 	if !strings.Contains(p, "logs/BEH-362") {
 		t.Error("prompt does not point at the ticket-keyed transcript path logs/BEH-362/")
@@ -146,7 +146,7 @@ func TestBuildRetrospectivePointsAtTranscriptsAndDiff(t *testing.T) {
 // The dropbox contract: the fixed path, the finding shape, and the always-write
 // rule that makes an absent file mean "the step never ran".
 func TestBuildRetrospectiveCarriesDropboxContract(t *testing.T) {
-	p := BuildRetrospective(sample, "beh-362")
+	p := BuildRetrospective(sample, "beh-362", nil)
 
 	if !strings.Contains(p, "/findings/out.json") {
 		t.Error("prompt missing the findings dropbox path")
@@ -163,12 +163,53 @@ func TestBuildRetrospectiveCarriesDropboxContract(t *testing.T) {
 	}
 }
 
+// On a re-run, the prompt must list the already-filed finding classes and tell
+// the session to treat them as settled and look only for NEW friction — so it
+// doesn't burn its budget re-deriving issues a prior run already filed (BEH-539).
+func TestBuildRetrospectiveListsAlreadyFiledFindingsOnRerun(t *testing.T) {
+	p := BuildRetrospective(sample, "beh-362", []FiledFinding{
+		{Key: "sandbox-build-oom", Title: "Build OOM-killed at prerender"},
+		{Key: "sandbox-storybook-oom", Title: "Storybook test runner OOMs"},
+	})
+
+	for _, want := range []string{"sandbox-build-oom", "sandbox-storybook-oom", "Build OOM-killed at prerender"} {
+		if !strings.Contains(p, want) {
+			t.Errorf("re-run prompt missing already-filed entry %q", want)
+		}
+	}
+	if !regexp.MustCompile(`(?i)(settled|already.*filed|do not re-)`).MatchString(p) {
+		t.Error("re-run prompt does not tell the session to treat already-filed findings as settled")
+	}
+	if !regexp.MustCompile(`(?i)new`).MatchString(p) {
+		t.Error("re-run prompt does not steer the session toward NEW friction only")
+	}
+}
+
+// A title-only finding (no explicit key) must still appear in the settled list.
+func TestBuildRetrospectiveListsTitleOnlyAlreadyFiledFinding(t *testing.T) {
+	p := BuildRetrospective(sample, "beh-362", []FiledFinding{
+		{Title: "vitest hung in watch mode"},
+	})
+	if !strings.Contains(p, "vitest hung in watch mode") {
+		t.Error("re-run prompt missing the title-only already-filed entry")
+	}
+}
+
+// First run (no already-filed findings): the prompt carries no settled-context
+// section, so it reads exactly as it did before BEH-539.
+func TestBuildRetrospectiveOmitsSettledSectionOnFirstRun(t *testing.T) {
+	p := BuildRetrospective(sample, "beh-362", nil)
+	if regexp.MustCompile(`(?i)already.*filed|treat.*as settled`).MatchString(p) {
+		t.Error("first-run prompt should not carry an already-filed/settled section")
+	}
+}
+
 func TestBuildRetrospectiveCarriesBashQuirkSteer(t *testing.T) {
-	assertCarriesBashQuirkSteer(t, BuildRetrospective(sample, "beh-362"), "retrospective prompt")
+	assertCarriesBashQuirkSteer(t, BuildRetrospective(sample, "beh-362", nil), "retrospective prompt")
 }
 
 func TestBuildRetrospectiveForbidsRemoteAndCodeChanges(t *testing.T) {
-	p := BuildRetrospective(sample, "beh-362")
+	p := BuildRetrospective(sample, "beh-362", nil)
 
 	if !regexp.MustCompile(`(?i)(do not|don't).*Linear`).MatchString(p) {
 		t.Error("prompt does not steer off Linear")

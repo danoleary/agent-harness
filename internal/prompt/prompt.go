@@ -73,6 +73,15 @@ func BuildTddResume(t ticket.Ticket, slug, worktreePath string) string {
 	return strings.Join(lines, "\n")
 }
 
+// FiledFinding is an already-filed harness-improvement finding class surfaced to
+// a retrospective re-run so the session treats it as settled instead of
+// re-deriving it (BEH-539). Key is the stable failure-class slug (may be empty
+// for a title-only finding); Title is the human summary for the prompt list.
+type FiledFinding struct {
+	Key   string
+	Title string
+}
+
 // BuildRetrospective builds the `-p` prompt for the sandboxed /retrospective
 // session — the third, terminal tool. The retrospective studies the *sessions*,
 // so it reads every prior transcript for the ticket plus the diff and writes
@@ -81,7 +90,7 @@ func BuildTddResume(t ticket.Ticket, slug, worktreePath string) string {
 // Linear/MCP/push and any code change, and pins the always-write-`[]` rule the
 // harness's ground-truth check depends on (an absent file means the step never
 // ran).
-func BuildRetrospective(t ticket.Ticket, slug string) string {
+func BuildRetrospective(t ticket.Ticket, slug string, filed []FiledFinding) string {
 	logsPath := "agent-harness/logs/" + t.Identifier
 	lines := []string{
 		"/retrospective for " + t.Identifier + ". The worktree is at `.claude/worktrees/" + slug + "` on branch `feat/" + slug + "`.",
@@ -91,10 +100,32 @@ func BuildRetrospective(t ticket.Ticket, slug string) string {
 		"Write your findings to `/findings/out.json` as a JSON array of `{title, body, kind, key}` objects (kind is a free-form category; key is a stable, lowercase failure-class slug like `sandbox-playwright-missing-deps` used to dedup re-runs — pick the same key any session would for this class of problem, so the harness skips a finding whose key already has an open issue). **Always write the file**, even when you found nothing — write an empty array `[]` in that case. An absent file means the step never ran, so never end without writing it.",
 		"",
 		"This session is read-only and reaches no remote. Make NO code changes, do NOT commit or push, and do NOT touch Linear — do not call any `mcp__linear-server__*` tool. The harness reads `out.json` after the session and files each finding to Linear itself.",
-		"",
-		bashQuirkSteer,
 	}
+	if section := alreadyFiledSection(filed); section != "" {
+		lines = append(lines, "", section)
+	}
+	lines = append(lines, "", bashQuirkSteer)
 	return strings.Join(lines, "\n")
+}
+
+// alreadyFiledSection renders the re-run dedup context (BEH-539): the finding
+// classes the harness has already filed, so the session treats them as settled
+// and spends its budget on NEW friction instead of re-deriving them. Empty when
+// there's nothing already filed — a first run reads exactly as it did before.
+func alreadyFiledSection(filed []FiledFinding) string {
+	if len(filed) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("This ticket has been through the pipeline before — the harness has ALREADY filed Linear issues for the finding classes below, so treat them as SETTLED. Do NOT re-investigate, re-derive, or re-file them (the harness would skip them on key anyway); spend your budget only on NEW friction introduced since the last retrospective:")
+	for _, f := range filed {
+		b.WriteString("\n  - ")
+		if f.Key != "" {
+			b.WriteString(f.Key + " — ")
+		}
+		b.WriteString(f.Title)
+	}
+	return b.String()
 }
 
 // BuildCIFix builds the `-p` prompt for a sandboxed session that diagnoses and

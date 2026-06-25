@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/beherd/agent-harness/internal/findings"
@@ -127,6 +128,62 @@ func openTracked(teamID string, searcher Searcher, log EventSink) map[string]lin
 		tracked[matchKey(e.Key, e.Title)] = e
 	}
 	return tracked
+}
+
+// PriorFinding is an already-known harness finding class (its dedup key and
+// human title) surfaced to a retrospective re-run so the session treats it as
+// settled instead of re-deriving it (BEH-539). Key may be empty for a finding
+// that was only ever title-keyed.
+type PriorFinding struct {
+	Key   string
+	Title string
+}
+
+// AlreadyFiled returns the deduped set of finding classes a retrospective re-run
+// should treat as settled (BEH-539): the team's OPEN filed findings, merged with
+// any classes left in this ticket's prior dropbox. It MUST be called before
+// ClearDropbox wipes that dropbox. Best-effort (ADR-0001): a Linear search
+// failure degrades to the dropbox classes alone and narrates, never crashes. The
+// result is sorted (key, then title) so the injected prompt is deterministic.
+func AlreadyFiled(findingsDir, teamID string, searcher Searcher, log EventSink) []PriorFinding {
+	seen := map[string]bool{}
+	out := []PriorFinding{}
+	add := func(key, title string) {
+		k := matchKey(key, title)
+		if seen[k] {
+			return
+		}
+		seen[k] = true
+		out = append(out, PriorFinding{Key: key, Title: title})
+	}
+
+	// The team's open filed findings — the authoritative set of settled classes.
+	if existing, err := searcher.SearchFindings(teamID); err != nil {
+		log.Event("retrospective context ⚠ already-filed lookup failed, prior-finding context limited to the dropbox: " + err.Error())
+	} else {
+		for _, e := range existing {
+			if e.Closed {
+				continue
+			}
+			add(e.Key, e.Title)
+		}
+	}
+
+	// Any classes the prior run dropped but that may never have reached Linear
+	// (e.g. a transient filing failure). Read here, before ClearDropbox wipes it.
+	if text, err := os.ReadFile(filepath.Join(findingsDir, dropboxFile)); err == nil {
+		for _, f := range findings.Parse(string(text)).Findings {
+			add(f.Key, f.Title)
+		}
+	}
+
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Key != out[j].Key {
+			return out[i].Key < out[j].Key
+		}
+		return out[i].Title < out[j].Title
+	})
+	return out
 }
 
 // matchKey is the dedup fingerprint: the explicit failure-class key when set,

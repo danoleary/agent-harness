@@ -21,6 +21,20 @@ import (
 // ticket's log dir.
 const retrospectiveSession = "retrospective"
 
+// toPromptFindings maps the filing layer's already-filed finding classes to the
+// prompt layer's shape, keeping the two packages decoupled (neither imports the
+// other's type).
+func toPromptFindings(prior []filing.PriorFinding) []prompt.FiledFinding {
+	if len(prior) == 0 {
+		return nil
+	}
+	out := make([]prompt.FiledFinding, len(prior))
+	for i, p := range prior {
+		out[i] = prompt.FiledFinding{Key: p.Key, Title: p.Title}
+	}
+	return out
+}
+
 // Retrospective runs the third and terminal stage: the /retrospective skill over
 // a ticket's prior session transcripts, then files whatever harness-improvement
 // findings the session dropped to Linear. Ground truth is the *presence* of
@@ -46,11 +60,19 @@ func Retrospective(cfg config.Config, log *runlog.Logger, runID string, args Arg
 	}
 	log.Event(fmt.Sprintf("fetched %s — %s", t.Identifier, t.Title))
 
-	p := prompt.BuildRetrospective(t, slug)
 	findingsDir := log.FindingsDir(retrospectiveSession)
 	if err := os.MkdirAll(findingsDir, 0o755); err != nil {
 		return Result{Err: err}
 	}
+	// Gather the finding classes a prior pipeline run already filed (the team's
+	// open findings + this ticket's prior dropbox) so the session can treat them
+	// as settled instead of re-deriving them (BEH-539). MUST run before
+	// ClearDropbox, which is about to wipe that prior dropbox.
+	prior := filing.AlreadyFiled(findingsDir, t.TeamID, client, log)
+	if len(prior) > 0 {
+		log.Event(fmt.Sprintf("retrospective re-run: %d already-filed finding class(es) passed to the session as settled context", len(prior)))
+	}
+
 	// Clear any stale dropbox from a prior retrospective run of this ticket before
 	// the session writes. The dir is ticket+session keyed (reused across runs), so
 	// without this a previous run's out.json would both re-file as duplicates and
@@ -58,6 +80,8 @@ func Retrospective(cfg config.Config, log *runlog.Logger, runID string, args Arg
 	if err := filing.ClearDropbox(findingsDir); err != nil {
 		return Result{Err: err}
 	}
+
+	p := prompt.BuildRetrospective(t, slug, toPromptFindings(prior))
 
 	// runID is second-resolution; include the pid so two runs started in the same
 	// second still get distinct container names (and distinct `docker kill` targets).

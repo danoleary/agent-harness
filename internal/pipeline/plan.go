@@ -93,7 +93,8 @@ func Plan(cfg config.Config, identifier string) string {
 	)
 
 	// --- retrospective ---
-	retroPrompt := prompt.BuildRetrospective(t, slug)
+	// Dry-run never fetches Linear, so there's no already-filed context to inject.
+	retroPrompt := prompt.BuildRetrospective(t, slug, nil)
 	retroDocker := sandbox.BuildDockerRunArgs(sandbox.Config{
 		Image:           cfg.Image,
 		HerdPath:        cfg.HerdPath,

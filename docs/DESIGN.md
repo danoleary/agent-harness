@@ -280,6 +280,17 @@ transcript for the ticket (implementation *and* review) plus the diff.
 - After the session returns, the harness reads `out.json`, files one Linear issue
   per finding (team BeHerd, referencing the worked ticket), and logs each.
 
+**Re-run dedup context (BEH-539).** When a ticket goes through the pipeline more
+than once, an earlier run's retrospective may have already filed findings. The
+harness already skips re-filing a finding whose `key` has an open issue, but a
+naive re-run session has no signal those classes are settled — so it burns its
+budget re-deriving them. Before launching the session, the harness gathers the
+already-filed classes (the team's open harness findings **plus** any classes left
+in this ticket's prior dropbox, read before it's cleared) and injects them into
+the retrospective prompt with an instruction to treat them as settled and look
+only for **new** friction. Best-effort: a Linear lookup failure degrades to the
+dropbox classes alone. A first run has nothing to inject and reads as before.
+
 These are a separate concern from the feature PR and never go in it.
 
 > Why `review` is a **cold** review and does *not* read the implementation

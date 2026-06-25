@@ -3,6 +3,7 @@ package filing
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -314,6 +315,108 @@ func TestDropboxExistsReportsPresence(t *testing.T) {
 	writeDropbox(t, dir, `[]`)
 	if !DropboxExists(dir) {
 		t.Error("expected present once out.json is written (even as [])")
+	}
+}
+
+// AlreadyFiled feeds a retrospective re-run the set of settled finding classes
+// (BEH-539). It returns the team's OPEN filed findings as {key, title}, skipping
+// closed ones (a closed finding is no longer a settled class to avoid).
+func TestAlreadyFiledReturnsOpenFindingsSkippingClosed(t *testing.T) {
+	searcher := &fakeSearcher{existing: []linear.ExistingFinding{
+		{Identifier: "BEH-529", Title: "Build OOMs", Key: "sandbox-build-oom"},
+		{Identifier: "BEH-100", Title: "old closed one", Key: "ancient-class", Closed: true},
+	}}
+	rec := &recorder{}
+
+	got := AlreadyFiled(t.TempDir(), "team-uuid", searcher, rec)
+
+	if len(got) != 1 {
+		t.Fatalf("expected only the open finding, got %d: %+v", len(got), got)
+	}
+	if got[0].Key != "sandbox-build-oom" || got[0].Title != "Build OOMs" {
+		t.Errorf("unexpected entry: %+v", got[0])
+	}
+}
+
+// The prior run's dropbox is read (before ClearDropbox wipes it) so classes that
+// never reached Linear still count as settled — merged with the Linear set and
+// deduped by key so a class in both sources appears once.
+func TestAlreadyFiledMergesPriorDropboxAndDedupsByKey(t *testing.T) {
+	dir := t.TempDir()
+	writeDropbox(t, dir, `[
+		{"title":"Build OOMs","body":"x","key":"sandbox-build-oom"},
+		{"title":"Storybook OOMs","body":"y","key":"sandbox-storybook-oom"}
+	]`)
+	searcher := &fakeSearcher{existing: []linear.ExistingFinding{
+		{Identifier: "BEH-529", Title: "Build OOMs", Key: "sandbox-build-oom"},
+	}}
+
+	got := AlreadyFiled(dir, "team-uuid", searcher, &recorder{})
+
+	keys := map[string]int{}
+	for _, f := range got {
+		keys[f.Key]++
+	}
+	if keys["sandbox-build-oom"] != 1 {
+		t.Errorf("expected the shared class deduped to one, got %d (%+v)", keys["sandbox-build-oom"], got)
+	}
+	if keys["sandbox-storybook-oom"] != 1 {
+		t.Errorf("expected the dropbox-only class included once, got %d (%+v)", keys["sandbox-storybook-oom"], got)
+	}
+	if len(got) != 2 {
+		t.Errorf("expected exactly two classes after dedup, got %d: %+v", len(got), got)
+	}
+}
+
+// Best-effort (ADR-0001): a Linear search failure must degrade to the dropbox
+// classes alone and narrate, never crash.
+func TestAlreadyFiledDegradesToDropboxWhenSearchFails(t *testing.T) {
+	dir := t.TempDir()
+	writeDropbox(t, dir, `[{"title":"Build OOMs","body":"x","key":"sandbox-build-oom"}]`)
+	searcher := &fakeSearcher{err: errBoom}
+	rec := &recorder{}
+
+	got := AlreadyFiled(dir, "team-uuid", searcher, rec)
+
+	if len(got) != 1 || got[0].Key != "sandbox-build-oom" {
+		t.Fatalf("expected the dropbox class despite the search failure, got %+v", got)
+	}
+	if !strings.Contains(strings.Join(rec.events, "\n"), "failed") {
+		t.Errorf("expected a degraded-lookup narration, got %v", rec.events)
+	}
+}
+
+// The result is sorted (key, then title) so the injected prompt is
+// deterministic across runs regardless of the order Linear returns findings in.
+func TestAlreadyFiledSortsDeterministically(t *testing.T) {
+	searcher := &fakeSearcher{existing: []linear.ExistingFinding{
+		{Identifier: "BEH-3", Title: "Z last", Key: "zzz-class"},
+		{Identifier: "BEH-1", Title: "A first", Key: "aaa-class"},
+		{Identifier: "BEH-2", Title: "mmm title only"},
+	}}
+
+	got := AlreadyFiled(t.TempDir(), "team-uuid", searcher, &recorder{})
+
+	gotKeys := make([]string, len(got))
+	for i, f := range got {
+		gotKeys[i] = f.Key
+	}
+	// Empty key (title-only) sorts before any explicit key, then key ascending.
+	want := []string{"", "aaa-class", "zzz-class"}
+	if !reflect.DeepEqual(gotKeys, want) {
+		t.Errorf("AlreadyFiled not sorted deterministically: got %v, want %v", gotKeys, want)
+	}
+}
+
+// First run: nothing filed and no prior dropbox → empty, no narration.
+func TestAlreadyFiledIsEmptyOnFirstRun(t *testing.T) {
+	rec := &recorder{}
+	got := AlreadyFiled(t.TempDir(), "team-uuid", noExisting(), rec)
+	if len(got) != 0 {
+		t.Errorf("expected nothing already filed on a first run, got %+v", got)
+	}
+	if len(rec.events) != 0 {
+		t.Errorf("expected no narration on a clean first run, got %v", rec.events)
 	}
 }
 
