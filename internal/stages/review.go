@@ -37,13 +37,25 @@ const prCreateTimeout = 2 * time.Minute
 const ciGhTimeout = 5 * time.Minute
 
 // oomMaxAttempts / oomRetryBackoff bound the OOM-kill retry of the throwaway
-// install + gate containers (BEH-524). A 137 under host memory pressure is
-// transient — the same frozen install succeeded in ~4s on a bare retry once
-// memory freed — so a couple of attempts with a short beat between them (to let
-// the starved Docker VM recover) is enough; a persistent OOM still falls through.
+// install container (BEH-524). A 137 under host memory pressure is transient — the
+// same frozen install succeeded in ~4s on a bare retry once memory freed — so a
+// couple of attempts with a short *fixed* beat between them (the install's
+// footprint recovers in seconds) is enough; a persistent OOM still falls through.
 const (
 	oomMaxAttempts  = 3
 	oomRetryBackoff = 10 * time.Second
+)
+
+// gateOOM* bound the OOM-kill retry of the heavier host-side gate (install + check
+// + build) separately (BEH-530). A full build's footprint is far larger than an
+// install's, so the install's short fixed beat doesn't transfer: on BEH-501 three
+// back-to-back retries 10s apart died progressively EARLIER (memory pressure
+// compounding, not recovering). An exponential backoff (30s → 60s → 120s) over one
+// more attempt gives the starved Docker VM real time to reclaim before each retry.
+const (
+	gateOOMMaxAttempts = 4
+	gateOOMBackoffBase = 30 * time.Second
+	gateOOMBackoffCap  = 120 * time.Second
 )
 
 // Review runs the second stage: over the worktree implementation left behind, run
@@ -161,7 +173,7 @@ func Review(cfg config.Config, log *runlog.Logger, runID string, args Args) Resu
 	// retry once memory freed), so a short backoff-and-retry recovers it up front.
 	installTranscript := runlog.TranscriptName("install", runID)
 	log.Event("prepping worktree (pnpm install --frozen-lockfile) before the review session")
-	installOutcome, installAttempts := session.RetryOnOOMKill(oomMaxAttempts, oomRetryBackoff, time.Sleep, func(attempt int) session.Outcome {
+	installOutcome, installAttempts := session.RetryOnOOMKill(oomMaxAttempts, session.ConstantBackoff(oomRetryBackoff), time.Sleep, func(attempt int) session.Outcome {
 		name, transcript := installName, installTranscript
 		if attempt > 1 {
 			name = fmt.Sprintf("%s-retry%d", installName, attempt)
@@ -240,15 +252,16 @@ func Review(cfg config.Config, log *runlog.Logger, runID string, args Args) Resu
 	// environmental, never the diff — a real gate failure (check/typecheck error)
 	// returns a non-137 code and is final on the first attempt.
 	gateTranscript := runlog.GateTranscriptName(runID)
+	gateBackoff := session.ExponentialBackoff(gateOOMBackoffBase, gateOOMBackoffCap)
 	log.Event(fmt.Sprintf("re-running gates host-side (cap %d min)", int(cfg.ReviewTimeout.Minutes())))
-	gateOutcome, _ := session.RetryOnOOMKill(oomMaxAttempts, oomRetryBackoff, time.Sleep, func(attempt int) session.Outcome {
+	gateOutcome, _ := session.RetryOnOOMKill(gateOOMMaxAttempts, gateBackoff, time.Sleep, func(attempt int) session.Outcome {
 		name, transcript := gateName, gateTranscript
 		if attempt > 1 {
 			name = fmt.Sprintf("%s-retry%d", gateName, attempt)
 			transcript = runlog.GateTranscriptName(fmt.Sprintf("%s-retry%d", runID, attempt))
 			log.Event(fmt.Sprintf(
-				"review ↻ host-side gate OOM-killed (exit 137) — retry %d/%d after %s (BEH-524)",
-				attempt-1, oomMaxAttempts-1, oomRetryBackoff,
+				"review ↻ host-side gate OOM-killed (exit 137) — retry %d/%d after %s (BEH-530)",
+				attempt-1, gateOOMMaxAttempts-1, gateBackoff(attempt-1),
 			))
 		}
 		return session.Run(buildGateArgs(name), session.Options{

@@ -12,7 +12,7 @@ import (
 func TestRetryOnOOMKill_RetriesThenSucceeds(t *testing.T) {
 	var slept []time.Duration
 	codes := []int{sandbox.ExitOOMKill, 0}
-	out, attempts := RetryOnOOMKill(3, 2*time.Second, func(d time.Duration) { slept = append(slept, d) },
+	out, attempts := RetryOnOOMKill(3, ConstantBackoff(2*time.Second), func(d time.Duration) { slept = append(slept, d) },
 		func(attempt int) Outcome { return Outcome{ExitCode: codes[attempt-1]} })
 
 	if out.ExitCode != 0 {
@@ -31,7 +31,7 @@ func TestRetryOnOOMKill_RetriesThenSucceeds(t *testing.T) {
 // attempts, never after the last.
 func TestRetryOnOOMKill_ExhaustsThenSurfaces137(t *testing.T) {
 	var slept []time.Duration
-	out, attempts := RetryOnOOMKill(3, time.Second, func(d time.Duration) { slept = append(slept, d) },
+	out, attempts := RetryOnOOMKill(3, ConstantBackoff(time.Second), func(d time.Duration) { slept = append(slept, d) },
 		func(attempt int) Outcome { return Outcome{ExitCode: sandbox.ExitOOMKill} })
 
 	if out.ExitCode != sandbox.ExitOOMKill {
@@ -45,11 +45,34 @@ func TestRetryOnOOMKill_ExhaustsThenSurfaces137(t *testing.T) {
 	}
 }
 
+// With an exponential schedule the sleeps GROW across retries — the gate's fix
+// (BEH-530): each successive OOM waits longer for the Docker VM to reclaim memory,
+// rather than the old fixed beat that compounded pressure across rapid retries.
+func TestRetryOnOOMKill_AppliesGrowingSchedule(t *testing.T) {
+	var slept []time.Duration
+	out, attempts := RetryOnOOMKill(4, ExponentialBackoff(30*time.Second, 120*time.Second),
+		func(d time.Duration) { slept = append(slept, d) },
+		func(attempt int) Outcome { return Outcome{ExitCode: sandbox.ExitOOMKill} })
+
+	if out.ExitCode != sandbox.ExitOOMKill || attempts != 4 {
+		t.Fatalf("ExitCode=%d attempts=%d, want %d/4", out.ExitCode, attempts, sandbox.ExitOOMKill)
+	}
+	want := []time.Duration{30 * time.Second, 60 * time.Second, 120 * time.Second}
+	if len(slept) != len(want) {
+		t.Fatalf("slept %v, want 3 growing backoffs between 4 attempts", slept)
+	}
+	for i := range want {
+		if slept[i] != want[i] {
+			t.Fatalf("slept[%d] = %s, want %s (schedule %v)", i, slept[i], want[i], slept)
+		}
+	}
+}
+
 // A real failure (a non-137 code the process itself returned) is final — never
 // retried, so a genuine typecheck/test error fails fast.
 func TestRetryOnOOMKill_RealFailureNotRetried(t *testing.T) {
 	calls := 0
-	out, attempts := RetryOnOOMKill(3, time.Second, func(time.Duration) { t.Fatal("must not sleep on a real failure") },
+	out, attempts := RetryOnOOMKill(3, ConstantBackoff(time.Second), func(time.Duration) { t.Fatal("must not sleep on a real failure") },
 		func(attempt int) Outcome { calls++; return Outcome{ExitCode: 1} })
 
 	if out.ExitCode != 1 || attempts != 1 || calls != 1 {
@@ -59,10 +82,36 @@ func TestRetryOnOOMKill_RealFailureNotRetried(t *testing.T) {
 
 // A first-attempt success returns immediately with no backoff.
 func TestRetryOnOOMKill_SuccessFirstTry(t *testing.T) {
-	out, attempts := RetryOnOOMKill(3, time.Second, func(time.Duration) { t.Fatal("must not sleep on first-try success") },
+	out, attempts := RetryOnOOMKill(3, ConstantBackoff(time.Second), func(time.Duration) { t.Fatal("must not sleep on first-try success") },
 		func(attempt int) Outcome { return Outcome{ExitCode: 0} })
 
 	if out.ExitCode != 0 || attempts != 1 {
 		t.Fatalf("ExitCode=%d attempts=%d, want 0/1", out.ExitCode, attempts)
+	}
+}
+
+// ExponentialBackoff doubles the base each retry (base, 2×, 4×, …) so a starved
+// Docker VM gets progressively longer to reclaim memory between gate attempts —
+// the fixed 10s beat was too short for a full build's footprint to fit (BEH-530).
+func TestExponentialBackoff_DoublesEachRetry(t *testing.T) {
+	b := ExponentialBackoff(30*time.Second, 120*time.Second)
+	got := []time.Duration{b(1), b(2), b(3)}
+	want := []time.Duration{30 * time.Second, 60 * time.Second, 120 * time.Second}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("b(%d) = %s, want %s (full schedule %v)", i+1, got[i], want[i], got)
+		}
+	}
+}
+
+// The schedule is capped so the backoff can't grow unboundedly past the cap once
+// the doubling would exceed it.
+func TestExponentialBackoff_CapsAtMax(t *testing.T) {
+	b := ExponentialBackoff(30*time.Second, 120*time.Second)
+	if got := b(4); got != 120*time.Second {
+		t.Fatalf("b(4) = %s, want 120s (capped, not 240s)", got)
+	}
+	if got := b(50); got != 120*time.Second {
+		t.Fatalf("b(50) = %s, want 120s (cap holds despite shift overflow)", got)
 	}
 }
