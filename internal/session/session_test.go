@@ -118,9 +118,33 @@ func TestWatchReasonFiresIdleWhenStreamSilent(t *testing.T) {
 	}
 }
 
+// A stalled session that the host then sleeps past the hard cap must be reported
+// as the stall it was, not as a "late" cap. This is the BEH-538 incident: the
+// session went idle ~5 min in, the host slept, and the watchdog tick only landed
+// at ~66 min wall-clock — past the 30 min cap. The cap is wall-clock-correct, but
+// blaming the cap hides that the session was actually dead 40 min earlier. The
+// idle window was crossed first (start+5+20 = 25 min < start+30 = cap), so the
+// reason must name the dead stream, not the cap.
+func TestWatchReasonReportsTheLimitCrossedFirst(t *testing.T) {
+	start := time.Date(2026, 6, 21, 15, 0, 0, 0, time.UTC)
+	cap := 30 * time.Minute
+	idle := 20 * time.Minute
+	lastActivity := start.Add(5 * time.Minute) // last byte ~5 min in, then silence
+	now := start.Add(66 * time.Minute)         // watchdog tick after a host sleep
+
+	reason := watchReason(now, start, lastActivity, cap, idle)
+	if !strings.Contains(reason, "activity") {
+		t.Errorf("a session that went idle before the cap must be reported as a dead stream, got: %q", reason)
+	}
+	if strings.Contains(reason, "cap") {
+		t.Errorf("must not blame the cap for a stall the idle window caught first, got: %q", reason)
+	}
+}
+
 // The watchdog contract: no kill when both limits have headroom; each limit is
 // disabled by a non-positive value (so a caller can opt out of either); and when
-// both are breached at once the cap is reported (it is the harder guarantee).
+// both are breached the one whose deadline came first is reported (the truthful
+// cause — see TestWatchReasonReportsTheLimitCrossedFirst).
 func TestWatchReasonContract(t *testing.T) {
 	start := time.Date(2026, 6, 21, 15, 0, 0, 0, time.UTC)
 
@@ -142,9 +166,41 @@ func TestWatchReasonContract(t *testing.T) {
 		t.Errorf("idle<=0 must disable the heartbeat, got: %q", r)
 	}
 
-	// Both breached → cap wins.
-	if r := watchReason(farPast, start, start, 30*time.Minute, 10*time.Minute); !strings.Contains(r, "cap") {
-		t.Errorf("expected cap to take precedence when both breach, got: %q", r)
+	// Both breached, idle deadline first (idle from the start) → idle reported.
+	if r := watchReason(farPast, start, start, 30*time.Minute, 10*time.Minute); !strings.Contains(r, "activity") {
+		t.Errorf("expected the idle stall (crossed first) to be reported, got: %q", r)
+	}
+
+	// Both breached, cap deadline first (stream alive until just before the cap,
+	// then the host slept past it) → cap reported. lastActivity = start+25 makes the
+	// idle deadline start+35, later than the start+30 cap.
+	lateIdle := start.Add(25 * time.Minute)
+	if r := watchReason(farPast, start, lateIdle, 30*time.Minute, 10*time.Minute); !strings.Contains(r, "cap") {
+		t.Errorf("expected the cap (crossed first) to be reported, got: %q", r)
+	}
+}
+
+// A wall-clock kill that lands long after its deadline is explained by host sleep:
+// the watchdog's poll ticker is monotonic and freezes while the host sleeps, so a
+// large gap between wall-elapsed and monotonic-elapsed at kill time is exactly the
+// time slept. The kill log must surface it so a 30 min cap observed at 66 min reads
+// as "host slept ~36m", not a broken timer (BEH-538).
+func TestSleepNoteSurfacesHostSleep(t *testing.T) {
+	note := sleepNote(66*time.Minute, 30*time.Minute)
+	if !strings.Contains(note, "slept") {
+		t.Errorf("expected the note to name host sleep, got: %q", note)
+	}
+	if !strings.Contains(note, "36m") {
+		t.Errorf("expected the note to quantify ~36m of sleep, got: %q", note)
+	}
+}
+
+// With no sleep, wall and monotonic elapsed track within scheduling jitter, so the
+// kill log carries no sleep note — the common case (a genuine overrun or a stall
+// while the host was awake) stays clean.
+func TestSleepNoteEmptyWhenWallTracksMonotonic(t *testing.T) {
+	if note := sleepNote(30*time.Minute+200*time.Millisecond, 30*time.Minute); note != "" {
+		t.Errorf("expected no sleep note when wall tracks monotonic, got: %q", note)
 	}
 }
 

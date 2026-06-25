@@ -399,7 +399,15 @@ ships. The `agent-ready` label remains the human gate on *what* runs unattended.
   expiry the harness kills the container and treats the session as failed. The cap is enforced against the **wall clock**,
   not a monotonic timer, so time the host spent asleep counts toward it — a Go
   `time.AfterFunc` freezes during macOS sleep and once let a container that lost
-  its API stream mid-sleep hang for two days (BEH-386 class).
+  its API stream mid-sleep hang for two days (BEH-386 class). The cap is *evaluated*
+  by a 15 s poll ticker, which is itself monotonic and freezes during sleep, so the
+  kill lands on the first tick after wake — the observed wall-clock kill time can
+  exceed the cap (a 30 min cap once landed at 66 min because the host slept ~36 min,
+  reading as a broken timer). Two refinements keep that honest (BEH-538): when both
+  the cap and the idle window are past, the kill is attributed to whichever deadline
+  came **first** (a session idle since minute 5 is reported as a dead stream, not a
+  late cap), and the kill log surfaces the wall-vs-monotonic gap as `host slept ~36m`
+  so a late kill is never mistaken for a cap-enforcement bug.
 - **Idle heartbeat (`SESSION_IDLE_TIMEOUT_MS`, default 20 min):** alongside the
   hard cap, every session is watched for stream silence. The watchdog taps the
   docker stdout reader; if no bytes arrive for the idle window the stream is
