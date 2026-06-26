@@ -88,6 +88,40 @@ func TestHardCapsExceedIdleWindow(t *testing.T) {
 	}
 }
 
+// The cap>idle invariant must hold for the resolved config, not just the
+// hand-picked defaults: a stalled session is reaped early only if the idle
+// watchdog fires before the hard cap, so any env override that lifts the idle
+// window to or above a hard cap silently disables dead-stream detection for that
+// session class — exactly the inert-watchdog regression that let a stalled
+// retrospective burn to the hard cap (BEH-535/538). Load must reject it loudly
+// (before any sandbox launches), naming the offending cap and both durations.
+func TestLoadRejectsIdleWindowAtOrAboveAnyCap(t *testing.T) {
+	// idle = 5m sits above the 2m review / 3m retrospective / 1m tdd caps — the
+	// idle watchdog could never fire before any of those caps.
+	_, err := Load(fullEnv(map[string]string{
+		"TDD_TIMEOUT_MS":           "60000",  // 1m
+		"REVIEW_TIMEOUT_MS":        "120000", // 2m
+		"RETROSPECTIVE_TIMEOUT_MS": "180000", // 3m
+		"SESSION_IDLE_TIMEOUT_MS":  "300000", // 5m — above every cap
+	}))
+	if err == nil {
+		t.Fatal("expected an error when the idle window is at or above a hard cap (idle watchdog would be inert)")
+	}
+	if !strings.Contains(err.Error(), "idle") {
+		t.Errorf("error %q should explain the idle-window inversion", err.Error())
+	}
+
+	// Boundary: idle EQUAL to a cap is still a failure — the cap is reached first
+	// (watchReason uses >=), so the idle watchdog never gets to fire.
+	_, err = Load(fullEnv(map[string]string{
+		"REVIEW_TIMEOUT_MS":       "300000", // 5m
+		"SESSION_IDLE_TIMEOUT_MS": "300000", // 5m — equal to the review cap
+	}))
+	if err == nil {
+		t.Fatal("expected an error when the idle window equals a hard cap")
+	}
+}
+
 func TestLoadHonoursOverrides(t *testing.T) {
 	cfg, err := Load(fullEnv(map[string]string{
 		"HARNESS_IMAGE":            "custom:tag",
@@ -95,7 +129,7 @@ func TestLoadHonoursOverrides(t *testing.T) {
 		"TDD_TIMEOUT_MS":           "60000",
 		"REVIEW_TIMEOUT_MS":        "120000",
 		"RETROSPECTIVE_TIMEOUT_MS": "180000",
-		"SESSION_IDLE_TIMEOUT_MS":  "300000",
+		"SESSION_IDLE_TIMEOUT_MS":  "30000", // 30s — kept below the 1m tdd cap (idle must stay under every cap)
 		"TDD_MODEL":                "sonnet",
 	}))
 	if err != nil {
@@ -107,8 +141,8 @@ func TestLoadHonoursOverrides(t *testing.T) {
 	if cfg.RetrospectiveTimeout != 3*time.Minute {
 		t.Errorf("RetrospectiveTimeout = %v, want 3m (RETROSPECTIVE_TIMEOUT_MS override)", cfg.RetrospectiveTimeout)
 	}
-	if cfg.SessionIdleTimeout != 5*time.Minute {
-		t.Errorf("SessionIdleTimeout = %v, want 5m", cfg.SessionIdleTimeout)
+	if cfg.SessionIdleTimeout != 30*time.Second {
+		t.Errorf("SessionIdleTimeout = %v, want 30s", cfg.SessionIdleTimeout)
 	}
 	if cfg.Image != "custom:tag" {
 		t.Errorf("Image = %q", cfg.Image)

@@ -119,7 +119,7 @@ func Load(get Getenv) (Config, error) {
 		return Config{}, err
 	}
 
-	return Config{
+	cfg := Config{
 		LinearAPIKey:         linearKey,
 		HerdPath:             herdPath,
 		Image:                orDefault(get("HARNESS_IMAGE"), defaultImage),
@@ -134,7 +134,40 @@ func Load(get Getenv) (Config, error) {
 		CIFixBudget:      parseTimeout(get("CI_FIX_BUDGET_MS"), defaultCIFixBudget),
 		CIPollInterval:   parseTimeout(get("CI_POLL_INTERVAL_MS"), defaultCIPollInterval),
 		CIPollBudget:     parseTimeout(get("CI_POLL_BUDGET_MS"), defaultCIPollBudget),
-	}, nil
+	}
+	if err := validateIdleBelowCaps(cfg); err != nil {
+		return Config{}, err
+	}
+	return cfg, nil
+}
+
+// validateIdleBelowCaps enforces the watchdog's load-bearing invariant: the idle/
+// no-progress window must stay strictly below every per-session hard cap. The idle
+// watchdog only reaps a dead-stream session if its cap leaves room for the idle
+// window to fire first; once the idle window reaches a cap, that cap is always hit
+// first (watchReason uses >=), silently disabling dead-stream detection for that
+// session class — the inert-watchdog regression that let a stalled retrospective
+// burn to the hard cap instead of being reaped early (BEH-535/538). A tuning typo
+// in an env override must fail loud here, before any sandbox launches, rather than
+// surface an hour later as a hung session.
+func validateIdleBelowCaps(cfg Config) error {
+	caps := []struct {
+		name string
+		cap  time.Duration
+	}{
+		{"TDD_TIMEOUT_MS", cfg.TddTimeout},
+		{"REVIEW_TIMEOUT_MS", cfg.ReviewTimeout},
+		{"RETROSPECTIVE_TIMEOUT_MS", cfg.RetrospectiveTimeout},
+	}
+	for _, c := range caps {
+		if cfg.SessionIdleTimeout >= c.cap {
+			return fmt.Errorf(
+				"SESSION_IDLE_TIMEOUT (%s) must be below the %s cap (%s), else the idle/no-progress watchdog can never fire before that hard cap and a stalled session is reaped only at the cap",
+				cfg.SessionIdleTimeout, c.name, c.cap,
+			)
+		}
+	}
+	return nil
 }
 
 // LoadDotEnv loads KEY=VALUE pairs from a .env file into the process environment
