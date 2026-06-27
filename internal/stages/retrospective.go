@@ -131,7 +131,7 @@ func Retrospective(cfg config.Config, log *runlog.Logger, runID string, args Arg
 	}
 
 	// Fail fast if Docker can't run the container before launching the session.
-	if err := sandbox.Preflight(cfg.Image, filepath.Join(cfg.HerdPath, "agent-harness"), sandbox.ProbeRunner, sandbox.BuildImage); err != nil {
+	if err := sandbox.Preflight(cfg.Image, filepath.Join(cfg.HerdPath, "agent-harness"), sandbox.ProbeRunner, sandbox.BuildImage, sandbox.FreeDiskBytes); err != nil {
 		return Result{Err: err}
 	}
 

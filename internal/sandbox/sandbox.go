@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"regexp"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/beherd/agent-harness/internal/proc"
@@ -62,6 +63,30 @@ var transientStartReasonRE = regexp.MustCompile(`(?i)read-only file system`)
 // bad flag) still fails fast and terminal.
 func IsRetryableStartFailure(reason string) bool {
 	return transientStartReasonRE.MatchString(reason)
+}
+
+// MinFreeDiskBytes is the host free-space floor Preflight refuses to launch below.
+// Below it a session reliably exhausts the disk mid-run — a fresh worktree's
+// web/node_modules (multiple GiB) plus the container's overlay2 layers plus
+// logs/findings outgrow what's left — and the failure then surfaces opaquely and
+// *after* the ticket is already claimed: an overlay2 "read-only file system"
+// exit-125 teardown (BEH-542) or a findings-dir mkdir ENOSPC (BEH-540). Failing
+// fast here turns that into one clear, actionable message before any state is
+// mutated. The floor sits well above new-worktree.sh's 2 GiB *warning* threshold,
+// which proved too low — BEH-540's session was warned at 1282 MiB free and still
+// ran and died; the harness needs headroom for a whole worktree + overlay churn,
+// not just a warning's-worth.
+const MinFreeDiskBytes = 5 << 30 // 5 GiB
+
+// FreeDiskBytes reports the bytes available to an unprivileged writer on the
+// filesystem holding path, via statfs (Bavail × Bsize). It is the production
+// diskFree passed to Preflight; tests inject their own.
+func FreeDiskBytes(path string) (uint64, error) {
+	var st syscall.Statfs_t
+	if err := syscall.Statfs(path, &st); err != nil {
+		return 0, err
+	}
+	return st.Bavail * uint64(st.Bsize), nil
 }
 
 // FindingsMountPath is the fixed container path the findings dropbox is mounted at.
@@ -291,8 +316,22 @@ func BuildImage(image, buildContext string) error {
 // so a `docker system prune -a` (or Docker Desktop's "reclaim disk") quietly
 // deletes it — build-on-miss makes that self-healing instead of a hard failure.
 // run is injected so the check can be unit-tested; build is the (injected)
-// image builder. Production passes ProbeRunner and BuildImage.
-func Preflight(image, buildContext string, run func(name string, args ...string) ([]byte, error), build func(image, buildContext string) error) error {
+// image builder, diskFree the (injected) free-space probe. Production passes
+// ProbeRunner, BuildImage, and FreeDiskBytes.
+func Preflight(image, buildContext string, run func(name string, args ...string) ([]byte, error), build func(image, buildContext string) error, diskFree func(path string) (uint64, error)) error {
+	// Disk precondition FIRST — before any docker call. A full host disk is the
+	// root cause that, downstream, wedges the daemon (overlay2 read-only, exit
+	// 125) and fails the findings mkdir (ENOSPC) — opaquely, and after the ticket
+	// is claimed (BEH-540). Refuse to launch with an actionable message instead. A
+	// statfs error is itself non-fatal: don't block a launch because free space
+	// couldn't be read — let the docker probes below run.
+	if free, err := diskFree(buildContext); err == nil && free < MinFreeDiskBytes {
+		return fmt.Errorf(
+			"insufficient free disk to launch a sandbox: %d MiB free at %s, need ≥ %d MiB — reclaim space (`pnpm store prune`; prune merged worktrees with `scripts/prune-merged-worktrees.sh --yes`) and re-run",
+			free>>20, buildContext, MinFreeDiskBytes>>20,
+		)
+	}
+
 	// Daemon reachable? `docker info` is the cheapest call that actually
 	// round-trips to the daemon — `docker --version` is client-only and passes
 	// even when the daemon is down.

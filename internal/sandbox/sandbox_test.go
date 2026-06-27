@@ -474,7 +474,7 @@ func TestPreflightOKWhenDaemonAndImagePresent(t *testing.T) {
 		"info":  one([]byte("Server Version: 27.0.0"), nil),
 		"image": one([]byte(`[{"Id":"sha256:abc"}]`), nil),
 	}, nil)
-	if err := Preflight(testImage, testContext, run, noBuild(t)); err != nil {
+	if err := Preflight(testImage, testContext, run, noBuild(t), plentyDisk); err != nil {
 		t.Errorf("Preflight should pass when daemon is up and image is present, got: %v", err)
 	}
 }
@@ -486,7 +486,7 @@ func TestPreflightSurfacesDaemonDownReason(t *testing.T) {
 			errFake,
 		),
 	}, nil)
-	err := Preflight(testImage, testContext, run, noBuild(t))
+	err := Preflight(testImage, testContext, run, noBuild(t), plentyDisk)
 	if err == nil {
 		t.Fatal("Preflight should fail when the daemon is unreachable")
 	}
@@ -514,7 +514,7 @@ func TestPreflightBuildsImageOnMiss(t *testing.T) {
 			{[]byte(`[{"Id":"sha256:abc"}]`), nil},
 		},
 	}, nil)
-	if err := Preflight(testImage, testContext, run, build); err != nil {
+	if err := Preflight(testImage, testContext, run, build, plentyDisk); err != nil {
 		t.Fatalf("Preflight should build the image on miss and pass, got: %v", err)
 	}
 	if builds != 1 {
@@ -531,7 +531,7 @@ func TestPreflightSurfacesBuildFailure(t *testing.T) {
 		"image": one([]byte("Error: No such image: herd-agent-harness:latest"), errFake),
 	}, nil)
 	build := func(string, string) error { return errFake }
-	err := Preflight(testImage, testContext, run, build)
+	err := Preflight(testImage, testContext, run, build, plentyDisk)
 	if err == nil {
 		t.Fatal("Preflight should fail when the build fails")
 	}
@@ -551,7 +551,7 @@ func TestPreflightFailsWhenImageAbsentAfterBuild(t *testing.T) {
 		"image": one([]byte("Error: No such image: herd-agent-harness:latest"), errFake),
 	}, nil)
 	build := func(string, string) error { return nil }
-	err := Preflight(testImage, testContext, run, build)
+	err := Preflight(testImage, testContext, run, build, plentyDisk)
 	if err == nil {
 		t.Fatal("Preflight should fail when the image is still absent after a 'successful' build")
 	}
@@ -565,7 +565,7 @@ func TestPreflightDoesNotInspectImageWhenDaemonDown(t *testing.T) {
 	run := fakeDocker(map[string][]reply{
 		"info": one(nil, errFake),
 	}, &calls)
-	_ = Preflight(testImage, testContext, run, noBuild(t))
+	_ = Preflight(testImage, testContext, run, noBuild(t), plentyDisk)
 	// A down daemon should short-circuit before the image check — no point
 	// inspecting an image we can't run anyway.
 	if len(calls) != 1 || calls[0] != "docker info" {
@@ -579,7 +579,7 @@ func TestPreflightProbesDaemonNotClientVersion(t *testing.T) {
 		"info":  one(nil, nil),
 		"image": one(nil, nil),
 	}, &calls)
-	_ = Preflight(testImage, testContext, run, noBuild(t))
+	_ = Preflight(testImage, testContext, run, noBuild(t), plentyDisk)
 	// `docker info` round-trips to the daemon; `docker --version` is client-only
 	// and would pass even with the daemon down.
 	if len(calls) == 0 || calls[0] != "docker info" {
@@ -594,8 +594,81 @@ func TestPreflightFallsBackToErrWhenNoOutput(t *testing.T) {
 	run := fakeDocker(map[string][]reply{
 		"info": one(nil, errFake),
 	}, nil)
-	err := Preflight(testImage, testContext, run, noBuild(t))
+	err := Preflight(testImage, testContext, run, noBuild(t), plentyDisk)
 	if err == nil || !strings.Contains(err.Error(), errFake.Error()) {
 		t.Errorf("Preflight should fall back to the runner error when there is no output, got: %v", err)
+	}
+}
+
+// plentyDisk / scantDisk are diskFree stand-ins for Preflight: one reports far
+// more free space than the floor, the other far less. The disk-agnostic Preflight
+// tests pass plentyDisk so the new precondition never trips them.
+func plentyDisk(string) (uint64, error) { return MinFreeDiskBytes * 4, nil }
+func scantDisk(string) (uint64, error)  { return MinFreeDiskBytes / 2, nil }
+
+func TestPreflightRefusesToLaunchWhenDiskBelowFloor(t *testing.T) {
+	run := fakeDocker(map[string][]reply{
+		"info":  one([]byte("Server Version: 27.0.0"), nil),
+		"image": one([]byte(`[{"Id":"sha256:abc"}]`), nil),
+	}, nil)
+	err := Preflight(testImage, testContext, run, noBuild(t), scantDisk)
+	if err == nil {
+		t.Fatal("Preflight should refuse to launch when free disk is below the floor")
+	}
+}
+
+// The disk check is the cheapest precondition and the root cause of the opaque
+// downstream docker failures — so it must short-circuit before any docker call,
+// not after a (possibly slow / wedged) `docker info`.
+func TestPreflightChecksDiskBeforeTouchingDocker(t *testing.T) {
+	var calls []string
+	run := fakeDocker(map[string][]reply{
+		"info":  one([]byte("Server Version: 27.0.0"), nil),
+		"image": one([]byte(`[{"Id":"sha256:abc"}]`), nil),
+	}, &calls)
+	_ = Preflight(testImage, testContext, run, noBuild(t), scantDisk)
+	if len(calls) != 0 {
+		t.Errorf("Preflight should fail on the disk floor before any docker call, got calls: %v", calls)
+	}
+}
+
+// The actionable message must name how much is free, where, and the reclaim steps
+// — otherwise the operator is left with a bare "insufficient disk" and no next move.
+func TestPreflightDiskErrorIsActionable(t *testing.T) {
+	run := fakeDocker(map[string][]reply{}, nil)
+	err := Preflight(testImage, testContext, run, noBuild(t), scantDisk)
+	if err == nil {
+		t.Fatal("expected a disk-floor error")
+	}
+	for _, want := range []string{testContext, "MiB", "pnpm store prune", "prune-merged-worktrees"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("disk error should mention %q, got: %v", want, err)
+		}
+	}
+}
+
+// A statfs failure (unreadable path, exotic FS) must NOT block a launch — free
+// space simply couldn't be read, which is not evidence the disk is full. Preflight
+// falls through to the docker probes.
+func TestPreflightProceedsWhenDiskProbeErrors(t *testing.T) {
+	run := fakeDocker(map[string][]reply{
+		"info":  one([]byte("Server Version: 27.0.0"), nil),
+		"image": one([]byte(`[{"Id":"sha256:abc"}]`), nil),
+	}, nil)
+	probeErr := func(string) (uint64, error) { return 0, errFake }
+	if err := Preflight(testImage, testContext, run, noBuild(t), probeErr); err != nil {
+		t.Errorf("a statfs error should not block launch, got: %v", err)
+	}
+}
+
+// Exactly at the floor is enough — the guard only refuses strictly below it.
+func TestPreflightAllowsLaunchAtTheFloor(t *testing.T) {
+	run := fakeDocker(map[string][]reply{
+		"info":  one([]byte("Server Version: 27.0.0"), nil),
+		"image": one([]byte(`[{"Id":"sha256:abc"}]`), nil),
+	}, nil)
+	atFloor := func(string) (uint64, error) { return MinFreeDiskBytes, nil }
+	if err := Preflight(testImage, testContext, run, noBuild(t), atFloor); err != nil {
+		t.Errorf("Preflight should allow launch with free space exactly at the floor, got: %v", err)
 	}
 }

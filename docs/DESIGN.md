@@ -271,13 +271,27 @@ loop:
   stranded *In Progress* — the one deliberate exception to "failure never mutates
   Linear state" below, safe precisely because there's no partial state. (A worktree
   that *does* exist is kept + checkpoint-committed, never released or re-attempted.)
-- **A full host disk degrades to a warning, not a hard error ([BEH-540](https://linear.app/beherd/issue/BEH-540)).**
-  A findings-dir `mkdir` that fails with ENOSPC (the disk filled) is recognised
-  (`isDiskFull`) and logged as a clear, actionable warning pointing at `pnpm store
-  prune` / pruning merged worktrees — rather than surfacing as an opaque `mkdir …:
-  no space left on device` hard pipeline error that masquerades as a stage crash and
-  forces a manual re-run. (Prevention — a host-side free-space precondition + auto-prune
-  *before* `docker run` — remains the open half of BEH-540.)
+- **A full host disk fails fast as a precondition, and degrades to a warning where it can't ([BEH-540](https://linear.app/beherd/issue/BEH-540)).**
+  Host disk exhaustion is the root cause behind two otherwise-baffling signatures —
+  a **mid-session exit-125 with `driver "overlay2" failed to remove root filesystem:
+  unlinkat …: read-only file system`** (the daemon's overlay2 store goes read-only
+  under disk/IO pressure; *not* a Docker config bug) and a **findings-dir `mkdir …:
+  no space left on device` (ENOSPC)**. Two guards, prevention then graceful-degrade:
+  - **Prevention (the precondition):** `sandbox.Preflight` checks free space on the
+    checkout volume *first*, before any `docker` call, and refuses to launch below
+    `MinFreeDiskBytes` (5 GiB — well above new-worktree.sh's 2 GiB *warning*, which
+    proved too low: BEH-540's session was warned at 1282 MiB free and ran and died
+    anyway). The error names the free space, the path, and the reclaim steps (`pnpm
+    store prune`, `scripts/prune-merged-worktrees.sh`), so the disk is caught *before*
+    the ticket is claimed rather than as an opaque exit-125 overlay2 teardown after.
+    A statfs error is non-fatal — an unreadable probe doesn't block a launch.
+  - **Graceful-degrade (where prevention can't reach):** a findings-dir `mkdir` that
+    still races to ENOSPC is recognised (`isDiskFull`) and logged as a clear,
+    actionable warning rather than a hard pipeline error that masquerades as a stage
+    crash and forces a manual re-run.
+  An exit-125 whose reason *is* the read-only-fs signature is also retried as transient
+  (BEH-542 above); the precondition is the cheaper front-line defence that stops the
+  session ever starting on a doomed disk.
 - **The harness owns all remote I/O — Linear ([ADR-0001](adr/0001-harness-owns-linear-integration.md))
   *and* git push / PR ([ADR-0002](adr/0002-harness-owns-remote-io.md)).** Agents
   commit only into the local shared `.git`; the harness pushes (via the main
