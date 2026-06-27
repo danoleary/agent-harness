@@ -296,6 +296,23 @@ func Review(cfg config.Config, log *runlog.Logger, runID string, args Args) Resu
 	clean := gitpkg.WorktreeClean(worktreePath)
 	result := verify.Review(verify.ReviewOutcome{GatesGreen: gateExit == 0, WorktreeClean: clean})
 	if !result.OK {
+		// A review killed mid-edit (spending cap / OOM) leaves its in-progress fixes
+		// uncommitted. Without capturing them they vanish on the next resume — the
+		// worktree is re-derived from the committed tip — and the resumed review
+		// re-judges the original diff from scratch, flipping the verdict on the very
+		// line review-1 had started fixing (BEH-559). Checkpoint-commit them (mirroring
+		// the tdd stage's BEH-479 safety net) so the started work survives and the
+		// resuming review's merge-base diff includes it. Done AFTER the push decision
+		// above (made on the pre-checkpoint `clean`), so an unverified, half-applied fix
+		// is never pushed — only preserved. A no-op when the worktree is already clean
+		// (a red-but-clean gate has nothing uncommitted to recover).
+		if !clean {
+			if cErr := gitpkg.CheckpointCommit(worktreePath, args.Identifier, reviewSession); cErr != nil {
+				log.Event("⚠ review session left uncommitted edits and the recovery checkpoint commit failed (" + cErr.Error() + ") — recover them manually at " + worktreePath)
+			} else {
+				log.Event("✓ harness recovery checkpoint committed on " + gitpkg.BranchName(slug) + " — the review session's in-progress edits are preserved (unverified: a resumed review will see them, finish or re-run before opening a PR)")
+			}
+		}
 		// Red/crash/dirty → keep the worktree (recoverable artifact), do not push.
 		log.Event(fmt.Sprintf("review ✗ %s (gate exit %d) — keeping worktree, nothing pushed", result.Reason, gateExit))
 		return Result{OK: false}

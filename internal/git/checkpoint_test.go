@@ -82,7 +82,7 @@ func TestCheckpointCommitCapturesUncommittedWork(t *testing.T) {
 	}
 
 	before := commitCount(t, wt)
-	if err := CheckpointCommit(wt, "BEH-479"); err != nil {
+	if err := CheckpointCommit(wt, "BEH-479", "tdd"); err != nil {
 		t.Fatalf("CheckpointCommit: %v", err)
 	}
 
@@ -106,7 +106,7 @@ func TestCheckpointCommitNoOpWhenClean(t *testing.T) {
 	_, wt := newRepoWithWorktree(t, "beh-479")
 
 	before := commitCount(t, wt)
-	if err := CheckpointCommit(wt, "BEH-479"); err != nil {
+	if err := CheckpointCommit(wt, "BEH-479", "tdd"); err != nil {
 		t.Fatalf("CheckpointCommit on a clean worktree should be a no-op success, got %v", err)
 	}
 
@@ -122,7 +122,7 @@ func TestCheckpointCommitNoOpWhenClean(t *testing.T) {
 // ticket, so a reviewer (or a future verify/recovery step) never mistakes a
 // salvaged-on-timeout diff for a real, verified handoff.
 func TestCheckpointMessageMarksHarnessRecoveryAndTicket(t *testing.T) {
-	msg := CheckpointMessage("BEH-479")
+	msg := CheckpointMessage("BEH-479", "tdd")
 
 	subject := strings.SplitN(msg, "\n", 2)[0]
 	if !strings.Contains(subject, "checkpoint") {
@@ -136,6 +136,69 @@ func TestCheckpointMessageMarksHarnessRecoveryAndTicket(t *testing.T) {
 	}
 	if !strings.Contains(msg, "NOT a verified handoff") {
 		t.Fatalf("body must warn the work is unverified, got %q", msg)
+	}
+}
+
+// The checkpoint message must name the *session* that left the work (tdd vs
+// review), so a reviewer (and a resumed review) can tell which stage's
+// uncommitted edits were salvaged. Before BEH-559 the wording was hardcoded to
+// "tdd", which mislabelled a review-stage checkpoint and gave the resuming review
+// no signal that a prior review pass had begun a fix.
+func TestCheckpointMessageNamesSession(t *testing.T) {
+	review := CheckpointMessage("BEH-559", "review")
+	if !strings.Contains(review, "review") {
+		t.Fatalf("a review checkpoint message must name the review session, got %q", review)
+	}
+
+	tdd := CheckpointMessage("BEH-559", "tdd")
+	if review == tdd {
+		t.Fatalf("checkpoint messages for different sessions must differ; both were %q", review)
+	}
+}
+
+// BEH-559: a review session killed mid-edit by a spending cap leaves its
+// in-progress fixes uncommitted. Without capturing them, the next (resumed)
+// review re-derives the diff from the committed tip (git diff merge-base) and
+// never sees them — flipping the verdict on the same line. A review-stage
+// checkpoint commit must preserve those edits on the branch so the resumed
+// review's merge-base diff includes the started fix instead of the original
+// clean commit.
+func TestCheckpointCommitPreservesReviewEditsForResumedDiff(t *testing.T) {
+	_, wt := newRepoWithWorktree(t, "beh-559")
+
+	// The implementation handoff: a committed file on the feature branch — the
+	// "original clean commit" the resumed review would otherwise re-judge.
+	src := filepath.Join(wt, "runner.ts")
+	if err := os.WriteFile(src, []byte("useRef(createLatestWinsRunner())\n"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	runGit(t, wt, "add", "-A")
+	runGit(t, wt, "commit", "-q", "-m", "feat: handoff (BEH-559)")
+
+	// review-1 begins applying the lazy-init nit fix, then is cap-killed mid-edit:
+	// the change is on disk but uncommitted.
+	if err := os.WriteFile(src, []byte("useRef(() => createLatestWinsRunner())\n"), 0o644); err != nil {
+		t.Fatalf("review edit: %v", err)
+	}
+
+	if err := CheckpointCommit(wt, "BEH-559", "review"); err != nil {
+		t.Fatalf("CheckpointCommit: %v", err)
+	}
+
+	// What review-2 (the resume) re-derives: the diff from the merge-base with
+	// main. It must now contain review-1's in-progress fix, not the original line
+	// alone — so the resumed review sees the started work rather than flipping the
+	// verdict on a "clean" diff.
+	baseOut, err := exec.Command("git", "-C", wt, "merge-base", "HEAD", "main").Output()
+	if err != nil {
+		t.Fatalf("merge-base: %v", err)
+	}
+	diff, err := exec.Command("git", "-C", wt, "diff", strings.TrimSpace(string(baseOut))+"..HEAD").Output()
+	if err != nil {
+		t.Fatalf("resume diff: %v", err)
+	}
+	if !strings.Contains(string(diff), "() => createLatestWinsRunner()") {
+		t.Fatalf("resumed review's merge-base diff must include the preserved in-progress fix, got:\n%s", diff)
 	}
 }
 

@@ -327,23 +327,27 @@ func StripWorktreeNodeModules(worktreePath string) error {
 	return os.RemoveAll(filepath.Join(worktreePath, "web", "node_modules"))
 }
 
-// CheckpointCommit captures whatever uncommitted work a finished tdd session left
-// in the worktree as a recovery commit on the feature branch, so a session that
-// ended (wall-clock cap / usage-policy refusal / crash) before reaching its own
-// handoff commit leaves a recoverable commit instead of a bare worktree that needs
-// manual rescue (BEH-479: the cap fired during a final verification re-run and
-// discarded a finished diff). It is a SAFETY NET, not a verdict — the work is
+// CheckpointCommit captures whatever uncommitted work a finished session left in
+// the worktree as a recovery commit on the feature branch, so a session that
+// ended (wall-clock cap / usage-policy refusal / crash) before committing its work
+// leaves a recoverable commit instead of a bare worktree that needs manual rescue.
+// Both stages use it: the tdd session (BEH-479: the cap fired during a final
+// verification re-run and discarded a finished diff) and the review session
+// (BEH-559: a cap killed a review mid-nit-fix, and the in-progress edit was
+// silently lost on resume — the resumed review then re-judged the original diff and
+// flipped its verdict). `session` names which stage left the work so the message
+// attributes it correctly. It is a SAFETY NET, not a verdict — the work is
 // unverified, so the commit subject loudly marks it a harness checkpoint. Staging
 // is `-A` (this is recovery: capture every change, tracked and untracked) and the
 // commit is `--no-verify` (the work may not pass hooks — that is precisely why it
 // is a checkpoint and not a handoff). A no-op success when the worktree is already
 // clean (nothing was left behind to recover). Run host-side against the worktree
 // via the real-path mount (ADR-0002), the same seam WorktreeClean uses.
-func CheckpointCommit(worktreePath, identifier string) error {
+func CheckpointCommit(worktreePath, identifier, session string) error {
 	if WorktreeClean(worktreePath) {
 		return nil
 	}
-	return checkpointCommit(worktreePath, CheckpointMessage(identifier), execRun)
+	return checkpointCommit(worktreePath, CheckpointMessage(identifier, session), execRun)
 }
 
 func checkpointCommit(worktreePath, message string, run commandRunner) error {
@@ -390,15 +394,15 @@ func CIRerunMessage() string {
 }
 
 // CheckpointMessage builds the commit message for a harness recovery checkpoint.
-// The subject is loudly prefixed so a reviewer (and a future verify step or
-// recovery script) can tell a salvaged-on-timeout diff apart from a real,
-// verified tdd handoff commit.
-func CheckpointMessage(identifier string) string {
-	return "checkpoint(harness): recover uncommitted session work (" + identifier + ")\n\n" +
-		"Harness-created safety net: the tdd session left this diff uncommitted in\n" +
-		"the worktree (wall-clock cap, usage-policy refusal, or crash) before it\n" +
-		"reached its own handoff commit. This is NOT a verified handoff — finish the\n" +
-		"work or re-run, then squash/amend, before opening a PR."
+// The subject is loudly prefixed and names the `session` (tdd / review) so a
+// reviewer — and a resumed review re-deriving the diff — can tell a salvaged-on-
+// timeout diff apart from a real, verified handoff, and know which stage left it.
+func CheckpointMessage(identifier, session string) string {
+	return "checkpoint(harness): recover uncommitted " + session + " session work (" + identifier + ")\n\n" +
+		"Harness-created safety net: the " + session + " session left this diff\n" +
+		"uncommitted in the worktree (wall-clock cap, usage-policy refusal, or crash)\n" +
+		"before committing its work. This is NOT a verified handoff — finish the work\n" +
+		"or re-run, then squash/amend, before opening a PR."
 }
 
 // RemoveWorktree tears down the worktree at `.claude/worktrees/<slug>` from the

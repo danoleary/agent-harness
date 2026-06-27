@@ -272,7 +272,10 @@ func Implementation(cfg config.Config, log *runlog.Logger, runID string, args Ar
 		// makes recovery cheap. The commit subject loudly marks it a checkpoint so a
 		// reviewer never mistakes it for a verified handoff.
 		if truth.WorktreeExists && !gitpkg.WorktreeClean(worktreePath) {
-			if cErr := gitpkg.CheckpointCommit(worktreePath, args.Identifier); cErr != nil {
+			// "tdd", not implementationSession: the checkpoint subject is reviewer-
+			// facing, so it uses this stage's human name (matching its "tdd ✓/✗" logs)
+			// rather than the machine identifier used for container/transcript names.
+			if cErr := gitpkg.CheckpointCommit(worktreePath, args.Identifier, "tdd"); cErr != nil {
 				log.Event("⚠ uncommitted work remains in the worktree at " + worktreePath + " and the recovery checkpoint commit failed (" + cErr.Error() + ") — recover it manually before re-running")
 			} else {
 				log.Event("✓ harness recovery checkpoint committed on " + gitpkg.BranchName(slug) + " — the session's uncommitted diff is preserved (unverified: finish or re-run, then amend, before opening a PR)")

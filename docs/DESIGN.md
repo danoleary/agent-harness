@@ -306,6 +306,15 @@ loop:
   unverified so a reviewer never mistakes it for a real handoff. To keep refusals rare, the tdd
   session is pinned to an exact Opus snapshot (`claude-opus-4-8`), not the floating
   `opus` alias that once resolved to a stale, refusal-prone Opus 4.1.
+  The **review** stage applies the same safety net ([BEH-559](https://linear.app/beherd/issue/BEH-559)):
+  a review session killed mid-edit by a spending cap would otherwise lose its
+  in-progress nit fixes on resume — the worktree is re-derived from the committed
+  tip — so the resumed review re-judges the original diff and can flip its verdict on
+  the very line review-1 had started fixing. Checkpoint-committing the started edits
+  (subject names the *review* session) keeps them on `feat/beh-nnn` and visible in the
+  resuming review's merge-base diff. As in implementation, the checkpoint is done
+  *after* the push decision and never authorises a push: an unverified, half-applied
+  fix is preserved, never shipped.
 - **A transient sandbox failure is retried, not charged to the ticket ([BEH-542](https://linear.app/beherd/issue/BEH-542)).**
   Two environmental failures look like a session result but aren't the diff's fault:
   a **137 OOM-kill** under host memory pressure, and a **transient exit-125 launch
