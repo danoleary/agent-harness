@@ -71,36 +71,39 @@ func Retrospective(dropboxExists, spendingCapAbort bool, exitCode int) Result {
 	return Result{OK: false, Reason: "findings dropbox out.json was not written — retrospective never ran"}
 }
 
-// RetrospectiveHasInputs is the *pre*condition counterpart to Retrospective's
-// post-check: it decides whether launching the retrospective sandbox is worth it
-// at all, before any container starts. The session reads a ticket's prior
-// implementation/review transcripts and studies the diff on its feature branch; if
-// there is no transcript to read AND/OR no branch to resolve, it can only conclude
-// "nothing to read" — so the harness should skip it rather than burn a full sandbox
-// launch to rediscover that (BEH-552: a retrospective was dispatched for BEH-318,
-// whose log dir held only the retro's own stream and whose feat/ branch never
-// existed).
+// RetrospectiveInputs is the host-side ground truth that decides whether the
+// retrospective has anything to work on at all. Its two fields mirror what the
+// /retrospective skill reads: the feature branch (the diff) and the ticket's
+// prior implementation/review session transcripts.
+type RetrospectiveInputs struct {
+	// BranchExists reports whether feat/<slug> resolves to a git revision in the
+	// host checkout — i.e. the upstream /tdd step actually produced a branch.
+	BranchExists bool
+	// PriorTranscripts reports whether at least one implementation-*.jsonl or
+	// review-*.jsonl transcript exists under logs/<ticket>/ — i.e. an upstream
+	// session actually ran and left something to mine for friction.
+	PriorTranscripts bool
+}
+
+// RetrospectivePreconditions decides whether it is worth launching the
+// retrospective sandbox at all (BEH-553). A retrospective scheduled for a ticket
+// whose upstream /tdd + /review steps produced neither a branch nor any session
+// transcript has no inputs: it can only emit an empty [] that masks the
+// misscheduling, or manufacture a self-referential finding about the missing
+// inputs. So when BOTH inputs are absent the caller skips host-side, before
+// spending the sandbox cap. OK == true means "proceed"; OK == false means "skip".
 //
-// Both inputs are required to proceed. In the normal pipeline both always hold by
-// the time the retrospective runs — the implementation session creates feat/<slug>
-// at step 0 and tees its transcript — so a skip only fires on an anomalous
-// standalone dispatch against a ticket whose pipeline produced no artifacts. A
-// genuinely-failed slice (implementation died after creating the branch) keeps both
-// inputs and is still retrospected: that failure is exactly what's worth mining.
-//
-// OK == true means "inputs present, launch". When OK is false the Reason names
-// every missing input so the skip diagnostic is unambiguous.
-func RetrospectiveHasInputs(hasTranscripts, branchResolves bool) Result {
-	switch {
-	case hasTranscripts && branchResolves:
-		return Result{OK: true, Reason: "prior pipeline transcripts present and feature branch resolves"}
-	case !hasTranscripts && !branchResolves:
-		return Result{OK: false, Reason: "no prior implementation/review transcripts and no feature branch — nothing to study"}
-	case !hasTranscripts:
-		return Result{OK: false, Reason: "no prior implementation/review transcripts to study"}
-	default:
-		return Result{OK: false, Reason: "feature branch does not resolve — no diff to study"}
+// The skip is BOTH-absent, deliberately NOT "either is absent" (the literal
+// reading of the finding). The pipeline runs the retrospective even on a FAILED
+// slice — "exactly the run worth mining for findings" — and a failed slice
+// routinely has transcripts but no branch (the session crashed before creating
+// the worktree). Skipping whenever the branch is missing would suppress those
+// legitimate retrospectives, so a single real input is enough to proceed.
+func RetrospectivePreconditions(in RetrospectiveInputs) Result {
+	if !in.BranchExists && !in.PriorTranscripts {
+		return Result{OK: false, Reason: "no upstream sessions to retrospect — feature branch does not resolve and no implementation/review transcripts exist; the /tdd + /review steps produced nothing"}
 	}
+	return Result{OK: true, Reason: "upstream inputs present — a feature branch and/or prior session transcripts exist to retrospect"}
 }
 
 // ReviewOutcome is the result of the harness's OWN host-side gate re-run after a

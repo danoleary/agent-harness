@@ -14,6 +14,64 @@ import (
 	"github.com/beherd/agent-harness/internal/verify"
 )
 
+// BEH-553: hasUpstreamTranscripts is the retrospective's host-side precondition
+// that an upstream /tdd or /review session actually ran and left something to
+// mine. It counts implementation-*.jsonl and review-*.jsonl transcripts under the
+// ticket log dir; the retrospective's OWN transcripts must not count (else a
+// re-run of a misscheduled retrospective would self-satisfy the gate).
+func TestHasUpstreamTranscripts(t *testing.T) {
+	write := func(dir, name string) {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("{}\n"), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+
+	t.Run("empty dir has none", func(t *testing.T) {
+		if hasUpstreamTranscripts(t.TempDir()) {
+			t.Error("an empty log dir has no upstream transcripts")
+		}
+	})
+
+	t.Run("only retrospective transcripts do not count", func(t *testing.T) {
+		dir := t.TempDir()
+		write(dir, "retrospective-20260625-195139.jsonl")
+		write(dir, "run.jsonl")
+		if hasUpstreamTranscripts(dir) {
+			t.Error("the retrospective's own logs must not satisfy its precondition")
+		}
+	})
+
+	t.Run("an implementation transcript counts", func(t *testing.T) {
+		dir := t.TempDir()
+		write(dir, "implementation-20260625-100000.jsonl")
+		if !hasUpstreamTranscripts(dir) {
+			t.Error("an implementation transcript is an upstream session")
+		}
+	})
+
+	t.Run("a review transcript counts", func(t *testing.T) {
+		dir := t.TempDir()
+		write(dir, "review-20260625-110000.jsonl")
+		if !hasUpstreamTranscripts(dir) {
+			t.Error("a review transcript is an upstream session")
+		}
+	})
+
+	t.Run("a retry-suffixed implementation transcript counts", func(t *testing.T) {
+		dir := t.TempDir()
+		write(dir, "implementation-retry2-20260625-120000.jsonl")
+		if !hasUpstreamTranscripts(dir) {
+			t.Error("a retry/launch-suffixed implementation transcript still counts")
+		}
+	})
+
+	t.Run("a missing dir has none", func(t *testing.T) {
+		if hasUpstreamTranscripts(filepath.Join(t.TempDir(), "does-not-exist")) {
+			t.Error("a non-existent log dir must read as no transcripts, not panic")
+		}
+	})
+}
+
 // runGitForTest runs a git command in dir, failing the test on error. Used to set
 // up the host checkout shape (a repo with no feature branch) the skip path reads.
 func runGitForTest(t *testing.T, dir string, args ...string) {

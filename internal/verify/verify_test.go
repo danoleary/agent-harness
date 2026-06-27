@@ -77,6 +77,48 @@ func TestRetrospectiveReportsKilledBeforeWrite(t *testing.T) {
 	}
 }
 
+// BEH-553: the retrospective has nothing to work on when its two inputs — the
+// feature branch (the diff) and the prior implementation/review transcripts —
+// are BOTH absent. Launching the sandbox then can only emit an empty [] that
+// masks the misscheduling or manufacture a self-referential finding, so the
+// stage skips host-side before paying the cap.
+func TestRetrospectivePreconditionsSkipWhenNoInputs(t *testing.T) {
+	r := RetrospectivePreconditions(RetrospectiveInputs{BranchExists: false, PriorTranscripts: false})
+	if r.OK {
+		t.Error("expected NOT-OK (skip) when neither the branch nor any transcript exists")
+	}
+	if !regexp.MustCompile(`(?i)branch|transcript|upstream|produced nothing`).MatchString(r.Reason) {
+		t.Errorf("reason %q should explain the missing upstream inputs", r.Reason)
+	}
+}
+
+// A single real input is enough to proceed. The pipeline deliberately runs the
+// retrospective even on a FAILED slice ("exactly the run worth mining for
+// findings"), and a failed slice routinely has transcripts but no branch (the
+// session crashed before creating the worktree) — so transcripts alone must not
+// be skipped. Symmetrically a branch alone (a diff with no session logs) is also
+// worth a pass. The skip is BOTH-absent, deliberately not either-absent.
+func TestRetrospectivePreconditionsProceedWhenOnlyTranscripts(t *testing.T) {
+	r := RetrospectivePreconditions(RetrospectiveInputs{BranchExists: false, PriorTranscripts: true})
+	if !r.OK {
+		t.Errorf("transcripts present (a mineable failed slice) must proceed, got %+v", r)
+	}
+}
+
+func TestRetrospectivePreconditionsProceedWhenOnlyBranch(t *testing.T) {
+	r := RetrospectivePreconditions(RetrospectiveInputs{BranchExists: true, PriorTranscripts: false})
+	if !r.OK {
+		t.Errorf("a feature branch present (a diff to review) must proceed, got %+v", r)
+	}
+}
+
+func TestRetrospectivePreconditionsProceedWhenBothPresent(t *testing.T) {
+	r := RetrospectivePreconditions(RetrospectiveInputs{BranchExists: true, PriorTranscripts: true})
+	if !r.OK {
+		t.Errorf("both inputs present must proceed, got %+v", r)
+	}
+}
+
 // A spending-cap abort that also carries a 137 exit must still report the
 // spending-cap class — the more specific, actionable cause (retry after the
 // billing window resets, not just re-run now).
@@ -103,59 +145,6 @@ func TestRetrospectiveReportsSpendingCapAbort(t *testing.T) {
 	}
 	if regexp.MustCompile(`(?i)never ran`).MatchString(r.Reason) {
 		t.Errorf("a cap abort must NOT use the misleading 'never ran' wording, got %q", r.Reason)
-	}
-}
-
-// BEH-552: a retrospective dispatched against a ticket whose pipeline produced no
-// artifacts can only conclude "nothing to read" — yet it still burns a full
-// sandbox launch to discover that. The precondition gates the launch on the two
-// inputs the session needs: at least one prior implementation/review transcript to
-// study, AND a feature branch that resolves (the diff it studies). With both
-// present, proceed.
-func TestRetrospectiveHasInputsProceedsWhenBothPresent(t *testing.T) {
-	r := RetrospectiveHasInputs(true, true)
-	if !r.OK {
-		t.Errorf("expected proceed when transcripts and branch both present, got %+v", r)
-	}
-}
-
-// No transcripts → there is literally nothing to read; skip with a reason that
-// names the missing transcripts (the BEH-318 shape: only the retro's own stream).
-func TestRetrospectiveHasInputsSkipsWhenNoTranscripts(t *testing.T) {
-	r := RetrospectiveHasInputs(false, true)
-	if r.OK {
-		t.Error("expected skip when no prior transcripts to study")
-	}
-	if !regexp.MustCompile(`(?i)transcript`).MatchString(r.Reason) {
-		t.Errorf("reason %q does not name the missing transcripts", r.Reason)
-	}
-}
-
-// No resolvable feature branch → no diff to study; skip with a reason that names
-// the branch. (In a real pipeline the implementation session creates feat/<slug>
-// at step 0, so this only fires on an anomalous standalone dispatch.)
-func TestRetrospectiveHasInputsSkipsWhenBranchUnresolved(t *testing.T) {
-	r := RetrospectiveHasInputs(true, false)
-	if r.OK {
-		t.Error("expected skip when the feature branch does not resolve")
-	}
-	if !regexp.MustCompile(`(?i)branch`).MatchString(r.Reason) {
-		t.Errorf("reason %q does not name the missing branch", r.Reason)
-	}
-}
-
-// Both absent (the exact BEH-318 case) → skip, and the reason must name both
-// missing inputs so the diagnostic is unambiguous about why nothing ran.
-func TestRetrospectiveHasInputsSkipsWhenBothAbsent(t *testing.T) {
-	r := RetrospectiveHasInputs(false, false)
-	if r.OK {
-		t.Error("expected skip when neither transcripts nor branch exist")
-	}
-	if !regexp.MustCompile(`(?i)transcript`).MatchString(r.Reason) {
-		t.Errorf("reason %q does not name the missing transcripts", r.Reason)
-	}
-	if !regexp.MustCompile(`(?i)branch`).MatchString(r.Reason) {
-		t.Errorf("reason %q does not name the missing branch", r.Reason)
 	}
 }
 

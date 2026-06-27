@@ -3,10 +3,20 @@ package git
 import (
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
 )
+
+// execIn runs a git command in dir to completion for test setup (init a repo,
+// create a branch). Distinct from the production commandRunner seam — these are
+// real git calls against a throwaway repo, the only way to exercise the host-git
+// reads (BranchExists) that have no injectable seam.
+func execIn(dir string, args ...string) error {
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	return cmd.Run()
+}
 
 // fakeClock is a deterministic clock for retry tests: time advances only when the
 // injected sleeper is called, so the wall-clock backoff/budget logic is exercised
@@ -106,40 +116,42 @@ func TestStripWorktreeNodeModulesLeavesSourceIntact(t *testing.T) {
 	}
 }
 
-// BEH-552: the retrospective precondition needs to know whether the feature branch
-// the session would study actually exists. A created local branch resolves.
-func TestBranchResolvesTrueForExistingBranch(t *testing.T) {
+// BEH-553: BranchExists is the retrospective's host-side precondition that the
+// upstream /tdd step actually produced a feature branch. It reads the LOCAL head
+// ref (where the worktree's commits land via the shared .git), so it must return
+// false before feat/<slug> is created and true once it exists.
+func TestBranchExistsTracksLocalFeatureBranch(t *testing.T) {
 	repo := t.TempDir()
-	runGit(t, repo, "init", "-q", "-b", "main")
-	runGit(t, repo, "config", "user.email", "test@example.com")
-	runGit(t, repo, "config", "user.name", "Test")
-	if err := os.WriteFile(filepath.Join(repo, "f"), []byte("x"), 0o644); err != nil {
-		t.Fatalf("seed: %v", err)
+	gitInRepo := func(args ...string) {
+		t.Helper()
+		if err := execIn(repo, args...); err != nil {
+			t.Fatalf("git %v: %v", args, err)
+		}
 	}
-	runGit(t, repo, "add", "-A")
-	runGit(t, repo, "commit", "-q", "-m", "init")
-	runGit(t, repo, "branch", "feat/beh-552")
+	gitInRepo("init", "-q")
+	gitInRepo("config", "user.email", "t@example.com")
+	gitInRepo("config", "user.name", "Test")
+	gitInRepo("commit", "-q", "--allow-empty", "-m", "root")
 
-	if !BranchResolves(repo, "beh-552") {
-		t.Fatal("feat/beh-552 exists — BranchResolves should report it")
+	const slug = "beh-553-retro-precondition"
+	if BranchExists(repo, slug) {
+		t.Fatal("BranchExists should be false before feat/<slug> is created")
 	}
-}
 
-// A slug with no branch (the BEH-318 shape: feat/beh-318 never existed) must not
-// resolve, so the precondition can skip a retrospective that has no diff to study.
-func TestBranchResolvesFalseWhenAbsent(t *testing.T) {
-	repo := t.TempDir()
-	runGit(t, repo, "init", "-q", "-b", "main")
-	runGit(t, repo, "config", "user.email", "test@example.com")
-	runGit(t, repo, "config", "user.name", "Test")
-	if err := os.WriteFile(filepath.Join(repo, "f"), []byte("x"), 0o644); err != nil {
-		t.Fatalf("seed: %v", err)
+	gitInRepo("branch", BranchName(slug))
+	if !BranchExists(repo, slug) {
+		t.Error("BranchExists should be true once feat/<slug> resolves")
 	}
-	runGit(t, repo, "add", "-A")
-	runGit(t, repo, "commit", "-q", "-m", "init")
 
-	if BranchResolves(repo, "beh-318") {
-		t.Fatal("feat/beh-318 never existed — BranchResolves must be false")
+	// An unrelated slug must not resolve — the gate is keyed to the exact branch.
+	if BranchExists(repo, "beh-999-nope") {
+		t.Error("BranchExists must not report a branch that was never created")
+	}
+
+	// A path that isn't a git repo makes rev-parse fail; the documented contract
+	// treats any git failure as "ref absent" (false), never a panic or true.
+	if BranchExists(t.TempDir(), slug) {
+		t.Error("BranchExists must read an unreadable ref (non-repo path) as absent")
 	}
 }
 

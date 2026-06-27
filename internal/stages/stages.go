@@ -33,6 +33,25 @@ func isDiskFull(err error) bool {
 	return errors.Is(err, syscall.ENOSPC)
 }
 
+// hasUpstreamTranscripts reports whether at least one implementation or review
+// session transcript exists under a ticket's log dir — the retrospective's
+// host-side precondition that an upstream /tdd or /review session actually ran
+// (BEH-553). It is the presence half of the gate (the branch is the other half).
+// The retrospective's own transcripts (retrospectiveSession) are deliberately not
+// matched, so a re-run of a misscheduled retrospective never self-satisfies the
+// gate. The glob prefix is the session name, so retry/launch-suffixed transcripts
+// (implementation-retry2-<id>.jsonl) still match. Any glob error → false (a
+// missing dir means no upstream session ran).
+func hasUpstreamTranscripts(logDir string) bool {
+	for _, session := range []string{implementationSession, reviewSession} {
+		matches, err := filepath.Glob(filepath.Join(logDir, session+"-*.jsonl"))
+		if err == nil && len(matches) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 // Args is the parsed CLI surface shared by all three tools and the pipeline:
 // a ticket identifier plus the universal flags. Force overrides the
 // already-merged-on-main dispatch guard (BEH-528) and is only consulted by the

@@ -49,20 +49,20 @@ func Retrospective(cfg config.Config, log *runlog.Logger, runID string, args Arg
 	}
 	log.Event(fmt.Sprintf("run %s — retrospective %s%s", runID, args.Identifier, dry))
 
-	// Precondition (BEH-552): the retrospective studies a ticket's prior
-	// implementation/review transcripts against the diff on feat/<slug>. With no
-	// transcript to read and/or no branch to resolve, the session can only conclude
-	// "nothing to read" — so skip it here rather than burn a full sandbox launch to
-	// rediscover that (BEH-318 dispatched a 30-min retro whose log dir held only its
-	// own stream and whose feat/ branch never existed). Checked before the Linear
-	// fetch so a skip costs nothing. In the normal pipeline both inputs always hold
-	// by now (implementation creates the branch at step 0 and tees its transcript),
-	// so this fires only on an anomalous standalone dispatch. A skip is a clean
-	// no-op, not a failure — return OK so it never reds the pipeline.
-	if pre := verify.RetrospectiveHasInputs(
-		log.HasPriorPipelineTranscripts(), gitpkg.BranchResolves(cfg.HerdPath, slug),
-	); !pre.OK {
-		log.Event(fmt.Sprintf("retrospective skipped — %s: %s", args.Identifier, pre.Reason))
+	// Skip a misscheduled retrospective host-side, before the Linear fetch and the
+	// sandbox cap: a ticket whose upstream /tdd + /review steps produced neither a
+	// feature branch nor any session transcript has nothing to retrospect, so the
+	// session could only emit an empty [] that masks the misscheduling or manufacture
+	// a self-referential finding about the missing inputs (BEH-553). The skip is
+	// BOTH-absent, deliberately not either-absent: the pipeline runs the retrospective
+	// even on a *failed* slice ("exactly the run worth mining"), which routinely has
+	// transcripts but no branch — one real input is enough to proceed. A skip is a
+	// clean no-op, not a failure — return OK so it never reds the pipeline.
+	if pre := verify.RetrospectivePreconditions(verify.RetrospectiveInputs{
+		BranchExists:     gitpkg.BranchExists(cfg.HerdPath, slug),
+		PriorTranscripts: hasUpstreamTranscripts(log.Dir),
+	}); !pre.OK {
+		log.Event(fmt.Sprintf("retrospective ⊘ skipped %s — %s", args.Identifier, pre.Reason))
 		return Result{OK: true}
 	}
 

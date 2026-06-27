@@ -180,8 +180,8 @@ loop:
   fetch + fast-forward origin/main
 
   --- retrospective: /retrospective (sandbox, 45 min cap) ---
-  precondition: launch only if a prior implementation/review transcript exists under logs/BEH-NNN/ AND feat/<slug> resolves
-                else skip with a "retrospective skipped" diagnostic (clean no-op, OK) — nothing to study, don't burn a sandbox (BEH-552)
+  precondition (host-side, BEH-553): SKIP if feat/<slug> does NOT resolve to a git revision AND no implementation-*/review-*.jsonl transcript exists under logs/BEH-NNN/
+    -> a retrospective with neither input could only emit a masking [] or a self-referential "no inputs" finding; skip before paying the cap. One real input (a failed slice has transcripts but maybe no branch) is enough to run.
   run: claude -p "/retrospective for BEH-NNN. Read every transcript under logs/BEH-NNN/ + the diff. Append harness/environment findings to /findings/out.json (ALWAYS write the file, even as []; write it EARLY and update as you go so a late OOM/kill can't lose it). Touch no code, no Linear."
   retro OK <=> /findings/out.json EXISTS          // absent & not killed => never ran; absent after a 137 kill => killed-before-write, retry
   collectFindings(/findings/out.json) -> harness files one Linear issue per finding (or none, for [])
@@ -313,21 +313,21 @@ real-path mount, the ticket-keyed transcripts at
 at their natural path — no extra mount. Retrospective reads **every** prior
 transcript for the ticket (implementation *and* review) plus the diff.
 
-**Precondition — those inputs are also a launch gate (BEH-552).** The `out.json`
+**Precondition — those inputs are also a launch gate (BEH-553).** The `out.json`
 post-check tells "ran, found nothing" (`[]`) apart from "never wrote" — but it
 cannot tell either from "there was never anything to study", and it only learns
 the inputs are missing *after* burning a full sandbox. So the dispatch path now
-gates the launch on the inputs: it runs only if at least one
-`implementation-*.jsonl` or `review-*.jsonl` exists under `logs/BEH-NNN/`
-(`runlog.HasPriorPipelineTranscripts`) **and** `feat/<slug>` resolves
-(`git.BranchResolves`). Otherwise it skips with a `retrospective skipped`
-diagnostic and reports a clean no-op (OK, never a pipeline failure) — the BEH-318
-shape, where a 30-min retro was dispatched against a ticket whose log dir held only
-its own stream and whose branch never existed. In a normal pipeline both inputs
-always hold by the time retrospective runs (implementation creates the branch at
-the tdd skill's step 0 and tees its transcript), and a genuinely-failed slice keeps
-both — so the gate only fires on an anomalous standalone dispatch, never on a
-failure worth mining. The decision is the pure `verify.RetrospectiveHasInputs`.
+gates the launch on the inputs: it skips **only if BOTH** are absent — no
+`implementation-*.jsonl`/`review-*.jsonl` transcript exists under `logs/BEH-NNN/`
+(`stages.hasUpstreamTranscripts`) **and** `feat/<slug>` does not resolve
+(`git.BranchExists`). One real input is enough to run. Otherwise it skips with a
+`retrospective skipped` diagnostic and reports a clean no-op (OK, never a pipeline
+failure) — the BEH-318 shape, where a 30-min retro was dispatched against a ticket
+whose log dir held only its own stream and whose branch never existed. The skip is
+deliberately BOTH-absent, not either-absent: the pipeline runs the retrospective
+even on a *failed* slice ("exactly the run worth mining"), which routinely has
+transcripts but no branch — skipping on a missing branch alone would suppress those.
+The decision is the pure `verify.RetrospectivePreconditions`.
 
 **Output — the findings dropbox**, kept deliberately simple and out-of-band:
 

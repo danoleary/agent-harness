@@ -276,6 +276,20 @@ func GatherTddGroundTruth(herdPath, slug string) verify.GroundTruth {
 	return verify.GroundTruth{WorktreeExists: worktreeExists, CommitsAhead: commitsAhead}
 }
 
+// BranchExists reports whether `feat/<slug>` resolves to a git revision in the
+// main checkout — i.e. the upstream /tdd session actually created the feature
+// branch. It reads the LOCAL head ref (`refs/heads/feat/<slug>`), where the
+// sandbox's commits land via the shared `.git`; distinct from BranchPushed,
+// which reads the remote-tracking ref. It is the retrospective's host-side
+// precondition (BEH-553): a branch that doesn't resolve means there is no diff to
+// retrospect. Any git failure → false (treat an unreadable ref as absent).
+func BranchExists(herdPath, slug string) bool {
+	err := exec.Command(
+		"git", "-C", herdPath, "rev-parse", "--verify", "--quiet", "refs/heads/"+BranchName(slug),
+	).Run()
+	return err == nil
+}
+
 // BranchPushed reports whether `feat/<slug>` reached origin, read from the main
 // checkout's remote-tracking ref (the review tool's host-side push sets it). It
 // is the safe gate on tearing down a worktree: the harness only removes a
@@ -284,21 +298,6 @@ func GatherTddGroundTruth(herdPath, slug string) verify.GroundTruth {
 func BranchPushed(herdPath, slug string) bool {
 	err := exec.Command(
 		"git", "-C", herdPath, "rev-parse", "--verify", "--quiet", "refs/remotes/origin/feat/"+slug,
-	).Run()
-	return err == nil
-}
-
-// BranchResolves reports whether the local feature branch `feat/<slug>` exists in
-// the main checkout's shared `.git` — the sandbox creates it there at the tdd
-// skill's step 0, so it is visible host-side without touching the worktree. It is
-// the retrospective precondition's "is there a diff to study?" check (BEH-552): a
-// retrospective dispatched for a ticket whose branch never resolved (feat/beh-318)
-// can only conclude "nothing to read", so the harness skips it rather than burn a
-// sandbox. Checks the local head specifically (not origin/), since the branch
-// always exists locally once created and a worktree teardown never deletes it.
-func BranchResolves(herdPath, slug string) bool {
-	err := exec.Command(
-		"git", "-C", herdPath, "rev-parse", "--verify", "--quiet", "refs/heads/"+BranchName(slug),
 	).Run()
 	return err == nil
 }
