@@ -6,7 +6,6 @@ package prompt
 import (
 	"strings"
 
-	"github.com/beherd/agent-harness/internal/ci"
 	"github.com/beherd/agent-harness/internal/ticket"
 )
 
@@ -179,19 +178,54 @@ func alreadyFiledSection(filed []FiledFinding) string {
 // the harness owns all remote I/O (ADR-0002): the agent commits the fix locally
 // and stops — the harness re-pushes and re-polls CI. Each fix is its own commit
 // (auditable trail; never a force-push over review history).
-func BuildCIFix(t ticket.Ticket, slug, worktreePath, ciLogs string) string {
+// ciFixLogSteer returns the log-framing block and the "your job" block for the
+// fix prompt, branched on whether the harness actually fetched a usable failing
+// log. When it could not (the step log expired, or the failure was an infra-level
+// kill), that absence is the single strongest signal the failure is NOT a
+// deterministic code defect — so the prompt warns the agent up front and gives it
+// an explicit flake early-exit, rather than letting it assume a real, reproducible
+// failure and exhaustively re-derive every PR gate to a dead end (BEH-558).
+func ciFixLogSteer(slug, ciLogs string, logAvailable bool) (logFraming, job []string) {
+	if logAvailable {
+		return []string{
+				"Here are the failing CI job logs the harness fetched for you (host-side, via `gh run view --log-failed`):",
+				"",
+				"```",
+				ciLogs,
+				"```",
+			}, []string{
+				"Your job: read those logs, reproduce/diagnose the failure locally in the worktree where you can, and apply a fix as a NEW LOCAL commit on `feat/" + slug + "`. Re-run the relevant gate locally (the specific test/lint/typecheck/check that failed) to verify the fix before you stop. Keep the fix to its own commit — do NOT amend or force-push over the existing history.",
+			}
+	}
+	return []string{
+			"WARNING: the harness could NOT fetch the failing step's log (`gh run view --log-failed` returned no usable log — the log expired or the step was an infra-level kill). An unfetchable log strongly implies this is a FLAKE or infra kill, NOT a deterministic code defect — there is most likely nothing in the diff to fix. The harness captured only this, which is probably just an error marker:",
+			"",
+			"```",
+			ciLogs,
+			"```",
+		}, []string{
+			"Your job: identify the SINGLE gate CI reported as failing and reproduce JUST that one gate locally in the worktree. Do NOT exhaustively re-run every gate the PR runs (check, typecheck, the lint guards, the full unit suite, the browser-backed Storybook suite) — the unfetchable log already tells you this is most likely a flake, and re-deriving all of them only burns the budget to reach the same verdict.",
+			"",
+			"Early-exit rule: if that one failing gate is green locally — or you cannot even tell which gate failed because the log is gone — report `flake — no fix` and stop. Commit a fix ONLY if you actually reproduce a real, code-level failure; do not invent a fix for a phantom failure.",
+		}
+}
+
+func BuildCIFix(t ticket.Ticket, slug, worktreePath, ciLogs string, logAvailable bool) string {
+	logFraming, job := ciFixLogSteer(slug, ciLogs, logAvailable)
 	lines := []string{
 		"A GitHub CI check is failing on the open PR for " + t.Identifier + ". The worktree already exists at `" + worktreePath + "` on branch `feat/" + slug + "` — work in it; do NOT create a new worktree.",
 		"",
 		"The branch already passed the harness's local gate re-run, but CI on GitHub went red. The cause is usually a CI-vs-local difference (a different toolchain/env, a lockfile or native-binding skew, or a flaky spec) rather than something the local gate could catch.",
 		"",
 	}
-	lines = append(lines, ciLogsSection(slug, ciLogs)...)
+	lines = append(lines, logFraming...)
+	lines = append(lines, "")
+	lines = append(lines, job...)
 	lines = append(lines,
 		"",
 		"This sandbox has NO network and NO `gh` — the harness already fetched (or failed to fetch) those logs for you host-side. The logs above are all you get; do NOT try to run `gh`, `git fetch`, or any network command to fetch the CI logs, the run, or anything else yourself — it will only fail with `command not found` / no route to host and burn a turn. Work from the logs above plus local reproduction.",
 		"",
-		"Escape hatch — do NOT fabricate a commit. If you reproduce every failing gate locally and they all pass (the red is a cancelled, superseded, or flaky run, not a reproducible code defect), then make NO commit at all and stop. Do NOT manufacture a speculative or unrelated change (a throwaway story, a no-op tweak, a base-refresh merge) just to give the loop something to push — that only pollutes the PR with unverified commits. When you leave the worktree clean with no new commit, the harness re-triggers CI itself with an empty commit, which clears a cancelled/superseded run. Only commit when you have a real, locally-verified fix.",
+		"Escape hatch — do NOT fabricate a commit. If you reproduce every failing gate locally and they all pass (the red is a cancelled or superseded run, not a reproducible code defect), then make NO commit at all and stop. Do NOT manufacture a speculative or unrelated change (a throwaway story, a no-op tweak, a base-refresh merge) just to give the loop something to push — that only pollutes the PR with unverified commits. When you leave the worktree clean with no new commit, the harness re-triggers CI itself with an empty commit, which clears a cancelled/superseded run. Only commit when you have a real, locally-verified fix.",
 		"",
 		"Ticket context (the intent — already fetched for you):",
 		"",
@@ -210,62 +244,6 @@ func BuildCIFix(t ticket.Ticket, slug, worktreePath, ciLogs string) string {
 		bashQuirkSteer,
 	)
 	return strings.Join(lines, "\n")
-}
-
-// ciLogsSection renders the log block + the agent's marching orders, branched on
-// whether the host-side fetch actually returned step output. When it did, the
-// agent is told to read the logs and reproduce the failure. When it did NOT
-// (only the driver's own "couldn't fetch" markers came back — see
-// logsUnfetchable), claiming the empty payload IS "the logs" sent both BEH-507
-// cifix sessions blind-reproducing every already-green gate; instead the prompt
-// says up-front the logs couldn't be fetched, that this usually means the run was
-// cancelled/superseded/expired rather than a code defect, and steers off
-// exhaustively re-running gates (BEH-560).
-func ciLogsSection(slug, ciLogs string) []string {
-	if logsUnfetchable(ciLogs) {
-		return []string{
-			"IMPORTANT: the harness could NOT fetch step logs for this run (`gh run view --log-failed` returned no failure output — most likely the run was cancelled, superseded by a newer push, or expired). The block below is only what the fetch returned, NOT real step logs:",
-			"",
-			"```",
-			ciLogs,
-			"```",
-			"",
-			"Because there are no logs, do NOT assume a code defect and do NOT blind-reproduce every PR gate (check, lint, typecheck, the Storybook/axe gate) — they already passed the harness's local re-run, so re-running them all would just burn your budget. First determine whether this is even a real failure: inspect the worktree and the recent diff for an obvious, specific breakage. If you can identify and fix a concrete failing gate, do so as a NEW LOCAL commit on `feat/" + slug + "` and verify just that gate. If you cannot find a real failure, do NOT fabricate a change — record \"no fetchable logs; run likely cancelled/superseded, no reproducible failure\" in your handoff and stop.",
-		}
-	}
-	return []string{
-		"Here are the failing CI job logs the harness fetched for you (host-side, via `gh run view --log-failed`):",
-		"",
-		"```",
-		ciLogs,
-		"```",
-		"",
-		"Your job: read those logs, reproduce/diagnose the failure locally in the worktree where you can, and apply a fix as a NEW LOCAL commit on `feat/" + slug + "`. Re-run the relevant gate locally (the specific test/lint/typecheck/check that failed) to verify the fix before you stop. Keep the fix to its own commit — do NOT amend or force-push over the existing history.",
-	}
-}
-
-// logsUnfetchable reports whether the fetched CI-log payload carries no real step
-// output — i.e. every line is one of fetchFailedLogs's own scaffolding markers
-// (the `===== run … =====` header, the folded-in `(could not fully fetch …)` gh
-// error, the truncation notice) or the no-runs sentinel, with gh's "log not
-// found"/"no logs found" being the typical underlying error. A single line of
-// genuine step output anywhere (e.g. a partial fetch where one run succeeded)
-// makes it fetchable. Keyed off ci's exported marker constants so a rename in the
-// driver moves the producer and this predicate together (BEH-560/BEH-563).
-func logsUnfetchable(ciLogs string) bool {
-	for _, line := range strings.Split(ciLogs, "\n") {
-		line = strings.TrimSpace(line)
-		switch {
-		case line == "":
-		case strings.HasPrefix(line, ci.RunHeaderMarker):
-		case strings.HasPrefix(line, ci.FetchErrorMarker):
-		case strings.HasPrefix(line, ci.NoRunsSentinel):
-		case strings.HasPrefix(line, ci.TruncationHeadMarker) && strings.Contains(line, ci.TruncationWord):
-		default:
-			return false
-		}
-	}
-	return true
 }
 
 // BuildReview builds the `-p` prompt for the sandboxed /review-worktree session

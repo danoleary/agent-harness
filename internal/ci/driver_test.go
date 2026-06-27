@@ -25,6 +25,92 @@ func TestRerunWithoutActionsRunsDoesNotWait(t *testing.T) {
 	}
 }
 
+func TestFetchFailedLogsReportsUnavailableWhenNoRunIDs(t *testing.T) {
+	// No backing Actions run (e.g. an external status check failed) — there is no
+	// log to fetch, so the driver must report the log as unavailable (BEH-558).
+	d := &GhDriver{logTailBytes: defaultLogTailBytes}
+	_, available := d.fetchFailedLogs(nil)
+	if available {
+		t.Fatal("fetchFailedLogs reported the log as available when there were no run IDs")
+	}
+}
+
+func TestFetchFailedLogsReportsUnavailableWhenGhErrors(t *testing.T) {
+	// `gh run view --log-failed` errors with "log not found: <id>" when the step
+	// log expired or the step was an infra-level kill — the exact BEH-558 case. With
+	// no usable log retrieved, the driver must report it unavailable and still fold
+	// gh's error into the text so the agent sees what happened.
+	d := &GhDriver{
+		logTailBytes: defaultLogTailBytes,
+		fetchRunLog: func(id string) ([]byte, error) {
+			return nil, errors.New("log not found: " + id)
+		},
+	}
+	logs, available := d.fetchFailedLogs([]string{"83755977095"})
+	if available {
+		t.Fatal("fetchFailedLogs reported the log as available even though gh errored with 'log not found'")
+	}
+	if !strings.Contains(logs, "log not found") {
+		t.Errorf("fetchFailedLogs dropped gh's error from the log text: %q", logs)
+	}
+}
+
+func TestFetchFailedLogsReportsAvailableWhenLogFetched(t *testing.T) {
+	d := &GhDriver{
+		logTailBytes: defaultLogTailBytes,
+		fetchRunLog: func(id string) ([]byte, error) {
+			return []byte("FAIL src/foo.test.ts\n##[error]exit code 1"), nil
+		},
+	}
+	logs, available := d.fetchFailedLogs([]string{"42"})
+	if !available {
+		t.Fatal("fetchFailedLogs reported the log as unavailable despite a successful fetch")
+	}
+	if !strings.Contains(logs, "FAIL src/foo.test.ts") {
+		t.Errorf("fetchFailedLogs dropped the fetched log content: %q", logs)
+	}
+}
+
+func TestFetchFailedLogsReportsUnavailableWhenFetchSucceedsButEmpty(t *testing.T) {
+	// gh can exit 0 yet return no usable log (an infra-level kill leaves no failed
+	// step output) — a successful-but-empty fetch must still count as unavailable,
+	// not be treated as a real log to diagnose (BEH-558).
+	d := &GhDriver{
+		logTailBytes: defaultLogTailBytes,
+		fetchRunLog:  func(id string) ([]byte, error) { return []byte("   \n"), nil },
+	}
+	_, available := d.fetchFailedLogs([]string{"42"})
+	if available {
+		t.Fatal("fetchFailedLogs reported the log as available despite an empty (whitespace-only) successful fetch")
+	}
+}
+
+func TestFixForwardsLogAvailabilityToRunFix(t *testing.T) {
+	// Fix must hand the runFix callback whether the log was fetchable, so the fix
+	// prompt can warn the agent when it was not (BEH-558).
+	var gotAvailable bool
+	called := false
+	d := &GhDriver{
+		logTailBytes: defaultLogTailBytes,
+		fetchRunLog:  func(id string) ([]byte, error) { return nil, errors.New("log not found: " + id) },
+		runFix: func(ciLogs string, logAvailable bool) error {
+			called = true
+			gotAvailable = logAvailable
+			return nil
+		},
+	}
+	failed := []Check{{Name: "build", Bucket: BucketFail, Link: "https://github.com/o/r/actions/runs/83755977095/job/1"}}
+	if err := d.Fix(failed); err != nil {
+		t.Fatalf("Fix: %v", err)
+	}
+	if !called {
+		t.Fatal("Fix did not invoke runFix")
+	}
+	if gotAvailable {
+		t.Error("Fix told runFix the log was available when gh could not fetch it")
+	}
+}
+
 func TestInterpretChecksOutputParsesDespiteNonZeroExit(t *testing.T) {
 	// gh pr checks exits non-zero when checks fail, but the JSON is on stdout.
 	stdout := []byte(`[{"name":"lint","bucket":"fail"}]`)
@@ -94,13 +180,17 @@ func TestTruncateLogsLeavesShortLogsUntouched(t *testing.T) {
 	}
 }
 
-// The producers must emit the exported marker constants prompt.logsUnfetchable
-// keys off, so an uncoordinated literal change here goes red instead of silently
-// desyncing the predicate (BEH-563).
+// The producers must emit the exported marker constants the tests and prompt
+// fixtures assert against, so an uncoordinated literal change here goes red
+// instead of silently desyncing the payload format (BEH-563).
 func TestFetchFailedLogsNoRunsEmitsSentinel(t *testing.T) {
 	d := &GhDriver{}
-	if got := d.fetchFailedLogs(nil); got != NoRunsSentinel {
+	got, available := d.fetchFailedLogs(nil)
+	if got != NoRunsSentinel {
 		t.Fatalf("fetchFailedLogs(nil) = %q, want NoRunsSentinel %q", got, NoRunsSentinel)
+	}
+	if available {
+		t.Fatal("fetchFailedLogs(nil) reported the log as available with no run IDs")
 	}
 }
 

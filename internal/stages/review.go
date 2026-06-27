@@ -371,16 +371,16 @@ func Review(cfg config.Config, log *runlog.Logger, runID string, args Args) Resu
 // a worktree left dirty (the agent didn't commit) is a failure, so the harness
 // never pushes an unverified or self-reported-only fix. Each attempt gets a
 // unique container name + transcript.
-func ciFixRunner(cfg config.Config, args Args, slug, worktreePath, runID string, t ticket.Ticket, log *runlog.Logger) func(string) error {
+func ciFixRunner(cfg config.Config, args Args, slug, worktreePath, runID string, t ticket.Ticket, log *runlog.Logger) func(string, bool) error {
 	attempt := 0
-	return func(ciLogs string) error {
+	return func(ciLogs string, logAvailable bool) error {
 		attempt++
 		// Capture the tip before the session so we can tell afterwards whether the
 		// agent actually committed a fix or correctly concluded there was nothing to
 		// fix (BEH-561). A read failure leaves headBefore empty, which degrades to
 		// "treat any HEAD as a real commit" — never a spurious empty commit.
 		headBefore, _ := gitpkg.HeadSHA(worktreePath)
-		fixPrompt := prompt.BuildCIFix(t, slug, worktreePath, ciLogs)
+		fixPrompt := prompt.BuildCIFix(t, slug, worktreePath, ciLogs, logAvailable)
 		containerName := fmt.Sprintf("herd-harness-%s-%d-cifix-%d", runID, os.Getpid(), attempt)
 		fixArgs := sandbox.BuildDockerRunArgs(sandbox.Config{
 			Image:           cfg.Image,

@@ -43,12 +43,11 @@ const defaultLogTailBytes = 16000
 
 // Marker prefixes that fetchFailedLogs / truncateLogs emit as the *only* content
 // when no real step output was retrievable (run cancelled/superseded/expired, no
-// Actions runs at all, or a fetch error folded into the text). prompt.logsUnfetchable
-// keys off these to detect an unfetchable payload and branch the CI-fix prompt
-// framing. They are exported as the single source of truth so a marker rename
-// here moves the producer and the predicate together — the two sides used to be
-// coupled only by "keep in sync" comments, which let a marker edit silently revert
-// the BEH-560 fix (BEH-563).
+// Actions runs at all, or a fetch error folded into the text). fetchFailedLogs now
+// reports unfetchability directly via its second return, so the prompt no longer
+// re-parses these — but they remain the single source of truth for the payload
+// format the driver emits and its tests assert against, exported so a marker rename
+// here moves the producer and those fixtures together (BEH-560/BEH-563).
 const (
 	// RunHeaderMarker begins each run's section: "===== run <id> (failed steps) =====".
 	RunHeaderMarker = "===== run "
@@ -76,10 +75,17 @@ type GhDriver struct {
 	logTailBytes int
 
 	// runFix launches the sandboxed Claude session over the worktree to diagnose
-	// + fix + commit, given the failing CI logs. Returns non-nil on session failure.
-	runFix func(ciLogs string) error
+	// + fix + commit, given the failing CI logs and whether those logs were actually
+	// fetchable. An unfetchable log is the strongest flake signal (BEH-558), so the
+	// prompt steers differently when logAvailable is false. Returns non-nil on
+	// session failure.
+	runFix func(ciLogs string, logAvailable bool) error
 	// push pushes the new fix commit to the PR branch (gitpkg.Push).
 	push func() error
+
+	// fetchRunLog fetches one failing run's log (`gh run view <id> --log-failed`).
+	// Injected so the log-availability logic is unit-testable without shelling out.
+	fetchRunLog func(id string) ([]byte, error)
 
 	sleep func(time.Duration)
 	now   func() time.Time
@@ -88,8 +94,8 @@ type GhDriver struct {
 // NewGhDriver builds the production Driver. ghTimeout bounds each individual gh
 // call; cfg supplies the poll cadence/budget; runFix and push are the sandbox +
 // remote effects the cmd provides.
-func NewGhDriver(herdPath, branch string, cfg Config, ghTimeout time.Duration, runFix func(ciLogs string) error, push func() error) *GhDriver {
-	return &GhDriver{
+func NewGhDriver(herdPath, branch string, cfg Config, ghTimeout time.Duration, runFix func(ciLogs string, logAvailable bool) error, push func() error) *GhDriver {
+	d := &GhDriver{
 		herdPath:     herdPath,
 		branch:       branch,
 		pollCfg:      pollConfig{interval: cfg.PollInterval, budget: cfg.PollBudget},
@@ -100,6 +106,11 @@ func NewGhDriver(herdPath, branch string, cfg Config, ghTimeout time.Duration, r
 		sleep:        time.Sleep,
 		now:          time.Now,
 	}
+	d.fetchRunLog = func(id string) ([]byte, error) {
+		stdout, _, err := proc.OutputInDir(d.ghTimeout, d.herdPath, "gh", "run", "view", id, "--log-failed")
+		return stdout, err
+	}
+	return d
 }
 
 // Poll runs `gh pr checks <branch> --json …` until the checks reach a terminal
@@ -132,9 +143,11 @@ func (d *GhDriver) Rerun(failed []Check) error {
 	return nil
 }
 
-// Fix fetches the failed-job logs host-side and hands them to the sandbox session.
+// Fix fetches the failed-job logs host-side and hands them — plus whether they
+// were actually fetchable — to the sandbox session.
 func (d *GhDriver) Fix(failed []Check) error {
-	return d.runFix(d.fetchFailedLogs(RunIDs(failed)))
+	logs, available := d.fetchFailedLogs(RunIDs(failed))
+	return d.runFix(logs, available)
 }
 
 // Push pushes the fix commit (delegated to the injected gitpkg.Push).
@@ -187,24 +200,31 @@ func (d *GhDriver) MergeState() (MergeVerdict, error) {
 // fetchFailedLogs concatenates `gh run view <id> --log-failed` for each failing
 // run, truncated to the configured tail. gh's own error is folded into the text
 // (rather than aborting) so the agent still gets whatever logs were retrievable
-// — a partial log beats no log when diagnosing. The scaffolding markers here (the
-// run header, the no-runs sentinel, the "could not fully fetch" fold-in) are what
-// prompt.logsUnfetchable keys off to detect an empty payload — keep them in sync.
-func (d *GhDriver) fetchFailedLogs(runIDs []string) string {
+// — a partial log beats no log when diagnosing. The second return reports whether
+// any usable log was actually fetched: false when there is no backing Actions run,
+// or when every fetch errored (the log expired / the step was an infra-level kill).
+// That flag is the strongest flake signal the fix prompt has (BEH-558). The payload
+// is built from the exported marker constants (run header, no-runs sentinel,
+// folded-in fetch error) so a rename moves the producer and its test fixtures
+// together (BEH-563).
+func (d *GhDriver) fetchFailedLogs(runIDs []string) (string, bool) {
 	if len(runIDs) == 0 {
-		return NoRunsSentinel
+		return NoRunsSentinel, false
 	}
 	var b strings.Builder
+	available := false
 	for _, id := range runIDs {
 		fmt.Fprintf(&b, RunHeaderMarker+"%s (failed steps) =====\n", id)
-		stdout, _, err := proc.OutputInDir(d.ghTimeout, d.herdPath, "gh", "run", "view", id, "--log-failed")
+		stdout, err := d.fetchRunLog(id)
 		b.Write(stdout)
 		if err != nil {
 			fmt.Fprintf(&b, "\n"+FetchErrorMarker+"%s: %v)\n", id, err)
+		} else if len(strings.TrimSpace(string(stdout))) > 0 {
+			available = true
 		}
 		b.WriteString("\n")
 	}
-	return truncateLogs(b.String(), d.logTailBytes)
+	return truncateLogs(b.String(), d.logTailBytes), available
 }
 
 // interpretChecksOutput turns a `gh pr checks --json` invocation into checks.
