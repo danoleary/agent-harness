@@ -137,6 +137,63 @@ Design decisions, and why:
   `runlog`; the loop will read the structured stage results, not the exit code, so
   encoding which stage failed into the code buys nothing.
 
+## Single-shot auto-select (`--next`)
+
+`pipeline --next` runs the same single-ticket chain as `pipeline BEH-NNN`, but
+**selects** the ticket instead of taking it as an argument: it resolves the
+top-of-queue eligible ticket via **Ticket selection** (below), runs implementation
+→ review → retrospective over it *once*, then exits. It is the smallest increment
+that removes the "the human must name a ticket" step — and the seam **The loop**
+later reuses, a loop being `--next` selection in a `for {}` with stop control and a
+circuit breaker around it. There is no continuous run, no auto-fix, no circuit
+breaker here; a human is still at the trigger, pulling it once per ticket.
+
+```
+pipeline --next:
+  ticket = selectNextTicket()          // Linear read + claim — see "claim-on-select" below
+  if no ticket -> log "no eligible ticket — queue empty"; exit 0   // empty queue is not a failure
+  run the pipeline over ticket (exactly as pipeline BEH-NNN, with PreClaimed set)
+```
+
+Design decisions, and why:
+
+- **An explicit `--next` flag, not bare `pipeline`.** Auto-select **mutates Linear**
+  (it claims the chosen ticket → In Progress) and burns a sandbox — too surprising a
+  side effect to trigger by *omission*. Bare `pipeline` with no ticket keeps today's
+  friendly `usage:` error rather than silently grabbing a ticket the user never named.
+  `--next` together with an explicit `BEH-NNN` is a conflict and is rejected — you
+  either name a ticket or ask for the next one, never both.
+- **Claim-on-select (dequeue semantics).** `selectNextTicket()` claims the ticket
+  (Todo → In Progress) **as part of selection**, before returning. This is what makes
+  selection a *dequeue*: a second selection (a stray concurrent `--next`, or the
+  future loop's next turn) sees the ticket is no longer Todo and picks the next one,
+  so two selections can't both grab the same top ticket. The window shrinks to a
+  single GraphQL round-trip. The cost — claiming *before* Docker preflight, which
+  inverts the implementation stage's hard-won "never claim a ticket we cannot work"
+  ordering — is paid back by **release-on-preflight-failure**, and the whole trade-off
+  is recorded in [ADR-0003](adr/0003-claim-on-select.md).
+- **`PreClaimed` threads the claim state into the stage; the hand-passed path is
+  untouched.** Selection sets `args.PreClaimed = true`. The implementation stage then
+  (a) skips its own `MoveToInProgress` (the ticket is already In Progress — it would
+  be a redundant no-op) and (b) if its **Docker preflight fails**, calls
+  `ReleaseToTodo` so the dequeued-but-unworkable ticket returns to the queue instead
+  of stranding In Progress. On the hand-passed path `PreClaimed` is false: preflight
+  still precedes the claim exactly as before, nothing to release, BEH-316 ordering
+  intact. The `--next` path carries the new complexity; the tested path does not move.
+- **`--dry-run` performs no Linear *mutations* — but it does *read*.** `--next
+  --dry-run` runs the real `selectNextTicket()` query to resolve the actual
+  top-of-queue ticket and prints the plan for it, but **never claims** (no
+  `MoveToInProgress`). The documented guarantee tightens from the hand-passed
+  pipeline's "touches no Linear" to "**mutates** no Linear": selection is
+  side-effect-free, so previewing *which* ticket `--next` would grab, and the plan it
+  would run, is honest and useful. One log line marks it: `dry-run — selected BEH-NNN
+  (not claiming)`.
+- **Empty queue exits 0.** No eligible ticket is a normal steady state, not a failure;
+  `--next` logs `no eligible ticket — queue empty` and exits 0. This matches what the
+  loop already does (`if no ticket -> exit cleanly`), so the loop wraps `--next`
+  without remapping exit codes. The distinct log line carries the "nothing to do"
+  signal for any future cron without overloading the process exit code.
+
 ## The loop
 
 ```
@@ -322,6 +379,12 @@ A ticket is eligible iff **all** hold:
 
 Ordering: **priority** (Urgent → High → Medium → Low → No-priority), tie-broken by
 **board sort order** then `createdAt` ascending. Take the top one.
+
+`selectNextTicket()` implements this predicate. Its **first consumer is `pipeline
+--next`** (see "Single-shot auto-select") — not only the future loop — and it
+**claims** the chosen ticket as part of selection (dequeue semantics,
+[ADR-0003](adr/0003-claim-on-select.md)), so the returned ticket is already In
+Progress.
 
 ## Harness-improvement findings (retrospective owns this, alone)
 
