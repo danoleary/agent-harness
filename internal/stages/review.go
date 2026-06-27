@@ -353,6 +353,14 @@ func Review(cfg config.Config, log *runlog.Logger, runID string, args Args) Resu
 	)
 	log.Event("watching CI for " + gitpkg.BranchName(slug) + " …")
 	ciResult := ci.WatchAndFix(driver, ciCfg, time.Now)
+	if ciResult.SpendingCapAbort {
+		// The auto-fix session hit an active spending cap — not a code defect or
+		// unfixable CI, just a billing window that resets. Name the retry-after-reset
+		// class (↻) so a re-dispatch after the cap resets lands the fix, instead of a
+		// spurious "CI did not go green" failure (BEH-571). PR + worktree are kept.
+		log.Event("review ↻ CI auto-fix deferred — spending cap reached, retry after reset (BEH-494) — keeping PR + worktree")
+		return Result{OK: false}
+	}
 	if !ciResult.OK {
 		log.Event("review ✗ CI did not go green: " + ciResult.Reason + " — keeping PR + worktree")
 		if s := ci.Summarize(ciResult.Failing); s != "" {
@@ -401,8 +409,8 @@ func ciFixRunner(cfg config.Config, args Args, slug, worktreePath, runID string,
 			Verbose:        args.Verbose,
 			Log:            log,
 		})
-		if outcome.ExitCode != 0 {
-			return fmt.Errorf("auto-fix session %d exited %d", attempt, outcome.ExitCode)
+		if err := fixSessionError(outcome, attempt); err != nil {
+			return err
 		}
 		// Ground truth, never the agent's say-so: the fix must be committed (clean
 		// worktree) or the harness has nothing trustworthy to push.
@@ -418,6 +426,23 @@ func ciFixRunner(cfg config.Config, args Args, slug, worktreePath, runID string,
 		}
 		return nil
 	}
+}
+
+// fixSessionError maps a finished auto-fix session's outcome to the error the
+// ci.Driver.Fix callback should return — nil if the session ran cleanly and the
+// caller should proceed to the ground-truth (committed-fix) checks. A spending-cap
+// abort (BEH-571) is its own retry-after-reset class, so it is surfaced as
+// ci.ErrSpendingCapActive and takes precedence over the exit code (a cap abort
+// also exits non-zero) — letting WatchAndFix defer rather than count the 1-second
+// no-op as a fix-attempt failure.
+func fixSessionError(outcome session.Outcome, attempt int) error {
+	if outcome.SpendingCapAbort {
+		return ci.ErrSpendingCapActive
+	}
+	if outcome.ExitCode != 0 {
+		return fmt.Errorf("auto-fix session %d exited %d", attempt, outcome.ExitCode)
+	}
+	return nil
 }
 
 // createPR opens the pull request from the main checkout with `gh`, which infers

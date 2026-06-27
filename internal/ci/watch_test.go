@@ -242,6 +242,34 @@ func TestWatchSurfacesFixError(t *testing.T) {
 	}
 }
 
+func TestWatchDefersOnSpendingCapAbort(t *testing.T) {
+	// The auto-fix session died on an active spending cap (BEH-571): it could not
+	// run, so the red is not a code defect or unfixable CI — the cap resets and a
+	// re-dispatch would proceed. WatchAndFix must surface this as its own
+	// retry-after-reset class (SpendingCapAbort + a distinct reason), NOT as a
+	// generic "auto-fix session failed", and must not push a non-existent fix.
+	d := &fakeDriver{
+		polls:  []pollResult{{v: Failed, checks: failChecks()}, {v: Failed, checks: failChecks()}},
+		fixErr: ErrSpendingCapActive,
+	}
+	out := WatchAndFix(d, testWatchCfg(), newFakeClock().now)
+	if out.OK {
+		t.Fatalf("expected non-OK on a spending-cap abort, got %+v", out)
+	}
+	if !out.SpendingCapAbort {
+		t.Fatalf("expected SpendingCapAbort=true, got %+v", out)
+	}
+	if !strings.Contains(out.Reason, "spending cap") || !strings.Contains(out.Reason, "retry after reset") {
+		t.Fatalf("reason %q should name the retry-after-reset class", out.Reason)
+	}
+	if strings.Contains(out.Reason, "auto-fix session failed") {
+		t.Fatalf("reason %q must not be the generic fix-failure wording", out.Reason)
+	}
+	if d.pushes != 0 {
+		t.Fatalf("pushes = %d, want 0 (nothing was fixed to push)", d.pushes)
+	}
+}
+
 func TestWatchDoesNotRefixWhileCIRunPredatesFix(t *testing.T) {
 	// Real failure → fix → push, but CI hasn't started a run for the new commit yet
 	// (AwaitHeadRun times out → the only red still showing is the prior run's stale

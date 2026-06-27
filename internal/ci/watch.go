@@ -56,6 +56,14 @@ type Config struct {
 	PollBudget time.Duration
 }
 
+// ErrSpendingCapActive is the sentinel a Fix callback returns when the auto-fix
+// session could not run because the account's spending cap is active (BEH-571).
+// It is a retry-after-reset condition — not a code defect, not unfixable CI — so
+// WatchAndFix surfaces it as a distinct class rather than counting the 1-second
+// no-op session as a fix-attempt failure (mirroring the implementation/review/
+// retrospective stages' SpendingCapAbort handling from BEH-494).
+var ErrSpendingCapActive = errors.New("auto-fix skipped: spending cap reached, retry after reset")
+
 // Outcome is the terminal result of watching (and trying to fix) CI.
 type Outcome struct {
 	OK bool
@@ -63,6 +71,11 @@ type Outcome struct {
 	Reason string
 	// Failing carries the last failing checks when !OK, for the operator report.
 	Failing []Check
+	// SpendingCapAbort marks the non-OK outcome where the auto-fix session hit an
+	// active spending cap (ErrSpendingCapActive) rather than failing on the code.
+	// It lets the caller log a retry-after-reset breadcrumb instead of a spurious
+	// "CI did not go green" failure (BEH-571).
+	SpendingCapAbort bool
 }
 
 // WatchAndFix polls CI for the just-pushed PR and, on failure, drives a bounded
@@ -109,6 +122,18 @@ func WatchAndFix(d Driver, cfg Config, now func() time.Time) Outcome {
 			}
 		}
 		if err := d.Fix(failed); err != nil {
+			// A spending-cap abort means the fix session never ran — defer rather than
+			// count it as a fix-attempt failure, so a cap-active window doesn't sink an
+			// otherwise-recoverable CI-fix that a post-reset re-dispatch would land
+			// (BEH-571).
+			if errors.Is(err, ErrSpendingCapActive) {
+				return Outcome{
+					OK:               false,
+					Reason:           "auto-fix deferred — spending cap reached, retry after reset",
+					Failing:          failed,
+					SpendingCapAbort: true,
+				}
+			}
 			return Outcome{OK: false, Reason: "auto-fix session failed: " + err.Error(), Failing: failed}
 		}
 		if err := d.Push(); err != nil {

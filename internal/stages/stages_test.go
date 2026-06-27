@@ -10,10 +10,44 @@ import (
 	"syscall"
 	"testing"
 
+	"github.com/beherd/agent-harness/internal/ci"
 	"github.com/beherd/agent-harness/internal/config"
 	"github.com/beherd/agent-harness/internal/runlog"
+	"github.com/beherd/agent-harness/internal/session"
 	"github.com/beherd/agent-harness/internal/verify"
 )
+
+// BEH-571: fixSessionError maps a finished auto-fix session's outcome to the
+// error its ci.Driver.Fix callback returns. A spending-cap abort is its own
+// retry-after-reset class (ci.ErrSpendingCapActive), distinct from a generic
+// non-zero exit, and takes precedence over the exit code (a cap abort also exits
+// non-zero) so a cap-active window isn't mislabelled as a fix-attempt failure.
+func TestFixSessionErrorSpendingCapTakesPrecedence(t *testing.T) {
+	// Cap aborts also carry a non-zero exit; the cap class must win.
+	err := fixSessionError(session.Outcome{ExitCode: 1, SpendingCapAbort: true}, 1)
+	if !errors.Is(err, ci.ErrSpendingCapActive) {
+		t.Fatalf("err = %v, want ci.ErrSpendingCapActive", err)
+	}
+}
+
+func TestFixSessionErrorNonZeroExitIsGenericFailure(t *testing.T) {
+	err := fixSessionError(session.Outcome{ExitCode: 2}, 3)
+	if err == nil {
+		t.Fatal("expected an error for a non-zero exit")
+	}
+	if errors.Is(err, ci.ErrSpendingCapActive) {
+		t.Fatalf("a plain non-zero exit must not be the spending-cap class: %v", err)
+	}
+	if !strings.Contains(err.Error(), "exited 2") || !strings.Contains(err.Error(), "session 3") {
+		t.Fatalf("err %q should name the attempt and exit code", err)
+	}
+}
+
+func TestFixSessionErrorCleanSessionReturnsNil(t *testing.T) {
+	if err := fixSessionError(session.Outcome{ExitCode: 0}, 1); err != nil {
+		t.Fatalf("a clean session must return nil, got %v", err)
+	}
+}
 
 // BEH-553: hasUpstreamTranscripts is the retrospective's host-side precondition
 // that an upstream /tdd or /review session actually ran and left something to
