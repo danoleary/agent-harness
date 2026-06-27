@@ -148,6 +148,26 @@ func TestBuildCIFixCarriesBashQuirkSteer(t *testing.T) {
 	assertCarriesBashQuirkSteer(t, BuildCIFix(sample, "beh-362", sampleWorktree, sampleCILogs), "ci-fix prompt")
 }
 
+// BEH-562: the sandbox has no network and no `gh`, and the harness already
+// fetched (or failed to fetch) the logs above. Without saying so, the agent
+// burns a turn discovering the dead end (`gh: command not found`) before
+// falling back to local reproduction. The prompt must state it up front.
+func TestBuildCIFixStatesNoNetworkOrGhInSandbox(t *testing.T) {
+	p := BuildCIFix(sample, "beh-362", sampleWorktree, sampleCILogs)
+
+	if !regexp.MustCompile(`(?i)no network`).MatchString(p) {
+		t.Error("prompt does not state the sandbox has no network")
+	}
+	// Don't make the agent try to fetch the logs itself — `gh`/`git fetch` are
+	// unavailable; the logs above are all it gets.
+	if !regexp.MustCompile(`(?i)git fetch`).MatchString(p) {
+		t.Error("prompt does not forbid trying to fetch logs with git fetch")
+	}
+	if !regexp.MustCompile(`(?i)(do not|don't|never).{0,60}(fetch|try).{0,40}(log|gh|git fetch)`).MatchString(p) {
+		t.Error("prompt does not tell the agent not to try fetching the logs itself")
+	}
+}
+
 // The escape hatch (BEH-561): when every gate reproduces green locally and the red
 // is a cancelled/superseded/flaky run rather than a code defect, the agent must NOT
 // manufacture a speculative diff to satisfy the loop — it should make no commit at

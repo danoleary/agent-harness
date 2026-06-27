@@ -189,6 +189,8 @@ func BuildCIFix(t ticket.Ticket, slug, worktreePath, ciLogs string) string {
 	lines = append(lines, ciLogsSection(slug, ciLogs)...)
 	lines = append(lines,
 		"",
+		"This sandbox has NO network and NO `gh` — the harness already fetched (or failed to fetch) those logs for you host-side. The logs above are all you get; do NOT try to run `gh`, `git fetch`, or any network command to fetch the CI logs, the run, or anything else yourself — it will only fail with `command not found` / no route to host and burn a turn. Work from the logs above plus local reproduction.",
+		"",
 		"Escape hatch — do NOT fabricate a commit. If you reproduce every failing gate locally and they all pass (the red is a cancelled, superseded, or flaky run, not a reproducible code defect), then make NO commit at all and stop. Do NOT manufacture a speculative or unrelated change (a throwaway story, a no-op tweak, a base-refresh merge) just to give the loop something to push — that only pollutes the PR with unverified commits. When you leave the worktree clean with no new commit, the harness re-triggers CI itself with an empty commit, which clears a cancelled/superseded run. Only commit when you have a real, locally-verified fix.",
 		"",
 		"Ticket context (the intent — already fetched for you):",
