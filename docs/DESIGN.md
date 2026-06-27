@@ -226,14 +226,21 @@ loop:
   --- review ground truth + push gate (harness, host-side) ---
   re-run gates in a throwaway container: `pnpm check && pnpm typecheck` on feat/beh-nnn
   review OK <=> gates are GREEN          // never the agent's self-report
-  if OK     -> git -C $HERD_PATH push origin feat/beh-nnn
+  if OK     -> git -C <worktree> rebase origin/main   // BEH-570: replay onto the fresh base
+                 - clean replay  -> continue (the long pipeline let main move; PR opens current)
+                 - content conflict -> abort (branch untouched) + KEEP worktree, leave for a human
+               git -C $HERD_PATH push origin feat/beh-nnn
                gh pr create --repo <origin> --head feat/beh-nnn --base main \
                             --title <templated> --body <templated: ticket id + commit subjects>
   if not OK -> log + Linear breadcrumb comment + KEEP worktree + record failure + continue
 
   --- review CI watch + auto-fix (harness, host-side, BEH-414) ---
   poll `gh pr checks feat/beh-nnn` until terminal (success/failure/cancelled), bounded by a poll budget
-  if green        -> done
+  if green        -> confirm mergeability against base (gh pr view --json mergeable):
+                       clean              -> done
+                       stale-base conflict (main moved after the push) -> auto-rebase + force-with-lease
+                         re-push, await CI re-run, re-check (capped); only a genuine CONTENT conflict
+                         is left for a human (BEH-570)
   else (red):
     one re-run of the failed checks first (flake wash); re-poll
     while still red AND attempts < N AND within wall-clock budget:

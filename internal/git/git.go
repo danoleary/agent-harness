@@ -242,6 +242,48 @@ func WorktreeClean(worktreePath string) bool {
 	return strings.TrimSpace(string(out)) == ""
 }
 
+// RebaseResult classifies a rebase-of-the-feature-branch-onto-origin/main attempt.
+type RebaseResult int
+
+const (
+	// RebaseClean — the branch replayed onto origin/main with no conflicts (or was
+	// already current). Its tip may now carry rewritten SHAs, so a branch already on
+	// the remote needs a force-with-lease re-push (PushForceWithLease); a not-yet-
+	// pushed branch ships with a plain Push.
+	RebaseClean RebaseResult = iota
+	// RebaseConflict — the rebase could not be applied cleanly (a genuine content
+	// conflict, or any other failure) and was aborted, restoring the branch exactly
+	// as it was. Resolution is left to a human (BEH-570).
+	RebaseConflict
+)
+
+// RebaseOntoMain replays the worktree's feature branch onto origin/main so the PR
+// opens on a current base instead of the stale one a long pipeline accreted (a
+// sibling PR merging underneath it — BEH-570). origin/main must already be fresh
+// (call FetchMain first) and the worktree clean (git rebase refuses a dirty tree).
+// Run host-side against the worktree, whose absolute .git resolves via the real-
+// path mount (ADR-0002) — the same seam WorktreeClean/CheckpointCommit use.
+//
+// A clean replay returns RebaseClean. Any failure (a content conflict, or git
+// refusing for any other reason) is aborted — leaving the branch untouched — and
+// returns RebaseConflict, so the caller hands resolution to a human rather than
+// pushing a branch it could not cleanly rebase. There is no network here, so unlike
+// the remote ops it is not retried.
+func RebaseOntoMain(worktreePath string) RebaseResult {
+	return rebaseOntoMain(worktreePath, execRun)
+}
+
+func rebaseOntoMain(worktreePath string, run commandRunner) RebaseResult {
+	if err := run("git", "-C", worktreePath, "rebase", "origin/main"); err != nil {
+		// Conflict (or any mid-rebase failure): abort to restore the branch to its
+		// pre-rebase tip, then report a conflict for a human. The abort is best-effort
+		// — if the rebase never started, `rebase --abort` fails harmlessly.
+		_ = run("git", "-C", worktreePath, "rebase", "--abort")
+		return RebaseConflict
+	}
+	return RebaseClean
+}
+
 // Push pushes the feature branch to origin from the main checkout (ADR-0002: the
 // harness owns the push, host-side; the sandbox never reaches a remote). Run only
 // after the harness's own gate re-run is green.
@@ -262,6 +304,23 @@ func Push(herdPath, slug string) error {
 func push(herdPath, slug string, run commandRunner, sleep func(time.Duration), now func() time.Time) error {
 	return withRetry(func() error {
 		return run("git", "-C", herdPath, "push", "--no-verify", "origin", BranchName(slug))
+	}, sleep, now)
+}
+
+// PushForceWithLease re-pushes the feature branch after an auto-rebase rewrote its
+// history (BEH-570). It is needed only on the reactive path — a branch already on
+// the remote whose tip the rebase moved — so a plain Push would be rejected as
+// non-fast-forward. --force-with-lease is the safe force: it refuses to overwrite
+// remote commits the harness hasn't observed (it never will here — the harness owns
+// the branch — but the lease is the correct, non-destructive force). --no-verify and
+// the transient-retry budget match Push.
+func PushForceWithLease(herdPath, slug string) error {
+	return pushForceWithLease(herdPath, slug, execRun, time.Sleep, time.Now)
+}
+
+func pushForceWithLease(herdPath, slug string, run commandRunner, sleep func(time.Duration), now func() time.Time) error {
+	return withRetry(func() error {
+		return run("git", "-C", herdPath, "push", "--no-verify", "--force-with-lease", "origin", BranchName(slug))
 	}, sleep, now)
 }
 

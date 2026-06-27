@@ -25,6 +25,13 @@ type fakeDriver struct {
 
 	mergeState MergeVerdict // verdict d.MergeState() reports (zero = MergeUnknown)
 	mergeErr   error
+	merges     []MergeVerdict // scripted MergeState sequence (last repeats); overrides mergeState
+	mergeIdx   int
+
+	// BEH-570 reactive auto-rebase: RebaseOntoBase's scripted verdict/error + a count.
+	rebaseVerdict RebaseVerdict
+	rebaseErr     error
+	rebases       int
 
 	clock   *fakeClock
 	fixCost time.Duration
@@ -48,7 +55,21 @@ func (d *fakeDriver) Fix([]Check) error {
 func (d *fakeDriver) Push() error         { d.pushes++; return nil }
 func (d *fakeDriver) AwaitHeadRun() error { d.awaits++; return d.awaitErr }
 func (d *fakeDriver) MergeState() (MergeVerdict, error) {
-	return d.mergeState, d.mergeErr
+	if d.mergeErr != nil {
+		return MergeUnknown, d.mergeErr
+	}
+	if len(d.merges) > 0 {
+		v := d.merges[d.mergeIdx]
+		if d.mergeIdx < len(d.merges)-1 {
+			d.mergeIdx++
+		}
+		return v, nil
+	}
+	return d.mergeState, nil
+}
+func (d *fakeDriver) RebaseOntoBase() (RebaseVerdict, error) {
+	d.rebases++
+	return d.rebaseVerdict, d.rebaseErr
 }
 
 func failChecks() []Check { return []Check{{Name: "lint", Bucket: BucketFail}} }
@@ -66,17 +87,22 @@ func TestWatchGreenOnFirstPoll(t *testing.T) {
 	}
 }
 
-func TestWatchBlocksGreenCIOnMergeConflict(t *testing.T) {
-	// Green checks but the PR conflicts with base (main moved underneath it).
-	// The harness must report not-passing — distinct from a check failure — and
-	// must not try to auto-fix it (a merge conflict is a rebase problem).
+func TestWatchBlocksGreenCIOnGenuineContentConflict(t *testing.T) {
+	// Green checks but the PR has a GENUINE content conflict with base — the
+	// auto-rebase can't apply cleanly. The harness must report not-passing (distinct
+	// from a check failure), must not try to code-fix it (a merge conflict is a rebase
+	// problem), and must have attempted exactly one rebase before deferring to a human.
 	d := &fakeDriver{
-		polls:      []pollResult{{v: Passed}},
-		mergeState: MergeConflicting,
+		polls:         []pollResult{{v: Passed}},
+		mergeState:    MergeConflicting,
+		rebaseVerdict: RebaseConflict,
 	}
 	out := WatchAndFix(d, testWatchCfg(), newFakeClock().now)
 	if out.OK {
-		t.Fatalf("expected non-OK on a merge conflict despite green CI, got %+v", out)
+		t.Fatalf("expected non-OK on a genuine content conflict despite green CI, got %+v", out)
+	}
+	if d.rebases != 1 {
+		t.Fatalf("rebases = %d, want exactly 1 (try the auto-rebase before deferring)", d.rebases)
 	}
 	if d.reruns != 0 || d.fixes != 0 {
 		t.Fatalf("a merge conflict must not trigger rerun/fix; got rerun=%d fix=%d", d.reruns, d.fixes)
@@ -84,6 +110,93 @@ func TestWatchBlocksGreenCIOnMergeConflict(t *testing.T) {
 	r := strings.ToLower(out.Reason)
 	if !strings.Contains(r, "conflict") && !strings.Contains(r, "merge") {
 		t.Fatalf("reason %q should name the merge conflict, distinct from a check failure", out.Reason)
+	}
+}
+
+func TestWatchAutoRebasesStaleBaseConflict(t *testing.T) {
+	// Green checks, but main moved underneath the branch so the PR reads CONFLICTING.
+	// It is NOT a genuine content conflict — the rebase applies cleanly and is
+	// re-pushed — so after CI re-runs green on the rebased commit and merge reads
+	// clean, the watch passes WITHOUT human intervention (the BEH-570 dead-end).
+	d := &fakeDriver{
+		polls:         []pollResult{{v: Passed}},
+		merges:        []MergeVerdict{MergeConflicting, MergeClean},
+		rebaseVerdict: RebaseClean,
+	}
+	out := WatchAndFix(d, testWatchCfg(), newFakeClock().now)
+	if !out.OK {
+		t.Fatalf("expected OK after auto-rebasing a stale-base conflict, got %+v", out)
+	}
+	if d.rebases != 1 {
+		t.Fatalf("rebases = %d, want exactly 1", d.rebases)
+	}
+	if d.awaits != 1 {
+		t.Fatalf("awaits = %d, want 1 (must confirm CI re-ran on the rebased HEAD)", d.awaits)
+	}
+	if d.fixes != 0 {
+		t.Fatalf("fixes = %d, want 0 (a rebase is not a code fix)", d.fixes)
+	}
+}
+
+func TestWatchGivesUpAfterRepeatedRebaseConflicts(t *testing.T) {
+	// main keeps moving: every rebase applies cleanly but the merge re-reads
+	// CONFLICTING each time. The watch must not chase main forever — it caps the
+	// auto-rebase attempts and then defers to a human.
+	d := &fakeDriver{
+		polls:         []pollResult{{v: Passed}},
+		mergeState:    MergeConflicting, // never clears
+		rebaseVerdict: RebaseClean,
+	}
+	out := WatchAndFix(d, testWatchCfg(), newFakeClock().now)
+	if out.OK {
+		t.Fatalf("expected non-OK once the rebase cap is hit, got %+v", out)
+	}
+	if d.rebases != maxRebaseAttempts {
+		t.Fatalf("rebases = %d, want the cap %d", d.rebases, maxRebaseAttempts)
+	}
+	if !strings.Contains(strings.ToLower(out.Reason), "conflict") {
+		t.Fatalf("reason %q should name the merge conflict", out.Reason)
+	}
+}
+
+func TestWatchSurfacesRebaseError(t *testing.T) {
+	// The auto-rebase/re-push errored (a gh/git failure, not a content conflict):
+	// surface it and keep the PR for a human rather than silently passing.
+	d := &fakeDriver{
+		polls:      []pollResult{{v: Passed}},
+		mergeState: MergeConflicting,
+		rebaseErr:  errors.New("force-with-lease push rejected"),
+	}
+	out := WatchAndFix(d, testWatchCfg(), newFakeClock().now)
+	if out.OK {
+		t.Fatalf("expected non-OK when the auto-rebase errors, got %+v", out)
+	}
+	if !strings.Contains(out.Reason, "force-with-lease push rejected") {
+		t.Fatalf("reason %q should surface the rebase error", out.Reason)
+	}
+}
+
+func TestWatchReportsCIRedAfterRebase(t *testing.T) {
+	// A stale-base conflict rebases cleanly, but CI comes back RED on the rebased
+	// commit (the new base genuinely broke the build). That is now a real failure to
+	// report, distinct from the merge-conflict outcome.
+	d := &fakeDriver{
+		polls: []pollResult{
+			{v: Passed},                       // initial green that triggers greenOutcome
+			{v: Failed, checks: failChecks()}, // post-rebase re-poll is red
+		},
+		mergeState:    MergeConflicting,
+		rebaseVerdict: RebaseClean,
+	}
+	out := WatchAndFix(d, testWatchCfg(), newFakeClock().now)
+	if out.OK {
+		t.Fatalf("expected non-OK when CI is red on the rebased commit, got %+v", out)
+	}
+	if d.rebases != 1 {
+		t.Fatalf("rebases = %d, want 1", d.rebases)
+	}
+	if len(out.Failing) == 0 {
+		t.Fatal("expected the failing checks reported for the operator")
 	}
 }
 

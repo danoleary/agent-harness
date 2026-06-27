@@ -43,6 +43,20 @@ const (
 	MergeConflicting
 )
 
+// RebaseVerdict classifies a reactive auto-rebase-onto-base attempt (BEH-570). It
+// is the ci-package mirror of git.RebaseResult, kept here so the Driver seam need
+// not import internal/git (the stages layer translates between the two).
+type RebaseVerdict int
+
+const (
+	// RebaseClean — the branch rebased onto origin/main cleanly and was re-pushed; a
+	// stale-base "conflict" (main merely moved underneath it), not a content conflict.
+	RebaseClean RebaseVerdict = iota
+	// RebaseConflict — a genuine content conflict the rebase could not apply; the
+	// branch was left untouched and a human must resolve it.
+	RebaseConflict
+)
+
 // mergeJSONFields is the `gh pr view --json` field set the merge-state poll reads.
 const mergeJSONFields = "mergeable,mergeStateStatus"
 

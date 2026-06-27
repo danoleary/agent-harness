@@ -58,11 +58,151 @@ func blipRunner(clock *fakeClock, clearAfter time.Duration, errEach error) (comm
 	return run, &calls
 }
 
+// BEH-570: a long pipeline lets sibling PRs merge to main underneath the branch,
+// stranding it on a stale base. RebaseOntoMain replays the feature branch onto the
+// freshly-fetched origin/main before the push so the PR opens on a current base. A
+// clean replay reports RebaseClean and runs exactly one git command (the rebase) —
+// no abort.
+func TestRebaseOntoMainCleanReportsClean(t *testing.T) {
+	run, calls := scriptedRunner(0, nil)
+	if res := rebaseOntoMain("/wt", run); res != RebaseClean {
+		t.Fatalf("res = %v, want RebaseClean", res)
+	}
+	if len(*calls) != 1 {
+		t.Fatalf("expected exactly one git call (no abort on a clean rebase), got %d: %v", len(*calls), *calls)
+	}
+	got := (*calls)[0]
+	want := []string{"git", "-C", "/wt", "rebase", "origin/main"}
+	if len(got) != len(want) {
+		t.Fatalf("argv = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("argv[%d] = %q, want %q (full: %v)", i, got[i], want[i], got)
+		}
+	}
+}
+
+// A rebase that can't be applied cleanly (a genuine content conflict) must abort —
+// restoring the branch so it is never left mid-rebase — and report RebaseConflict
+// so the caller defers to a human rather than pushing.
+func TestRebaseOntoMainConflictAbortsAndReportsConflict(t *testing.T) {
+	// First call (the rebase) fails; the second (the abort) succeeds.
+	run, calls := scriptedRunner(1, errors.New("exit status 1: CONFLICT (content)"))
+	if res := rebaseOntoMain("/wt", run); res != RebaseConflict {
+		t.Fatalf("res = %v, want RebaseConflict", res)
+	}
+	if len(*calls) != 2 {
+		t.Fatalf("expected the rebase then an abort, got %d calls: %v", len(*calls), *calls)
+	}
+	abort := (*calls)[1]
+	want := []string{"git", "-C", "/wt", "rebase", "--abort"}
+	if len(abort) != len(want) {
+		t.Fatalf("abort argv = %v, want %v", abort, want)
+	}
+	for i := range want {
+		if abort[i] != want[i] {
+			t.Fatalf("abort argv[%d] = %q, want %q (full: %v)", i, abort[i], want[i], abort)
+		}
+	}
+}
+
 // BEH-412: the implementation tool hands the worktree back to a reviewer who may
 // be on a non-Linux host. The sandbox-built `web/node_modules` carries Linux-only
 // native bindings that crash the macOS gates, and `pnpm install --frozen-lockfile`
 // won't repair them. Stripping the tree forces the reviewer to install fresh for
 // their own platform.
+// The scripted-runner tests above pin RebaseOntoMain's control flow; this one pins
+// the contract it rests on — that real `git rebase origin/main` exits 0 on a clean
+// replay and non-zero on a content conflict, and that the abort restores the branch.
+// Without it a wrong command name or a git-semantics surprise would pass the fakes
+// but silently mislabel every conflict (BEH-570).
+func TestRebaseOntoMainAgainstRealGit(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+
+	// setupRepo builds a repo where main has advanced past feat/<slug> by one commit
+	// touching `mainFile`, with refs/remotes/origin/main pointing at that advanced tip
+	// and feat/<slug> checked out — the exact shape RebaseOntoMain rebases. feat always
+	// edits `feat.txt`; whether main's commit also edits `feat.txt` (conflict) or a
+	// different file (clean) is the only variable.
+	const slug = "beh-570-real"
+	setupRepo := func(t *testing.T, mainFile, mainContents string) string {
+		t.Helper()
+		repo := t.TempDir()
+		git := func(args ...string) {
+			t.Helper()
+			if err := execIn(repo, args...); err != nil {
+				t.Fatalf("git %v: %v", args, err)
+			}
+		}
+		write := func(name, contents string) {
+			t.Helper()
+			if err := os.WriteFile(filepath.Join(repo, name), []byte(contents), 0o644); err != nil {
+				t.Fatalf("write %s: %v", name, err)
+			}
+		}
+		git("init", "-q", "-b", "main")
+		git("config", "user.email", "t@example.com")
+		git("config", "user.name", "Test")
+		write("feat.txt", "base\n")
+		git("add", "-A")
+		git("commit", "-q", "-m", "base")
+		// feat branch edits feat.txt.
+		git("checkout", "-q", "-b", BranchName(slug))
+		write("feat.txt", "feat change\n")
+		git("add", "-A")
+		git("commit", "-q", "-m", "feat work")
+		// main advances by one commit; origin/main tracks it.
+		git("checkout", "-q", "main")
+		write(mainFile, mainContents)
+		git("add", "-A")
+		git("commit", "-q", "-m", "main moved")
+		git("update-ref", "refs/remotes/origin/main", "main")
+		git("checkout", "-q", BranchName(slug))
+		return repo
+	}
+
+	t.Run("clean replay onto an advanced base", func(t *testing.T) {
+		// main touched a different file, so feat replays cleanly onto the new base.
+		repo := setupRepo(t, "unrelated.txt", "main-only\n")
+		if res := RebaseOntoMain(repo); res != RebaseClean {
+			t.Fatalf("res = %v, want RebaseClean", res)
+		}
+		// The replayed branch now sits on top of main: it carries main's new file.
+		if _, err := os.Stat(filepath.Join(repo, "unrelated.txt")); err != nil {
+			t.Fatalf("rebased branch should contain main's commit (unrelated.txt), stat err = %v", err)
+		}
+		if !WorktreeClean(repo) {
+			t.Fatal("worktree should be clean after a successful rebase")
+		}
+	})
+
+	t.Run("genuine conflict aborts and restores the branch", func(t *testing.T) {
+		// main edited the same file feat did → a real content conflict.
+		repo := setupRepo(t, "feat.txt", "main change\n")
+		featTip, err := HeadSHA(filepath.Join(repo))
+		if err != nil {
+			t.Fatalf("read feat tip: %v", err)
+		}
+		if res := RebaseOntoMain(repo); res != RebaseConflict {
+			t.Fatalf("res = %v, want RebaseConflict", res)
+		}
+		// Aborted cleanly: no rebase in progress, branch back at its original tip.
+		if !WorktreeClean(repo) {
+			t.Fatal("worktree should be clean after the conflicting rebase was aborted")
+		}
+		after, err := HeadSHA(repo)
+		if err != nil {
+			t.Fatalf("read tip after abort: %v", err)
+		}
+		if after != featTip {
+			t.Fatalf("branch tip = %s after abort, want it restored to %s", after, featTip)
+		}
+	})
+}
+
 func TestStripWorktreeNodeModulesRemovesIt(t *testing.T) {
 	wt := t.TempDir()
 	binding := filepath.Join(wt, "web", "node_modules", "@oxlint", "binding-linux-arm64-gnu")
@@ -173,6 +313,42 @@ func TestPushUsesNoVerifyAndCorrectArgs(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("argv[%d] = %q, want %q (full: %v)", i, got[i], want[i], got)
 		}
+	}
+}
+
+// BEH-570: after an auto-rebase rewrites the branch's history, the re-push to an
+// already-pushed branch must force — but safely. --force-with-lease refuses to
+// clobber remote commits the harness hasn't observed, and --no-verify skips the
+// host pre-push hook (same rationale as Push). It is retried like every remote op.
+func TestPushForceWithLeaseUsesLeaseAndNoVerify(t *testing.T) {
+	clock := newFakeClock()
+	run, calls := scriptedRunner(0, nil)
+	if err := pushForceWithLease("/herd", "beh-570", run, clock.sleep, clock.now); err != nil {
+		t.Fatalf("expected success, got %v", err)
+	}
+	if len(*calls) != 1 {
+		t.Fatalf("expected exactly one attempt, got %d", len(*calls))
+	}
+	got := (*calls)[0]
+	want := []string{"git", "-C", "/herd", "push", "--no-verify", "--force-with-lease", "origin", "feat/beh-570"}
+	if len(got) != len(want) {
+		t.Fatalf("argv = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("argv[%d] = %q, want %q (full: %v)", i, got[i], want[i], got)
+		}
+	}
+}
+
+func TestPushForceWithLeaseRetriesThenSucceeds(t *testing.T) {
+	clock := newFakeClock()
+	run, calls := scriptedRunner(2, errors.New("exit status 128"))
+	if err := pushForceWithLease("/herd", "beh-570", run, clock.sleep, clock.now); err != nil {
+		t.Fatalf("expected eventual success, got %v", err)
+	}
+	if len(*calls) != 3 {
+		t.Fatalf("expected 3 attempts (2 fail + 1 ok), got %d", len(*calls))
 	}
 }
 

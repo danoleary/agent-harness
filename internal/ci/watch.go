@@ -35,6 +35,12 @@ type Driver interface {
 	// not block a green PR — it returns MergeUnknown / an error and the watch
 	// degrades to passing rather than failing on something indeterminate.
 	MergeState() (MergeVerdict, error)
+	// RebaseOntoBase auto-resolves a stale-base conflict: it rebases the PR branch
+	// onto the latest origin/main and, if the replay is clean, re-pushes (force-with-
+	// lease) and returns RebaseClean; a genuine content conflict aborts the rebase
+	// (branch untouched) and returns RebaseConflict for a human. This is what keeps a
+	// long pipeline from dead-ending when a sibling PR merged underneath it (BEH-570).
+	RebaseOntoBase() (RebaseVerdict, error)
 }
 
 // Config bounds the whole CI watch: the auto-fix loop (used by WatchAndFix) and
@@ -179,24 +185,72 @@ const mergeConflictReason = "CI is green but the PR conflicts with base (merge c
 // instead of silently passing (BEH-484/BEH-476).
 const mergeUnconfirmedNote = " — note: mergeability against base could not be confirmed; check the PR has no merge conflict before merging"
 
-// greenOutcome confirms the PR is also mergeable before declaring CI a pass.
-// Green checks on a PR that conflicts with base are not shippable, so a
-// MergeConflicting verdict turns the pass into a distinct non-OK outcome that is
-// never auto-fixed (a merge conflict is a rebase problem, not a code edit). An
-// unreadable or persistently-UNKNOWN merge state must not block an otherwise-green
-// PR, so it degrades to a green pass — but with the conflict guard flagged as
-// unrun (mergeUnconfirmedNote), mirroring the checks-unobservable degrade rather
-// than passing silently.
+// maxRebaseAttempts caps how many times a green watch will auto-rebase a stale-base
+// conflict before deferring to a human. main can keep moving underneath the branch,
+// so the loop must not chase it forever; in practice one rebase resolves it. The cap
+// is the backstop against a pathological merge storm (BEH-570).
+const maxRebaseAttempts = 2
+
+// rebaseFailedReason / rebaseBrokeCIReason are the operator summaries for the two
+// ways an auto-rebase can fall short of a clean pass: the rebase/re-push itself
+// errored (a gh/git failure), or it applied cleanly but the rebased commit is now
+// red on CI (the moved base genuinely broke the build — a real failure, not a
+// merge-conflict dead-end).
+const (
+	rebaseFailedReason  = "CI is green but auto-rebasing the PR onto base failed: "
+	rebaseBrokeCIReason = "auto-rebased the PR onto the latest base but CI is now red on the rebased commit"
+)
+
+// greenOutcome confirms the PR is also mergeable before declaring CI a pass, and —
+// new in BEH-570 — auto-resolves the common stale-base case instead of dead-ending
+// on it. On a MergeConflicting verdict it rebases the branch onto the latest base
+// (RebaseOntoBase): a stale-base "conflict" (a sibling PR merged underneath) replays
+// cleanly, is re-pushed, and — once CI re-runs green on the rebased commit and the
+// merge re-reads clean — passes with no human needed. Only a genuine content
+// conflict (RebaseConflict) keeps the distinct non-OK merge-conflict outcome a human
+// resolves. The rebase loop is capped (maxRebaseAttempts) so a continuously-moving
+// main can't spin it forever. An unreadable or persistently-UNKNOWN merge state must
+// not block an otherwise-green PR, so it degrades to a green pass with the conflict
+// guard flagged as unrun (mergeUnconfirmedNote), mirroring the checks-unobservable
+// degrade rather than passing silently.
 func greenOutcome(d Driver, reason string) Outcome {
-	switch mv, err := d.MergeState(); {
-	case err == nil && mv == MergeConflicting:
-		return Outcome{OK: false, Reason: mergeConflictReason}
-	case err == nil && mv == MergeClean:
-		return Outcome{OK: true, Reason: reason}
-	default:
-		// Indeterminate (persistent UNKNOWN) or unreadable merge state: never block
-		// an otherwise-green PR, but flag that mergeability wasn't confirmed.
-		return Outcome{OK: true, Reason: reason + mergeUnconfirmedNote}
+	for attempt := 0; ; attempt++ {
+		switch mv, err := d.MergeState(); {
+		case err == nil && mv == MergeClean:
+			return Outcome{OK: true, Reason: reason}
+		case err == nil && mv == MergeConflicting:
+			// Fall through to the auto-rebase handling below.
+		default:
+			// Indeterminate (persistent UNKNOWN) or unreadable merge state: never block
+			// an otherwise-green PR, but flag that mergeability wasn't confirmed.
+			return Outcome{OK: true, Reason: reason + mergeUnconfirmedNote}
+		}
+
+		// The PR conflicts with base. Once the rebase attempts are spent, hand off.
+		if attempt >= maxRebaseAttempts {
+			return Outcome{OK: false, Reason: mergeConflictReason}
+		}
+		switch rv, err := d.RebaseOntoBase(); {
+		case err != nil:
+			return Outcome{OK: false, Reason: rebaseFailedReason + err.Error()}
+		case rv == RebaseConflict:
+			return Outcome{OK: false, Reason: mergeConflictReason}
+		}
+
+		// Clean rebase + re-push. Confirm CI re-runs green on the rebased HEAD before
+		// re-checking mergeability — the rebased commit could break on the new base,
+		// and main may have moved again in the meantime.
+		if err := d.AwaitHeadRun(); err != nil {
+			return ciRerunErrOutcome(err, nil)
+		}
+		v, checks, err := d.Poll()
+		if err != nil {
+			return pollErrOutcome(err, checks)
+		}
+		if v != Passed {
+			return Outcome{OK: false, Reason: rebaseBrokeCIReason, Failing: FailedChecks(checks)}
+		}
+		// Loop: re-check mergeability on the rebased branch.
 	}
 }
 

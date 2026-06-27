@@ -319,7 +319,31 @@ func Review(cfg config.Config, log *runlog.Logger, runID string, args Args) Resu
 	}
 	log.Event("review ✓ " + result.Reason)
 
-	// --- push + PR (only reached on a green harness gate) ---
+	// --- rebase onto the latest base, then push + PR (only on a green harness gate) ---
+	// Re-fetch origin/main right before the rebase: the earlier FetchMain ran before the
+	// multi-minute host gate re-run, and a sibling PR can merge *during* that gate — the
+	// exact long-pipeline staleness BEH-570 targets — so rebasing onto the pre-gate ref
+	// would still open a stale-base PR and lean on the (expensive) reactive CI-watch
+	// rebase. A fresh fetch here makes the proactive rebase replay onto the truly-latest
+	// base. Non-fatal like the earlier fetch: on failure we rebase onto the ref we have
+	// and the reactive path remains the backstop.
+	if err := gitpkg.FetchMain(cfg.HerdPath); err != nil {
+		log.Event("review … warning: could not re-fetch origin/main before rebase: " + err.Error())
+	}
+	// Rebase onto origin/main before pushing so a sibling PR that merged during this long
+	// pipeline can't strand the branch on a stale base — the merge-conflict dead-end
+	// BEH-570 hit, where the conflict only surfaced post-PR in the CI watch and was left
+	// as a manual step. The worktree is clean here (verified just above), which git rebase
+	// requires. A clean replay moves the tip onto the current base; a genuine content
+	// conflict aborts (branch untouched) and is left for a human rather than opening a PR
+	// that cannot merge. The host gate validated the pre-rebase tree; CI's full run on the
+	// rebased commit (watched below) is the backstop for the small rebase delta.
+	if gitpkg.RebaseOntoMain(worktreePath) == gitpkg.RebaseConflict {
+		log.Event("review ✗ branch conflicts with origin/main and can't be auto-rebased — resolve the conflict and re-push; keeping worktree")
+		return Result{OK: false}
+	}
+	log.Event("rebased " + gitpkg.BranchName(slug) + " onto origin/main")
+
 	if err := gitpkg.Push(cfg.HerdPath, slug); err != nil {
 		log.Event("review ✗ push failed: " + err.Error() + " — keeping worktree")
 		return Result{OK: false}
@@ -350,6 +374,7 @@ func Review(cfg config.Config, log *runlog.Logger, runID string, args Args) Resu
 		cfg.HerdPath, gitpkg.BranchName(slug), ciCfg, ciGhTimeout,
 		ciFixRunner(cfg, args, slug, worktreePath, runID, t, log),
 		func() error { return gitpkg.Push(cfg.HerdPath, slug) },
+		func() (ci.RebaseVerdict, error) { return rebaseOntoBase(cfg.HerdPath, worktreePath, slug) },
 	)
 	log.Event("watching CI for " + gitpkg.BranchName(slug) + " …")
 	ciResult := ci.WatchAndFix(driver, ciCfg, time.Now)
@@ -443,6 +468,28 @@ func fixSessionError(outcome session.Outcome, attempt int) error {
 		return fmt.Errorf("auto-fix session %d exited %d", attempt, outcome.ExitCode)
 	}
 	return nil
+}
+
+// rebaseOntoBase is the reactive auto-rebase the CI watch invokes when a green PR
+// reads CONFLICTING against base (main moved underneath it after the push). It
+// refreshes origin/main — the conflict means main advanced since the pre-push
+// rebase, so we must replay onto the truly-latest base — rebases the worktree, and
+// on a clean replay force-with-lease re-pushes the rewritten branch. A genuine
+// content conflict returns RebaseConflict (branch left untouched) for a human; any
+// fetch/push failure is surfaced as an error the watch reports. This is the
+// host-side git effect wired into the ci.Driver, kept here so internal/ci needn't
+// import internal/git (BEH-570).
+func rebaseOntoBase(herdPath, worktreePath, slug string) (ci.RebaseVerdict, error) {
+	if err := gitpkg.FetchMain(herdPath); err != nil {
+		return ci.RebaseConflict, fmt.Errorf("fetch origin/main before rebase: %w", err)
+	}
+	if gitpkg.RebaseOntoMain(worktreePath) == gitpkg.RebaseConflict {
+		return ci.RebaseConflict, nil
+	}
+	if err := gitpkg.PushForceWithLease(herdPath, slug); err != nil {
+		return ci.RebaseClean, fmt.Errorf("force-with-lease re-push after rebase: %w", err)
+	}
+	return ci.RebaseClean, nil
 }
 
 // createPR opens the pull request from the main checkout with `gh`, which infers

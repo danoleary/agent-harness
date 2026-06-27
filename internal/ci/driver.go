@@ -82,6 +82,11 @@ type GhDriver struct {
 	runFix func(ciLogs string, logAvailable bool) error
 	// push pushes the new fix commit to the PR branch (gitpkg.Push).
 	push func() error
+	// rebase rebases the branch onto the latest origin/main and, if clean, re-pushes
+	// (force-with-lease) — the host-side git effect wired by the stages layer. It is a
+	// callback for the same reason push/runFix are: so this package needn't import
+	// internal/git (BEH-570).
+	rebase func() (RebaseVerdict, error)
 
 	// fetchRunLog fetches one failing run's log (`gh run view <id> --log-failed`).
 	// Injected so the log-availability logic is unit-testable without shelling out.
@@ -94,7 +99,7 @@ type GhDriver struct {
 // NewGhDriver builds the production Driver. ghTimeout bounds each individual gh
 // call; cfg supplies the poll cadence/budget; runFix and push are the sandbox +
 // remote effects the cmd provides.
-func NewGhDriver(herdPath, branch string, cfg Config, ghTimeout time.Duration, runFix func(ciLogs string, logAvailable bool) error, push func() error) *GhDriver {
+func NewGhDriver(herdPath, branch string, cfg Config, ghTimeout time.Duration, runFix func(ciLogs string, logAvailable bool) error, push func() error, rebase func() (RebaseVerdict, error)) *GhDriver {
 	d := &GhDriver{
 		herdPath:     herdPath,
 		branch:       branch,
@@ -103,6 +108,7 @@ func NewGhDriver(herdPath, branch string, cfg Config, ghTimeout time.Duration, r
 		logTailBytes: defaultLogTailBytes,
 		runFix:       runFix,
 		push:         push,
+		rebase:       rebase,
 		sleep:        time.Sleep,
 		now:          time.Now,
 	}
@@ -152,6 +158,10 @@ func (d *GhDriver) Fix(failed []Check) error {
 
 // Push pushes the fix commit (delegated to the injected gitpkg.Push).
 func (d *GhDriver) Push() error { return d.push() }
+
+// RebaseOntoBase rebases the branch onto the latest origin/main and re-pushes a
+// clean replay (delegated to the injected host-side git effect, BEH-570).
+func (d *GhDriver) RebaseOntoBase() (RebaseVerdict, error) { return d.rebase() }
 
 // AwaitHeadRun polls `gh run list --branch <branch> -L 1 --json headSha` until the
 // latest run's head commit matches the branch HEAD (resolved with git rev-parse) —
