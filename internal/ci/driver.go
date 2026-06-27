@@ -41,6 +41,28 @@ const checksJSONFields = "name,bucket,state,link"
 // last chunk and drops the rest with a marker.
 const defaultLogTailBytes = 16000
 
+// Marker prefixes that fetchFailedLogs / truncateLogs emit as the *only* content
+// when no real step output was retrievable (run cancelled/superseded/expired, no
+// Actions runs at all, or a fetch error folded into the text). prompt.logsUnfetchable
+// keys off these to detect an unfetchable payload and branch the CI-fix prompt
+// framing. They are exported as the single source of truth so a marker rename
+// here moves the producer and the predicate together — the two sides used to be
+// coupled only by "keep in sync" comments, which let a marker edit silently revert
+// the BEH-560 fix (BEH-563).
+const (
+	// RunHeaderMarker begins each run's section: "===== run <id> (failed steps) =====".
+	RunHeaderMarker = "===== run "
+	// FetchErrorMarker begins the folded-in gh error when a run's logs could not
+	// be retrieved: "(could not fully fetch logs for run <id>: <err>)".
+	FetchErrorMarker = "(could not fully fetch logs for run "
+	// NoRunsSentinel is the entire payload when there were no Actions run ids.
+	NoRunsSentinel = "(no GitHub Actions run logs available for the failing checks)"
+	// TruncationHeadMarker begins truncateLogs's dropped-head notice; TruncationWord
+	// also appears within it: "[… <n> earlier bytes truncated …]".
+	TruncationHeadMarker = "[…"
+	TruncationWord       = "truncated"
+)
+
 // GhDriver is the production Driver. Host-side `gh` (through internal/proc, per
 // ADR-0002) does the poll / re-run / log-fetch; the sandbox fix and the git push
 // are injected as callbacks so this package needn't import internal/session or
@@ -165,18 +187,20 @@ func (d *GhDriver) MergeState() (MergeVerdict, error) {
 // fetchFailedLogs concatenates `gh run view <id> --log-failed` for each failing
 // run, truncated to the configured tail. gh's own error is folded into the text
 // (rather than aborting) so the agent still gets whatever logs were retrievable
-// — a partial log beats no log when diagnosing.
+// — a partial log beats no log when diagnosing. The scaffolding markers here (the
+// run header, the no-runs sentinel, the "could not fully fetch" fold-in) are what
+// prompt.logsUnfetchable keys off to detect an empty payload — keep them in sync.
 func (d *GhDriver) fetchFailedLogs(runIDs []string) string {
 	if len(runIDs) == 0 {
-		return "(no GitHub Actions run logs available for the failing checks)"
+		return NoRunsSentinel
 	}
 	var b strings.Builder
 	for _, id := range runIDs {
-		fmt.Fprintf(&b, "===== run %s (failed steps) =====\n", id)
+		fmt.Fprintf(&b, RunHeaderMarker+"%s (failed steps) =====\n", id)
 		stdout, _, err := proc.OutputInDir(d.ghTimeout, d.herdPath, "gh", "run", "view", id, "--log-failed")
 		b.Write(stdout)
 		if err != nil {
-			fmt.Fprintf(&b, "\n(could not fully fetch logs for run %s: %v)\n", id, err)
+			fmt.Fprintf(&b, "\n"+FetchErrorMarker+"%s: %v)\n", id, err)
 		}
 		b.WriteString("\n")
 	}
@@ -218,5 +242,5 @@ func truncateLogs(s string, limit int) string {
 	if len(s) <= limit {
 		return s
 	}
-	return fmt.Sprintf("[… %d earlier bytes truncated …]\n%s", len(s)-limit, s[len(s)-limit:])
+	return fmt.Sprintf(TruncationHeadMarker+" %d earlier bytes "+TruncationWord+" …]\n%s", len(s)-limit, s[len(s)-limit:])
 }

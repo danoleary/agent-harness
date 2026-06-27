@@ -4,9 +4,32 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/beherd/agent-harness/internal/ci"
 )
 
 const sampleCILogs = "FAIL src/foo.test.ts\n  Expected 1, received 2\n##[error]Process completed with exit code 1"
+
+// sampleUnfetchableLogs is what fetchFailedLogs returns when `gh run view
+// --log-failed` couldn't retrieve any step output (run cancelled/superseded or
+// expired): just the run header plus the folded-in gh error, no real failure
+// lines (BEH-560). Built from ci's exported marker constants so a marker rename
+// in the driver moves this fixture with the predicate instead of leaving a stale
+// literal that reds these tests for the wrong reason (BEH-563).
+const sampleUnfetchableLogs = ci.RunHeaderMarker + "456 (failed steps) =====\n\n" + ci.FetchErrorMarker + "456: log not found)\n"
+
+// claimsLogsWereFetched is the assertion the prompt must NOT make when the fetch
+// returned nothing fetchable — it framed the empty payload as the real logs and
+// sent both BEH-507 cifix sessions blind-reproducing every gate.
+const claimsLogsWereFetched = "Here are the failing CI job logs the harness fetched"
+
+func TestBuildCIFixEmptyLogsDoesNotClaimLogsWereFetched(t *testing.T) {
+	p := BuildCIFix(sample, "beh-362", sampleWorktree, sampleUnfetchableLogs)
+
+	if strings.Contains(p, claimsLogsWereFetched) {
+		t.Error("prompt asserts the empty/unfetchable payload IS the fetched logs")
+	}
+}
 
 func TestBuildCIFixNamesWorktreeAndTicket(t *testing.T) {
 	p := BuildCIFix(sample, "beh-362", sampleWorktree, sampleCILogs)
@@ -15,6 +38,63 @@ func TestBuildCIFixNamesWorktreeAndTicket(t *testing.T) {
 		if !strings.Contains(p, want) {
 			t.Errorf("prompt missing %q", want)
 		}
+	}
+}
+
+func TestBuildCIFixEmptyLogsFramesRunAsLikelyNotAFailure(t *testing.T) {
+	p := BuildCIFix(sample, "beh-362", sampleWorktree, sampleUnfetchableLogs)
+
+	if !regexp.MustCompile(`(?i)(could not|couldn't|no).{0,40}(fetch|logs)`).MatchString(p) {
+		t.Error("prompt does not tell the agent up-front the logs could not be fetched")
+	}
+	if !regexp.MustCompile(`(?i)cancel|supersed|expired`).MatchString(p) {
+		t.Error("prompt does not frame the run as likely cancelled/superseded/expired rather than a code defect")
+	}
+}
+
+func TestBuildCIFixEmptyLogsSteersOffBlindGateReproduction(t *testing.T) {
+	p := BuildCIFix(sample, "beh-362", sampleWorktree, sampleUnfetchableLogs)
+
+	if !regexp.MustCompile(`(?i)(do not|don't|never).{0,40}(reproduce|re-?run).{0,40}(every|all|gate)`).MatchString(p) {
+		t.Error("prompt does not steer the agent off blindly reproducing every gate")
+	}
+	// The empty-log branch must NOT instruct "read those logs" — there are none.
+	if strings.Contains(p, "read those logs") {
+		t.Error("prompt tells the agent to read logs that were never fetched")
+	}
+}
+
+// The no-runs sentinel (no Actions run ids at all) is just as unfetchable as a
+// folded-in gh error — both must take the cancelled/superseded framing.
+func TestBuildCIFixNoRunSentinelIsUnfetchable(t *testing.T) {
+	p := BuildCIFix(sample, "beh-362", sampleWorktree, "(no GitHub Actions run logs available for the failing checks)")
+
+	if strings.Contains(p, claimsLogsWereFetched) {
+		t.Error("no-runs sentinel still framed as fetched logs")
+	}
+}
+
+// Real step output must keep the original framing untouched — the empty-log
+// branch must not swallow a genuine failure.
+func TestBuildCIFixRealLogsKeepFetchedFraming(t *testing.T) {
+	p := BuildCIFix(sample, "beh-362", sampleWorktree, sampleCILogs)
+
+	if !strings.Contains(p, claimsLogsWereFetched) {
+		t.Error("real logs no longer use the 'here are the fetched logs' framing")
+	}
+	if !strings.Contains(p, "read those logs") {
+		t.Error("real logs no longer tell the agent to read the logs")
+	}
+}
+
+// A partial fetch (one run's logs retrieved, another folded in an error) still
+// carries real output, so it must NOT take the unfetchable branch.
+func TestBuildCIFixPartialFetchIsFetchable(t *testing.T) {
+	partial := "===== run 1 (failed steps) =====\nFAIL src/foo.test.ts\n  Expected 1, received 2\n===== run 2 (failed steps) =====\n\n(could not fully fetch logs for run 2: log not found)\n"
+	p := BuildCIFix(sample, "beh-362", sampleWorktree, partial)
+
+	if !strings.Contains(p, claimsLogsWereFetched) {
+		t.Error("a partial fetch with real output was wrongly framed as unfetchable")
 	}
 }
 

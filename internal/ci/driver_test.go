@@ -93,3 +93,23 @@ func TestTruncateLogsLeavesShortLogsUntouched(t *testing.T) {
 		t.Fatalf("short logs should pass through unchanged, got %q", got)
 	}
 }
+
+// The producers must emit the exported marker constants prompt.logsUnfetchable
+// keys off, so an uncoordinated literal change here goes red instead of silently
+// desyncing the predicate (BEH-563).
+func TestFetchFailedLogsNoRunsEmitsSentinel(t *testing.T) {
+	d := &GhDriver{}
+	if got := d.fetchFailedLogs(nil); got != NoRunsSentinel {
+		t.Fatalf("fetchFailedLogs(nil) = %q, want NoRunsSentinel %q", got, NoRunsSentinel)
+	}
+}
+
+func TestTruncateLogsNoticeUsesMarkerConstants(t *testing.T) {
+	got := truncateLogs(strings.Repeat("x", 100), 16)
+	if !strings.HasPrefix(got, TruncationHeadMarker) {
+		t.Fatalf("truncation notice does not start with TruncationHeadMarker %q: %q", TruncationHeadMarker, got)
+	}
+	if !strings.Contains(got, TruncationWord) {
+		t.Fatalf("truncation notice missing TruncationWord %q: %q", TruncationWord, got)
+	}
+}
