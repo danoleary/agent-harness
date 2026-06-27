@@ -85,6 +85,23 @@ func (l *Logger) FindingsDir(session string) string {
 	return filepath.Join(l.Dir, "findings", session)
 }
 
+// HasPriorPipelineTranscripts reports whether this ticket's log dir already holds
+// at least one implementation or review transcript — the raw material a
+// retrospective studies. It deliberately ignores the retrospective's own stream
+// and run.jsonl: a dir holding only those is the BEH-552/BEH-318 shape where the
+// pipeline produced nothing, so the retrospective would have nothing to read. The
+// glob keys on the session prefix, so a retried run (implementation-retry1-….jsonl)
+// counts too. Used by the retrospective precondition to skip a doomed launch.
+func (l *Logger) HasPriorPipelineTranscripts() bool {
+	for _, session := range []string{"implementation", "review"} {
+		matches, _ := filepath.Glob(filepath.Join(l.Dir, session+"-*.jsonl"))
+		if len(matches) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 // Event emits one concise narration line to the console and mirrors it to run.jsonl.
 func (l *Logger) Event(message string) {
 	ts := time.Now().UTC().Format(time.RFC3339)

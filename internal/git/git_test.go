@@ -106,6 +106,43 @@ func TestStripWorktreeNodeModulesLeavesSourceIntact(t *testing.T) {
 	}
 }
 
+// BEH-552: the retrospective precondition needs to know whether the feature branch
+// the session would study actually exists. A created local branch resolves.
+func TestBranchResolvesTrueForExistingBranch(t *testing.T) {
+	repo := t.TempDir()
+	runGit(t, repo, "init", "-q", "-b", "main")
+	runGit(t, repo, "config", "user.email", "test@example.com")
+	runGit(t, repo, "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(repo, "f"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	runGit(t, repo, "add", "-A")
+	runGit(t, repo, "commit", "-q", "-m", "init")
+	runGit(t, repo, "branch", "feat/beh-552")
+
+	if !BranchResolves(repo, "beh-552") {
+		t.Fatal("feat/beh-552 exists — BranchResolves should report it")
+	}
+}
+
+// A slug with no branch (the BEH-318 shape: feat/beh-318 never existed) must not
+// resolve, so the precondition can skip a retrospective that has no diff to study.
+func TestBranchResolvesFalseWhenAbsent(t *testing.T) {
+	repo := t.TempDir()
+	runGit(t, repo, "init", "-q", "-b", "main")
+	runGit(t, repo, "config", "user.email", "test@example.com")
+	runGit(t, repo, "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(repo, "f"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	runGit(t, repo, "add", "-A")
+	runGit(t, repo, "commit", "-q", "-m", "init")
+
+	if BranchResolves(repo, "beh-318") {
+		t.Fatal("feat/beh-318 never existed — BranchResolves must be false")
+	}
+}
+
 func TestPushUsesNoVerifyAndCorrectArgs(t *testing.T) {
 	clock := newFakeClock()
 	run, calls := scriptedRunner(0, nil)

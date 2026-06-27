@@ -71,6 +71,38 @@ func Retrospective(dropboxExists, spendingCapAbort bool, exitCode int) Result {
 	return Result{OK: false, Reason: "findings dropbox out.json was not written — retrospective never ran"}
 }
 
+// RetrospectiveHasInputs is the *pre*condition counterpart to Retrospective's
+// post-check: it decides whether launching the retrospective sandbox is worth it
+// at all, before any container starts. The session reads a ticket's prior
+// implementation/review transcripts and studies the diff on its feature branch; if
+// there is no transcript to read AND/OR no branch to resolve, it can only conclude
+// "nothing to read" — so the harness should skip it rather than burn a full sandbox
+// launch to rediscover that (BEH-552: a retrospective was dispatched for BEH-318,
+// whose log dir held only the retro's own stream and whose feat/ branch never
+// existed).
+//
+// Both inputs are required to proceed. In the normal pipeline both always hold by
+// the time the retrospective runs — the implementation session creates feat/<slug>
+// at step 0 and tees its transcript — so a skip only fires on an anomalous
+// standalone dispatch against a ticket whose pipeline produced no artifacts. A
+// genuinely-failed slice (implementation died after creating the branch) keeps both
+// inputs and is still retrospected: that failure is exactly what's worth mining.
+//
+// OK == true means "inputs present, launch". When OK is false the Reason names
+// every missing input so the skip diagnostic is unambiguous.
+func RetrospectiveHasInputs(hasTranscripts, branchResolves bool) Result {
+	switch {
+	case hasTranscripts && branchResolves:
+		return Result{OK: true, Reason: "prior pipeline transcripts present and feature branch resolves"}
+	case !hasTranscripts && !branchResolves:
+		return Result{OK: false, Reason: "no prior implementation/review transcripts and no feature branch — nothing to study"}
+	case !hasTranscripts:
+		return Result{OK: false, Reason: "no prior implementation/review transcripts to study"}
+	default:
+		return Result{OK: false, Reason: "feature branch does not resolve — no diff to study"}
+	}
+}
+
 // ReviewOutcome is the result of the harness's OWN host-side gate re-run after a
 // review session — the only thing that may authorise a push (never the agent's
 // self-report). GatesGreen is true iff `pnpm check && pnpm typecheck` passed in the

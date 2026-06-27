@@ -288,6 +288,21 @@ func BranchPushed(herdPath, slug string) bool {
 	return err == nil
 }
 
+// BranchResolves reports whether the local feature branch `feat/<slug>` exists in
+// the main checkout's shared `.git` — the sandbox creates it there at the tdd
+// skill's step 0, so it is visible host-side without touching the worktree. It is
+// the retrospective precondition's "is there a diff to study?" check (BEH-552): a
+// retrospective dispatched for a ticket whose branch never resolved (feat/beh-318)
+// can only conclude "nothing to read", so the harness skips it rather than burn a
+// sandbox. Checks the local head specifically (not origin/), since the branch
+// always exists locally once created and a worktree teardown never deletes it.
+func BranchResolves(herdPath, slug string) bool {
+	err := exec.Command(
+		"git", "-C", herdPath, "rev-parse", "--verify", "--quiet", "refs/heads/"+BranchName(slug),
+	).Run()
+	return err == nil
+}
+
 // StripWorktreeNodeModules removes `web/node_modules` from the worktree the
 // implementation tool hands back. The sandbox builds the worktree on linux-arm64
 // (ADR-0002), so that tree carries Linux-only native bindings (`@oxlint/...`,

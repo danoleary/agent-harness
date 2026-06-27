@@ -49,6 +49,23 @@ func Retrospective(cfg config.Config, log *runlog.Logger, runID string, args Arg
 	}
 	log.Event(fmt.Sprintf("run %s — retrospective %s%s", runID, args.Identifier, dry))
 
+	// Precondition (BEH-552): the retrospective studies a ticket's prior
+	// implementation/review transcripts against the diff on feat/<slug>. With no
+	// transcript to read and/or no branch to resolve, the session can only conclude
+	// "nothing to read" — so skip it here rather than burn a full sandbox launch to
+	// rediscover that (BEH-318 dispatched a 30-min retro whose log dir held only its
+	// own stream and whose feat/ branch never existed). Checked before the Linear
+	// fetch so a skip costs nothing. In the normal pipeline both inputs always hold
+	// by now (implementation creates the branch at step 0 and tees its transcript),
+	// so this fires only on an anomalous standalone dispatch. A skip is a clean
+	// no-op, not a failure — return OK so it never reds the pipeline.
+	if pre := verify.RetrospectiveHasInputs(
+		log.HasPriorPipelineTranscripts(), gitpkg.BranchResolves(cfg.HerdPath, slug),
+	); !pre.OK {
+		log.Event(fmt.Sprintf("retrospective skipped — %s: %s", args.Identifier, pre.Reason))
+		return Result{OK: true}
+	}
+
 	client := linear.NewClient(linear.NewTransport(cfg.LinearAPIKey))
 
 	// The ticket is fetched for its team id (findings are filed back into it) and
