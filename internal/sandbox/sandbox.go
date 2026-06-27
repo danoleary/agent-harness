@@ -47,26 +47,27 @@ const ExitOOMKill = 137
 
 // transientStartReasonRE matches the docker stderr reasons for the environmental,
 // transient class of exit-125 launch failure. Two known signatures, both the host
-// momentarily wedging — not a code/config fault — so the same `docker run`
-// succeeds on a bare retry once the host recovers (like the 137 OOM-kill,
-// ExitOOMKill):
-//
+// momentarily wedging rather than a code/config fault:
 //   - the overlay2 store gone read-only under host disk/IO pressure — the kernel's
 //     EROFS ("read-only file system"), e.g. `driver "overlay2" failed to remove
-//     root filesystem: unlinkat …: read-only file system` (BEH-542, the same
-//     daemon-wedge the PreflightTimeout note above documents).
-//   - the container process vanishing mid-run under memory pressure, so docker's
-//     wait stream hits EOF — `error waiting for container: unexpected EOF`. This is
-//     the same memory-pressure/OOM class as the 137 kill, but it took out the whole
-//     container rather than one command, so docker reports it as a launch failure
-//     (exit 125) with no recovery turn left to the agent (BEH-550). Retrying the
-//     session recovers it instead of discarding the ticket.
-var transientStartReasonRE = regexp.MustCompile(`(?i)read-only file system|unexpected EOF`)
+//     root filesystem: unlinkat …: read-only file system` (BEH-542).
+//   - the container vanishing mid-launch with the engine's wait failing on a
+//     severed stream — `error waiting for container: unexpected EOF` (BEH-547/
+//     BEH-550: a session was killed ~90s in by exactly this, costing the whole
+//     ticket; the same memory-pressure/OOM class as the 137 kill, but it took out
+//     the whole container rather than one command, so docker reports it as a
+//     launch failure with no recovery turn left to the agent). The match is
+//     anchored on "waiting for container" so a bare "unexpected EOF" from a
+//     genuine config/parse fault (e.g. a yaml parse error) stays terminal.
+//
+// Like the 137 OOM-kill (ExitOOMKill), the same `docker run` succeeds on a bare
+// retry once the engine recovers — so both are worth retrying.
+var transientStartReasonRE = regexp.MustCompile(`(?i)read-only file system|waiting for container: unexpected EOF`)
 
 // IsRetryableStartFailure reports whether a docker "cannot start" (exit 125)
-// reason line is one of the transient launch-failure signatures worth retrying
-// (overlay2/read-only-fs, or the container dying mid-run with `unexpected EOF`),
-// mirroring the ExitOOMKill (137) precedent. reason is docker's own error line
+// reason line is one of the transient engine-wedge classes worth retrying
+// (overlay2 read-only filesystem, or a container-wait "unexpected EOF"), mirroring
+// the ExitOOMKill (137) precedent. reason is docker's own error line
 // (DockerErrorReason). An empty or unrecognised reason is NOT retryable: only the
 // known transient signatures match, so a genuine 125 (daemon down, image missing,
 // bad flag) still fails fast and terminal.

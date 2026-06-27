@@ -318,19 +318,25 @@ loop:
 - **A transient sandbox failure is retried, not charged to the ticket ([BEH-542](https://linear.app/beherd/issue/BEH-542)).**
   Two environmental failures look like a session result but aren't the diff's fault:
   a **137 OOM-kill** under host memory pressure, and a **transient exit-125 launch
-  failure** — either docker's overlay2 store gone read-only (`… read-only file
-  system`) when the host disk/IO wedges momentarily ([BEH-542](https://linear.app/beherd/issue/BEH-542)),
-  or the container process vanishing mid-run under memory pressure so docker's wait
-  stream hits EOF (`error waiting for container: unexpected EOF`) — the same OOM
-  class as the 137 kill, but it took out the whole container rather than one command,
-  so there was no recovery turn left to the agent ([BEH-550](https://linear.app/beherd/issue/BEH-550)).
-  `session.Outcome.Retryable` folds all three
-  into one predicate, and `session.RetryTransient` (formerly `RetryOnOOMKill`) retries
-  them with a backoff. *implementation* wraps its launch in it, so a crash at the
+  failure**. Two exit-125 signatures count as transient engine wedges, not the
+  diff's fault: docker's overlay2 store gone read-only (`… read-only file system`)
+  when the host disk/IO wedges momentarily ([BEH-542](https://linear.app/beherd/issue/BEH-542)),
+  and the container vanishing mid-run under memory pressure so docker's wait stream
+  hits EOF (`error waiting for container: unexpected EOF`) — the same OOM class as
+  the 137 kill, but it took out the whole container rather than one command, so
+  docker reports it as an exit-125 launch failure with no recovery turn left to the
+  agent ([BEH-547](https://linear.app/beherd/issue/BEH-547)/[BEH-550](https://linear.app/beherd/issue/BEH-550) —
+  a session was killed ~90s in by exactly this, costing the whole ticket with no
+  handoff). The EOF match is anchored on "waiting for container" so a bare
+  `unexpected EOF` from a config/parse fault never trips it. `session.Outcome.Retryable`
+  folds these and the 137 into one predicate (`sandbox.IsRetryableStartFailure`), and
+  `session.RetryTransient` (formerly `RetryOnOOMKill`) retries them with a backoff.
+  *implementation* wraps its launch in it, so a crash at the
   worktree-creation step — the session's first and heaviest host I/O — recovers on a
   bare retry (a fresh `--name`, the same create prompt: the wedged container's `--rm`
   teardown may have left the name taken, and a creation-time 125 left no worktree to
-  resume). A *genuine* 125 (daemon down, image missing, bad flag) stays terminal.
+  resume). A *genuine* 125 (daemon down, image missing, bad flag, or a bare
+  `unexpected EOF` from a config/parse fault) stays terminal.
 - **A first-stage crash that leaves no worktree is re-attempted once, then releases the claim ([BEH-543](https://linear.app/beherd/issue/BEH-543)).**
   When implementation fails with **no worktree ever created** (the transient retries
   above exhausted, or a kill before any work) there is nothing to salvage. The stage

@@ -404,19 +404,21 @@ func TestIsRetryableStartFailure(t *testing.T) {
 		},
 		{"bare read-only file system", "write /var/lib/docker/...: read-only file system", true},
 		{"mixed case EROFS", "Read-Only File System", true},
-		// The reported BEH-550 signature: the container process vanished mid-run under
-		// memory pressure, so docker's wait stream hit EOF — environmental & transient,
-		// the same class as the 137 OOM-kill but surfaced as an exit-125 launch failure.
-		{
-			"container vanished — unexpected EOF",
-			`level=error msg="error waiting for container: unexpected EOF"`,
-			true,
-		},
-		{"mixed case unexpected EOF", "Unexpected EOF", true},
+		// The reported BEH-547/BEH-550 signature: the container vanished mid-session
+		// under memory pressure and the engine reported the wait failing on a severed
+		// stream — environmental & transient, the same class as the 137 OOM-kill but
+		// surfaced as an exit-125 launch failure, recoverable on a bare retry.
+		{"container wait unexpected EOF", "error waiting for container: unexpected EOF", true},
+		{"wrapped container wait EOF", `level=error msg="error waiting for container: unexpected EOF"`, true},
+		{"mixed case container wait EOF", "error Waiting For Container: Unexpected EOF", true},
 		// Genuine, terminal 125s carry none of the transient signatures.
 		{"daemon down", "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?", false},
 		{"image missing", "Unable to find image 'herd-agent-harness:latest' locally", false},
 		{"bad flag", "unknown flag: --nope", false},
+		// A bare "unexpected EOF" without the container-wait context is a config/parse
+		// fault, not the engine wedge — terminal, so the match stays anchored on
+		// "waiting for container".
+		{"unrelated parse EOF", "yaml: line 3: unexpected EOF", false},
 		{"empty", "", false},
 	}
 	for _, c := range cases {
