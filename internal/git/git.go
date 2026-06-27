@@ -181,6 +181,18 @@ func BranchName(slug string) string {
 	return "feat/" + slug
 }
 
+// HeadSHA returns the commit SHA at the worktree's HEAD, read host-side via the
+// real-path mount (the same seam WorktreeClean/CheckpointCommit use). It lets a
+// caller capture the tip before a session and tell afterwards whether that
+// session actually committed anything.
+func HeadSHA(worktreePath string) (string, error) {
+	out, err := exec.Command("git", "-C", worktreePath, "rev-parse", "HEAD").Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
 // FetchMain fast-forwards the primary checkout's view of origin/main so commit
 // ranges and the PR base are current (DESIGN.md: pull origin/main after every
 // session). Retried against transient remote blips; a fetch failure is returned
@@ -339,6 +351,42 @@ func checkpointCommit(worktreePath, message string, run commandRunner) error {
 		return err
 	}
 	return run("git", "-C", worktreePath, "commit", "--no-verify", "-m", message)
+}
+
+// EnsureCIRerunCommit guarantees the just-finished auto-fix session leaves CI a
+// fresh HEAD to run against. An auto-fix agent that reproduces every gate locally
+// and finds no code defect (the red was a cancelled/superseded/flaky run) should
+// NOT fabricate a speculative diff just to satisfy the loop's "produce a commit"
+// contract — it leaves the worktree clean with HEAD unmoved. In that case the
+// harness adds an empty commit so the re-push moves the branch tip and CI re-runs
+// (clearing the stale red); if the agent did commit a real fix (HEAD moved), this
+// is a no-op. The worktree must already be clean — the caller checks that and the
+// empty commit ships only committed history (BEH-561).
+func EnsureCIRerunCommit(worktreePath, headBefore string) error {
+	return ensureCIRerunCommit(worktreePath, headBefore, execRun)
+}
+
+func ensureCIRerunCommit(worktreePath, headBefore string, run commandRunner) error {
+	head, err := HeadSHA(worktreePath)
+	if err != nil {
+		return err
+	}
+	// HEAD moved → the agent committed a real fix; that is what re-triggers CI.
+	if head != headBefore {
+		return nil
+	}
+	return run("git", "-C", worktreePath, "commit", "--no-verify", "--allow-empty", "-m", CIRerunMessage())
+}
+
+// CIRerunMessage is the subject+body for the harness's empty re-trigger commit.
+// It loudly marks the commit as a no-code-change CI re-run so a reviewer reading
+// PR history sees why an empty commit exists rather than mistaking it for a fix.
+func CIRerunMessage() string {
+	return "chore(harness): re-trigger CI (no code change)\n\n" +
+		"The auto-fix session reproduced the gates locally and found no code defect:\n" +
+		"the CI red was a cancelled/superseded/flaky run, not a reproducible failure.\n" +
+		"This empty commit gives CI a fresh HEAD to re-run against instead of a\n" +
+		"fabricated, speculative change."
 }
 
 // CheckpointMessage builds the commit message for a harness recovery checkpoint.

@@ -182,7 +182,11 @@ loop:
     while still red AND attempts < N AND within wall-clock budget:
       fetch failed-job logs (`gh run view <id> --log-failed`, host-side)
       run sandboxed fix session over the worktree (diagnose + fix + LOCAL commit)
-      harness pushes the fix; re-poll
+        - escape hatch (BEH-561): if all gates reproduce green and the red is a
+          cancelled/superseded/flaky run (no code defect), the agent commits NOTHING
+          rather than fabricating a speculative diff; the harness then adds an empty
+          commit so the re-push gives CI a fresh HEAD to re-run against
+      harness pushes the fix (or the empty re-trigger commit); re-poll
     on green   -> done
     on exhaust -> non-success: KEEP PR + worktree, print failing checks + logs pointer
 

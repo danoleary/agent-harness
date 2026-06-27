@@ -189,6 +189,8 @@ func BuildCIFix(t ticket.Ticket, slug, worktreePath, ciLogs string) string {
 	lines = append(lines, ciLogsSection(slug, ciLogs)...)
 	lines = append(lines,
 		"",
+		"Escape hatch — do NOT fabricate a commit. If you reproduce every failing gate locally and they all pass (the red is a cancelled, superseded, or flaky run, not a reproducible code defect), then make NO commit at all and stop. Do NOT manufacture a speculative or unrelated change (a throwaway story, a no-op tweak, a base-refresh merge) just to give the loop something to push — that only pollutes the PR with unverified commits. When you leave the worktree clean with no new commit, the harness re-triggers CI itself with an empty commit, which clears a cancelled/superseded run. Only commit when you have a real, locally-verified fix.",
+		"",
 		"Ticket context (the intent — already fetched for you):",
 		"",
 		"# "+t.Identifier+": "+t.Title,
@@ -201,7 +203,7 @@ func BuildCIFix(t ticket.Ticket, slug, worktreePath, ciLogs string) string {
 		"",
 		"Do NOT touch Linear — do not call any `mcp__linear-server__*` tool, do not move the ticket, do not open or comment on issues. The harness owns all Linear I/O (ADR-0001).",
 		"",
-		"Do NOT emit or file any harness-improvement findings, and do NOT write `/findings/out.json`. The retrospective tool owns findings — your only output is the fix commit.",
+		"Do NOT emit or file any harness-improvement findings, and do NOT write `/findings/out.json`. The retrospective tool owns findings — your only output is the local fix commit, or no commit at all when there is nothing real to fix.",
 		"",
 		bashQuirkSteer,
 	)

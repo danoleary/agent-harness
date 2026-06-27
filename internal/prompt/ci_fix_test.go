@@ -147,3 +147,23 @@ func TestBuildCIFixSteersOffLinearAndFindings(t *testing.T) {
 func TestBuildCIFixCarriesBashQuirkSteer(t *testing.T) {
 	assertCarriesBashQuirkSteer(t, BuildCIFix(sample, "beh-362", sampleWorktree, sampleCILogs), "ci-fix prompt")
 }
+
+// The escape hatch (BEH-561): when every gate reproduces green locally and the red
+// is a cancelled/superseded/flaky run rather than a code defect, the agent must NOT
+// manufacture a speculative diff to satisfy the loop — it should make no commit at
+// all; the harness re-triggers CI itself.
+func TestBuildCIFixOffersNoOpEscapeHatch(t *testing.T) {
+	p := BuildCIFix(sample, "beh-362", sampleWorktree, sampleCILogs)
+
+	// Forbids fabricating a commit just to re-push.
+	if !regexp.MustCompile(`(?i)(do not|don't|never).{0,60}(speculative|fabricat|manufactur|invent|unrelated)`).MatchString(p) {
+		t.Error("prompt does not forbid manufacturing a speculative commit")
+	}
+	// Tells the agent that making no commit is a valid outcome and the harness re-runs CI.
+	if !regexp.MustCompile(`(?i)(no commit|do not commit|don't commit|without a commit|make no)`).MatchString(p) {
+		t.Error("prompt does not tell the agent that committing nothing is acceptable")
+	}
+	if !regexp.MustCompile(`(?i)(re-?trigger|re-?run).{0,40}ci|ci.{0,40}(re-?trigger|re-?run)`).MatchString(p) {
+		t.Error("prompt does not say the harness re-triggers CI on a no-op")
+	}
+}

@@ -358,6 +358,11 @@ func ciFixRunner(cfg config.Config, args Args, slug, worktreePath, runID string,
 	attempt := 0
 	return func(ciLogs string) error {
 		attempt++
+		// Capture the tip before the session so we can tell afterwards whether the
+		// agent actually committed a fix or correctly concluded there was nothing to
+		// fix (BEH-561). A read failure leaves headBefore empty, which degrades to
+		// "treat any HEAD as a real commit" — never a spurious empty commit.
+		headBefore, _ := gitpkg.HeadSHA(worktreePath)
 		fixPrompt := prompt.BuildCIFix(t, slug, worktreePath, ciLogs)
 		containerName := fmt.Sprintf("herd-harness-%s-%d-cifix-%d", runID, os.Getpid(), attempt)
 		fixArgs := sandbox.BuildDockerRunArgs(sandbox.Config{
@@ -386,6 +391,13 @@ func ciFixRunner(cfg config.Config, args Args, slug, worktreePath, runID string,
 		// worktree) or the harness has nothing trustworthy to push.
 		if !gitpkg.WorktreeClean(worktreePath) {
 			return fmt.Errorf("auto-fix session %d left uncommitted changes — not pushing", attempt)
+		}
+		// The agent may have correctly concluded the red is not a code defect (a
+		// cancelled/superseded/flaky run) and committed nothing. Don't force a
+		// speculative diff: add an empty commit so the re-push gives CI a fresh HEAD
+		// to re-run against; a no-op if a real fix moved HEAD (BEH-561).
+		if err := gitpkg.EnsureCIRerunCommit(worktreePath, headBefore); err != nil {
+			return fmt.Errorf("auto-fix session %d: re-trigger commit failed: %w", attempt, err)
 		}
 		return nil
 	}
