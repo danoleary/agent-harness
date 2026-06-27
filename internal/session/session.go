@@ -89,7 +89,8 @@ type Outcome struct {
 
 // Retryable reports whether this outcome is an environmental, transient failure
 // worth a bare retry — the 137 OOM-kill (sandbox.ExitOOMKill, BEH-524) or a
-// transient exit-125 launch failure (overlay2/read-only-fs, BEH-542). Both are the
+// transient exit-125 launch failure (overlay2/read-only-fs of BEH-542, or the
+// container dying mid-run with `unexpected EOF` of BEH-550). Both are the
 // host momentarily wedging, not a code/config fault; the same `docker run`
 // succeeds once it recovers. A genuine 125 (daemon down, image missing, bad flag)
 // and any real non-zero code the process itself returned stay terminal.

@@ -6,8 +6,9 @@ import (
 
 // RetryTransient calls run (passing the 1-based attempt index) and, while the
 // outcome is an environmental, transient failure (Outcome.Retryable — the 137
-// OOM-kill of BEH-524 or a transient exit-125 launch failure, overlay2/read-only-fs
-// of BEH-542) and attempts remain, sleeps the scheduled backoff and retries, up to
+// OOM-kill of BEH-524 or a transient exit-125 launch failure — overlay2/read-only-fs
+// of BEH-542, or the container dying mid-run with `unexpected EOF` of BEH-550) and
+// attempts remain, sleeps the scheduled backoff and retries, up to
 // maxAttempts total. Both classes are the host momentarily wedging, not a code
 // fault: the same `docker run` / `pnpm install` succeeds on a bare retry once the
 // host recovers — so a retry recovers it instead of charging the failure

@@ -18,6 +18,7 @@ func TestOutcomeRetryable(t *testing.T) {
 	}{
 		{"oom 137", Outcome{ExitCode: sandbox.ExitOOMKill}, true},
 		{"transient 125 read-only", Outcome{ExitCode: sandbox.ExitCannotStart, DockerReason: `failed to remove root filesystem: unlinkat /var/lib/docker/overlay2/x: read-only file system`}, true},
+		{"transient 125 unexpected EOF", Outcome{ExitCode: sandbox.ExitCannotStart, DockerReason: `level=error msg="error waiting for container: unexpected EOF"`}, true},
 		{"genuine 125 daemon down", Outcome{ExitCode: sandbox.ExitCannotStart, DockerReason: "Cannot connect to the Docker daemon"}, false},
 		{"125 with no reason", Outcome{ExitCode: sandbox.ExitCannotStart}, false},
 		{"success", Outcome{ExitCode: 0}, false},

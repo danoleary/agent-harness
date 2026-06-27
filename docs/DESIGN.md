@@ -318,8 +318,13 @@ loop:
 - **A transient sandbox failure is retried, not charged to the ticket ([BEH-542](https://linear.app/beherd/issue/BEH-542)).**
   Two environmental failures look like a session result but aren't the diff's fault:
   a **137 OOM-kill** under host memory pressure, and a **transient exit-125 launch
-  failure** — docker's overlay2 store gone read-only (`… read-only file system`)
-  when the host disk/IO wedges momentarily. `session.Outcome.Retryable` folds both
+  failure** — either docker's overlay2 store gone read-only (`… read-only file
+  system`) when the host disk/IO wedges momentarily ([BEH-542](https://linear.app/beherd/issue/BEH-542)),
+  or the container process vanishing mid-run under memory pressure so docker's wait
+  stream hits EOF (`error waiting for container: unexpected EOF`) — the same OOM
+  class as the 137 kill, but it took out the whole container rather than one command,
+  so there was no recovery turn left to the agent ([BEH-550](https://linear.app/beherd/issue/BEH-550)).
+  `session.Outcome.Retryable` folds all three
   into one predicate, and `session.RetryTransient` (formerly `RetryOnOOMKill`) retries
   them with a backoff. *implementation* wraps its launch in it, so a crash at the
   worktree-creation step — the session's first and heaviest host I/O — recovers on a

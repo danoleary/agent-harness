@@ -46,17 +46,26 @@ const ExitCannotStart = 125
 const ExitOOMKill = 137
 
 // transientStartReasonRE matches the docker stderr reasons for the environmental,
-// transient class of exit-125 launch failure: the overlay2 store gone read-only
-// under host disk/IO pressure — the kernel's EROFS ("read-only file system"),
-// e.g. `driver "overlay2" failed to remove root filesystem: unlinkat …: read-only
-// file system` (BEH-542, the same daemon-wedge the PreflightTimeout note above
-// documents). Like the 137 OOM-kill (ExitOOMKill), this is the host momentarily
-// wedging, not a code/config fault — the same `docker run` succeeds on a bare
-// retry once the daemon recovers — so it is worth retrying.
-var transientStartReasonRE = regexp.MustCompile(`(?i)read-only file system`)
+// transient class of exit-125 launch failure. Two known signatures, both the host
+// momentarily wedging — not a code/config fault — so the same `docker run`
+// succeeds on a bare retry once the host recovers (like the 137 OOM-kill,
+// ExitOOMKill):
+//
+//   - the overlay2 store gone read-only under host disk/IO pressure — the kernel's
+//     EROFS ("read-only file system"), e.g. `driver "overlay2" failed to remove
+//     root filesystem: unlinkat …: read-only file system` (BEH-542, the same
+//     daemon-wedge the PreflightTimeout note above documents).
+//   - the container process vanishing mid-run under memory pressure, so docker's
+//     wait stream hits EOF — `error waiting for container: unexpected EOF`. This is
+//     the same memory-pressure/OOM class as the 137 kill, but it took out the whole
+//     container rather than one command, so docker reports it as a launch failure
+//     (exit 125) with no recovery turn left to the agent (BEH-550). Retrying the
+//     session recovers it instead of discarding the ticket.
+var transientStartReasonRE = regexp.MustCompile(`(?i)read-only file system|unexpected EOF`)
 
 // IsRetryableStartFailure reports whether a docker "cannot start" (exit 125)
-// reason line is the transient overlay2/read-only-filesystem class worth retrying,
+// reason line is one of the transient launch-failure signatures worth retrying
+// (overlay2/read-only-fs, or the container dying mid-run with `unexpected EOF`),
 // mirroring the ExitOOMKill (137) precedent. reason is docker's own error line
 // (DockerErrorReason). An empty or unrecognised reason is NOT retryable: only the
 // known transient signatures match, so a genuine 125 (daemon down, image missing,
