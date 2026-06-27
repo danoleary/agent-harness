@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/beherd/agent-harness/internal/git"
 	"github.com/beherd/agent-harness/internal/proc"
 )
 
@@ -183,6 +184,19 @@ func BuildDockerRunArgs(c Config) []string {
 	args = append(args,
 		"-e", "BASH_DEFAULT_TIMEOUT_MS="+bashDefaultTimeoutMS,
 		"-e", "BASH_MAX_TIMEOUT_MS="+bashMaxTimeoutMS,
+	)
+
+	// Stamp the harness bot identity on the agent's in-container commits (the
+	// handoff commit, any checkpoint). GIT_AUTHOR_*/GIT_COMMITTER_* env take
+	// precedence over every git config level, so they override the bind-mounted
+	// checkout's placeholder `Test <test@example.com>` LOCAL config that defeats
+	// the entrypoint's `git config --global` identity (BEH-579). Not secrets —
+	// passed by value.
+	args = append(args,
+		"-e", "GIT_AUTHOR_NAME="+git.HarnessAuthorName,
+		"-e", "GIT_AUTHOR_EMAIL="+git.HarnessAuthorEmail,
+		"-e", "GIT_COMMITTER_NAME="+git.HarnessAuthorName,
+		"-e", "GIT_COMMITTER_EMAIL="+git.HarnessAuthorEmail,
 	)
 
 	args = append(args,

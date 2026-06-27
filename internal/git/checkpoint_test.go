@@ -99,6 +99,40 @@ func TestCheckpointCommitCapturesUncommittedWork(t *testing.T) {
 	}
 }
 
+// commitIdentity reads "author-name|author-email|committer-name|committer-email"
+// of the worktree's HEAD commit — the four fields the placeholder leaks into.
+func commitIdentity(t *testing.T, dir string) string {
+	t.Helper()
+	out, err := exec.Command("git", "-C", dir, "log", "-1", "--format=%an|%ae|%cn|%ce").Output()
+	if err != nil {
+		t.Fatalf("read HEAD identity: %v", err)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// BEH-579: the checkpoint commit is made host-side against a worktree whose repo
+// config may carry the placeholder `Test <test@example.com>` identity. It must
+// stamp the harness bot identity (author AND committer) so a recovery commit that
+// reaches PR history doesn't pollute `git blame`/contributor stats — even though
+// the surrounding repo config is the placeholder.
+func TestCheckpointCommitStampsHarnessIdentity(t *testing.T) {
+	_, wt := newRepoWithWorktree(t, "beh-579") // seeded with the Test placeholder config
+
+	feat := filepath.Join(wt, "feature.ts")
+	if err := os.WriteFile(feat, []byte("export const x = 1\n"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	if err := CheckpointCommit(wt, "BEH-579", "tdd"); err != nil {
+		t.Fatalf("CheckpointCommit: %v", err)
+	}
+
+	want := HarnessAuthorName + "|" + HarnessAuthorEmail + "|" + HarnessAuthorName + "|" + HarnessAuthorEmail
+	if got := commitIdentity(t, wt); got != want {
+		t.Fatalf("checkpoint identity = %q, want %q (the placeholder Test identity must not leak)", got, want)
+	}
+}
+
 // A clean worktree means the session already handed off (or produced nothing) —
 // there is nothing to recover, so the checkpoint must not manufacture an empty
 // commit that would pollute the branch and read as work that does not exist.

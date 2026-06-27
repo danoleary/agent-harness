@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -71,15 +72,12 @@ func TestRebaseOntoMainCleanReportsClean(t *testing.T) {
 	if len(*calls) != 1 {
 		t.Fatalf("expected exactly one git call (no abort on a clean rebase), got %d: %v", len(*calls), *calls)
 	}
-	got := (*calls)[0]
-	want := []string{"git", "-C", "/wt", "rebase", "origin/main"}
-	if len(got) != len(want) {
-		t.Fatalf("argv = %v, want %v", got, want)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("argv[%d] = %q, want %q (full: %v)", i, got[i], want[i], got)
-		}
+	got := strings.Join((*calls)[0], " ")
+	// The rebase carries the harness identity overrides (BEH-579) so replayed
+	// commits' committer never inherits the host's placeholder config.
+	want := "git -C /wt -c user.name=" + HarnessAuthorName + " -c user.email=" + HarnessAuthorEmail + " rebase origin/main"
+	if got != want {
+		t.Fatalf("argv = %q, want %q", got, want)
 	}
 }
 
@@ -176,6 +174,17 @@ func TestRebaseOntoMainAgainstRealGit(t *testing.T) {
 		}
 		if !WorktreeClean(repo) {
 			t.Fatal("worktree should be clean after a successful rebase")
+		}
+		// BEH-579: a rebase rewrites the COMMITTER of every replayed commit to
+		// whoever runs it. Run host-side against a repo carrying the placeholder
+		// `Test` config, that would stamp the whole pushed branch's commits as
+		// Test. The harness identity must win instead.
+		out, err := exec.Command("git", "-C", repo, "log", "-1", "--format=%cn|%ce").Output()
+		if err != nil {
+			t.Fatalf("read committer: %v", err)
+		}
+		if got, want := strings.TrimSpace(string(out)), HarnessAuthorName+"|"+HarnessAuthorEmail; got != want {
+			t.Fatalf("replayed committer = %q, want %q (the placeholder Test identity must not leak)", got, want)
 		}
 	})
 

@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/beherd/agent-harness/internal/git"
 )
 
 // errFake stands in for the non-nil error `exec` returns on a failed command.
@@ -277,6 +279,28 @@ func TestPassesMountPathToEntrypoint(t *testing.T) {
 
 	if !slices.Contains(envs, "HERD_PATH="+c.HerdPath) {
 		t.Errorf("entrypoint needs the mount path: expected -e HERD_PATH=%s, got %v", c.HerdPath, envs)
+	}
+}
+
+// BEH-579: the bind-mounted checkout carries a placeholder `Test
+// <test@example.com>` LOCAL git config that overrides the entrypoint's `git
+// config --global` identity, so the agent's in-container handoff commit was
+// authored AND committed as Test — polluting `git blame`/contributor stats on
+// every harness-built PR. The launcher stamps the harness bot identity via
+// GIT_AUTHOR_*/GIT_COMMITTER_* env, which take precedence over every git config
+// level, so the in-container commit carries an intentional author/committer.
+func TestStampsHarnessGitIdentityForAgentCommits(t *testing.T) {
+	args := BuildDockerRunArgs(baseConfig())
+
+	for _, name := range []string{"GIT_AUTHOR_NAME", "GIT_COMMITTER_NAME"} {
+		if got := envValue(args, name); got != git.HarnessAuthorName {
+			t.Errorf("%s = %q, want the bot identity %q (else the leaked Test identity wins)", name, got, git.HarnessAuthorName)
+		}
+	}
+	for _, email := range []string{"GIT_AUTHOR_EMAIL", "GIT_COMMITTER_EMAIL"} {
+		if got := envValue(args, email); got != git.HarnessAuthorEmail {
+			t.Errorf("%s = %q, want the bot email %q", email, got, git.HarnessAuthorEmail)
+		}
 	}
 }
 

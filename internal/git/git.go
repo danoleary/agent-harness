@@ -20,6 +20,31 @@ import (
 // without touching a real remote (mirrors sandbox.Preflight's runner seam).
 type commandRunner func(name string, args ...string) error
 
+// HarnessAuthorName / HarnessAuthorEmail are the dedicated bot identity the
+// harness stamps on every commit it is responsible for: the host-side recovery
+// (CheckpointCommit) and CI-rerun (EnsureCIRerunCommit) commits it makes
+// directly, the committer of the commits it rebases before pushing
+// (RebaseOntoMain), and — via sandbox.BuildDockerRunArgs' GIT_AUTHOR_*/
+// GIT_COMMITTER_* env — the agent's in-container handoff commit. Without it the
+// sandbox checkout's placeholder `Test <test@example.com>` LOCAL git config —
+// which overrides the entrypoint's `git config --global` identity — leaks into
+// real history, polluting `git blame`/contributor stats on every harness-built
+// PR (BEH-579). The values match the entrypoint's global identity so an
+// in-container `git config user.name` read stays consistent.
+const (
+	HarnessAuthorName  = "Herd Agent Harness"
+	HarnessAuthorEmail = "agent-harness@beherd.co"
+)
+
+// identityArgs are the `-c user.name=… -c user.email=…` overrides that stamp the
+// harness bot identity on a host-side commit/rebase regardless of the ambient
+// (possibly placeholder) repo config. A `-c` override beats both the local and
+// global config levels, so it wins over the leaked `Test <test@example.com>`
+// local config a host checkout may carry (BEH-579).
+func identityArgs() []string {
+	return []string{"-c", "user.name=" + HarnessAuthorName, "-c", "user.email=" + HarnessAuthorEmail}
+}
+
 // remoteOpTimeout bounds a single git remote attempt (fetch/push). A stalled
 // remote — a black-hole network, a blocking credential prompt — would otherwise
 // hang an attempt forever, defeating the retry loop entirely (BEH-386). It is
@@ -274,7 +299,12 @@ func RebaseOntoMain(worktreePath string) RebaseResult {
 }
 
 func rebaseOntoMain(worktreePath string, run commandRunner) RebaseResult {
-	if err := run("git", "-C", worktreePath, "rebase", "origin/main"); err != nil {
+	// A rebase rewrites the COMMITTER of every replayed commit to whoever runs it;
+	// stamp the harness identity so the pushed branch's commits never inherit the
+	// host checkout's placeholder identity (BEH-579).
+	args := append([]string{"-C", worktreePath}, identityArgs()...)
+	args = append(args, "rebase", "origin/main")
+	if err := run("git", args...); err != nil {
 		// Conflict (or any mid-rebase failure): abort to restore the branch to its
 		// pre-rebase tip, then report a conflict for a human. The abort is best-effort
 		// — if the rebase never started, `rebase --abort` fails harmlessly.
@@ -413,7 +443,9 @@ func checkpointCommit(worktreePath, message string, run commandRunner) error {
 	if err := run("git", "-C", worktreePath, "add", "-A"); err != nil {
 		return err
 	}
-	return run("git", "-C", worktreePath, "commit", "--no-verify", "-m", message)
+	args := append([]string{"-C", worktreePath}, identityArgs()...)
+	args = append(args, "commit", "--no-verify", "-m", message)
+	return run("git", args...)
 }
 
 // EnsureCIRerunCommit guarantees the just-finished auto-fix session leaves CI a
@@ -438,7 +470,9 @@ func ensureCIRerunCommit(worktreePath, headBefore string, run commandRunner) err
 	if head != headBefore {
 		return nil
 	}
-	return run("git", "-C", worktreePath, "commit", "--no-verify", "--allow-empty", "-m", CIRerunMessage())
+	args := append([]string{"-C", worktreePath}, identityArgs()...)
+	args = append(args, "commit", "--no-verify", "--allow-empty", "-m", CIRerunMessage())
+	return run("git", args...)
 }
 
 // CIRerunMessage is the subject+body for the harness's empty re-trigger commit.

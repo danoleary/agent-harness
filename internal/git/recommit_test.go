@@ -85,6 +85,27 @@ func TestEnsureCIRerunCommitAddsEmptyCommitWhenHeadUnmoved(t *testing.T) {
 	}
 }
 
+// BEH-579: the empty CI-rerun commit is made host-side against a repo whose
+// config may carry the placeholder `Test <test@example.com>` identity. It ships
+// to the PR, so it must stamp the harness bot identity (author AND committer)
+// rather than leak the placeholder into history.
+func TestEnsureCIRerunCommitStampsHarnessIdentity(t *testing.T) {
+	repo := seedRepo(t) // seeded with the Test placeholder config
+	headBefore, err := HeadSHA(repo)
+	if err != nil {
+		t.Fatalf("HeadSHA: %v", err)
+	}
+
+	if err := EnsureCIRerunCommit(repo, headBefore); err != nil {
+		t.Fatalf("EnsureCIRerunCommit: %v", err)
+	}
+
+	want := HarnessAuthorName + "|" + HarnessAuthorEmail + "|" + HarnessAuthorName + "|" + HarnessAuthorEmail
+	if got := commitIdentity(t, repo); got != want {
+		t.Fatalf("CI-rerun identity = %q, want %q (the placeholder Test identity must not leak)", got, want)
+	}
+}
+
 // When the agent committed a real fix (HEAD moved since the session started), the
 // harness must NOT pile an empty commit on top — the fix is what should re-trigger
 // CI. EnsureCIRerunCommit is a no-op in that case.
