@@ -88,6 +88,51 @@ func TestBuildTddCarriesBashQuirkSteer(t *testing.T) {
 	assertCarriesBashQuirkSteer(t, BuildTdd(sample, "beh-362"), "tdd prompt")
 }
 
+// BEH-554: when the dispatched ticket's OWN feat branch already carries un-merged
+// fix commits (a *resumed* worktree from a prior session), the host swaps in this
+// prompt. It must steer the agent to inspect the branch's existing commits before
+// planning and prefer verify-and-handoff over re-implementing a fix that may
+// already be complete — keyed on the branch's own history, not main.
+func TestBuildTddResumedBranchSteersToVerifyExistingCommits(t *testing.T) {
+	p := BuildTddResumedBranch(sample, "beh-362")
+
+	for _, want := range []string{"/tdd", "BEH-362", "feat/beh-362"} {
+		if !strings.Contains(p, want) {
+			t.Errorf("resumed-branch prompt missing %q", want)
+		}
+	}
+	// Must say the branch already carries commits for this ticket.
+	if !regexp.MustCompile(`(?i)already.{0,40}(commit|fix)`).MatchString(p) {
+		t.Error("resumed-branch prompt does not say the branch already has commits/a fix")
+	}
+	// Must steer to inspect that history (git log) before planning.
+	if !regexp.MustCompile(`(?i)git log`).MatchString(p) {
+		t.Error("resumed-branch prompt does not tell the agent to read the branch's git log")
+	}
+	// Must steer toward verify-and-handoff, away from re-implementing.
+	if !regexp.MustCompile(`(?i)(do not|don't|never).{0,40}(re-?implement|rewrite|redo)`).MatchString(p) {
+		t.Error("resumed-branch prompt does not warn against re-implementing already-done work")
+	}
+	if !regexp.MustCompile(`(?i)already (resolved|fixed|done|complete)`).MatchString(p) {
+		t.Error("resumed-branch prompt does not mention the already-fixed outcome")
+	}
+}
+
+// The resumed-branch prompt must keep every cross-cutting steer the standard tdd
+// prompt carries — off Linear, findings to the dropbox, and the bash-quirk
+// workaround — so swapping it in never silently drops a guard.
+func TestBuildTddResumedBranchKeepsStandardSteers(t *testing.T) {
+	p := BuildTddResumedBranch(sample, "beh-362")
+
+	if !regexp.MustCompile(`(?i)(do not|don't).*Linear`).MatchString(p) {
+		t.Error("resumed-branch prompt does not steer off Linear")
+	}
+	if !strings.Contains(p, "/findings/out.json") {
+		t.Error("resumed-branch prompt missing the findings dropbox path")
+	}
+	assertCarriesBashQuirkSteer(t, p, "tdd resumed-branch prompt")
+}
+
 func TestBuildTddRedirectsFindingsToDropbox(t *testing.T) {
 	p := BuildTdd(sample, "beh-362")
 

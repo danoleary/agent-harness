@@ -60,6 +60,15 @@ runnable by hand against a ticket id before the next is added:
    is heuristic (a cited symbol can be absent because the ticket asks to *create*
    it); the `/tdd` prompt separately steers the in-session agent to verify the
    premise still holds and recommend close rather than fabricate a no-op change.
+   A third, complementary advisory (`git.ResumedBranchAdvisory`, BEH-554) fires
+   when the ticket's *own* `feat/<slug>` branch already carries un-merged commits
+   referencing it — a *resumed* worktree whose prior session already landed a
+   complete fix. The merge-base with `main` is stale, so `TicketAlreadyOnMain`
+   sees nothing and `ResolvedAdvisory` stays quiet when the fix *added* code. It's
+   advisory (a resumed branch can hold *incomplete* work too), so instead of
+   skipping, the host swaps the `/tdd` prompt for `prompt.BuildTddResumedBranch`,
+   which steers the agent to inspect the branch's existing commits (`git log
+   main..HEAD`) and prefer verify-and-handoff over re-implementing.
 2. **`review BEH-NNN`** — run `/review-worktree` over the existing worktree, then
    host-side re-run the gates and, if green, push + open the PR.
 3. **`retrospective BEH-NNN`** — run `/retrospective` over the ticket's

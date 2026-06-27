@@ -45,6 +45,38 @@ func BuildTdd(t ticket.Ticket, slug string) string {
 	return strings.Join(lines, "\n")
 }
 
+// BuildTddResumedBranch builds the `-p` prompt the host swaps in for BuildTdd
+// when the dispatched ticket's OWN feature branch already carries un-merged
+// commits referencing it (ResumedBranchAdvisory fired — BEH-554). A prior session
+// resumed that worktree and likely already landed a complete fix, but the ticket
+// prose still reads un-fixed, so a naive /tdd run would re-implement work that's
+// already done. This prompt steers the agent to inspect the branch's existing
+// commits FIRST and prefer verify-and-handoff over re-implementing. Every other
+// steer (Linear off, findings to the dropbox, bash-quirk) mirrors BuildTdd.
+func BuildTddResumedBranch(t ticket.Ticket, slug string) string {
+	branch := "feat/" + slug
+	lines := []string{
+		"/tdd Work on " + t.Identifier + ". Create/enter the worktree with slug `" + slug + "` (`new-worktree.sh` resumes the existing branch).",
+		"",
+		"IMPORTANT — RESUMED WORKTREE: branch `" + branch + "` ALREADY carries commit(s) for this ticket ahead of `main` from a previous session — the fix may already be COMPLETE. Before you plan or write any code, enter the worktree and inspect that history: run `git log origin/main..HEAD` (equivalently `git log main..HEAD`) and read the diff. If the ticket's behaviour is already implemented and tested on the branch, do NOT re-implement, rewrite, or redo it — instead verify the gates pass and record \"already fixed on branch — recommend review/handoff\" in your handoff, then stop. Only finish or extend the work if the branch's fix is genuinely incomplete. The ticket prose below may describe the code as still un-fixed even though the branch already resolves it, so trust the branch's git history over the prose.",
+		"",
+		"Ticket context (already fetched for you — do not look it up):",
+		"",
+		"# " + t.Identifier + ": " + t.Title,
+		"",
+		t.Description,
+		"",
+		"---",
+		"",
+		t.Identifier + " is already claimed and moved to In Progress for you. Do NOT touch Linear — do not call any `mcp__linear-server__*` tool, do not move the ticket, do not open or comment on issues. The harness owns all Linear I/O.",
+		"",
+		"If you hit problems with the harness or environment itself (setup friction, systemic gaps, missing patterns) during your session retrospective, do NOT file Linear issues. Instead append them to `/findings/out.json` as a JSON array of `{title, body, kind, key}` objects (kind is a free-form category; key is a stable, lowercase failure-class slug like `sandbox-playwright-missing-deps` used to dedup re-runs — pick the same key any session would for this class of problem). The harness reads this file after the session and files the issues for you, skipping any whose key already has an open issue. If you have no findings, leave the file untouched.",
+		"",
+		bashQuirkSteer,
+	}
+	return strings.Join(lines, "\n")
+}
+
 // premiseCheckSteer guards against the BEH-544 footgun: a ticket can be
 // dispatched as live work after its fix already merged — sometimes under a
 // *sibling* ticket, which the host-side own-key dispatch guard can't catch. The

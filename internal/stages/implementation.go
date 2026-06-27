@@ -72,7 +72,19 @@ func Implementation(cfg config.Config, log *runlog.Logger, runID string, args Ar
 		log.Event(adv)
 	}
 
+	// Advisory + prompt swap (BEH-554): when the ticket's OWN feature branch already
+	// carries un-merged commits referencing it, a prior session resumed this
+	// worktree and likely already landed a complete fix — a footgun TicketAlreadyOnMain
+	// (work merged TO main) and ResolvedAdvisory (a sibling merge / deleted symbol)
+	// both miss, because the fix lives on the SAME branch as un-merged commits and may
+	// have ADDED code rather than deleting any. We don't skip (the branch can hold
+	// incomplete work) — instead we steer the session to verify-and-handoff over
+	// re-implementing by swapping in BuildTddResumedBranch.
 	p := prompt.BuildTdd(t, slug)
+	if adv := gitpkg.ResumedBranchAdvisory(cfg.HerdPath, slug, t.Identifier); adv != "" {
+		log.Event(adv)
+		p = prompt.BuildTddResumedBranch(t, slug)
+	}
 	findingsDir := log.FindingsDir(implementationSession)
 	if err := os.MkdirAll(findingsDir, 0o755); err != nil {
 		// Degrade a full-disk ENOSPC to a clear warning instead of an opaque hard

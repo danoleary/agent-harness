@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os/exec"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -108,5 +109,48 @@ func ResolvedAdvisory(srcRoot, identifier, description string) string {
 	return fmt.Sprintf(
 		"⚠ %s cites symbol(s) absent from source: %s — likely already resolved (possibly by a sibling ticket's merge). Verify the premise still holds before implementing; recommend close if the work has already landed.",
 		identifier, strings.Join(missing, ", "),
+	)
+}
+
+// ResumedBranchAdvisory returns a one-line warning when the ticket's OWN feature
+// branch `feat/<slug>` already carries commit(s) ahead of origin/main whose
+// subject references the ticket key — the BEH-554 signal that a *resumed*
+// worktree's branch already holds a complete, un-merged fix for this exact
+// ticket. It returns "" when the branch doesn't exist, has no commits ahead, or
+// none of those commits reference the key.
+//
+// This is the third, distinct dispatch guard, keyed on the branch's own history:
+//   - TicketAlreadyOnMain skips when the work merged TO origin/main (own key).
+//   - ResolvedAdvisory warns when cited symbols vanished from source (often a
+//     *sibling* ticket's merge).
+//   - ResumedBranchAdvisory warns when the fix lives on the SAME branch as
+//     un-merged commits — the merge-base with main is stale, so a "contained in
+//     main?" check (TicketAlreadyOnMain) sees nothing and the symbol check
+//     (ResolvedAdvisory) stays quiet because the fix *added* code rather than
+//     deleting any.
+//
+// ADVISORY, never a skip — same safety asymmetry as ResolvedAdvisory: a resumed
+// branch can legitimately hold *incomplete* work (a recovery checkpoint commit, a
+// half-finished slice), so the host only logs this and the prompt steers the
+// in-session agent to verify-and-handoff rather than re-implement. Dropping the
+// dispatch outright would risk discarding a genuinely unfinished ticket. Reads
+// origin/main as-is (no fetch): a slightly stale ref can only over-report commits
+// as "ahead", which at worst yields a verify-first nudge — never a false skip.
+func ResumedBranchAdvisory(herdPath, slug, identifier string) string {
+	out, err := exec.Command(
+		"git", "-C", herdPath, "log", "--oneline", "-"+strconv.Itoa(mainHistoryLookback), "origin/main.."+BranchName(slug),
+	).Output()
+	if err != nil {
+		// Branch absent, no upstream, or any git error → nothing to advise on. Fail
+		// quiet: an unreadable range must never imply work is already done.
+		return ""
+	}
+	if !mainHistoryReferences(string(out), identifier) {
+		return ""
+	}
+	branch := BranchName(slug)
+	return fmt.Sprintf(
+		"⚠ %s already has commit(s) on %s ahead of origin/main referencing it — a resumed worktree likely already holds a complete, un-merged fix. Before re-implementing, verify the work is done (`git log origin/main..%s` + the diff, run the gates) and prefer verify-and-handoff; recommend opening the PR / close if it's already fixed.",
+		identifier, branch, branch,
 	)
 }
