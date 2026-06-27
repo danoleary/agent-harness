@@ -22,6 +22,52 @@ import (
 // the ticket's log dir (DESIGN.md "Logging": logs/BEH-NNN/<session>-<run-id>.jsonl).
 const implementationSession = "implementation"
 
+// claimReleaser is the slice of the Linear client the implementation stage's
+// claim/release path needs. An interface keeps the PreClaimed branching (ADR-0003)
+// unit-testable without a live Linear.
+type claimReleaser interface {
+	MoveToInProgress(identifier string) error
+	ReleaseToTodo(identifier string) error
+}
+
+// eventLogger is the runlog narration surface these claim helpers write to.
+type eventLogger interface{ Event(string) }
+
+// claimForImplementation moves the ticket to In Progress for the implementation
+// stage — unless selection already claimed it (preClaimed, the `pipeline --next`
+// path), in which case re-claiming is a redundant no-op and is skipped (ADR-0003).
+// On the hand-passed path preClaimed is false and it claims exactly as before,
+// after the Docker preflight (BEH-316 ordering intact). It returns an error only
+// when an actual claim mutation fails.
+func claimForImplementation(client claimReleaser, identifier string, preClaimed bool, log eventLogger) error {
+	if preClaimed {
+		log.Event(identifier + " already claimed during selection (--next) — skipping redundant claim")
+		return nil
+	}
+	if err := client.MoveToInProgress(identifier); err != nil {
+		return err
+	}
+	log.Event(fmt.Sprintf("claimed %s → In Progress", identifier))
+	return nil
+}
+
+// releaseIfPreClaimed returns a pre-claimed ticket to Todo after a Docker-preflight
+// failure (ADR-0003): selection dequeued (claimed) a ticket the host turns out not
+// to be able to work, so release it rather than strand it In Progress with no
+// worktree. A no-op on the hand-passed path — nothing was claimed before preflight
+// there, so BEH-316's claim-after-preflight ordering is untouched. Best-effort: a
+// release error is warned, never fatal, since the preflight error stays the verdict.
+func releaseIfPreClaimed(client claimReleaser, identifier string, preClaimed bool, log eventLogger) {
+	if !preClaimed {
+		return
+	}
+	if err := client.ReleaseToTodo(identifier); err != nil {
+		log.Event("⚠ Docker preflight failed and releasing the pre-claimed ticket " + identifier + " back to Todo failed (" + err.Error() + ") — move it out of In Progress manually")
+		return
+	}
+	log.Event("↩ released pre-claimed " + identifier + " back to Todo — Docker preflight failed before any work (ADR-0003)")
+}
+
 // retryableEnvCrash reports whether a failed implementation attempt crashed
 // environmentally with nothing to salvage — no worktree was ever created — as
 // opposed to running to completion and producing no handoff commit. Only the
@@ -147,15 +193,20 @@ func Implementation(cfg config.Config, log *runlog.Logger, runID string, args Ar
 
 	// Fail fast if Docker can't run the container, so we never claim a ticket we
 	// cannot actually work (the launch failure would otherwise leave it In
-	// Progress with no worktree — BEH-316's exit-125 footgun).
+	// Progress with no worktree — BEH-316's exit-125 footgun). On the --next path
+	// the ticket was already claimed during selection (ADR-0003), so a preflight
+	// failure means we dequeued a ticket we can't work: release it back to Todo
+	// rather than strand it In Progress (a no-op on the hand-passed path).
 	if err := sandbox.Preflight(cfg.Image, filepath.Join(cfg.HerdPath, "agent-harness"), sandbox.ProbeRunner, sandbox.BuildImage, sandbox.FreeDiskBytes); err != nil {
+		releaseIfPreClaimed(client, args.Identifier, args.PreClaimed, log)
 		return Result{Err: err}
 	}
 
-	if err := client.MoveToInProgress(args.Identifier); err != nil {
+	// Claim the ticket — unless selection already did on the --next path. On the
+	// hand-passed path this runs after preflight exactly as before (BEH-316).
+	if err := claimForImplementation(client, args.Identifier, args.PreClaimed, log); err != nil {
 		return Result{Err: err}
 	}
-	log.Event(fmt.Sprintf("claimed %s → In Progress", args.Identifier))
 
 	// The tdd session runs at most twice. A terminal usage-policy refusal is a
 	// known intermittent false-positive that disproportionately strikes long

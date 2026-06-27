@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"syscall"
 	"testing"
@@ -122,7 +123,7 @@ func TestIsDiskFull(t *testing.T) {
 }
 
 func TestParseArgsValidIdentifierUppercases(t *testing.T) {
-	got, err := ParseArgs("implementation", []string{"beh-527"})
+	got, err := ParseArgs("implementation", []string{"beh-527"}, false)
 	if err != nil {
 		t.Fatalf("ParseArgs returned error: %v", err)
 	}
@@ -135,7 +136,7 @@ func TestParseArgsValidIdentifierUppercases(t *testing.T) {
 }
 
 func TestParseArgsFlags(t *testing.T) {
-	got, err := ParseArgs("review", []string{"--verbose", "BEH-1", "--dry-run"})
+	got, err := ParseArgs("review", []string{"--verbose", "BEH-1", "--dry-run"}, false)
 	if err != nil {
 		t.Fatalf("ParseArgs returned error: %v", err)
 	}
@@ -148,7 +149,7 @@ func TestParseArgsFlags(t *testing.T) {
 }
 
 func TestParseArgsRejectsMissingIdentifierWithToolNameInUsage(t *testing.T) {
-	_, err := ParseArgs("retrospective", []string{"--verbose"})
+	_, err := ParseArgs("retrospective", []string{"--verbose"}, false)
 	if err == nil {
 		t.Fatal("ParseArgs accepted argv with no ticket id, want error")
 	}
@@ -158,8 +159,67 @@ func TestParseArgsRejectsMissingIdentifierWithToolNameInUsage(t *testing.T) {
 }
 
 func TestParseArgsRejectsNonTicketToken(t *testing.T) {
-	if _, err := ParseArgs("implementation", []string{"not-a-ticket"}); err == nil {
+	if _, err := ParseArgs("implementation", []string{"not-a-ticket"}, false); err == nil {
 		t.Error("ParseArgs accepted a non-ticket token, want error")
+	}
+}
+
+// BEH-565: `pipeline --next` auto-selects a ticket, so it parses with no
+// identifier and sets Next. allowNext gates the flag to the pipeline (the three
+// standalone tools never select).
+func TestParseArgsNextFlagParsesWithoutIdentifier(t *testing.T) {
+	got, err := ParseArgs("pipeline", []string{"--next"}, true)
+	if err != nil {
+		t.Fatalf("ParseArgs returned error: %v", err)
+	}
+	if !got.Next {
+		t.Error("expected --next to set Next=true")
+	}
+	if got.Identifier != "" {
+		t.Errorf("Identifier = %q, want empty (--next supplies no id)", got.Identifier)
+	}
+}
+
+// --next composes with --dry-run (resolve + preview without claiming).
+func TestParseArgsNextWithDryRun(t *testing.T) {
+	got, err := ParseArgs("pipeline", []string{"--next", "--dry-run"}, true)
+	if err != nil {
+		t.Fatalf("ParseArgs returned error: %v", err)
+	}
+	if !got.Next || !got.DryRun {
+		t.Errorf("flags = {Next:%v DryRun:%v}, want both true", got.Next, got.DryRun)
+	}
+}
+
+// Bare `pipeline` (no id, no --next) keeps the friendly usage error — auto-select
+// must be opted into explicitly, never triggered by omission.
+func TestParseArgsBarePipelineStillErrors(t *testing.T) {
+	if _, err := ParseArgs("pipeline", []string{}, true); err == nil {
+		t.Error("bare pipeline with no ticket and no --next must error")
+	}
+}
+
+// --next together with an explicit ticket id is a conflict: name a ticket OR ask
+// for the next one, never both.
+func TestParseArgsNextWithExplicitIdentifierIsRejected(t *testing.T) {
+	_, err := ParseArgs("pipeline", []string{"--next", "BEH-1"}, true)
+	if err == nil {
+		t.Fatal("--next + an explicit ticket id must be rejected")
+	}
+	if !strings.Contains(err.Error(), "BEH-1") {
+		t.Errorf("conflict error should name the conflicting id, got %q", err.Error())
+	}
+}
+
+// --next is pipeline-only: a standalone tool (allowNext=false) must not accept it
+// — it falls through to the missing-identifier usage error rather than selecting.
+func TestParseArgsNextRejectedWhenNotAllowed(t *testing.T) {
+	got, err := ParseArgs("implementation", []string{"--next"}, false)
+	if err == nil {
+		t.Fatal("--next must be rejected for a tool that does not allow selection")
+	}
+	if got.Next {
+		t.Error("Next must stay false when --next is not allowed")
 	}
 }
 
@@ -168,7 +228,7 @@ func TestParseArgsRejectsNonTicketToken(t *testing.T) {
 // coincidentally appears in a follow-up commit) without editing the harness. It
 // parses alongside the identifier and defaults off so the guard stays armed.
 func TestParseArgsForceFlag(t *testing.T) {
-	got, err := ParseArgs("implementation", []string{"BEH-528", "--force"})
+	got, err := ParseArgs("implementation", []string{"BEH-528", "--force"}, false)
 	if err != nil {
 		t.Fatalf("ParseArgs returned error: %v", err)
 	}
@@ -219,8 +279,111 @@ func TestRetrospectiveSkipsWhenNoPipelineInputs(t *testing.T) {
 	}
 }
 
+// fakeClaimReleaser records the Linear claim/release mutations the implementation
+// stage's claim path makes, so PreClaimed branching is testable without live Linear.
+type fakeClaimReleaser struct {
+	moved    []string
+	released []string
+	moveErr  error
+	relErr   error
+}
+
+func (f *fakeClaimReleaser) MoveToInProgress(id string) error {
+	f.moved = append(f.moved, id)
+	return f.moveErr
+}
+
+func (f *fakeClaimReleaser) ReleaseToTodo(id string) error {
+	f.released = append(f.released, id)
+	return f.relErr
+}
+
+// fakeEventLog captures narration for assertions.
+type fakeEventLog struct{ events []string }
+
+func (f *fakeEventLog) Event(m string) { f.events = append(f.events, m) }
+
+func (f *fakeEventLog) saw(sub string) bool {
+	for _, e := range f.events {
+		if strings.Contains(e, sub) {
+			return true
+		}
+	}
+	return false
+}
+
+// BEH-565 / ADR-0003: on the hand-passed path (PreClaimed=false) the
+// implementation stage claims the ticket itself, exactly as before.
+func TestClaimForImplementationClaimsWhenNotPreClaimed(t *testing.T) {
+	c := &fakeClaimReleaser{}
+	log := &fakeEventLog{}
+	if err := claimForImplementation(c, "BEH-1", false, log); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if want := []string{"BEH-1"}; !reflect.DeepEqual(c.moved, want) {
+		t.Errorf("moved = %v, want %v (hand-passed path claims itself)", c.moved, want)
+	}
+}
+
+// On the --next path the ticket is already In Progress from selection, so the
+// stage must NOT issue a redundant claim.
+func TestClaimForImplementationSkipsWhenPreClaimed(t *testing.T) {
+	c := &fakeClaimReleaser{}
+	log := &fakeEventLog{}
+	if err := claimForImplementation(c, "BEH-2", true, log); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(c.moved) != 0 {
+		t.Errorf("moved = %v, want none (a pre-claimed ticket must not be re-claimed)", c.moved)
+	}
+}
+
+// A real claim failure on the hand-passed path is propagated (the stage surfaces
+// it as a hard Result.Err).
+func TestClaimForImplementationPropagatesClaimError(t *testing.T) {
+	c := &fakeClaimReleaser{moveErr: errors.New("linear down")}
+	if err := claimForImplementation(c, "BEH-3", false, &fakeEventLog{}); err == nil {
+		t.Error("expected the MoveToInProgress error to propagate")
+	}
+}
+
+// ADR-0003 release-on-preflight-failure: a pre-claimed ticket whose Docker
+// preflight fails is returned to Todo so it isn't stranded In Progress.
+func TestReleaseIfPreClaimedReleasesWhenPreClaimed(t *testing.T) {
+	c := &fakeClaimReleaser{}
+	log := &fakeEventLog{}
+	releaseIfPreClaimed(c, "BEH-4", true, log)
+	if want := []string{"BEH-4"}; !reflect.DeepEqual(c.released, want) {
+		t.Errorf("released = %v, want %v (pre-claimed + preflight fail → release)", c.released, want)
+	}
+	if !log.saw("Todo") {
+		t.Errorf("expected a release narration mentioning Todo; events = %v", log.events)
+	}
+}
+
+// On the hand-passed path nothing was claimed before preflight, so there is
+// nothing to release — the BEH-316 ordering stays untouched.
+func TestReleaseIfPreClaimedNoOpWhenNotPreClaimed(t *testing.T) {
+	c := &fakeClaimReleaser{}
+	releaseIfPreClaimed(c, "BEH-5", false, &fakeEventLog{})
+	if len(c.released) != 0 {
+		t.Errorf("released = %v, want none (hand-passed path never claimed before preflight)", c.released)
+	}
+}
+
+// A release failure is best-effort: it warns but never panics or escalates (the
+// preflight error stays the stage's verdict).
+func TestReleaseIfPreClaimedWarnsOnReleaseError(t *testing.T) {
+	c := &fakeClaimReleaser{relErr: errors.New("linear down")}
+	log := &fakeEventLog{}
+	releaseIfPreClaimed(c, "BEH-6", true, log)
+	if !log.saw("manually") {
+		t.Errorf("expected a warning to move the ticket out of In Progress manually; events = %v", log.events)
+	}
+}
+
 func TestParseArgsForceDefaultsOff(t *testing.T) {
-	got, err := ParseArgs("implementation", []string{"BEH-528"})
+	got, err := ParseArgs("implementation", []string{"BEH-528"}, false)
 	if err != nil {
 		t.Fatalf("ParseArgs returned error: %v", err)
 	}

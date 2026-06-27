@@ -16,7 +16,7 @@ import (
 )
 
 func main() {
-	args, err := stages.ParseArgs("implementation", os.Args[1:])
+	args, err := stages.ParseArgs("implementation", os.Args[1:], false)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		os.Exit(1)

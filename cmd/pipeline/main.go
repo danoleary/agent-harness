@@ -1,8 +1,13 @@
 // Command pipeline runs the single-ticket chain — implementation → review →
-// retrospective — over one hand-passed ticket, then exits. It is the layer
-// between the three standalone tools and the (future) autonomous loop: it adds no
-// ticket selection, stop control, or circuit breaker, only the in-order
-// orchestration with the failure/skip semantics in DESIGN.md "The pipeline".
+// retrospective — over one ticket, then exits. It is the layer between the three
+// standalone tools and the (future) autonomous loop: it adds no stop control or
+// circuit breaker, only the in-order orchestration with the failure/skip semantics
+// in DESIGN.md "The pipeline".
+//
+// The ticket is either hand-passed (`pipeline BEH-NNN`) or auto-selected
+// (`pipeline --next`, DESIGN.md "Single-shot auto-select"): --next resolves the
+// top-of-queue eligible ticket and claims it during selection (ADR-0003), threading
+// PreClaimed into the implementation stage so the hand-passed path stays untouched.
 //
 // In-process, not subprocesses: it calls the same internal/stages bodies the
 // cmd/<tool> wrappers do, sharing one config load and one runlog, so it gets real
@@ -13,23 +18,55 @@ package main
 import (
 	"fmt"
 	"os"
+	"time"
 
 	gitpkg "github.com/beherd/agent-harness/internal/git"
+	"github.com/beherd/agent-harness/internal/linear"
 	"github.com/beherd/agent-harness/internal/pipeline"
 	"github.com/beherd/agent-harness/internal/stages"
 )
 
+// consoleNarrator narrates the --next selection step before a ticket-keyed runlog
+// exists (selection runs first and may resolve no ticket). It matches the runlog's
+// concise timestamped console format (DESIGN.md "Logging").
+type consoleNarrator struct{}
+
+func (consoleNarrator) Event(message string) {
+	fmt.Printf("%s  %s\n", time.Now().UTC().Format(time.RFC3339), message)
+}
+
 func main() {
-	args, err := stages.ParseArgs("pipeline", os.Args[1:])
+	args, err := stages.ParseArgs("pipeline", os.Args[1:], true)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		os.Exit(1)
 	}
 
-	// --dry-run is pipeline-level: print the plan and exit without claiming the
-	// ticket, launching a container, or touching Linear (DESIGN.md). It needs only
-	// config, not a runlog — nothing is logged because nothing runs.
-	if args.DryRun {
+	// --next auto-selects (and, unless --dry-run, claims) the ticket, then falls
+	// through to the normal pipeline over it. Selection needs config + a Linear
+	// client up front, and narrates to the console because the ticket-keyed runlog
+	// can't exist until a ticket is chosen (an empty queue chooses none).
+	if args.Next {
+		cfg, err := stages.LoadConfig()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "%v\n", err)
+			os.Exit(1)
+		}
+		client := linear.NewClient(linear.NewTransport(cfg.LinearAPIKey))
+		sel := pipeline.ResolveNext(client, args.DryRun, consoleNarrator{})
+		if !sel.Proceed {
+			// Dry-run resolved a real ticket: print its plan before exiting.
+			if args.DryRun && sel.Identifier != "" {
+				fmt.Print(pipeline.Plan(cfg, sel.Identifier))
+			}
+			os.Exit(sel.ExitCode)
+		}
+		args.Identifier = sel.Identifier
+		args.PreClaimed = sel.PreClaimed
+	} else if args.DryRun {
+		// Hand-passed --dry-run is pipeline-level: print the plan and exit without
+		// claiming the ticket, launching a container, or touching Linear (DESIGN.md).
+		// It needs only config, not a runlog — nothing is logged because nothing runs.
 		cfg, err := stages.LoadConfig()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "%v\n", err)
@@ -46,8 +83,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Bind each stage to the shared cfg/log/runID/args (--verbose forwards through
-	// args). The pipeline decides ordering; the stages do the work.
+	// Bind each stage to the shared cfg/log/runID/args (--verbose and PreClaimed
+	// forward through args). The pipeline decides ordering; the stages do the work.
 	code := pipeline.Run(pipeline.Deps{
 		FetchMain:      func() error { return gitpkg.FetchMain(cfg.HerdPath) },
 		Implementation: func() stages.Result { return stages.Implementation(cfg, log, runID, args) },

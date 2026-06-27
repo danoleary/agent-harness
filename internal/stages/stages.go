@@ -55,18 +55,32 @@ func hasUpstreamTranscripts(logDir string) bool {
 // Args is the parsed CLI surface shared by all three tools and the pipeline:
 // a ticket identifier plus the universal flags. Force overrides the
 // already-merged-on-main dispatch guard (BEH-528) and is only consulted by the
-// implementation stage.
+// implementation stage. Next and PreClaimed serve `pipeline --next` (BEH-565):
+// Next requests auto-selection (no identifier on the command line), and PreClaimed
+// records that selection already claimed the ticket so the implementation stage
+// skips its own claim and releases on a preflight failure (ADR-0003).
 type Args struct {
 	Identifier string
 	DryRun     bool
 	Verbose    bool
 	Force      bool
+	// Next requests `pipeline --next` auto-select: resolve the top-of-queue
+	// eligible ticket instead of taking an explicit identifier. Pipeline-only.
+	Next bool
+	// PreClaimed is set when the ticket was already claimed (Todo → In Progress)
+	// during selection, so the implementation stage skips MoveToInProgress and
+	// releases the claim on a Docker-preflight failure (ADR-0003). False on the
+	// hand-passed path, leaving the BEH-316 claim-after-preflight ordering intact.
+	PreClaimed bool
 }
 
 // ParseArgs parses argv (excluding the program name) into Args. tool names the
 // caller for the usage error only — the flag/identifier grammar is identical for
 // every tool, which is why it lives here rather than being copied per cmd.
-func ParseArgs(tool string, argv []string) (Args, error) {
+// allowNext gates the pipeline-only `--next` auto-select flag: the three
+// standalone tools pass false (they never select a ticket), so for them `--next`
+// is an unknown token that falls through to the missing-identifier usage error.
+func ParseArgs(tool string, argv []string, allowNext bool) (Args, error) {
 	var a Args
 	for _, arg := range argv {
 		switch {
@@ -76,12 +90,26 @@ func ParseArgs(tool string, argv []string) (Args, error) {
 			a.Verbose = true
 		case arg == "--force":
 			a.Force = true
+		case arg == "--next" && allowNext:
+			a.Next = true
 		case !strings.HasPrefix(arg, "-") && a.Identifier == "":
 			a.Identifier = strings.ToUpper(arg)
 		}
 	}
+	// --next auto-selects, so it carries no identifier — and pairing it with an
+	// explicit one is a conflict (name a ticket OR ask for the next, never both).
+	if a.Next {
+		if a.Identifier != "" {
+			return a, fmt.Errorf("%s: --next selects the next ticket — do not also pass an explicit ticket id (%q)", tool, a.Identifier)
+		}
+		return a, nil
+	}
 	if !ticketRE.MatchString(a.Identifier) {
-		return a, fmt.Errorf("usage: %s <TICKET-ID> [--dry-run] [--verbose] [--force]  (got: %q)", tool, a.Identifier)
+		usage := fmt.Sprintf("usage: %s <TICKET-ID> [--dry-run] [--verbose] [--force]", tool)
+		if allowNext {
+			usage = fmt.Sprintf("usage: %s (<TICKET-ID> | --next) [--dry-run] [--verbose] [--force]", tool)
+		}
+		return a, fmt.Errorf("%s  (got: %q)", usage, a.Identifier)
 	}
 	return a, nil
 }
