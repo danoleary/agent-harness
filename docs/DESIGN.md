@@ -37,7 +37,7 @@ silently skipped (the agent ended with a summary and never wrote `out.json`), so
 Making retrospective its own agent with a single job — and making an absent
 `out.json` a hard failure (see ground truth below) — closes that gap.
 
-The eventual destination is an autonomous loop over the `agent-ready` queue (see
+The eventual destination is an autonomous loop over the `ready-for-agent` queue (see
 **The loop**), but the three tools are independently runnable by hand first.
 
 ## Build order
@@ -392,7 +392,7 @@ A ticket is eligible iff **all** hold:
 
 - workflow state is **Todo** (the team's Todo-type state),
 - **unassigned** (never steal human-claimed work),
-- carries the **`agent-ready`** label (the human-in-the-loop blast-radius gate —
+- carries the **`ready-for-agent`** label (the human-in-the-loop blast-radius gate —
   a person decides *what* runs unattended; the harness decides *how*),
 - **not blocked**: no still-open issue has a `blocks` relation pointing at it, and
   it has no `Blocked` label.
@@ -485,7 +485,7 @@ original design — the sandboxed agent now holds **only the Claude credential**
 even a fully compromised `--dangerously-skip-permissions` session cannot push to a
 remote, open a PR, or touch Linear; the worst it can do is mutate the local
 checkout, which the harness's independent gate re-run catches before anything
-ships. The `agent-ready` label remains the human gate on *what* runs unattended.
+ships. The `ready-for-agent` label remains the human gate on *what* runs unattended.
 
 ## Sandbox image
 
@@ -569,7 +569,7 @@ ships. The `agent-ready` label remains the human gate on *what* runs unattended.
 
 - **Circuit breaker:** 3 consecutive ticket failures → stop and report (assume
   something environmental broke, e.g. expired auth or a broken base build —
-  rather than burn the whole `agent-ready` queue failing identically).
+  rather than burn the whole `ready-for-agent` queue failing identically).
 
 ## Logging
 

@@ -15,17 +15,17 @@ const harnessTeamKey = "BEH"
 // agentReadyLabel is the human-in-the-loop blast-radius gate: a person decides
 // WHAT runs unattended by applying it; the harness decides HOW. Only labelled
 // tickets are eligible for auto-selection (DESIGN.md "Ticket selection").
-const agentReadyLabel = "agent-ready"
+const agentReadyLabel = "ready-for-agent"
 
 // blockedLabel marks a ticket a human has flagged as blocked; it is never
 // auto-selected even if nothing else blocks it.
 const blockedLabel = "Blocked"
 
-// selectNextQuery lists the team's unassigned, Todo-type (unstarted), agent-ready
+// selectNextQuery lists the team's unassigned, Todo-type (unstarted), ready-for-agent
 // issues with the fields the eligibility predicate + ordering need: labels (to
-// re-check agent-ready and screen the Blocked label) and the inverse "blocks"
+// re-check ready-for-agent and screen the Blocked label) and the inverse "blocks"
 // relations (who blocks this issue, and whether that blocker is still open). The
-// cheap, clean filter fields — team/type/assignee/agent-ready — scope the fetch so
+// cheap, clean filter fields — team/type/assignee/ready-for-agent — scope the fetch so
 // the first:250 page is the small human-gated working set; the Blocked label and
 // the blocking-relation traversal are applied in Go (eligible) so one fixture still
 // exercises the whole predicate.
@@ -96,15 +96,15 @@ type selectedIssue struct {
 }
 
 // SelectNextTicket resolves the top-of-queue eligible ticket from the BeHerd
-// backlog (DESIGN.md "Ticket selection"): Todo + unassigned + agent-ready +
+// backlog (DESIGN.md "Ticket selection"): Todo + unassigned + ready-for-agent +
 // not-blocked, ordered by priority then board sort order then createdAt. It is a
 // PURE READ — claim-on-select (ADR-0003) is the caller composing it with
 // MoveToInProgress, so dry-run can resolve a ticket without mutating Linear.
 // ok=false means the queue is empty.
 func (c *Client) SelectNextTicket() (ticket.Ticket, bool, error) {
-	// agent-ready is filtered in GraphQL (not only in eligible) so the first:250
+	// ready-for-agent is filtered in GraphQL (not only in eligible) so the first:250
 	// page is the small human-gated working set, never the whole unassigned-Todo
-	// backlog — otherwise a higher-priority agent-ready ticket beyond the 250th
+	// backlog — otherwise a higher-priority ready-for-agent ticket beyond the 250th
 	// node would be silently skipped, since ordering is applied client-side over
 	// the fetched page. eligible() still re-checks the label as defensive depth.
 	filter := map[string]any{
@@ -169,7 +169,7 @@ func topEligible(issues []selectedIssue) (selectedIssue, bool) {
 	return best, found
 }
 
-// eligible reports whether an issue may be auto-worked: it carries agent-ready, is
+// eligible reports whether an issue may be auto-worked: it carries ready-for-agent, is
 // not labelled Blocked, and has no still-OPEN issue blocking it (DESIGN.md "Ticket
 // selection"). Linear models "A blocks B" as an IssueRelation with type "blocks",
 // issue=A (the blocker), relatedIssue=B; from B that relation appears in

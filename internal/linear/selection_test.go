@@ -7,7 +7,7 @@ import (
 )
 
 // issueNode builds one issue node for the SelectNextTicket fake response. labels
-// and blockers default to the eligible shape (carries agent-ready, nothing
+// and blockers default to the eligible shape (carries ready-for-agent, nothing
 // blocking) unless overridden via the option funcs.
 type issueNode struct {
 	identifier string
@@ -67,10 +67,10 @@ func selectTransport(t *testing.T, nodes ...issueNode) (Transport, *[]call) {
 	return tr, &calls
 }
 
-// eligibleNode is the canonical agent-workable node: carries agent-ready, no
+// eligibleNode is the canonical agent-workable node: carries ready-for-agent, no
 // Blocked label, no open blocker.
 func eligibleNode(id string, priority int) issueNode {
-	return issueNode{identifier: id, priority: priority, labels: []string{"agent-ready"}}
+	return issueNode{identifier: id, priority: priority, labels: []string{"ready-for-agent"}}
 }
 
 func TestSelectNextTicketReturnsEligibleTicketWithoutClaiming(t *testing.T) {
@@ -113,7 +113,7 @@ func TestSelectNextTicketEmptyQueueReturnsNotOK(t *testing.T) {
 }
 
 // The query must scope the fetch to the BeHerd backlog's auto-workable candidate
-// set: team key BEH, Todo-type (unstarted) state, unassigned, and agent-ready —
+// set: team key BEH, Todo-type (unstarted) state, unassigned, and ready-for-agent —
 // the last filtered in GraphQL (not only in eligible) so the first:250 page is the
 // small human-gated set and ordering can't miss a higher-priority ticket beyond it.
 func TestSelectNextTicketQueryScopesTeamStateAssignee(t *testing.T) {
@@ -129,15 +129,15 @@ func TestSelectNextTicketQueryScopesTeamStateAssignee(t *testing.T) {
 		t.Fatalf("marshal variables: %v", err)
 	}
 	vars := string(raw)
-	for _, want := range []string{"BEH", "unstarted", "assignee", "null", "agent-ready"} {
+	for _, want := range []string{"BEH", "unstarted", "assignee", "null", "ready-for-agent"} {
 		if !strings.Contains(vars, want) {
 			t.Errorf("query filter missing %q: %s", want, vars)
 		}
 	}
 }
 
-// agent-ready is the human gate: a Todo, unassigned ticket WITHOUT it is never
-// auto-selected. Here the only labelled ticket lacks agent-ready, so the queue is
+// ready-for-agent is the human gate: a Todo, unassigned ticket WITHOUT it is never
+// auto-selected. Here the only labelled ticket lacks ready-for-agent, so the queue is
 // effectively empty.
 func TestSelectNextTicketSkipsTicketsWithoutAgentReady(t *testing.T) {
 	noLabel := issueNode{identifier: "BEH-2", priority: 1, labels: []string{"bug"}}
@@ -147,14 +147,14 @@ func TestSelectNextTicketSkipsTicketsWithoutAgentReady(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if ok {
-		t.Error("a ticket without the agent-ready label must not be selected")
+		t.Error("a ticket without the ready-for-agent label must not be selected")
 	}
 }
 
-// A ticket a human flagged Blocked is skipped even if it carries agent-ready and
+// A ticket a human flagged Blocked is skipped even if it carries ready-for-agent and
 // nothing else blocks it.
 func TestSelectNextTicketSkipsBlockedLabel(t *testing.T) {
-	blocked := issueNode{identifier: "BEH-3", priority: 1, labels: []string{"agent-ready", "Blocked"}}
+	blocked := issueNode{identifier: "BEH-3", priority: 1, labels: []string{"ready-for-agent", "Blocked"}}
 	ready := eligibleNode("BEH-4", 2)
 	tr, _ := selectTransport(t, blocked, ready)
 	got, ok, err := NewClient(tr).SelectNextTicket()
@@ -169,7 +169,7 @@ func TestSelectNextTicketSkipsBlockedLabel(t *testing.T) {
 // A ticket blocked by a still-OPEN issue (a "blocks" inverse relation whose source
 // is started) is skipped; the lower-priority unblocked ticket is taken instead.
 func TestSelectNextTicketSkipsTicketBlockedByOpenIssue(t *testing.T) {
-	blocked := issueNode{identifier: "BEH-5", priority: 1, labels: []string{"agent-ready"}, blockers: []string{"started"}}
+	blocked := issueNode{identifier: "BEH-5", priority: 1, labels: []string{"ready-for-agent"}, blockers: []string{"started"}}
 	ready := eligibleNode("BEH-6", 3)
 	tr, _ := selectTransport(t, blocked, ready)
 	got, ok, err := NewClient(tr).SelectNextTicket()
@@ -184,7 +184,7 @@ func TestSelectNextTicketSkipsTicketBlockedByOpenIssue(t *testing.T) {
 // A blocker that is already completed/canceled no longer blocks: a ticket whose
 // only "blocks" relation points at a closed issue is eligible.
 func TestSelectNextTicketIgnoresClosedBlockers(t *testing.T) {
-	wasBlocked := issueNode{identifier: "BEH-7", priority: 1, labels: []string{"agent-ready"}, blockers: []string{"completed"}}
+	wasBlocked := issueNode{identifier: "BEH-7", priority: 1, labels: []string{"ready-for-agent"}, blockers: []string{"completed"}}
 	tr, _ := selectTransport(t, wasBlocked)
 	got, ok, err := NewClient(tr).SelectNextTicket()
 	if err != nil {
@@ -229,8 +229,8 @@ func TestSelectNextTicketNoPrioritySortsLast(t *testing.T) {
 // Within the same priority, ties break by board sort order ascending, then
 // createdAt ascending.
 func TestSelectNextTicketTieBreaksBySortOrderThenCreatedAt(t *testing.T) {
-	first := issueNode{identifier: "BEH-A", priority: 2, sortOrder: 1.0, createdAt: "2026-01-01T00:00:00Z", labels: []string{"agent-ready"}}
-	lowerSort := issueNode{identifier: "BEH-B", priority: 2, sortOrder: 0.5, createdAt: "2026-02-01T00:00:00Z", labels: []string{"agent-ready"}}
+	first := issueNode{identifier: "BEH-A", priority: 2, sortOrder: 1.0, createdAt: "2026-01-01T00:00:00Z", labels: []string{"ready-for-agent"}}
+	lowerSort := issueNode{identifier: "BEH-B", priority: 2, sortOrder: 0.5, createdAt: "2026-02-01T00:00:00Z", labels: []string{"ready-for-agent"}}
 	tr, _ := selectTransport(t, first, lowerSort)
 	got, _, err := NewClient(tr).SelectNextTicket()
 	if err != nil {
@@ -241,8 +241,8 @@ func TestSelectNextTicketTieBreaksBySortOrderThenCreatedAt(t *testing.T) {
 	}
 
 	// Same sortOrder → older createdAt wins.
-	older := issueNode{identifier: "BEH-OLD", priority: 2, sortOrder: 1.0, createdAt: "2026-01-01T00:00:00Z", labels: []string{"agent-ready"}}
-	newer := issueNode{identifier: "BEH-NEW", priority: 2, sortOrder: 1.0, createdAt: "2026-03-01T00:00:00Z", labels: []string{"agent-ready"}}
+	older := issueNode{identifier: "BEH-OLD", priority: 2, sortOrder: 1.0, createdAt: "2026-01-01T00:00:00Z", labels: []string{"ready-for-agent"}}
+	newer := issueNode{identifier: "BEH-NEW", priority: 2, sortOrder: 1.0, createdAt: "2026-03-01T00:00:00Z", labels: []string{"ready-for-agent"}}
 	tr2, _ := selectTransport(t, newer, older)
 	got2, _, err := NewClient(tr2).SelectNextTicket()
 	if err != nil {
