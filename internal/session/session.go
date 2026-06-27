@@ -69,9 +69,11 @@ type Outcome struct {
 	// refusal result event. The diff survives on disk (ADR-0002 real-path mount),
 	// so the caller can retry the session rather than discard the run.
 	UsagePolicyRefusal bool
-	// SpendingCapAbort is true iff the stream carried the terminal spending-cap
-	// abort result event (BEH-494) — the session was killed by a billing/usage cap
-	// before doing any work. A distinct retry-after-reset class, not a real failure.
+	// SpendingCapAbort is true iff the stream carried a spending-cap abort (BEH-494):
+	// the terminal is_error cap result, or the `model:"<synthetic>"` "Spending cap
+	// reached" turn the API can ship at session start (BEH-568). Either way the
+	// session was killed by a billing/usage cap before doing any work — a distinct
+	// retry-after-reset class, not a real failure.
 	SpendingCapAbort bool
 	// ReviewVerdictEmitted is true iff the stream carried the /review-worktree
 	// verdict — the "## Review:" report header (BEH-525). The caller uses it to tell

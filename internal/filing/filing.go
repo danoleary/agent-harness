@@ -43,6 +43,35 @@ func ClearDropbox(findingsDir string) error {
 	return nil
 }
 
+// ClearEmptyDropbox removes the dropbox iff it is present and cleanly parses to
+// zero findings — the skill's default `[]` (BEH-568). It exists for the
+// spending-cap-abort path: the retrospective writes out.json as `[]` up front
+// (BEH-536's incremental write), so a session capped mid-run leaves that default
+// `[]`. Left in place it reads as "ran, found nothing" (DropboxExists → true),
+// masking the abort and suppressing the retry-after-reset. Removing only the
+// empty default restores the "absent file = never ran" contract while preserving
+// any real findings a session managed to write before the cap fired. A
+// malformed or non-empty dropbox is left untouched (returns false); an absent
+// dropbox is a no-op. Returns whether it removed the file.
+func ClearEmptyDropbox(findingsDir string) (bool, error) {
+	path := filepath.Join(findingsDir, dropboxFile)
+	text, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	parsed := findings.Parse(string(text))
+	if parsed.Error != "" || len(parsed.Findings) > 0 {
+		return false, nil
+	}
+	if err := os.Remove(path); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 // DropboxExists reports whether a session wrote its findings dropbox
 // (`out.json`) in findingsDir. It is the retrospective tool's ground truth: an
 // absent file means the retrospective step never ran (DESIGN.md). It owns the

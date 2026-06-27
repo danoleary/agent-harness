@@ -303,6 +303,58 @@ func TestClearDropboxIsNoOpWhenAbsent(t *testing.T) {
 	}
 }
 
+// ClearEmptyDropbox removes a present-but-empty default `[]` dropbox so the
+// "absent file = never ran" contract holds after a spending-cap abort: the
+// retrospective skill writes out.json as `[]` up front (BEH-536's incremental
+// write), so a session capped mid-run leaves that default `[]`, which would
+// otherwise read as "ran, found nothing" and suppress the retry (BEH-568).
+func TestClearEmptyDropboxRemovesDefaultEmptyArray(t *testing.T) {
+	dir := t.TempDir()
+	writeDropbox(t, dir, `[]`)
+
+	removed, err := ClearEmptyDropbox(dir)
+	if err != nil {
+		t.Fatalf("ClearEmptyDropbox: %v", err)
+	}
+	if !removed {
+		t.Error("expected removed = true for a default [] dropbox")
+	}
+	if DropboxExists(dir) {
+		t.Error("expected dropbox removed so DropboxExists is false (never-ran contract)")
+	}
+}
+
+// A spending-cap abort may strike after the session wrote real findings
+// incrementally — those must survive so the harness still files them. Only the
+// empty default is cleared.
+func TestClearEmptyDropboxPreservesRealFindings(t *testing.T) {
+	dir := t.TempDir()
+	writeDropbox(t, dir, `[{"title":"real friction","body":"detail"}]`)
+
+	removed, err := ClearEmptyDropbox(dir)
+	if err != nil {
+		t.Fatalf("ClearEmptyDropbox: %v", err)
+	}
+	if removed {
+		t.Error("expected removed = false when the dropbox carries real findings")
+	}
+	if !DropboxExists(dir) {
+		t.Error("expected the dropbox with real findings to be kept")
+	}
+}
+
+// Clearing an empty dropbox in a dir that has none is a no-op (an abort that
+// never started never wrote one).
+func TestClearEmptyDropboxIsNoOpWhenAbsent(t *testing.T) {
+	removed, err := ClearEmptyDropbox(t.TempDir())
+	if err != nil {
+		t.Errorf("ClearEmptyDropbox on empty dir = %v, want nil", err)
+	}
+	if removed {
+		t.Error("expected removed = false when there is no dropbox")
+	}
+}
+
 // DropboxExists is the retrospective tool's ground truth: it reports whether the
 // session wrote out.json at all. It owns the dropbox filename so the truth check
 // and the filer can never disagree on which file is the dropbox.

@@ -16,6 +16,9 @@ type event struct {
 	Result     string   `json:"result"`
 	DurationMS *float64 `json:"duration_ms"`
 	Message    struct {
+		// Model is the model that produced the turn. A spending-cap abort ships a
+		// "<synthetic>" turn the API injects rather than a real model response.
+		Model   string `json:"model"`
 		Content []struct {
 			Type string `json:"type"`
 			Name string `json:"name"`
@@ -50,19 +53,38 @@ func IsUsagePolicyRefusal(line string) bool {
 // the trailing reset time (which varies) doesn't have to be exact.
 const spendingCapAbortMarker = "Spending cap reached"
 
-// IsSpendingCapAbort reports whether a stream-json line is the terminal
-// spending-cap abort *result* event (BEH-494): an `is_error` result whose
-// `result` text is the billing/usage-cap message. The session is killed before
-// doing any real work, so — like a usage-policy refusal — the harness treats it
-// as a distinct, retry-after-reset class rather than the generic "never ran"
-// failure. Only the terminal result event counts; a malformed line is never a
+// syntheticModel is the model id the API stamps on a turn it injected itself
+// rather than a real model response. A spending-cap abort ships its
+// "Spending cap reached" notice as a `model:"<synthetic>"` assistant turn.
+const syntheticModel = "<synthetic>"
+
+// IsSpendingCapAbort reports whether a stream-json line is a terminal
+// spending-cap abort (BEH-494) — either the `is_error` result whose `result`
+// text is the billing/usage-cap message, OR the `model:"<synthetic>"` assistant
+// turn carrying that message (BEH-568). The cap can strike at session start and
+// ship only the synthetic turn, before any terminal result event, so keying off
+// the result alone risks mislabelling it "never ran"; recognising both shapes
+// makes the retry-after-reset classification robust. The session is killed before
+// doing any real work, so — like a usage-policy refusal — the harness treats it as
+// a distinct, retry-after-reset class. The synthetic gate keeps a real assistant
+// turn that merely quotes the cap text from counting; a malformed line is never a
 // cap abort (it just returns false).
 func IsSpendingCapAbort(line string) bool {
 	var e event
 	if err := json.Unmarshal([]byte(line), &e); err != nil {
 		return false
 	}
-	return e.Type == "result" && e.IsError && strings.Contains(e.Result, spendingCapAbortMarker)
+	if e.Type == "result" && e.IsError && strings.Contains(e.Result, spendingCapAbortMarker) {
+		return true
+	}
+	if e.Type == "assistant" && e.Message.Model == syntheticModel {
+		for _, block := range e.Message.Content {
+			if block.Type == "text" && strings.Contains(block.Text, spendingCapAbortMarker) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // reviewVerdictMarker is the stable lead of the /review-worktree report (step 5 of

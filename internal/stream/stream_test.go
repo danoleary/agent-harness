@@ -153,6 +153,40 @@ func TestIsSpendingCapAbortRejectsNonCaps(t *testing.T) {
 	}
 }
 
+// A spending-cap abort that strikes at session start can ship ONLY the synthetic
+// assistant turn — `model:"<synthetic>"` carrying "Spending cap reached" — and not
+// the terminal is_error result the result-based detector keys off (BEH-568). The
+// detector must recognise that shape too, so classification doesn't depend on the
+// result event always being present.
+func TestIsSpendingCapAbortDetectsTheSyntheticAssistantTurn(t *testing.T) {
+	line := mustJSON(t, map[string]any{
+		"type": "assistant",
+		"message": map[string]any{
+			"model":   "<synthetic>",
+			"content": []any{map[string]any{"type": "text", "text": "Spending cap reached resets 7:30am"}},
+		},
+	})
+	if !IsSpendingCapAbort(line) {
+		t.Error("expected the synthetic spending-cap assistant turn to be detected")
+	}
+}
+
+// The synthetic gate matters: a real assistant turn that merely quotes "Spending
+// cap reached" (e.g. an agent discussing this very ticket) is not a cap abort. Only
+// the `model:"<synthetic>"` turn is.
+func TestIsSpendingCapAbortIgnoresNonSyntheticCapText(t *testing.T) {
+	line := mustJSON(t, map[string]any{
+		"type": "assistant",
+		"message": map[string]any{
+			"model":   "claude-opus-4-8",
+			"content": []any{map[string]any{"type": "text", "text": "The finding says 'Spending cap reached' is the marker."}},
+		},
+	})
+	if IsSpendingCapAbort(line) {
+		t.Error("a real assistant turn quoting the cap text must not be a cap abort")
+	}
+}
+
 // The review verdict (BEH-525): the /review-worktree session emits its seven-lens
 // report as an assistant text block led by the "## Review:" header. The harness
 // keys off that header to tell whether the qualitative review actually ran — so a

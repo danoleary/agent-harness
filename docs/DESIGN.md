@@ -291,6 +291,15 @@ loop:
   agent's say-so); *retrospective* = `/findings/out.json` exists on disk (an empty
   `[]` is a valid "ran, found nothing"; an *absent* file means the step never ran
   and is a failure). The agent's own "I'm done" is logged but never authoritative.
+  One external hazard would otherwise break this contract ([BEH-568](https://linear.app/beherd/issue/BEH-568)):
+  an **Anthropic API spending-cap abort** — distinct from the harness's own per-session
+  caps — can strike *mid-session*, after the skill wrote its up-front default `[]`
+  (the BEH-536 incremental write), leaving an empty dropbox that reads as the success
+  "ran, found nothing" and masks the abort. So when a spending-cap abort is detected
+  (the `is_error` cap result **or** the `model:"<synthetic>"` "Spending cap reached"
+  turn — keying off both, not the exit code alone), the harness drops that empty default
+  so the *absent* = never-ran signal holds and the run routes to ↻ retry-after-reset;
+  any real findings written before the cap fired are preserved and still filed.
 - **A usage-policy refusal is retryable, not fatal ([BEH-389](https://linear.app/beherd/issue/BEH-389)).**
   Claude Code's "unable to respond … violate our Usage Policy" refusal is a known
   intermittent false-positive on long agentic sessions; it returns a terminal

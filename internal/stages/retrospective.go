@@ -149,6 +149,20 @@ func Retrospective(cfg config.Config, log *runlog.Logger, runID string, args Arg
 		"session exited (code %d) — transcript at logs/%s/%s", outcome.ExitCode, args.Identifier, transcriptFile,
 	))
 
+	// A spending-cap abort can fire after the skill wrote its up-front default `[]`
+	// (BEH-536's incremental write), leaving an empty dropbox that the ground-truth
+	// check below would read as "ran, found nothing" — masking the abort and
+	// suppressing the retry-after-reset. Drop that empty default so the "absent file
+	// = never ran" contract holds and the abort routes to ↻ retry; any real findings
+	// written before the cap fired are preserved and still filed (BEH-568).
+	if outcome.SpendingCapAbort {
+		if removed, err := filing.ClearEmptyDropbox(findingsDir); err != nil {
+			log.Event("retrospective ⚠ could not clear empty dropbox after spending-cap abort: " + err.Error())
+		} else if removed {
+			log.Event("retrospective — cleared the default empty dropbox left by the spending-cap abort (preserving the 'never ran' contract)")
+		}
+	}
+
 	// Ground truth, never self-report: the retrospective ran iff it wrote the
 	// findings dropbox. An empty `[]` is still present → success; an absent file
 	// means the step never ran (DESIGN.md "Success is ground-truth"). Two
