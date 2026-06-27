@@ -189,10 +189,12 @@ Design decisions, and why:
   would run, is honest and useful. One log line marks it: `dry-run — selected BEH-NNN
   (not claiming)`.
 - **Empty queue exits 0.** No eligible ticket is a normal steady state, not a failure;
-  `--next` logs `no eligible ticket — queue empty` and exits 0. This matches what the
-  loop already does (`if no ticket -> exit cleanly`), so the loop wraps `--next`
-  without remapping exit codes. The distinct log line carries the "nothing to do"
-  signal for any future cron without overloading the process exit code.
+  `--next` (the *single-shot* tool) logs `no eligible ticket — queue empty` and exits 0.
+  The long-running **loop** treats the same empty-queue condition differently — it
+  *idles and re-polls* rather than exiting (§The loop) — because a daemon's job is to
+  wait for the next ready ticket, not to end. Both read "no ticket" from the same
+  side-effect-free `selectNextTicket()`; only the reaction differs (exit vs idle). The
+  distinct log line carries the "nothing to do" signal either way.
 
 ## The loop
 
@@ -204,7 +206,10 @@ startup:
 loop:
   if stop requested (Ctrl-C or STOP file)   -> exit cleanly
   ticket = selectNextTicket()               // Linear GraphQL, harness-owned
-  if no ticket                              -> exit cleanly ("queue empty")
+  if no ticket:                             // daemon: empty queue is IDLE, not done
+    log "queue empty — idle, will re-poll"
+    sleep pollInterval in short ticks, checking stop each tick  // responsive stop while idle
+    continue                                // re-poll; a newly ready-for-agent ticket is picked up
 
   Linear: move ticket -> In Progress         // harness owns ALL Linear I/O
 
@@ -268,9 +273,22 @@ loop:
 
   if review OK -> git worktree remove <worktree-path>   // branch pushed + PR captures everything
 
+  // SPENDING-CAP ABORT is a control-flow signal, NOT a ticket failure (see invariant below).
+  // If ANY stage ended in an external Anthropic spending-cap abort:
+  if any stage SpendingCapAbort:
+    release ticket -> Todo            // no progress was made; don't strand it In Progress
+    do NOT touch the breaker counter  // not the diff's fault; breaker stays blind to it by design
+    long backoff sleep (interruptible by STOP, same as idle; default ~30–60 min)
+    continue                          // auto-resume: re-poll after the cap window resets
+
   fetch + fast-forward origin/main
-  reset/advance consecutive-failure counter
-  if 3 consecutive ticket failures -> stop + report (circuit breaker)
+  // breaker signal = "did this ticket reach a PUSHED PR?", NOT the pipeline exit code
+  if ticket reached a pushed PR -> reset consecutive-failure counter to 0
+  else                          -> increment consecutive-failure counter
+  // a retrospective-only failure (PR shipped) and a CI-red-after-budget (a reviewable PR
+  // exists) do NOT count as failures; only "never produced a PR" does.
+  // an idle/empty-queue tick is neutral — it neither increments nor resets.
+  if 3 consecutive ticket failures -> exit + loud report (circuit breaker)
 ```
 
 ## Key invariants & decisions
@@ -562,11 +580,18 @@ ships. The `ready-for-agent` label remains the human gate on *what* runs unatten
   (after a full implementation→review→retrospective cycle), never mid-ticket —
   stopping between stages would strand a half-finished worktree.
 - **Two signals, one check** (`stopRequested || existsSync(STOP_FILE)` at each
-  between-ticket checkpoint):
+  between-ticket checkpoint **and on every idle-sleep tick**):
   - `SIGINT` (Ctrl-C) — flips the flag, logs `will stop after current ticket`,
     leaves the running session alone.
   - sentinel file `agent-harness/STOP` — the one that matters for AFK runs:
     `touch` it from anywhere and the harness winds down after the current ticket.
+- **Idle is also a stop point (daemon).** Because the loop is long-running and
+  sleeps on an empty queue (§The loop), the idle re-poll sleep is broken into
+  short ticks that re-check the stop condition, so a stop requested while idle is
+  honoured within a few seconds rather than after a full poll interval.
+- **The sentinel is cleared at clean startup.** The loop deletes a pre-existing
+  `agent-harness/STOP` when it starts, so a stale sentinel from a prior run can't
+  instantly kill a fresh launch; thereafter only a *new* `touch` stops it.
 - **Double Ctrl-C = hard abort** — kills the running container and exits now,
   leaving the worktree behind (harmless; `review-worktree` can pick it up later).
 - The active session is a `docker run` child. To keep "graceful" from actually
@@ -622,15 +647,51 @@ ships. The `ready-for-agent` label remains the human gate on *what* runs unatten
   | Crash / non-zero exit / timeout | log + breadcrumb, skip rest, next | log + breadcrumb, keep worktree (no push), next | log + breadcrumb, keep worktree, next |
   | Ran but ground-truth fails | no commit → skip + breadcrumb | gates **red** (or dirty worktree, or **no verdict** — spending-cap/OOM, BEH-569) → no push, breadcrumb, keep worktree, next; OR PR open but **CI red after auto-fix budget** → keep PR + worktree, print failing checks | `out.json` absent → breadcrumb, keep worktree, next |
 
-- **Circuit breaker:** 3 consecutive ticket failures → stop and report (assume
-  something environmental broke, e.g. expired auth or a broken base build —
-  rather than burn the whole `ready-for-agent` queue failing identically).
+- **Circuit breaker:** 3 consecutive ticket failures → **exit and report
+  loudly** (assume something environmental broke, e.g. expired auth or a broken
+  base build — rather than burn the whole `ready-for-agent` queue failing
+  identically). The trip action is a full daemon exit on the same wind-down path
+  as a STOP, not a pause-and-wait: it forces a human to investigate before more
+  tickets are consumed, and recovery is a relaunch once the environment is fixed.
+  - **"Failure" is "did not reach a pushed PR" — not the raw pipeline exit code.**
+    A successful PR (implementation + review + push) resets the counter to 0; a
+    ticket that never produced a PR (impl crash/empty diff, review gates red)
+    increments it. A **retrospective-only failure** (the PR already shipped) and a
+    **CI-red-after-auto-fix-budget** (a reviewable PR exists for a human to take
+    over) do **not** count — otherwise three genuinely-hard-but-shipped tickets
+    could trip the breaker while the harness is working fine. An idle/empty-queue
+    tick is neutral: it neither increments nor resets.
+  - **A "poison" top-of-queue ticket trips the breaker by design (v1).** Because a
+    no-worktree implementation crash *releases the ticket back to Todo* (BEH-543),
+    the loop re-selects that same top-of-queue ticket on the next iteration and
+    fails identically — so three such iterations trip the breaker and the daemon
+    exits. This is intended: a ticket that fails 3× in a row is exactly the "a human
+    should look" signal, and the cause is usually environmental (full disk, broken
+    base build) that would sink the *next* ticket too, not poison specific to that
+    id. The breaker bounds the wasted respin to 3 attempts. **The trip report names
+    the repeated ticket** when all 3 failures share one id (`BEH-NNN failed 3× —
+    start here`) so the human sees the offender immediately. *Deferred follow-up:* if
+    real runs show single bad tickets halting otherwise-healthy queues, quarantine a
+    ticket after N releases (skip it / drop `ready-for-agent`) so the daemon
+    continues — not built in v1.
+- **Spending-cap abort backoff (daemon-only runaway guard).** An external Anthropic
+  spending-cap abort (`session.Outcome.SpendingCapAbort`, BEH-494) is the one
+  runaway the breaker is deliberately blind to: it is classified retry-after-reset,
+  **not** a failure, so it never increments the counter — but in a `for {}` daemon a
+  capped account aborts *every* session at start, which would spin the loop through
+  the whole queue in seconds, producing nothing. So a cap-abort is handled as
+  control flow, not a verdict: the daemon **releases the ticket to Todo** (no
+  progress to protect), leaves the breaker counter untouched, and enters a **long
+  interruptible backoff** (default ~30–60 min) before re-polling, auto-resuming once
+  the cap window resets. Parsing the exact reset time from the abort message is
+  deliberately *not* done — fragile string-parsing for minutes of saved latency; the
+  fixed backoff + re-poll is robust.
 
 ## Logging
 
 - **Console = concise harness narration**, one timestamped line per event
   (`selected BEH-312 (Urgent)`, `tdd ✓ committed a1b2c3d`, `review ✓ PR #418`,
-  `stop requested — finishing current ticket`, `queue empty — exiting`).
+  `stop requested — finishing current ticket`, `queue empty — idle, re-poll 60s`).
 - **Disk = full forensic detail, keyed by ticket** (not by run id) so any later
   tool finds a ticket's whole arc by globbing one dir:
   - `agent-harness/logs/BEH-NNN/<session>-<run-id>.jsonl` — the complete
@@ -663,6 +724,38 @@ ships. The `ready-for-agent` label remains the human gate on *what* runs unatten
 - Config: `agent-harness/.env` (`LINEAR_API_KEY`, `ANTHROPIC_API_KEY`,
   `GH_TOKEN`, `HERD_PATH`, bot identity, timeouts) + CLI flags (`--verbose`,
   `--once` for a single ticket then exit, label/timeout overrides).
+- **`cmd/loop` config knobs** (host-side, following the existing `*_MS` env
+  convention; all optional with the defaults below):
+
+  | Env | Default | Meaning |
+  |---|---|---|
+  | `LOOP_POLL_INTERVAL_MS` | `60000` (60s) | idle re-poll wait on an empty queue, broken into ~2–5s ticks that re-check the stop condition |
+  | `LOOP_CAP_BACKOFF_MS` | `2700000` (45 min) | backoff after a spending-cap abort before re-polling (interruptible by STOP) |
+  | `LOOP_MAX_CONSECUTIVE_FAILURES` | `3` | circuit-breaker threshold (consecutive no-PR tickets → exit + report) |
+  | `LOOP_MAX_TICKETS` | `0` (unlimited) | optional ceiling: stop after N *attempted* tickets |
+  | `LOOP_MAX_RUNTIME_MS` | `0` (unlimited) | optional ceiling: stop after T wall-clock |
+  | `STOP_FILE` | `agent-harness/STOP` | sentinel path; cleared at clean startup, `touch` to wind down |
+
+  `LOOP_MAX_TICKETS`/`LOOP_MAX_RUNTIME_MS` default to **unlimited** because the loop
+  is deliberately long-running (§The loop) — they exist as opt-in insurance for an
+  AFK overnight run, switchable without code changes. The loop takes no required
+  args (contrast `pipeline`, which always wants a ticket or `--next`); `--verbose`
+  forwards to every stage.
+- **Run model: a standalone detached process — no tmux, no supervisor.** The loop
+  is started as a plain background process the operator walks away from (a thin
+  `scripts/loop-start.sh` does `nohup bin/loop >> … & echo $! > agent-harness/loop.pid`),
+  not under tmux, launchd, or systemd. Lifecycle is the stop model in §Stop control:
+  `touch agent-harness/STOP` to wind down gracefully (the PID file is for a hard
+  `kill` only if needed). No supervisor means no auto-restart — a crash or a breaker
+  trip stays down until the operator relaunches, which is the intended behaviour for
+  the breaker (a human must look first). launchd/systemd is explicitly **deferred**;
+  if ever added, it must not auto-restart a clean exit.
+- **Exit-code contract (observability, supervisor-agnostic).** `0` = a *deliberate*
+  terminal stop — STOP requested, circuit breaker tripped, or an optional
+  `LOOP_MAX_*` ceiling reached. Non-zero = an *unexpected* crash (panic, docker
+  daemon gone, config error). With no supervisor nothing acts on this, but it lets
+  the operator (or a future launchd `SuccessfulExit=false`) tell "stopped on
+  purpose" from "died".
 
 ## Worktree lifecycle
 
