@@ -50,20 +50,27 @@ func Tdd(truth GroundTruth) Result {
 //     doing any work never gets the chance to write the dropbox, so the generic
 //     "never ran" reads as the agent misbehaving. When the cap fired, report the
 //     distinct retry-after-reset class instead. It is the most specific cause, so
-//     it takes precedence over the exit code.
+//     it takes precedence over BOTH the exit code AND a present dropbox: the
+//     synthetic cap abort replaces a genuine assistant turn, so any out.json that
+//     exists alongside it can only be a stale prior-run file or the early `[]` the
+//     skill writes before its analysis — never proof the retrospective completed.
+//     Checking dropbox-present first would let that file silently mask the abort
+//     into a false "ran, found nothing" success and skip the re-run (BEH-568).
 //   - exitCode (BEH-536): the retrospective is a long, read-heavy step that hit
 //     its wall-clock cap (exit 137) mid-investigation — after the analysis but
 //     before its write. A 137 kill with no dropbox is "killed before writing —
 //     retry", NOT "never ran" (mirrors ReviewQualitative's OOM branch). Combined
 //     with the skill's incremental write, this leaves a clear, actionable signal.
+//     Unlike the cap abort, a 137 is checked *after* dropbox-present: a present
+//     dropbox there is genuine output written before a teardown kill, so it stands.
 //
 // Only a genuinely absent-and-not-killed dropbox keeps the "never ran" wording.
 func Retrospective(dropboxExists, spendingCapAbort bool, exitCode int) Result {
-	if dropboxExists {
-		return Result{OK: true, Reason: "findings dropbox out.json present"}
-	}
 	if spendingCapAbort {
 		return Result{OK: false, Reason: "session aborted before running — spending cap reached, retry after reset"}
+	}
+	if dropboxExists {
+		return Result{OK: true, Reason: "findings dropbox out.json present"}
 	}
 	if exitCode == oomExitCode {
 		return Result{OK: false, Reason: "session killed (exit 137) before writing findings — likely OOM or wall-clock cap, retry"}

@@ -129,6 +129,27 @@ func TestRetrospectiveSpendingCapWinsOverExitCode(t *testing.T) {
 	}
 }
 
+// BEH-568: a spending-cap abort that coexists with a PRESENT out.json must still
+// route to the retry-after-reset class, not be masked into a false "ran, found
+// nothing" success. The synthetic cap abort replaces a genuine assistant turn, so
+// a present dropbox can only be a stale prior-run file or the early `[]` the skill
+// writes before its analysis — never proof the retrospective completed. The two
+// signals disagree here; the abort is authoritative, so it must win over the
+// dropbox-present check, exactly the disagreement that would otherwise let the
+// dropbox silently skip the re-run.
+func TestRetrospectiveSpendingCapWinsOverPresentDropbox(t *testing.T) {
+	r := Retrospective(true, true, 1)
+	if r.OK {
+		t.Error("a spending-cap abort must not be masked by a present (stale/[]) dropbox — expected a retry, got OK")
+	}
+	if !regexp.MustCompile(`(?i)spending cap`).MatchString(r.Reason) {
+		t.Errorf("reason %q does not name the spending-cap abort", r.Reason)
+	}
+	if !regexp.MustCompile(`(?i)retry after reset`).MatchString(r.Reason) {
+		t.Errorf("reason %q does not signal retry-after-reset", r.Reason)
+	}
+}
+
 // BEH-494: a spending-cap abort killed the session before it could write the
 // dropbox. The reason must be the distinct retry-after-reset class — NOT the
 // misleading generic "never ran" (which reads as the agent misbehaving).

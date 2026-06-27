@@ -291,15 +291,22 @@ loop:
   agent's say-so); *retrospective* = `/findings/out.json` exists on disk (an empty
   `[]` is a valid "ran, found nothing"; an *absent* file means the step never ran
   and is a failure). The agent's own "I'm done" is logged but never authoritative.
-  One external hazard would otherwise break this contract ([BEH-568](https://linear.app/beherd/issue/BEH-568)):
-  an **Anthropic API spending-cap abort** — distinct from the harness's own per-session
-  caps — can strike *mid-session*, after the skill wrote its up-front default `[]`
-  (the BEH-536 incremental write), leaving an empty dropbox that reads as the success
-  "ran, found nothing" and masks the abort. So when a spending-cap abort is detected
-  (the `is_error` cap result **or** the `model:"<synthetic>"` "Spending cap reached"
-  turn — keying off both, not the exit code alone), the harness drops that empty default
-  so the *absent* = never-ran signal holds and the run routes to ↻ retry-after-reset;
-  any real findings written before the cap fired are preserved and still filed.
+  One external hazard would otherwise break this contract
+  ([BEH-568](https://linear.app/beherd/issue/BEH-568)): an **external Anthropic
+  spending-cap abort** ([BEH-494](https://linear.app/beherd/issue/BEH-494)) —
+  distinct from the harness's own time/spend caps. It can strike at session *start*
+  (replacing the first assistant turn with a synthetic "Spending cap reached"
+  message) or *mid-session* after the skill wrote its up-front default `[]` (the
+  BEH-536 incremental write), so a dropbox can be present alongside it yet only ever
+  be a stale prior-run file or that early `[]` — never proof a genuine analysis turn
+  ran. Trusting it would mask the abort into a false "ran, found nothing" success and
+  skip the retry-after-reset. The harness defends in depth, keying off both signals
+  (the `is_error` cap result **and** the `model:"<synthetic>"` turn, not the exit
+  code alone): the retrospective stage drops the empty default dropbox at the source
+  so the *absent* = never-ran contract holds, and `verify.Retrospective` gives the
+  cap-abort signal precedence over a *present* `out.json` so the abort wins even if
+  that on-disk clear didn't. Either way the run routes to ↻ retry-after-reset; any
+  real findings written before the cap fired are preserved and still filed.
 - **A usage-policy refusal is retryable, not fatal ([BEH-389](https://linear.app/beherd/issue/BEH-389)).**
   Claude Code's "unable to respond … violate our Usage Policy" refusal is a known
   intermittent false-positive on long agentic sessions; it returns a terminal
