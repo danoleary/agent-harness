@@ -22,6 +22,19 @@ import (
 // the ticket's log dir (DESIGN.md "Logging": logs/BEH-NNN/<session>-<run-id>.jsonl).
 const implementationSession = "implementation"
 
+// retryableEnvCrash reports whether a failed implementation attempt crashed
+// environmentally with nothing to salvage — no worktree was ever created — as
+// opposed to running to completion and producing no handoff commit. Only the
+// former is worth re-attempting: the crash strikes at the worktree-creation
+// step's heavy host I/O and is usually transient, whereas a worktree that exists
+// (even with no commit) means the agent ran and the diff, if any, is recoverable.
+// A spending-cap abort is excluded — it has its own retry-after-reset handling.
+// The pipeline reads the resulting Result.Retryable to decide whether to
+// re-attempt the whole stage (BEH-543).
+func retryableEnvCrash(truth verify.GroundTruth, capAborted bool) bool {
+	return !truth.WorktreeExists && !capAborted
+}
+
 // Implementation runs the first stage: fetch + claim one ticket, run only the
 // /tdd session in a Docker sandbox, verify the worktree + handoff commit by
 // ground truth, and file any dropped findings. No push, no PR (review owns
@@ -252,7 +265,7 @@ func Implementation(cfg config.Config, log *runlog.Logger, runID string, args Ar
 			} else {
 				log.Event("✓ harness recovery checkpoint committed on " + gitpkg.BranchName(slug) + " — the session's uncommitted diff is preserved (unverified: finish or re-run, then amend, before opening a PR)")
 			}
-		} else if !truth.WorktreeExists && !capAborted {
+		} else if retryableEnvCrash(truth, capAborted) {
 			// The session crashed environmentally before it ever created a worktree —
 			// the transient launch failures retried above (125/137) were exhausted, an
 			// idle/cap kill struck pre-work, or the like. There is no partial state to
@@ -272,5 +285,8 @@ func Implementation(cfg config.Config, log *runlog.Logger, runID string, args Ar
 	// File any harness-improvement findings the session dropped (after every session, per ADR-0001).
 	filing.File(findingsDir, t.TeamID, args.Identifier, client, client, log)
 
-	return Result{OK: result.OK}
+	// Surface an environmental no-worktree crash to the pipeline so it can
+	// re-attempt the whole stage once rather than discarding the slice (BEH-543).
+	// A successful run is never retryable.
+	return Result{OK: result.OK, Retryable: !result.OK && retryableEnvCrash(truth, capAborted)}
 }

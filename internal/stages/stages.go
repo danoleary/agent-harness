@@ -77,6 +77,12 @@ type Result struct {
 	// that the standalone wrapper prints to stderr before exiting 1. For the
 	// pipeline it is simply folded into "not OK".
 	Err error
+	// Retryable marks a failed outcome that crashed environmentally with nothing
+	// to salvage — no worktree, no commit — as opposed to running to completion
+	// and producing no handoff diff. Only the former is worth a fresh attempt (a
+	// later run, or a healthy host, may get further); the pipeline re-attempts the
+	// stage once when it is set (BEH-543). Never set when OK is true.
+	Retryable bool
 }
 
 // LoadConfig loads the harness config: .env first (best-effort), then the

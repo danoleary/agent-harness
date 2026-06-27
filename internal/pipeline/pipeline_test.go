@@ -25,6 +25,21 @@ func (r *recorder) stage(name string, res stages.Result) Stage {
 	}
 }
 
+// stageSeq returns a Stage that records each run and yields the next Result in
+// the sequence (clamping to the last once exhausted), so a test can model a
+// stage that a re-attempt invokes more than once with a different outcome.
+func (r *recorder) stageSeq(name string, results ...stages.Result) Stage {
+	var calls int
+	return func() stages.Result {
+		r.order = append(r.order, name)
+		res := results[calls]
+		if calls < len(results)-1 {
+			calls++
+		}
+		return res
+	}
+}
+
 func (r *recorder) saw(event string) bool {
 	for _, e := range r.events {
 		if strings.Contains(e, event) {
@@ -69,6 +84,76 @@ func TestRunImplementationFailureSkipsReviewButRunsRetro(t *testing.T) {
 	}
 	if want := []string{"impl", "retro"}; !reflect.DeepEqual(r.order, want) {
 		t.Errorf("stage order = %v, want %v (review must be skipped, retro must still run)", r.order, want)
+	}
+}
+
+func TestRunRetriesImplementationOnEnvCrashThenSucceeds(t *testing.T) {
+	r := &recorder{}
+	code := Run(Deps{
+		FetchMain: func() error { return nil },
+		// First attempt crashed environmentally with no commit (no worktree) —
+		// Retryable; the re-attempt lands on a healthy host and succeeds.
+		Implementation: r.stageSeq("impl",
+			stages.Result{OK: false, Retryable: true},
+			stages.Result{OK: true},
+		),
+		Review:        r.stage("review", stages.Result{OK: true}),
+		Retrospective: r.stage("retro", stages.Result{OK: true}),
+		Log:           r,
+	})
+	if code != 0 {
+		t.Errorf("exit code = %d, want 0 (a retried env-crash that then succeeds passes)", code)
+	}
+	if want := []string{"impl", "impl", "review", "retro"}; !reflect.DeepEqual(r.order, want) {
+		t.Errorf("stage order = %v, want %v (impl re-attempted, then review+retro run)", r.order, want)
+	}
+	if !r.saw("re-attempt") {
+		t.Errorf("expected a narration that implementation was re-attempted; events = %v", r.events)
+	}
+}
+
+func TestRunRetriesImplementationOnlyOnceThenGivesUp(t *testing.T) {
+	r := &recorder{}
+	code := Run(Deps{
+		FetchMain: func() error { return nil },
+		// Every attempt crashes environmentally (e.g. a persistently full disk).
+		Implementation: r.stageSeq("impl",
+			stages.Result{OK: false, Retryable: true},
+		),
+		Review:        r.stage("review", stages.Result{OK: true}),
+		Retrospective: r.stage("retro", stages.Result{OK: true}),
+		Log:           r,
+	})
+	if code != 1 {
+		t.Errorf("exit code = %d, want 1 (both attempts failed)", code)
+	}
+	if want := []string{"impl", "impl", "retro"}; !reflect.DeepEqual(r.order, want) {
+		t.Errorf("stage order = %v, want %v (impl re-attempted exactly once, review skipped, retro runs)", r.order, want)
+	}
+}
+
+func TestRunDoesNotRetryGenuineImplementationFailure(t *testing.T) {
+	r := &recorder{}
+	code := Run(Deps{
+		FetchMain: func() error { return nil },
+		// Ran to completion but produced no handoff diff — a real verification
+		// failure, not an environmental crash. Must NOT be re-attempted.
+		Implementation: r.stageSeq("impl",
+			stages.Result{OK: false, Retryable: false},
+			stages.Result{OK: true}, // would be consumed only on an (incorrect) retry
+		),
+		Review:        r.stage("review", stages.Result{OK: true}),
+		Retrospective: r.stage("retro", stages.Result{OK: true}),
+		Log:           r,
+	})
+	if code != 1 {
+		t.Errorf("exit code = %d, want 1 (a non-retryable failure fails the run)", code)
+	}
+	if want := []string{"impl", "retro"}; !reflect.DeepEqual(r.order, want) {
+		t.Errorf("stage order = %v, want %v (impl runs once, no re-attempt, review skipped)", r.order, want)
+	}
+	if r.saw("re-attempt") {
+		t.Errorf("a non-retryable failure must not narrate a re-attempt; events = %v", r.events)
 	}
 }
 

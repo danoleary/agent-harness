@@ -6,7 +6,26 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+
+	"github.com/beherd/agent-harness/internal/verify"
 )
+
+// retryableEnvCrash distinguishes the one failed-implementation outcome worth a
+// fresh attempt — an environmental crash that left no worktree and no commit —
+// from a run that completed and produced no diff, or a spending-cap abort (which
+// has its own retry-after-reset handling). The pipeline re-attempts only the
+// former (BEH-543).
+func TestRetryableEnvCrash(t *testing.T) {
+	if !retryableEnvCrash(verify.GroundTruth{WorktreeExists: false}, false) {
+		t.Error("no worktree + not cap-aborted is an environmental crash — should be retryable")
+	}
+	if retryableEnvCrash(verify.GroundTruth{WorktreeExists: true, CommitsAhead: 0}, false) {
+		t.Error("a worktree that exists (ran to completion, empty diff) is NOT an environmental crash")
+	}
+	if retryableEnvCrash(verify.GroundTruth{WorktreeExists: false}, true) {
+		t.Error("a spending-cap abort has its own handling — must not be reported retryable here")
+	}
+}
 
 // isDiskFull recognises the ENOSPC a findings-dir mkdir returns when the host disk
 // is full (BEH-540), so the stage can degrade to a clear warning instead of an

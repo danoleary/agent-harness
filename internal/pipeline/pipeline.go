@@ -53,6 +53,20 @@ func Run(d Deps) int {
 	impl := d.Implementation()
 	narrateErr(d.Log, "implementation", impl)
 
+	// Re-attempt the implementation stage once when the first attempt crashed
+	// environmentally with nothing to salvage (no worktree, no commit — Retryable)
+	// rather than running to completion and producing no diff. Such a crash lands
+	// at the worktree-creation step's heavy host I/O and is often transient, so a
+	// fresh attempt may get further; without this the whole slice is discarded with
+	// no commit and no re-queue (BEH-543). A genuine empty-diff/verification failure
+	// is not Retryable and is never re-attempted. Bounded to one extra attempt so a
+	// persistently sick host (e.g. full disk) can't spin the slice.
+	if !impl.OK && impl.Retryable {
+		d.Log.Event("pipeline ↻ implementation crashed environmentally with no commit — re-attempting the stage once (BEH-543)")
+		impl = d.Implementation()
+		narrateErr(d.Log, "implementation", impl)
+	}
+
 	reviewRan := false
 	var review stages.Result
 	if impl.OK {

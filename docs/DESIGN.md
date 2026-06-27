@@ -245,14 +245,21 @@ loop:
   bare retry (a fresh `--name`, the same create prompt: the wedged container's `--rm`
   teardown may have left the name taken, and a creation-time 125 left no worktree to
   resume). A *genuine* 125 (daemon down, image missing, bad flag) stays terminal.
-- **A first-stage crash that leaves no worktree releases the claim ([BEH-543](https://linear.app/beherd/issue/BEH-543)).**
+- **A first-stage crash that leaves no worktree is re-attempted once, then releases the claim ([BEH-543](https://linear.app/beherd/issue/BEH-543)).**
   When implementation fails with **no worktree ever created** (the transient retries
-  above exhausted, or a kill before any work) there is nothing to salvage, so leaving
-  the ticket *In Progress* just strands it. The stage releases the claim back to
-  **Todo** (`linear.ReleaseToTodo`) so a later run re-grabs it. This is the one
-  deliberate exception to "failure never mutates Linear state" below — and it's
-  safe precisely because there's no partial state. (A worktree that *does* exist is
-  kept + checkpoint-committed, never released.)
+  above exhausted, or a kill before any work) there is nothing to salvage. The stage
+  flags this outcome `Retryable` (`retryableEnvCrash` — no worktree *and* not a
+  spending-cap abort) on its `Result`, and the **pipeline re-attempts the whole
+  implementation stage once** before giving up: such a crash strikes at the
+  worktree-creation step's heavy host I/O and is usually transient, so a fresh attempt
+  may get further. A genuine run-to-completion empty diff is *not* `Retryable` and is
+  never re-attempted. The re-attempt is bounded to one extra try so a persistently
+  sick host (e.g. a full disk) can't spin the slice. Whether or not the re-attempt is
+  taken, the no-worktree branch still releases the claim back to **Todo**
+  (`linear.ReleaseToTodo`) so a later run re-grabs it instead of leaving the ticket
+  stranded *In Progress* — the one deliberate exception to "failure never mutates
+  Linear state" below, safe precisely because there's no partial state. (A worktree
+  that *does* exist is kept + checkpoint-committed, never released or re-attempted.)
 - **A full host disk degrades to a warning, not a hard error ([BEH-540](https://linear.app/beherd/issue/BEH-540)).**
   A findings-dir `mkdir` that fails with ENOSPC (the disk filled) is recognised
   (`isDiskFull`) and logged as a clear, actionable warning pointing at `pnpm store
