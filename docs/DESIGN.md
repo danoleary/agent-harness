@@ -231,6 +231,7 @@ loop:
   --- review ground truth + push gate (harness, host-side) ---
   re-run gates in a throwaway container: `pnpm check && pnpm typecheck` on feat/beh-nnn
   review OK <=> gates are GREEN AND worktree is clean AND the review session emitted its verdict
+                AND that verdict's disposition is NOT `blocked` (BEH-580)
                 // never the agent's self-report; a green gate is NOT a review (BEH-569)
   if OK     -> git -C <worktree> rebase origin/main   // BEH-570: replay onto the fresh base
                  - clean replay  -> continue (the long pipeline let main move; PR opens current)
@@ -240,6 +241,8 @@ loop:
                             --title <templated> --body <templated: ticket id + commit subjects>
   if not OK -> log + Linear breadcrumb comment + KEEP worktree + record failure + continue
                # incl. verdict-absent (spending-cap abort / OOM): fail closed, never push an unreviewed diff
+               # incl. verdict-blocked (BEH-580): review ran + found an unresolved Blocker/Important
+               #   finding it couldn't self-resolve → fail closed, keep worktree for a human decision
 
   --- review CI watch + auto-fix (harness, host-side, BEH-414) ---
   poll `gh pr checks feat/beh-nnn` until terminal (success/failure/cancelled), bounded by a poll budget
@@ -348,6 +351,20 @@ loop:
   worktree kept so a resumed review can finish before the branch ever ships. The
   BEH-494 retry-after-reset note already fired for the *session*; this is what makes
   the *pipeline* honour it instead of pushing past it.
+- **A review that ran but is *blocked* on an unresolved finding fails the push closed ([BEH-580](https://linear.app/beherd/issue/BEH-580)).**
+  The companion case to BEH-569: there the review never ran; here it ran, found a real
+  Blocker/Important finding, and was structurally unable to act on it. The
+  `/review-worktree` skill was written for a human-in-the-loop — it asked "apply the
+  fixes? (a)/(b)?" and waited. In the autonomous pipeline (ADR-0002) there is no
+  approver, so the review emitted its `## Review:` verdict with the finding still open
+  and the harness — reading the verdict as the green "review ran" signal — pushed the
+  PR anyway, shipping the unaddressed finding (the BEH-439 leak). The fix is two-sided:
+  the skill now **self-resolves** under the harness (apply a safe fix, or
+  accept-and-document a deliberate change) and, only for a finding it genuinely cannot
+  resolve, declares `Disposition: blocked` in the verdict instead of asking; and
+  `verify.Review` gates the push on `ReviewBlocked` (surfaced by `stream.IsReviewBlocked`)
+  **in addition to** the BEH-569 conditions — a blocked verdict is fail-closed, keeping
+  the worktree for a human decision rather than opening a PR on an unresolved finding.
 - **A usage-policy refusal is retryable, not fatal ([BEH-389](https://linear.app/beherd/issue/BEH-389)).**
   Claude Code's "unable to respond … violate our Usage Policy" refusal is a known
   intermittent false-positive on long agentic sessions; it returns a terminal
@@ -645,7 +662,7 @@ ships. The `ready-for-agent` label remains the human gate on *what* runs unatten
   |---|---|---|---|
   | Clean success (ground-truth passes) | commit ahead → run review | gates green → push + PR → CI watch → CI green → run retrospective | `out.json` present → file findings → remove worktree, ticket done, next |
   | Crash / non-zero exit / timeout | log + breadcrumb, skip rest, next | log + breadcrumb, keep worktree (no push), next | log + breadcrumb, keep worktree, next |
-  | Ran but ground-truth fails | no commit → skip + breadcrumb | gates **red** (or dirty worktree, or **no verdict** — spending-cap/OOM, BEH-569) → no push, breadcrumb, keep worktree, next; OR PR open but **CI red after auto-fix budget** → keep PR + worktree, print failing checks | `out.json` absent → breadcrumb, keep worktree, next |
+  | Ran but ground-truth fails | no commit → skip + breadcrumb | gates **red** (or dirty worktree, or **no verdict** — spending-cap/OOM, BEH-569, or verdict **blocked** on an unresolved finding, BEH-580) → no push, breadcrumb, keep worktree, next; OR PR open but **CI red after auto-fix budget** → keep PR + worktree, print failing checks | `out.json` absent → breadcrumb, keep worktree, next |
 
 - **Circuit breaker:** 3 consecutive ticket failures → **exit and report
   loudly** (assume something environmental broke, e.g. expired auth or a broken

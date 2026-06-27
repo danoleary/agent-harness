@@ -243,6 +243,14 @@ func Review(cfg config.Config, log *runlog.Logger, runID string, args Args) Resu
 		log.Event("review ✓ " + completeness.Reason)
 	}
 
+	// A review that ran but declared a blocked disposition found a Blocker/Important
+	// finding it could not autonomously resolve (BEH-580). The autonomous pipeline has
+	// no human to answer the skill's approval prompt, so this fails the push closed
+	// below rather than shipping the finding to a PR unaddressed (the BEH-439 leak).
+	if reviewOutcome.ReviewBlocked {
+		log.Event("review ⚠ verdict declared a blocked disposition — an unresolved blocker/important finding needs a human decision; will not push (BEH-580)")
+	}
+
 	// --- ground truth + push gate (harness, host-side) ---
 	// Refresh origin/main so the commit range + PR base are current.
 	if err := gitpkg.FetchMain(cfg.HerdPath); err != nil {
@@ -299,7 +307,7 @@ func Review(cfg config.Config, log *runlog.Logger, runID string, args Args) Resu
 	// abort / OOM that killed the review before it reviewed leaves the diff unreviewed,
 	// so the push fails closed and the worktree is kept for a resumed review rather than
 	// opening a PR on a gate re-run that nobody mistakes for a review.
-	result := verify.Review(verify.ReviewOutcome{GatesGreen: gateExit == 0, WorktreeClean: clean, ReviewComplete: completeness.Complete})
+	result := verify.Review(verify.ReviewOutcome{GatesGreen: gateExit == 0, WorktreeClean: clean, ReviewComplete: completeness.Complete, ReviewBlocked: reviewOutcome.ReviewBlocked})
 	if !result.OK {
 		// A review killed mid-edit (spending cap / OOM) leaves its in-progress fixes
 		// uncommitted. Without capturing them they vanish on the next resume — the

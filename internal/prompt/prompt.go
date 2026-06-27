@@ -277,6 +277,8 @@ func BuildReview(t ticket.Ticket, slug, worktreePath string) string {
 		"",
 		"Do the diff-reading + seven-lens review FIRST, before running the memory-heavy gates (`pnpm run lint`/`build`/`test-storybook`/`typecheck`). This sandbox is memory-constrained and those gates routinely OOM-kill the session (exit 137); the harness re-runs every gate host-side anyway, so running them in-session mostly risks aborting the review before the lenses are applied. Whatever else happens, ALWAYS emit your `## Review:` report once the lenses are done — even though you don't push or open the PR, the harness keys off that report header to confirm the qualitative review actually ran, and otherwise flags the ticket as 'gates green but review incomplete'.",
 		"",
+		"This runs UNATTENDED — there is no human to approve anything. Do NOT ask for approval and do NOT wait for a decision; that question is never answered and the finding ships unaddressed. Instead SELF-RESOLVE every Blocker/Important finding: apply the fix if it's clearly-correct, or accept-and-document a deliberate behaviour change (record it in your report for the PR body). End your `## Review:` report with a mandatory `Disposition:` line that the harness reads as the push decision: `Disposition: clear — <reason>` when everything is fixed or accepted-and-documented (the harness pushes), or `Disposition: blocked — <reason>` ONLY for a finding you genuinely cannot resolve and that needs a human judgement call (the harness fails the push closed and keeps the worktree). Use `blocked` instead of asking; never leave a finding open under a `clear` disposition.",
+		"",
 		bashQuirkSteer,
 	}
 	return strings.Join(lines, "\n")

@@ -117,6 +117,42 @@ func IsReviewVerdict(line string) bool {
 	return false
 }
 
+// reviewBlockedMarker is the disposition the /review-worktree report carries when
+// it could NOT autonomously resolve a Blocker/Important finding and a human
+// decision is required (BEH-580). The autonomous pipeline has no approver, so the
+// reviewer self-resolves what it can (applies a safe fix, or accepts-and-documents
+// a deliberate change) and emits "Disposition: clear"; only a genuinely unresolved
+// finding emits "Disposition: blocked". Matched as a substring so the trailing
+// reason text doesn't have to be exact. The "clear" disposition deliberately does
+// NOT contain this marker, so a clear verdict never trips it.
+const reviewBlockedMarker = "Disposition: blocked"
+
+// IsReviewBlocked reports whether a stream-json line is a /review-worktree verdict
+// declaring a blocked disposition (BEH-580): an assistant text block carrying BOTH
+// the "## Review:" report header AND "Disposition: blocked". That pairing means the
+// review ran and found a Blocker/Important finding it could not autonomously
+// resolve — so the harness must fail the push closed and keep the worktree rather
+// than open a PR with the finding unaddressed (the BEH-439 leak). Both markers are
+// required so a "Disposition: blocked" mentioned outside a review report can't trip
+// it; a malformed line is never blocked.
+func IsReviewBlocked(line string) bool {
+	var e event
+	if err := json.Unmarshal([]byte(line), &e); err != nil {
+		return false
+	}
+	if e.Type != "assistant" {
+		return false
+	}
+	for _, block := range e.Message.Content {
+		if block.Type == "text" &&
+			strings.Contains(block.Text, reviewVerdictMarker) &&
+			strings.Contains(block.Text, reviewBlockedMarker) {
+			return true
+		}
+	}
+	return false
+}
+
 // Narrate turns one line of claude's `--output-format stream-json` into a concise
 // console narration string, returning ok=false to skip it. The full raw stream
 // is teed to the per-run jsonl regardless; this is only the human-friendly

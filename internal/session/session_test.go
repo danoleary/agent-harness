@@ -44,6 +44,7 @@ const (
 	lineRefusal = `{"type":"result","subtype":"success","is_error":true,"result":"API Error: Claude Code is unable to respond to this request, which appears to violate our Usage Policy. If you are seeing this refusal repeatedly, try running /model to switch models."}`
 	lineCap     = `{"type":"result","subtype":"success","is_error":true,"result":"Spending cap reached resets 8:20am"}`
 	lineVerdict = `{"type":"assistant","message":{"content":[{"type":"text","text":"## Review: feat/x  (BEH-1 — intent)   2 files, +5/-1"}]}}`
+	lineBlocked = `{"type":"assistant","message":{"content":[{"type":"text","text":"## Review: feat/x  (BEH-1 — intent)   2 files, +5/-1\n\nDisposition: blocked — needs a human call"}]}}`
 )
 
 // pumpStdout reports whether the review session emitted its seven-lens verdict
@@ -59,6 +60,25 @@ func TestPumpStdoutReportsReviewVerdict(t *testing.T) {
 	clean := pumpStdout(strings.NewReader(lineToolUse+"\n"+lineResult), "x.jsonl", false, &fakeLog{}, &bytes.Buffer{})
 	if clean.reviewVerdictEmitted {
 		t.Error("a stream that never emitted the report header must not report a verdict")
+	}
+}
+
+// pumpStdout reports whether the review verdict declared a blocked disposition
+// (BEH-580) — an unresolved Blocker/Important finding the autonomous reviewer could
+// not resolve — so Run can fail the push closed instead of opening a PR with the
+// finding unaddressed. A clear verdict reports the verdict but not the block.
+func TestPumpStdoutReportsBlockedReviewVerdict(t *testing.T) {
+	blocked := pumpStdout(strings.NewReader(lineToolUse+"\n"+lineBlocked+"\n"+lineResult), "x.jsonl", false, &fakeLog{}, &bytes.Buffer{})
+	if !blocked.reviewBlocked {
+		t.Error("expected a blocked disposition to be reported when the verdict declares it")
+	}
+	if !blocked.reviewVerdictEmitted {
+		t.Error("a blocked verdict is still a verdict — reviewVerdictEmitted must also be set")
+	}
+
+	clear := pumpStdout(strings.NewReader(lineToolUse+"\n"+lineVerdict+"\n"+lineResult), "x.jsonl", false, &fakeLog{}, &bytes.Buffer{})
+	if clear.reviewBlocked {
+		t.Error("a clear verdict (no blocked disposition) must not report a block")
 	}
 }
 

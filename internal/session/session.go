@@ -81,6 +81,11 @@ type Outcome struct {
 	// OOM mid-gate), so a green host-side gate re-run isn't mistaken for a full
 	// review. Only meaningful for review sessions.
 	ReviewVerdictEmitted bool
+	// ReviewBlocked is true iff the /review-worktree verdict declared a blocked
+	// disposition (BEH-580) — an unresolved Blocker/Important finding the autonomous
+	// reviewer could not resolve. The caller fails the push closed on it so the
+	// finding isn't shipped to a PR unaddressed. Only meaningful for review sessions.
+	ReviewBlocked bool
 	// DockerReason is docker's own error line on a launch failure (exit 125 —
 	// sandbox.ExitCannotStart), extracted from the stderr tail. It lets the caller
 	// tell a transient launch failure (overlay2/read-only-fs, BEH-542) from a
@@ -110,6 +115,7 @@ type streamFlags struct {
 	usagePolicyRefusal   bool
 	spendingCapAbort     bool
 	reviewVerdictEmitted bool
+	reviewBlocked        bool
 }
 
 // realNow returns the current wall-clock time with the monotonic reading stripped
@@ -307,7 +313,7 @@ func Run(dockerArgs []string, opts Options) Outcome {
 		opts.Log.Event("session ✗ docker could not start the container (exit 125): " + hint)
 	}
 
-	return Outcome{ExitCode: exitCode, UsagePolicyRefusal: flags.usagePolicyRefusal, SpendingCapAbort: flags.spendingCapAbort, ReviewVerdictEmitted: flags.reviewVerdictEmitted, DockerReason: dockerReason}
+	return Outcome{ExitCode: exitCode, UsagePolicyRefusal: flags.usagePolicyRefusal, SpendingCapAbort: flags.spendingCapAbort, ReviewVerdictEmitted: flags.reviewVerdictEmitted, ReviewBlocked: flags.reviewBlocked, DockerReason: dockerReason}
 }
 
 // pumpStdout scans claude's stream-json stdout: it tees every line raw to the
@@ -332,6 +338,9 @@ func pumpStdout(r io.Reader, transcriptFile string, verbose bool, log Logger, ec
 		}
 		if stream.IsReviewVerdict(line) {
 			flags.reviewVerdictEmitted = true
+		}
+		if stream.IsReviewBlocked(line) {
+			flags.reviewBlocked = true
 		}
 		if verbose {
 			fmt.Fprintln(echo, line)

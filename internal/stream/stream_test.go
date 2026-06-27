@@ -237,6 +237,70 @@ func TestIsReviewVerdictRejectsNonVerdicts(t *testing.T) {
 	}
 }
 
+// The blocked disposition (BEH-580): under the autonomous pipeline there is no
+// human to answer the review's approval prompt, so the reviewer must declare its
+// push decision in the verdict. A "## Review:" report carrying "Disposition:
+// blocked" means an unresolved Blocker/Important finding still needs a human
+// decision — the harness must NOT push it. Both markers must be present: the
+// blocked disposition is only meaningful inside a review verdict.
+func TestIsReviewBlockedDetectsTheBlockedDisposition(t *testing.T) {
+	line := mustJSON(t, map[string]any{
+		"type": "assistant",
+		"message": map[string]any{
+			"content": []any{
+				map[string]any{"type": "text", "text": "## Review: feat/beh-439  (BEH-439 — showView refactor)   4 files, +60/-12\n\nDisposition: blocked — showView behaviour divergence needs a human call"},
+			},
+		},
+	})
+	if !IsReviewBlocked(line) {
+		t.Error("expected a review verdict declaring a blocked disposition to be detected")
+	}
+}
+
+// A verdict that declares "Disposition: clear" — everything resolved or
+// accepted-and-documented — is not blocked, and neither is a verdict with no
+// disposition, a bare "Disposition: blocked" outside any review report, a
+// non-verdict turn, or a malformed line. Only "## Review:" + "Disposition:
+// blocked" together block the push.
+func TestIsReviewBlockedRejectsNonBlocked(t *testing.T) {
+	clearVerdict := mustJSON(t, map[string]any{
+		"type": "assistant",
+		"message": map[string]any{
+			"content": []any{map[string]any{"type": "text", "text": "## Review: feat/x  (BEH-1 — intent)   2 files, +5/-1\n\nDisposition: clear — all findings resolved"}},
+		},
+	})
+	verdictNoDisposition := mustJSON(t, map[string]any{
+		"type": "assistant",
+		"message": map[string]any{
+			"content": []any{map[string]any{"type": "text", "text": "## Review: feat/x  (BEH-1 — intent)   2 files, +5/-1"}},
+		},
+	})
+	blockedOutsideReport := mustJSON(t, map[string]any{
+		"type": "assistant",
+		"message": map[string]any{
+			"content": []any{map[string]any{"type": "text", "text": "Disposition: blocked — discussing the contract, not a verdict"}},
+		},
+	})
+	otherText := mustJSON(t, map[string]any{
+		"type": "assistant",
+		"message": map[string]any{
+			"content": []any{map[string]any{"type": "text", "text": "Running pnpm run lint first."}},
+		},
+	})
+	for name, line := range map[string]string{
+		"clear verdict":          clearVerdict,
+		"verdict no disposition": verdictNoDisposition,
+		"blocked outside report": blockedOutsideReport,
+		"other text":             otherText,
+		"malformed":              "{not json",
+		"empty":                  "",
+	} {
+		if IsReviewBlocked(line) {
+			t.Errorf("%s should not be a blocked review verdict", name)
+		}
+	}
+}
+
 func TestNarratesResultWithDuration(t *testing.T) {
 	line := mustJSON(t, map[string]any{
 		"type":        "result",

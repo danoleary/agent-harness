@@ -353,6 +353,25 @@ func TestBuildReviewSteersLensesFirstAndEmitsVerdict(t *testing.T) {
 	}
 }
 
+// BEH-580: the autonomous pipeline has no human to answer the skill's approval
+// prompt, so the prompt must steer the reviewer to self-resolve findings and end the
+// verdict in a machine-read `Disposition:` line — `blocked` for a finding it can't
+// resolve (the harness fails the push closed) rather than asking a question that
+// never gets answered and shipping the finding unaddressed.
+func TestBuildReviewSteersDispositionAndSelfResolve(t *testing.T) {
+	p := BuildReview(sample, "beh-362", sampleWorktree)
+
+	if !strings.Contains(p, "Disposition:") {
+		t.Error("prompt does not tell the agent to end the verdict with a machine-read Disposition: line (the harness's push decision)")
+	}
+	if !regexp.MustCompile(`(?i)(do not|don't|never).{0,40}(ask|wait|approval)`).MatchString(p) {
+		t.Error("prompt does not steer the reviewer off asking/waiting for approval (no human in the autonomous pipeline)")
+	}
+	if !regexp.MustCompile(`(?i)blocked`).MatchString(p) {
+		t.Error("prompt does not mention the blocked disposition for an unresolvable finding")
+	}
+}
+
 func TestBuildReviewForbidsLinearAndFindings(t *testing.T) {
 	p := BuildReview(sample, "beh-362", sampleWorktree)
 

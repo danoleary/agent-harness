@@ -125,6 +125,11 @@ type ReviewOutcome struct {
 	GatesGreen     bool
 	WorktreeClean  bool
 	ReviewComplete bool
+	// ReviewBlocked is true iff the review session emitted its verdict but declared
+	// a blocked disposition (BEH-580) — an unresolved Blocker/Important finding it
+	// could not autonomously resolve. A blocked review is *complete* (the lenses
+	// ran), so ReviewComplete is also true; the two are distinct signals.
+	ReviewBlocked bool
 }
 
 // Review decides whether a reviewed branch may ship. A green gate over a clean
@@ -140,11 +145,20 @@ type ReviewOutcome struct {
 // validated a different tree than would ship (e.g. a review session that edited
 // but never committed), so its green/red verdict can't be trusted as the push gate.
 //
-// ReviewComplete is checked last and fails the gate closed (BEH-569): a review
-// session killed before its verdict (a spending-cap abort, an OOM) leaves the diff
-// with a green gate but ZERO qualitative review. Pushing then opens a PR that no
-// one actually reviewed, while the gate re-run masquerades as the review signal.
-// Blocking keeps the worktree for a resumed review rather than shipping unreviewed.
+// ReviewComplete is checked before ReviewBlocked and fails the gate closed
+// (BEH-569): a review session killed before its verdict (a spending-cap abort, an
+// OOM) leaves the diff with a green gate but ZERO qualitative review. Pushing then
+// opens a PR that no one actually reviewed, while the gate re-run masquerades as the
+// review signal. Blocking keeps the worktree for a resumed review rather than
+// shipping unreviewed.
+//
+// ReviewBlocked is checked last and also fails closed (BEH-580): a review that DID
+// run but declared a blocked disposition found a Blocker/Important finding it could
+// not autonomously resolve. The autonomous pipeline has no human to answer the
+// skill's approval prompt, so pushing would open a PR with the finding unaddressed
+// (the BEH-439 leak). Blocking keeps the worktree for a human decision — distinct
+// from the BEH-569 case (there the review never ran; here it ran and found a real,
+// unresolved issue).
 func Review(outcome ReviewOutcome) Result {
 	if !outcome.WorktreeClean {
 		return Result{OK: false, Reason: "worktree has uncommitted changes — the gate validated a different tree than would ship; not pushing"}
@@ -155,7 +169,10 @@ func Review(outcome ReviewOutcome) Result {
 	if !outcome.ReviewComplete {
 		return Result{OK: false, Reason: "qualitative review never produced a verdict — gates green but the seven-lens review did not run; not pushing (fail-closed)"}
 	}
-	return Result{OK: true, Reason: "harness gate re-run is green and the qualitative review emitted its verdict — clear to push + open PR"}
+	if outcome.ReviewBlocked {
+		return Result{OK: false, Reason: "review verdict declared a blocked disposition — an unresolved blocker/important finding needs a human decision; not pushing (fail-closed)"}
+	}
+	return Result{OK: true, Reason: "harness gate re-run is green and the qualitative review emitted a clear verdict — clear to push + open PR"}
 }
 
 // ReviewCompleteness reports whether the in-sandbox /review-worktree session

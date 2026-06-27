@@ -215,6 +215,22 @@ func TestReviewBlocksPushWhenReviewIncompleteDespiteGreenGate(t *testing.T) {
 	}
 }
 
+// BEH-580: a review that emitted its verdict but declared "Disposition: blocked" —
+// an unresolved Blocker/Important finding it could not autonomously resolve — must
+// NOT push, even with green gates over a clean worktree and a completed review. The
+// autonomous pipeline has no human to answer the approval prompt, so an open finding
+// would otherwise reach the PR unaddressed (the BEH-439 leak). Fail closed and keep
+// the worktree for a human decision.
+func TestReviewBlocksPushWhenReviewVerdictBlocked(t *testing.T) {
+	r := Review(ReviewOutcome{GatesGreen: true, WorktreeClean: true, ReviewComplete: true, ReviewBlocked: true})
+	if r.OK {
+		t.Error("a blocked review disposition must NOT clear the push gate even with green gates, a clean worktree, and a completed review")
+	}
+	if !regexp.MustCompile(`(?i)blocked|unresolved|human`).MatchString(r.Reason) {
+		t.Errorf("reason %q does not name the blocked/unresolved finding", r.Reason)
+	}
+}
+
 // BEH-525: completeness of the qualitative review is independent of the push gate.
 // When the review session emitted its verdict (the "## Review:" report), the
 // seven-lens pass ran — complete, regardless of how the container exited.
