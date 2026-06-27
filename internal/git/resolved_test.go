@@ -100,6 +100,35 @@ func TestExtractCitedSymbolsIsPreciseAcrossTicketNoise(t *testing.T) {
 	}
 }
 
+// A PascalCase component name (`GiphyGrid`, `CallTool`) is a code symbol too,
+// and the advisory must round-trip it whole. The regression: a lower-camelCase
+// extractor anchored on a leading *lowercase* letter starts matching at the
+// first inner lowercase char, swallowing the leading capital — `GiphyGrid`
+// surfaced as `iphyGrid`, a token that exists nowhere in source, so the advisory
+// both mis-named the symbol and would self-confirm a false absence on a verbatim
+// grep. Extraction must keep the leading `G`.
+func TestExtractCitedSymbolsKeepsPascalCaseLeadingCapital(t *testing.T) {
+	got := extractCitedSymbols("the lazy `GiphyGrid` never renders")
+	if !contains(got, "GiphyGrid") {
+		t.Fatalf("expected PascalCase GiphyGrid extracted whole, got %v", got)
+	}
+	if contains(got, "iphyGrid") {
+		t.Fatalf("leading capital was stripped — got truncated iphyGrid in %v", got)
+	}
+}
+
+// End-to-end: the emitted advisory must carry the exact, untruncated symbol so an
+// agent can grep it verbatim and trust the result. A source tree missing the
+// cited PascalCase symbol must warn naming `GiphyGrid`, never `iphyGrid`.
+func TestResolvedAdvisoryNamesPascalCaseSymbolUntruncated(t *testing.T) {
+	root := writeSrc(t, "export function useLiveKitConnection() {}\n")
+
+	msg := ResolvedAdvisory(root, "BEH-318", "the lazy `GiphyGrid` never renders")
+	if !strings.Contains(msg, "GiphyGrid") {
+		t.Fatalf("advisory must name the untruncated symbol GiphyGrid, got: %s", msg)
+	}
+}
+
 func contains(xs []string, want string) bool {
 	for _, x := range xs {
 		if x == want {

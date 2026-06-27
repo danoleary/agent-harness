@@ -14,22 +14,45 @@ import (
 // word is never scanned.
 var backtickSpan = regexp.MustCompile("`([^`]+)`")
 
-// camelCaseIdentifier matches a lower-camelCase code identifier: a leading
-// lowercase letter, then at least one internal capital (`onParticipantConnected`,
-// `useLiveKitConnection`, `syncLog`). The internal-capital requirement is the
-// precision filter — it excludes plain lowercase words a ticket quotes in
-// backticks (`grep`, `delete`, `ts`), commit SHAs (`aab6cc98f`), and ticket keys
-// (`BEH-435`), none of which a source grep should chase.
-var camelCaseIdentifier = regexp.MustCompile(`[a-z][a-zA-Z0-9]*[A-Z][a-zA-Z0-9]*`)
+// wordIdentifier matches a whole letter-led word token (anchored at a word
+// boundary by RE2's greedy left-to-right scan, so it never starts mid-word). The
+// mixed-case precision filter is applied in Go afterwards rather than baked into
+// the pattern: anchoring it on a leading *lowercase* letter was the BEH-557 bug —
+// a PascalCase identifier like `GiphyGrid` then matched starting at its first
+// inner lowercase char (`iphyGrid`), silently dropping the leading capital.
+var wordIdentifier = regexp.MustCompile(`[A-Za-z][A-Za-z0-9]*`)
 
-// extractCitedSymbols returns the distinct lower-camelCase code identifiers a
-// ticket description names inside backtick spans — the symbols whose continued
-// existence the advisory guard checks. Order-preserving and de-duplicated.
+// isMixedCaseIdentifier is the precision filter: a code symbol the advisory will
+// grep for must carry both a lowercase and an uppercase letter. That admits both
+// lower-camelCase (`syncLog`) and PascalCase (`GiphyGrid`) while excluding the
+// noise a finding quotes alongside them — plain words (`grep`, `delete`, `ts`),
+// commit SHAs (`aab6cc98f`), and all-caps ticket keys (`BEH-435`), none of which
+// a source grep should chase.
+func isMixedCaseIdentifier(s string) bool {
+	var hasLower, hasUpper bool
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z':
+			hasLower = true
+		case r >= 'A' && r <= 'Z':
+			hasUpper = true
+		}
+	}
+	return hasLower && hasUpper
+}
+
+// extractCitedSymbols returns the distinct mixed-case code identifiers a ticket
+// description names inside backtick spans — lower-camelCase and PascalCase alike —
+// the symbols whose continued existence the advisory guard checks.
+// Order-preserving and de-duplicated.
 func extractCitedSymbols(description string) []string {
 	var out []string
 	seen := map[string]bool{}
 	for _, span := range backtickSpan.FindAllStringSubmatch(description, -1) {
-		for _, sym := range camelCaseIdentifier.FindAllString(span[1], -1) {
+		for _, sym := range wordIdentifier.FindAllString(span[1], -1) {
+			if !isMixedCaseIdentifier(sym) {
+				continue
+			}
 			if !seen[sym] {
 				seen[sym] = true
 				out = append(out, sym)
