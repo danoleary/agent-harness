@@ -182,7 +182,9 @@ func Retrospective(cfg config.Config, log *runlog.Logger, runID string, args Arg
 
 	// File whatever the session dropped: one Linear issue per finding, `[]` files
 	// nothing. Safe to call even on failure — an absent dropbox files nothing.
-	filing.File(findingsDir, t.TeamID, args.Identifier, client, client, log)
+	// Dedup runs exact-match first, then a best-effort semantic pass; a match is
+	// recorded as a recurrence on the existing issue (client) instead of re-filed (BEH-573).
+	filing.File(findingsDir, t.TeamID, args.Identifier, client, client, newSemanticMatcher(cfg), client, log)
 
 	if !result.OK {
 		// Keep the worktree as a recoverable breadcrumb (DESIGN.md failure matrix).

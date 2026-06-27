@@ -17,10 +17,26 @@ import (
 	"time"
 
 	"github.com/beherd/agent-harness/internal/config"
+	"github.com/beherd/agent-harness/internal/filing"
 	"github.com/beherd/agent-harness/internal/runlog"
+	"github.com/beherd/agent-harness/internal/semdedup"
 )
 
 var ticketRE = regexp.MustCompile(`^[A-Z]+-\d+$`)
+
+// newSemanticMatcher builds the host-side semantic dedup matcher for filing
+// findings (BEH-573), or returns a nil filing.SemanticMatcher when no Anthropic
+// API key is available — only a subscription OAuth token, which the x-api-key
+// header rejects (BEH-316). filing.File treats a nil matcher as "skip the
+// semantic pass", degrading to exact key/title dedup. Returning the interface
+// (not the concrete *semdedup.Matcher) keeps the no-key result a true nil
+// interface so that nil check fires.
+func newSemanticMatcher(cfg config.Config) filing.SemanticMatcher {
+	if cfg.AnthropicAPIKey == "" {
+		return nil
+	}
+	return semdedup.New(semdedup.NewAnthropicComplete(cfg.AnthropicAPIKey, cfg.DedupModel))
+}
 
 // isDiskFull reports whether err is the host-disk-full ENOSPC — surfaced when a
 // findings-dir mkdir fails because the disk filled (BEH-540: the BEH-336

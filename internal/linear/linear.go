@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/beherd/agent-harness/internal/findings"
@@ -30,6 +31,43 @@ func ExtractFindingKey(body string) string {
 // findingKeyMarker renders the body marker for a dedup key.
 func findingKeyMarker(key string) string {
 	return "<!-- finding-key: " + key + " -->"
+}
+
+// occurrenceRe matches the occurrence-count marker a recurrence bump writes into a
+// filed finding's body: `<!-- occurrences: <n> -->`. Like the finding-key marker
+// it's machine-readable and invisible in rendered Markdown, so the count survives
+// round-trips without cluttering the human-facing issue.
+var occurrenceRe = regexp.MustCompile(`<!--\s*occurrences:\s*(\d+)\s*-->`)
+
+// occurrenceMarker renders the body marker for an occurrence count.
+func occurrenceMarker(n int) string {
+	return fmt.Sprintf("<!-- occurrences: %d -->", n)
+}
+
+// extractOccurrences reads the occurrence count from a finding body, defaulting
+// to 1 (the original filing) when the body carries no marker yet.
+func extractOccurrences(body string) int {
+	m := occurrenceRe.FindStringSubmatch(body)
+	if m == nil {
+		return 1
+	}
+	n, err := strconv.Atoi(m[1])
+	if err != nil || n < 1 {
+		return 1
+	}
+	return n
+}
+
+// withOccurrences returns body with its occurrence marker set to n — replacing an
+// existing marker in place, or appending one when the body has none.
+func withOccurrences(body string, n int) string {
+	if occurrenceRe.MatchString(body) {
+		return occurrenceRe.ReplaceAllString(body, occurrenceMarker(n))
+	}
+	if strings.TrimSpace(body) == "" {
+		return occurrenceMarker(n)
+	}
+	return body + "\n\n" + occurrenceMarker(n)
 }
 
 // Transport sends a GraphQL operation and returns the `data` payload as raw JSON
@@ -130,6 +168,37 @@ const fileFindingMutation = `
 				identifier
 				url
 			}
+		}
+	}
+`
+
+// occurrenceContextQuery fetches the fields a recurrence bump needs: the issue's
+// node id (commentCreate/issueUpdate key off the UUID, not the human identifier)
+// and its current description (to read + rewrite the occurrence marker).
+const occurrenceContextQuery = `
+	query OccurrenceContext($id: String!) {
+		issue(id: $id) {
+			id
+			description
+		}
+	}
+`
+
+// updateDescriptionMutation rewrites an issue's body (used to bump the occurrence
+// marker in place).
+const updateDescriptionMutation = `
+	mutation UpdateDescription($id: String!, $description: String!) {
+		issueUpdate(id: $id, input: { description: $description }) {
+			success
+		}
+	}
+`
+
+// addCommentMutation appends a comment to an issue (the recurrence breadcrumb).
+const addCommentMutation = `
+	mutation AddComment($input: CommentCreateInput!) {
+		commentCreate(input: $input) {
+			success
 		}
 	}
 `
@@ -381,4 +450,48 @@ func (c *Client) SearchFindings(teamID string) ([]ExistingFinding, error) {
 // must not suppress a re-file.
 func isClosedStateType(stateType string) bool {
 	return stateType == "completed" || stateType == "canceled"
+}
+
+// RecordOccurrence records that an already-tracked finding recurred during
+// relatedIdentifier's pipeline (BEH-573): it bumps the issue's occurrence marker
+// (`<!-- occurrences: N -->`, defaulting to 1 for the original filing) and
+// appends a breadcrumb comment, returning the new count. Turning N reworded
+// duplicates into one issue carrying N occurrences is both less backlog noise and
+// a sharper prioritisation signal. The bump and the comment are two mutations: if
+// the comment fails after the bump landed the count is still advanced (the
+// breadcrumb is the lossy half, not the count), and either failure surfaces as an
+// error the caller degrades on — it never files a duplicate instead.
+func (c *Client) RecordOccurrence(identifier, relatedIdentifier string) (int, error) {
+	data, err := c.transport(occurrenceContextQuery, map[string]any{"id": identifier})
+	if err != nil {
+		return 0, err
+	}
+	var ctx struct {
+		Issue *struct {
+			ID          string `json:"id"`
+			Description string `json:"description"`
+		} `json:"issue"`
+	}
+	if err := json.Unmarshal(data, &ctx); err != nil {
+		return 0, err
+	}
+	if ctx.Issue == nil {
+		return 0, fmt.Errorf("Linear issue not found: %s", identifier)
+	}
+
+	next := extractOccurrences(ctx.Issue.Description) + 1
+	if _, err := c.transport(updateDescriptionMutation, map[string]any{
+		"id":          ctx.Issue.ID,
+		"description": withOccurrences(ctx.Issue.Description, next),
+	}); err != nil {
+		return 0, err
+	}
+
+	comment := fmt.Sprintf("Recurred in %s pipeline (occurrence %d).", relatedIdentifier, next)
+	if _, err := c.transport(addCommentMutation, map[string]any{
+		"input": map[string]any{"issueId": ctx.Issue.ID, "body": comment},
+	}); err != nil {
+		return next, err
+	}
+	return next, nil
 }

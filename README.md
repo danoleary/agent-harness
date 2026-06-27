@@ -132,7 +132,7 @@ runnable by hand in pipeline order.)
 | Var | Scope | Purpose |
 |---|---|---|
 | `LINEAR_API_KEY` | host only | ticket selection, claiming, breadcrumbs, filing findings |
-| `ANTHROPIC_API_KEY` | passed into sandbox | running `claude` |
+| `ANTHROPIC_API_KEY` | passed into sandbox; also host-side | running `claude`; host-side also powers the cheap semantic finding-dedup model call when filing (BEH-573). A subscription `CLAUDE_CODE_OAUTH_TOKEN` satisfies the sandbox but NOT the host dedup call (rejected on `x-api-key`, BEH-316), which then degrades to exact-match dedup. The dedup model is set by the optional `DEDUP_MODEL` (default a small Haiku snapshot). |
 | `GH_TOKEN` | host only | harness's own `git push` + `gh pr create` + the post-PR CI-watch; never enters the sandbox |
 | `HERD_PATH` | host (also passed into sandbox as the mount path) | path to the herd checkout, bind-mounted at its real path |
 

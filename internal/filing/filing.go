@@ -87,6 +87,28 @@ type EventSink interface {
 	Event(msg string)
 }
 
+// SemanticMatcher decides whether a finding is the same root-cause class as one
+// of the already-open findings, returning that issue's identifier or "" for none.
+// It exists because matchKey only catches exact key/title equality, while most
+// real duplicates are the same class described in different prose (BEH-573): two
+// sessions word the same failure differently and pick different free-form keys,
+// so neither the key nor the title collides. *linear.Client-backed matchers pass
+// a fake in tests. Best-effort (ADR-0001): the caller treats any error as "no
+// match" and degrades to filing the finding, the pre-semantic behaviour.
+type SemanticMatcher interface {
+	MatchFinding(f findings.Finding, open []linear.ExistingFinding) (identifier string, err error)
+}
+
+// OccurrenceRecorder records that an already-tracked finding recurred: it appends
+// an occurrence comment to the existing issue and bumps its occurrence count
+// (BEH-573), turning N duplicate files into one issue carrying N occurrences —
+// also a better prioritisation signal than N near-identical issues. It returns
+// the new count for narration. Best-effort (ADR-0001): the caller narrates a
+// failure and still skips the duplicate, never crashing or filing a dup.
+type OccurrenceRecorder interface {
+	RecordOccurrence(identifier, relatedIdentifier string) (count int, err error)
+}
+
 // File reads the findings dropbox in findingsDir and files each finding to
 // Linear, referencing relatedIdentifier (the worked ticket). It never returns an
 // error: every failure is degraded to a narration line, so one bad dropbox or a
@@ -94,7 +116,15 @@ type EventSink interface {
 //   - No dropbox file → nothing to file (the common, friction-free case).
 //   - Dropbox present but unreadable/malformed → one narration line, nothing filed.
 //   - Findings present but no team id resolved → one narration line, nothing filed.
-func File(findingsDir, teamID, relatedIdentifier string, filer Filer, searcher Searcher, log EventSink) {
+//
+// Dedup runs in two passes before filing: the fast exact key/title match
+// (matchKey), then — for anything that misses — a best-effort semantic pass via
+// matcher. A match (either pass) is recorded as a recurrence on the existing
+// issue (comment-and-bump) instead of filing a duplicate. matcher and recorder
+// are both optional: nil matcher skips the semantic pass, nil recorder degrades a
+// match to the pre-BEH-573 silent-skip narration — so a caller can opt into
+// either half independently and a failure of either degrades, never crashes.
+func File(findingsDir, teamID, relatedIdentifier string, filer Filer, searcher Searcher, matcher SemanticMatcher, recorder OccurrenceRecorder, log EventSink) {
 	text, err := os.ReadFile(filepath.Join(findingsDir, dropboxFile))
 	if err != nil {
 		return // no dropbox file → nothing to file (the common, friction-free case)
@@ -117,15 +147,27 @@ func File(findingsDir, teamID, relatedIdentifier string, filer Filer, searcher S
 	}
 
 	// Look up findings already tracked so we don't re-file duplicates across runs.
-	// Best-effort (ADR-0001): a search failure degrades to filing everything, the
-	// pre-dedup behaviour — never a crash.
-	tracked := openTracked(teamID, searcher, log)
+	// Best-effort (ADR-0001): a search failure degrades to filing everything (an
+	// empty tracked map AND no open set, so the semantic pass is also skipped) —
+	// the pre-dedup behaviour, never a crash.
+	tracked, open := openTracked(teamID, searcher, log)
 
 	for _, f := range parsed.Findings {
+		// 1. Exact match — the fast short-circuit, preserved ahead of the model.
 		if existing, ok := tracked[matchKey(f.Key, f.Title)]; ok {
-			log.Event(fmt.Sprintf("finding ↩ already tracked: %s — %s", existing.Identifier, existing.Title))
+			recordRecurrence(existing, relatedIdentifier, recorder, log)
 			continue
 		}
+		// 2. Semantic match — best-effort; an error, a nil matcher, an empty open
+		// set, or an unrecognised id all fall through to filing as new.
+		if existing, ok := semanticMatch(f, open, matcher, log); ok {
+			recordRecurrence(existing, relatedIdentifier, recorder, log)
+			// Register so a later same-class finding in this dropbox also dedups
+			// against it (its exact key/title now points at the matched issue).
+			tracked[matchKey(f.Key, f.Title)] = existing
+			continue
+		}
+		// 3. No match — file a new issue.
 		created, err := filer.FileFinding(f, linear.FileFindingOptions{
 			TeamID: teamID, RelatedIdentifier: relatedIdentifier,
 		})
@@ -134,29 +176,82 @@ func File(findingsDir, teamID, relatedIdentifier string, filer Filer, searcher S
 			continue
 		}
 		// Register what we just filed so a later finding in the same dropbox that
-		// shares its key dedups against it too, not just across runs.
-		tracked[matchKey(f.Key, f.Title)] = linear.ExistingFinding{Identifier: created.Identifier, Title: f.Title, Key: f.Key}
+		// shares its key/title — or reads as the same class — dedups against it too,
+		// not just across runs.
+		filed := linear.ExistingFinding{Identifier: created.Identifier, Title: f.Title, Key: f.Key}
+		tracked[matchKey(f.Key, f.Title)] = filed
+		open = append(open, filed)
 		log.Event(fmt.Sprintf("finding filed: %s — %s", created.Identifier, f.Title))
 	}
 }
 
-// openTracked returns the already-filed harness findings keyed by match key,
-// limited to OPEN issues — a closed/canceled match must not suppress a re-file.
-// A search failure is narrated once and degrades to an empty map (file all).
-func openTracked(teamID string, searcher Searcher, log EventSink) map[string]linear.ExistingFinding {
+// recordRecurrence handles a finding that matched an already-tracked issue:
+// comment-and-bump when a recorder is wired (BEH-573), else the pre-BEH-573
+// silent-skip narration. Best-effort: a recorder failure degrades to a skip
+// narration so a transient Linear error never files a duplicate or crashes.
+func recordRecurrence(existing linear.ExistingFinding, relatedIdentifier string, recorder OccurrenceRecorder, log EventSink) {
+	if recorder == nil {
+		log.Event(fmt.Sprintf("finding ↩ already tracked: %s — %s", existing.Identifier, existing.Title))
+		return
+	}
+	count, err := recorder.RecordOccurrence(existing.Identifier, relatedIdentifier)
+	if err != nil {
+		log.Event(fmt.Sprintf("finding ⚠ recurrence not recorded on %s (skipped, not re-filed): %s", existing.Identifier, err.Error()))
+		return
+	}
+	log.Event(fmt.Sprintf("finding ↩ recurred (occurrence %d): %s — %s", count, existing.Identifier, existing.Title))
+}
+
+// semanticMatch asks the matcher whether f duplicates one of the open findings,
+// resolving the returned identifier back to its ExistingFinding. Best-effort: a
+// nil matcher, an empty open set, a model error, or an identifier not in the open
+// set all yield ok=false so the finding is filed as new (the pre-semantic
+// behaviour) rather than mis-deduped against an issue we can't verify.
+func semanticMatch(f findings.Finding, open []linear.ExistingFinding, matcher SemanticMatcher, log EventSink) (linear.ExistingFinding, bool) {
+	if matcher == nil || len(open) == 0 {
+		return linear.ExistingFinding{}, false
+	}
+	id, err := matcher.MatchFinding(f, open)
+	if err != nil {
+		log.Event("finding ⚠ semantic dedup failed, filing without it: " + err.Error())
+		return linear.ExistingFinding{}, false
+	}
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return linear.ExistingFinding{}, false
+	}
+	for _, e := range open {
+		if e.Identifier == id {
+			return e, true
+		}
+	}
+	// The model named an id that isn't in the open set we gave it — don't trust a
+	// match we can't resolve; file as new.
+	log.Event("finding ⚠ semantic dedup returned unknown id " + id + ", filing as new")
+	return linear.ExistingFinding{}, false
+}
+
+// openTracked returns the already-filed harness findings both keyed by match key
+// (for the exact short-circuit) and as an ordered slice (the candidate set for
+// the semantic pass), limited to OPEN issues — a closed/canceled match must not
+// suppress a re-file. A search failure is narrated once and degrades to an empty
+// map and nil slice (file all, no semantic pass).
+func openTracked(teamID string, searcher Searcher, log EventSink) (map[string]linear.ExistingFinding, []linear.ExistingFinding) {
 	tracked := map[string]linear.ExistingFinding{}
 	existing, err := searcher.SearchFindings(teamID)
 	if err != nil {
 		log.Event("findings ⚠ dedup search failed, filing without dedup: " + err.Error())
-		return tracked
+		return tracked, nil
 	}
+	open := make([]linear.ExistingFinding, 0, len(existing))
 	for _, e := range existing {
 		if e.Closed {
 			continue
 		}
 		tracked[matchKey(e.Key, e.Title)] = e
+		open = append(open, e)
 	}
-	return tracked
+	return tracked, open
 }
 
 // PriorFinding is an already-known harness finding class (its dedup key and

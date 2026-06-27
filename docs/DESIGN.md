@@ -484,6 +484,22 @@ the retrospective prompt with an instruction to treat them as settled and look
 only for **new** friction. Best-effort: a Linear lookup failure degrades to the
 dropbox classes alone. A first run has nothing to inject and reads as before.
 
+**Filing dedup (BEH-573).** Before filing each finding, the harness dedups it
+against the team's open harness findings in two passes: first an exact `key`/
+title match (the fast `matchKey` short-circuit), then — for anything that misses
+— a best-effort **semantic** pass that asks a cheap host-side model "is this the
+same root-cause class as one of these open issues?". The semantic pass is what
+catches the common case the exact match can't: two sessions wording the *same*
+failure differently and picking different (or empty) free-form keys. On any match
+(either pass) the existing issue is bumped as a recurrence — an occurrence comment
+plus a bumped `<!-- occurrences: N -->` body marker — instead of filing a
+duplicate, turning N reworded dups into one issue carrying N occurrences. Both new
+paths are best-effort (ADR-0001): the model needs a host-side `ANTHROPIC_API_KEY`
+(a subscription OAuth token is rejected on the `x-api-key` header, BEH-316), and a
+missing key, a model error, or a Linear error all degrade to the prior exact-match
+behaviour with one narration line — never a crash, never a re-filed duplicate. The
+cheap model is set by `DEDUP_MODEL` (default a small Haiku snapshot).
+
 These are a separate concern from the feature PR and never go in it.
 
 > Why `review` is a **cold** review and does *not* read the implementation

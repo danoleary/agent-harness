@@ -46,6 +46,35 @@ func (s *fakeSearcher) SearchFindings(_ string) ([]linear.ExistingFinding, error
 // noExisting is a searcher that finds nothing already tracked (the first-run case).
 func noExisting() *fakeSearcher { return &fakeSearcher{} }
 
+// fakeMatcher replays a scripted semantic verdict: the identifier it matches f to
+// (or "" for none), or an error. It records the open set it was handed so a test
+// can assert the candidate list was passed through.
+type fakeMatcher struct {
+	matchTo  string
+	err      error
+	calls    int
+	lastOpen []linear.ExistingFinding
+}
+
+func (m *fakeMatcher) MatchFinding(_ findings.Finding, open []linear.ExistingFinding) (string, error) {
+	m.calls++
+	m.lastOpen = open
+	return m.matchTo, m.err
+}
+
+// fakeRecorder records which issues were bumped as recurrences and replays a
+// scripted count/error.
+type fakeRecorder struct {
+	bumped []string
+	count  int
+	err    error
+}
+
+func (r *fakeRecorder) RecordOccurrence(identifier, _ string) (int, error) {
+	r.bumped = append(r.bumped, identifier)
+	return r.count, r.err
+}
+
 // recorder captures the narration events filing emits.
 type recorder struct{ events []string }
 
@@ -74,7 +103,7 @@ func TestFileFilesEachFindingAndNarrates(t *testing.T) {
 	}}
 	rec := &recorder{}
 
-	File(dir, "team-uuid", "BEH-370", filer, noExisting(), rec)
+	File(dir, "team-uuid", "BEH-370", filer, noExisting(), nil, nil, rec)
 
 	if len(filer.calls) != 2 {
 		t.Fatalf("expected 2 findings filed, got %d", len(filer.calls))
@@ -100,7 +129,7 @@ func TestFileSkipsFindingAlreadyTrackedByOpenIssue(t *testing.T) {
 	}}
 	rec := &recorder{}
 
-	File(dir, "team-uuid", "BEH-370", filer, searcher, rec)
+	File(dir, "team-uuid", "BEH-370", filer, searcher, nil, nil, rec)
 
 	if len(filer.calls) != 0 {
 		t.Fatalf("expected the duplicate to be skipped, but %d were filed", len(filer.calls))
@@ -123,7 +152,7 @@ func TestFileRefilesWhenOnlyMatchIsClosed(t *testing.T) {
 	}}
 	rec := &recorder{}
 
-	File(dir, "team-uuid", "BEH-370", filer, searcher, rec)
+	File(dir, "team-uuid", "BEH-370", filer, searcher, nil, nil, rec)
 
 	if len(filer.calls) != 1 {
 		t.Fatalf("expected the finding re-filed past the closed match, got %d filed", len(filer.calls))
@@ -146,7 +175,7 @@ func TestFileDedupsOnTitleWhenNoKey(t *testing.T) {
 	}}
 	rec := &recorder{}
 
-	File(dir, "team-uuid", "BEH-370", filer, searcher, rec)
+	File(dir, "team-uuid", "BEH-370", filer, searcher, nil, nil, rec)
 
 	if len(filer.calls) != 0 {
 		t.Fatalf("expected the same-title finding deduped, got %d filed", len(filer.calls))
@@ -166,7 +195,7 @@ func TestFileFilesAllWhenSearchFails(t *testing.T) {
 	searcher := &fakeSearcher{err: errBoom}
 	rec := &recorder{}
 
-	File(dir, "team-uuid", "BEH-370", filer, searcher, rec)
+	File(dir, "team-uuid", "BEH-370", filer, searcher, nil, nil, rec)
 
 	if len(filer.calls) != 2 {
 		t.Fatalf("expected both findings filed despite the search failure, got %d", len(filer.calls))
@@ -188,7 +217,7 @@ func TestFileDedupsWithinASingleRun(t *testing.T) {
 	filer := &fakeFiler{results: []fakeResult{{issue: linear.CreatedIssue{Identifier: "BEH-600"}}}}
 	rec := &recorder{}
 
-	File(dir, "team-uuid", "BEH-370", filer, noExisting(), rec)
+	File(dir, "team-uuid", "BEH-370", filer, noExisting(), nil, nil, rec)
 
 	if len(filer.calls) != 1 {
 		t.Fatalf("expected the two same-key findings collapsed to one filed, got %d", len(filer.calls))
@@ -203,7 +232,7 @@ func TestFileIsSilentWhenNoDropbox(t *testing.T) {
 	filer := &fakeFiler{}
 	rec := &recorder{}
 
-	File(t.TempDir(), "team-uuid", "BEH-370", filer, noExisting(), rec)
+	File(t.TempDir(), "team-uuid", "BEH-370", filer, noExisting(), nil, nil, rec)
 
 	if len(filer.calls) != 0 {
 		t.Errorf("expected nothing filed, got %d", len(filer.calls))
@@ -221,7 +250,7 @@ func TestFileSkipsWhenNoTeamID(t *testing.T) {
 	filer := &fakeFiler{}
 	rec := &recorder{}
 
-	File(dir, "", "BEH-370", filer, noExisting(), rec)
+	File(dir, "", "BEH-370", filer, noExisting(), nil, nil, rec)
 
 	if len(filer.calls) != 0 {
 		t.Errorf("expected nothing filed without a team id, got %d", len(filer.calls))
@@ -238,7 +267,7 @@ func TestFileNarratesUnreadableDropbox(t *testing.T) {
 	filer := &fakeFiler{}
 	rec := &recorder{}
 
-	File(dir, "team-uuid", "BEH-370", filer, noExisting(), rec)
+	File(dir, "team-uuid", "BEH-370", filer, noExisting(), nil, nil, rec)
 
 	if len(filer.calls) != 0 {
 		t.Errorf("expected nothing filed from a bad dropbox, got %d", len(filer.calls))
@@ -258,7 +287,7 @@ func TestFileContinuesPastAFilingError(t *testing.T) {
 	}}
 	rec := &recorder{}
 
-	File(dir, "team-uuid", "BEH-370", filer, noExisting(), rec)
+	File(dir, "team-uuid", "BEH-370", filer, noExisting(), nil, nil, rec)
 
 	if len(filer.calls) != 2 {
 		t.Fatalf("expected both findings attempted, got %d", len(filer.calls))
@@ -286,7 +315,7 @@ func TestClearDropboxPreventsRefilingStaleFindings(t *testing.T) {
 	// A second run that drops nothing must file nothing — not run 1's stale finding.
 	filer := &fakeFiler{}
 	rec := &recorder{}
-	File(dir, "team-uuid", "BEH-370", filer, noExisting(), rec)
+	File(dir, "team-uuid", "BEH-370", filer, noExisting(), nil, nil, rec)
 	if len(filer.calls) != 0 {
 		t.Errorf("expected nothing filed after clear, got %d", len(filer.calls))
 	}
@@ -469,6 +498,165 @@ func TestAlreadyFiledIsEmptyOnFirstRun(t *testing.T) {
 	}
 	if len(rec.events) != 0 {
 		t.Errorf("expected no narration on a clean first run, got %v", rec.events)
+	}
+}
+
+// The headline BEH-573 behaviour: a finding whose prose and key DON'T match any
+// open issue exactly, but which the semantic matcher reports is the same class,
+// is NOT filed as a new issue — the matched issue is bumped as a recurrence.
+func TestFileSemanticMatchBumpsInsteadOfFiling(t *testing.T) {
+	dir := t.TempDir()
+	writeDropbox(t, dir, `[{"title":"review aborted on spend cap yet PR still opened","body":"no verdict","key":"review-spendcap-abort-pushes-pr-without-verdict"}]`)
+
+	filer := &fakeFiler{}
+	searcher := &fakeSearcher{existing: []linear.ExistingFinding{
+		{Identifier: "BEH-572", Title: "spending-cap-aborted review still pushes a PR", Key: "review-spending-cap-abort-still-pushes-pr-without-qualitative-review"},
+	}}
+	matcher := &fakeMatcher{matchTo: "BEH-572"}
+	bumper := &fakeRecorder{count: 2}
+	rec := &recorder{}
+
+	File(dir, "team-uuid", "BEH-370", filer, searcher, matcher, bumper, rec)
+
+	if len(filer.calls) != 0 {
+		t.Fatalf("expected the reworded duplicate NOT filed, but %d were filed", len(filer.calls))
+	}
+	if len(bumper.bumped) != 1 || bumper.bumped[0] != "BEH-572" {
+		t.Fatalf("expected BEH-572 bumped once as a recurrence, got %v", bumper.bumped)
+	}
+	joined := strings.Join(rec.events, "\n")
+	if !strings.Contains(joined, "recurred") || !strings.Contains(joined, "BEH-572") {
+		t.Errorf("expected a recurrence narration naming BEH-572, got: %q", joined)
+	}
+}
+
+// With a recorder wired, an EXACT key match is also recorded as a recurrence
+// (comment-and-bump), not the silent skip — and the fast exact short-circuit is
+// preserved, so the semantic matcher is never consulted for an exact hit.
+func TestFileExactMatchBumpsAndSkipsSemanticPass(t *testing.T) {
+	dir := t.TempDir()
+	writeDropbox(t, dir, `[{"title":"Playwright can't run in sandbox","body":"missing deps","key":"sandbox-playwright-missing-deps"}]`)
+
+	filer := &fakeFiler{}
+	searcher := &fakeSearcher{existing: []linear.ExistingFinding{
+		{Identifier: "BEH-405", Title: "Storybook unrunnable", Key: "sandbox-playwright-missing-deps"},
+	}}
+	matcher := &fakeMatcher{matchTo: "BEH-999"} // would mis-match if ever consulted
+	bumper := &fakeRecorder{count: 3}
+	rec := &recorder{}
+
+	File(dir, "team-uuid", "BEH-370", filer, searcher, matcher, bumper, rec)
+
+	if len(filer.calls) != 0 {
+		t.Fatalf("expected exact dup not filed, got %d filed", len(filer.calls))
+	}
+	if matcher.calls != 0 {
+		t.Errorf("expected the matcher NOT consulted on an exact hit (short-circuit), got %d calls", matcher.calls)
+	}
+	if len(bumper.bumped) != 1 || bumper.bumped[0] != "BEH-405" {
+		t.Fatalf("expected BEH-405 bumped on the exact match, got %v", bumper.bumped)
+	}
+}
+
+// No-match: when neither the exact key/title nor the semantic matcher matches, the
+// finding is filed as a new issue (the matcher returning "" must not block it).
+func TestFileFilesNewWhenSemanticReturnsNoMatch(t *testing.T) {
+	dir := t.TempDir()
+	writeDropbox(t, dir, `[{"title":"a brand new failure class","body":"x"}]`)
+
+	filer := &fakeFiler{results: []fakeResult{{issue: linear.CreatedIssue{Identifier: "BEH-700"}}}}
+	searcher := &fakeSearcher{existing: []linear.ExistingFinding{
+		{Identifier: "BEH-405", Title: "unrelated open finding"},
+	}}
+	matcher := &fakeMatcher{matchTo: ""} // explicitly "none of these"
+	bumper := &fakeRecorder{}
+	rec := &recorder{}
+
+	File(dir, "team-uuid", "BEH-370", filer, searcher, matcher, bumper, rec)
+
+	if len(filer.calls) != 1 {
+		t.Fatalf("expected the unmatched finding filed as new, got %d filed", len(filer.calls))
+	}
+	if len(bumper.bumped) != 0 {
+		t.Errorf("expected nothing bumped on a no-match, got %v", bumper.bumped)
+	}
+	if !strings.Contains(strings.Join(rec.events, "\n"), "BEH-700") {
+		t.Errorf("expected the new issue narrated, got %v", rec.events)
+	}
+}
+
+// Best-effort (ADR-0001): a semantic-matcher ERROR must degrade to filing the
+// finding (the pre-semantic behaviour) and narrate, never crash or silently drop.
+func TestFileFilesWhenSemanticMatcherErrors(t *testing.T) {
+	dir := t.TempDir()
+	writeDropbox(t, dir, `[{"title":"some finding","body":"x"}]`)
+
+	filer := &fakeFiler{results: []fakeResult{{issue: linear.CreatedIssue{Identifier: "BEH-701"}}}}
+	searcher := &fakeSearcher{existing: []linear.ExistingFinding{
+		{Identifier: "BEH-405", Title: "an open finding"},
+	}}
+	matcher := &fakeMatcher{err: errBoom}
+	bumper := &fakeRecorder{}
+	rec := &recorder{}
+
+	File(dir, "team-uuid", "BEH-370", filer, searcher, matcher, bumper, rec)
+
+	if len(filer.calls) != 1 {
+		t.Fatalf("expected the finding filed despite the matcher error, got %d filed", len(filer.calls))
+	}
+	if len(bumper.bumped) != 0 {
+		t.Errorf("expected nothing bumped when the matcher errored, got %v", bumper.bumped)
+	}
+	if !strings.Contains(strings.Join(rec.events, "\n"), "semantic dedup failed") {
+		t.Errorf("expected a degraded-semantic narration, got %v", rec.events)
+	}
+}
+
+// Best-effort: a recorder failure on a confirmed match must NOT fall back to
+// filing a duplicate — the match still held, so the finding is skipped with a
+// degraded narration. Re-filing on a transient comment error is the worse outcome.
+func TestFileSkipsWithoutRefilingWhenRecorderErrors(t *testing.T) {
+	dir := t.TempDir()
+	writeDropbox(t, dir, `[{"title":"dup","body":"x","key":"same-class"}]`)
+
+	filer := &fakeFiler{}
+	searcher := &fakeSearcher{existing: []linear.ExistingFinding{
+		{Identifier: "BEH-405", Title: "tracked", Key: "same-class"},
+	}}
+	bumper := &fakeRecorder{err: errBoom}
+	rec := &recorder{}
+
+	File(dir, "team-uuid", "BEH-370", filer, searcher, nil, bumper, rec)
+
+	if len(filer.calls) != 0 {
+		t.Fatalf("expected no duplicate filed when the recorder errors, got %d filed", len(filer.calls))
+	}
+	if !strings.Contains(strings.Join(rec.events, "\n"), "recurrence not recorded") {
+		t.Errorf("expected a degraded-recorder narration, got %v", rec.events)
+	}
+}
+
+// The matcher is handed the open candidate set to compare against (the thing that
+// lets it spot a same-class recurrence at all).
+func TestFilePassesOpenFindingsToMatcher(t *testing.T) {
+	dir := t.TempDir()
+	writeDropbox(t, dir, `[{"title":"new wording","body":"x"}]`)
+
+	filer := &fakeFiler{results: []fakeResult{{issue: linear.CreatedIssue{Identifier: "BEH-702"}}}}
+	searcher := &fakeSearcher{existing: []linear.ExistingFinding{
+		{Identifier: "BEH-405", Title: "open one", Closed: false},
+		{Identifier: "BEH-406", Title: "closed one", Closed: true},
+	}}
+	matcher := &fakeMatcher{matchTo: ""}
+	rec := &recorder{}
+
+	File(dir, "team-uuid", "BEH-370", filer, searcher, matcher, &fakeRecorder{}, rec)
+
+	if matcher.calls != 1 {
+		t.Fatalf("expected the matcher consulted once, got %d", matcher.calls)
+	}
+	if len(matcher.lastOpen) != 1 || matcher.lastOpen[0].Identifier != "BEH-405" {
+		t.Errorf("expected only the OPEN finding passed as a candidate, got %+v", matcher.lastOpen)
 	}
 }
 

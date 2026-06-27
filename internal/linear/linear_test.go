@@ -378,6 +378,133 @@ func TestFileFindingAddsAgentHarnessAlongsideFindingLabels(t *testing.T) {
 	}
 }
 
+// routingTransport returns a Transport that picks a response by matching a
+// substring of the query, recording every call so a test can assert the
+// variables sent. A query matching no route fails the test.
+func routingTransport(t *testing.T, routes map[string]any) (Transport, *[]call) {
+	t.Helper()
+	var calls []call
+	tr := func(query string, variables map[string]any) (json.RawMessage, error) {
+		calls = append(calls, call{query: query, variables: variables})
+		for needle, data := range routes {
+			if strings.Contains(query, needle) {
+				b, err := json.Marshal(data)
+				if err != nil {
+					t.Fatalf("marshal route %q: %v", needle, err)
+				}
+				return b, nil
+			}
+		}
+		t.Fatalf("no route matched query: %s", query)
+		return nil, nil
+	}
+	return tr, &calls
+}
+
+func TestRecordOccurrenceBumpsCountAndComments(t *testing.T) {
+	tr, calls := routingTransport(t, map[string]any{
+		"OccurrenceContext": map[string]any{
+			"issue": map[string]any{"id": "uuid-1", "description": "the original body"},
+		},
+		"UpdateDescription": map[string]any{"issueUpdate": map[string]any{"success": true}},
+		"AddComment":        map[string]any{"commentCreate": map[string]any{"success": true}},
+	})
+
+	count, err := NewClient(tr).RecordOccurrence("BEH-405", "BEH-370")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// No marker in the original body → original counts as 1, first recurrence is 2.
+	if count != 2 {
+		t.Errorf("count = %d, want 2", count)
+	}
+
+	var updateVars, commentVars map[string]any
+	for _, c := range *calls {
+		if strings.Contains(c.query, "UpdateDescription") {
+			updateVars = c.variables
+		}
+		if strings.Contains(c.query, "AddComment") {
+			commentVars = c.variables
+		}
+	}
+	desc, _ := updateVars["description"].(string)
+	if !strings.Contains(desc, "<!-- occurrences: 2 -->") {
+		t.Errorf("bumped description missing the occurrences:2 marker, got %q", desc)
+	}
+	if !strings.Contains(desc, "the original body") {
+		t.Errorf("bump must preserve the original body, got %q", desc)
+	}
+	input, _ := commentVars["input"].(map[string]any)
+	body, _ := input["body"].(string)
+	if !strings.Contains(body, "BEH-370") || !strings.Contains(body, "occurrence 2") {
+		t.Errorf("comment = %q, want it to name the pipeline ticket and occurrence 2", body)
+	}
+	if id, _ := input["issueId"].(string); id != "uuid-1" {
+		t.Errorf("comment issueId = %q, want the resolved UUID uuid-1", id)
+	}
+}
+
+// An existing marker is incremented in place, not duplicated.
+func TestRecordOccurrenceIncrementsExistingMarker(t *testing.T) {
+	tr, calls := routingTransport(t, map[string]any{
+		"OccurrenceContext": map[string]any{
+			"issue": map[string]any{"id": "uuid-1", "description": "body\n\n<!-- occurrences: 3 -->"},
+		},
+		"UpdateDescription": map[string]any{"issueUpdate": map[string]any{"success": true}},
+		"AddComment":        map[string]any{"commentCreate": map[string]any{"success": true}},
+	})
+
+	count, err := NewClient(tr).RecordOccurrence("BEH-405", "BEH-370")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if count != 4 {
+		t.Errorf("count = %d, want 4 (3 + 1)", count)
+	}
+	var desc string
+	for _, c := range *calls {
+		if strings.Contains(c.query, "UpdateDescription") {
+			desc, _ = c.variables["description"].(string)
+		}
+	}
+	if strings.Count(desc, "<!-- occurrences:") != 1 {
+		t.Errorf("expected exactly one marker after the bump, got %q", desc)
+	}
+	if !strings.Contains(desc, "<!-- occurrences: 4 -->") {
+		t.Errorf("expected the marker bumped to 4, got %q", desc)
+	}
+}
+
+func TestRecordOccurrenceErrorsWhenIssueMissing(t *testing.T) {
+	tr, _ := routingTransport(t, map[string]any{
+		"OccurrenceContext": map[string]any{"issue": nil},
+	})
+	if _, err := NewClient(tr).RecordOccurrence("BEH-405", "BEH-370"); err == nil {
+		t.Error("expected an error when the issue is not found, got nil")
+	}
+}
+
+func TestExtractOccurrencesDefaultsToOne(t *testing.T) {
+	if got := extractOccurrences("a body with no marker"); got != 1 {
+		t.Errorf("extractOccurrences(no marker) = %d, want 1", got)
+	}
+	if got := extractOccurrences("x <!-- occurrences: 5 --> y"); got != 5 {
+		t.Errorf("extractOccurrences(marker 5) = %d, want 5", got)
+	}
+}
+
+func TestWithOccurrencesAppendsAndReplaces(t *testing.T) {
+	appended := withOccurrences("body", 2)
+	if !strings.Contains(appended, "body") || !strings.Contains(appended, "<!-- occurrences: 2 -->") {
+		t.Errorf("withOccurrences append = %q", appended)
+	}
+	replaced := withOccurrences("body <!-- occurrences: 2 -->", 3)
+	if strings.Count(replaced, "occurrences:") != 1 || !strings.Contains(replaced, "<!-- occurrences: 3 -->") {
+		t.Errorf("withOccurrences replace = %q", replaced)
+	}
+}
+
 // labelIDsContain reports whether the issueCreate labelIds payload (a []string)
 // contains id.
 func labelIDsContain(labelIDs any, id string) bool {

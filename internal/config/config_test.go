@@ -182,6 +182,37 @@ func TestLoadAcceptsOAuthTokenOnly(t *testing.T) {
 	}
 }
 
+// The Anthropic API key is held host-side for the semantic dedup model call, and
+// the cheap dedup model defaults to a small model (BEH-573).
+func TestLoadExposesAnthropicKeyAndDedupModel(t *testing.T) {
+	cfg, err := Load(fullEnv(nil))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.AnthropicAPIKey != "sk-ant-x" {
+		t.Errorf("AnthropicAPIKey = %q, want sk-ant-x", cfg.AnthropicAPIKey)
+	}
+	if cfg.DedupModel != "claude-haiku-4-5-20251001" {
+		t.Errorf("DedupModel = %q, want the cheap default", cfg.DedupModel)
+	}
+}
+
+// With only an OAuth token (no API key), AnthropicAPIKey is empty — the x-api-key
+// header rejects an OAuth token (BEH-316), so the matcher is left unwired and
+// filing degrades to exact-match dedup. The credential check still passes.
+func TestLoadLeavesAnthropicKeyEmptyForOAuthOnly(t *testing.T) {
+	cfg, err := Load(fullEnv(map[string]string{
+		"ANTHROPIC_API_KEY":       "",
+		"CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat01-x",
+	}))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.AnthropicAPIKey != "" {
+		t.Errorf("AnthropicAPIKey = %q, want empty for OAuth-only", cfg.AnthropicAPIKey)
+	}
+}
+
 // Neither Claude credential set → a clear error naming both vars.
 func TestLoadRequiresAClaudeCredential(t *testing.T) {
 	_, err := Load(fullEnv(map[string]string{

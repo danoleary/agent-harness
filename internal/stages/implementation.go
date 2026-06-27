@@ -349,7 +349,9 @@ func Implementation(cfg config.Config, log *runlog.Logger, runID string, args Ar
 	}
 
 	// File any harness-improvement findings the session dropped (after every session, per ADR-0001).
-	filing.File(findingsDir, t.TeamID, args.Identifier, client, client, log)
+	// Dedup runs exact-match first, then a best-effort semantic pass; a match is
+	// recorded as a recurrence on the existing issue (client) instead of re-filed (BEH-573).
+	filing.File(findingsDir, t.TeamID, args.Identifier, client, client, newSemanticMatcher(cfg), client, log)
 
 	// Surface an environmental no-worktree crash to the pipeline so it can
 	// re-attempt the whole stage once rather than discarding the slice (BEH-543).

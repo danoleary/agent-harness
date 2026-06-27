@@ -62,6 +62,17 @@ type Config struct {
 	CIPollInterval time.Duration
 	// CIPollBudget caps a single wait for CI checks to reach a terminal state.
 	CIPollBudget time.Duration
+	// AnthropicAPIKey is the host-only API key used for the cheap host-side semantic
+	// dedup model call when filing findings (BEH-573). Unlike the sandbox credential
+	// (which is validated for presence but never stored — it crosses into the
+	// container via docker `-e`, ADR-0002), this is held host-side for the harness's
+	// own model call. It is "" when only a subscription OAuth token is set — the
+	// x-api-key header rejects an OAuth token (BEH-316) — and semantic dedup is then
+	// skipped (best-effort), with filing degrading to exact key/title dedup.
+	AnthropicAPIKey string
+	// DedupModel is the cheap model used for the semantic dedup pass — a small model
+	// is plenty for a one-token same-class-or-NONE classification.
+	DedupModel string
 }
 
 const (
@@ -72,6 +83,7 @@ const (
 	defaultRetroTimeout     = 45 * time.Minute
 	defaultSessionIdle      = 20 * time.Minute
 	defaultModel            = "claude-opus-4-8"
+	defaultDedupModel       = "claude-haiku-4-5-20251001"
 	defaultCIMaxFixAttempts = 2
 	defaultCIFixBudget      = 30 * time.Minute
 	defaultCIPollInterval   = 30 * time.Second
@@ -134,6 +146,9 @@ func Load(get Getenv) (Config, error) {
 		CIFixBudget:      parseTimeout(get("CI_FIX_BUDGET_MS"), defaultCIFixBudget),
 		CIPollInterval:   parseTimeout(get("CI_POLL_INTERVAL_MS"), defaultCIPollInterval),
 		CIPollBudget:     parseTimeout(get("CI_POLL_BUDGET_MS"), defaultCIPollBudget),
+
+		AnthropicAPIKey: get("ANTHROPIC_API_KEY"),
+		DedupModel:      orDefault(get("DEDUP_MODEL"), defaultDedupModel),
 	}
 	if err := validateIdleBelowCaps(cfg); err != nil {
 		return Config{}, err
