@@ -170,9 +170,9 @@ func TestRetrospectiveReportsSpendingCapAbort(t *testing.T) {
 }
 
 func TestReviewPushesWhenGatesGreenAndWorktreeClean(t *testing.T) {
-	r := Review(ReviewOutcome{GatesGreen: true, WorktreeClean: true})
+	r := Review(ReviewOutcome{GatesGreen: true, WorktreeClean: true, ReviewComplete: true})
 	if !r.OK {
-		t.Errorf("green gates over a clean worktree must clear the push gate, got %+v", r)
+		t.Errorf("green gates over a clean worktree with a completed review must clear the push gate, got %+v", r)
 	}
 }
 
@@ -196,6 +196,22 @@ func TestReviewBlocksPushWhenWorktreeDirty(t *testing.T) {
 	}
 	if !regexp.MustCompile(`(?i)uncommitted|worktree`).MatchString(r.Reason) {
 		t.Errorf("reason %q does not mention the dirty worktree", r.Reason)
+	}
+}
+
+// BEH-569: a green host-side gate over a clean worktree is NOT sufficient to ship
+// a branch — the qualitative seven-lens review must also have produced its verdict.
+// A review session killed before emitting "## Review:" (a spending-cap abort / OOM)
+// leaves the diff with zero qualitative review; the push must fail closed so the PR
+// is never opened on a gate re-run alone (the gate only proves the diff compiles —
+// it is not a review).
+func TestReviewBlocksPushWhenReviewIncompleteDespiteGreenGate(t *testing.T) {
+	r := Review(ReviewOutcome{GatesGreen: true, WorktreeClean: true, ReviewComplete: false})
+	if r.OK {
+		t.Error("an incomplete qualitative review (no verdict) must NOT clear the push gate even with green gates over a clean worktree")
+	}
+	if !regexp.MustCompile(`(?i)review|verdict`).MatchString(r.Reason) {
+		t.Errorf("reason %q does not name the missing qualitative review/verdict", r.Reason)
 	}
 }
 

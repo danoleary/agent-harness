@@ -114,27 +114,37 @@ func RetrospectivePreconditions(in RetrospectiveInputs) Result {
 }
 
 // ReviewOutcome is the result of the harness's OWN host-side gate re-run after a
-// review session — the only thing that may authorise a push (never the agent's
-// self-report). GatesGreen is true iff `pnpm check && pnpm typecheck` passed in the
-// throwaway container on the feature branch (DESIGN.md: ground truth = the
-// harness's own gate run is green; this is also the push gate). WorktreeClean is
-// true iff the worktree had no uncommitted changes when the gate ran.
+// review session plus whether that session actually reviewed — the inputs that
+// together authorise a push (never the agent's self-report). GatesGreen is true iff
+// `pnpm check && pnpm typecheck` passed in the throwaway container on the feature
+// branch (DESIGN.md: ground truth = the harness's own gate run is green). WorktreeClean
+// is true iff the worktree had no uncommitted changes when the gate ran. ReviewComplete
+// is true iff the in-sandbox /review-worktree session emitted its seven-lens verdict
+// (see ReviewQualitative) — a green gate proves the diff compiles but is NOT a review.
 type ReviewOutcome struct {
-	GatesGreen    bool
-	WorktreeClean bool
+	GatesGreen     bool
+	WorktreeClean  bool
+	ReviewComplete bool
 }
 
-// Review decides whether a reviewed branch may ship. Green gates over a clean
-// worktree clear the push + PR; anything else blocks it (no branch reaches a PR
-// on a failing gate, and the worktree is kept for recovery). Because the only
-// inputs are the harness's own gate result and the worktree's git state, a branch
-// can never be pushed on the agent's say-so (AC: no push on self-report).
+// Review decides whether a reviewed branch may ship. A green gate over a clean
+// worktree AND a completed qualitative review clear the push + PR; anything else
+// blocks it (no branch reaches a PR on a failing gate or an unran review, and the
+// worktree is kept for recovery). Because the inputs are only the harness's own
+// gate result, the worktree's git state, and whether the review emitted a verdict,
+// a branch can never be pushed on the agent's say-so (AC: no push on self-report).
 //
 // WorktreeClean is checked first because it qualifies the gate result: the gate
 // runs against the worktree's working tree (committed + uncommitted), but the push
 // ships only the committed branch tip. A dirty worktree therefore means the gate
 // validated a different tree than would ship (e.g. a review session that edited
 // but never committed), so its green/red verdict can't be trusted as the push gate.
+//
+// ReviewComplete is checked last and fails the gate closed (BEH-569): a review
+// session killed before its verdict (a spending-cap abort, an OOM) leaves the diff
+// with a green gate but ZERO qualitative review. Pushing then opens a PR that no
+// one actually reviewed, while the gate re-run masquerades as the review signal.
+// Blocking keeps the worktree for a resumed review rather than shipping unreviewed.
 func Review(outcome ReviewOutcome) Result {
 	if !outcome.WorktreeClean {
 		return Result{OK: false, Reason: "worktree has uncommitted changes — the gate validated a different tree than would ship; not pushing"}
@@ -142,7 +152,10 @@ func Review(outcome ReviewOutcome) Result {
 	if !outcome.GatesGreen {
 		return Result{OK: false, Reason: "harness gate re-run is red — not pushing"}
 	}
-	return Result{OK: true, Reason: "harness gate re-run is green — clear to push + open PR"}
+	if !outcome.ReviewComplete {
+		return Result{OK: false, Reason: "qualitative review never produced a verdict — gates green but the seven-lens review did not run; not pushing (fail-closed)"}
+	}
+	return Result{OK: true, Reason: "harness gate re-run is green and the qualitative review emitted its verdict — clear to push + open PR"}
 }
 
 // ReviewCompleteness reports whether the in-sandbox /review-worktree session

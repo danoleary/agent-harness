@@ -294,7 +294,12 @@ func Review(cfg config.Config, log *runlog.Logger, runID string, args Args) Resu
 	// the worktree is also clean, guaranteeing what shipped is exactly what the gate
 	// validated (never the agent's say-so, and never an unverified working tree).
 	clean := gitpkg.WorktreeClean(worktreePath)
-	result := verify.Review(verify.ReviewOutcome{GatesGreen: gateExit == 0, WorktreeClean: clean})
+	// completeness gates the push closed (BEH-569): a green gate over a clean worktree
+	// is not enough — the review session must have emitted its verdict. A spending-cap
+	// abort / OOM that killed the review before it reviewed leaves the diff unreviewed,
+	// so the push fails closed and the worktree is kept for a resumed review rather than
+	// opening a PR on a gate re-run that nobody mistakes for a review.
+	result := verify.Review(verify.ReviewOutcome{GatesGreen: gateExit == 0, WorktreeClean: clean, ReviewComplete: completeness.Complete})
 	if !result.OK {
 		// A review killed mid-edit (spending cap / OOM) leaves its in-progress fixes
 		// uncommitted. Without capturing them they vanish on the next resume — the

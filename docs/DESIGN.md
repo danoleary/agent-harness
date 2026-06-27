@@ -225,7 +225,8 @@ loop:
 
   --- review ground truth + push gate (harness, host-side) ---
   re-run gates in a throwaway container: `pnpm check && pnpm typecheck` on feat/beh-nnn
-  review OK <=> gates are GREEN          // never the agent's self-report
+  review OK <=> gates are GREEN AND worktree is clean AND the review session emitted its verdict
+                // never the agent's self-report; a green gate is NOT a review (BEH-569)
   if OK     -> git -C <worktree> rebase origin/main   // BEH-570: replay onto the fresh base
                  - clean replay  -> continue (the long pipeline let main move; PR opens current)
                  - content conflict -> abort (branch untouched) + KEEP worktree, leave for a human
@@ -233,6 +234,7 @@ loop:
                gh pr create --repo <origin> --head feat/beh-nnn --base main \
                             --title <templated> --body <templated: ticket id + commit subjects>
   if not OK -> log + Linear breadcrumb comment + KEEP worktree + record failure + continue
+               # incl. verdict-absent (spending-cap abort / OOM): fail closed, never push an unreviewed diff
 
   --- review CI watch + auto-fix (harness, host-side, BEH-414) ---
   poll `gh pr checks feat/beh-nnn` until terminal (success/failure/cancelled), bounded by a poll budget
@@ -294,7 +296,8 @@ loop:
   on `feat/beh-nnn`.
 - **Success is ground-truth, never self-report.** Per tool: *implementation* = a
   real commit ahead of merge-base; *review* = the harness's **own** re-run of the
-  gates is green (which is also the push gate — no branch reaches a PR on the
+  gates is green over a clean worktree **and** the review session emitted its
+  seven-lens verdict (all three are the push gate — no branch reaches a PR on the
   agent's say-so); *retrospective* = `/findings/out.json` exists on disk (an empty
   `[]` is a valid "ran, found nothing"; an *absent* file means the step never ran
   and is a failure). The agent's own "I'm done" is logged but never authoritative.
@@ -314,6 +317,19 @@ loop:
   cap-abort signal precedence over a *present* `out.json` so the abort wins even if
   that on-disk clear didn't. Either way the run routes to ↻ retry-after-reset; any
   real findings written before the cap fired are preserved and still filed.
+- **A review with no verdict fails the push closed ([BEH-569](https://linear.app/beherd/issue/BEH-569)).**
+  The host-side gate re-run authorises the push, but a green gate only proves the
+  diff compiles — it is **not** a review. A review session killed before it emitted
+  its `## Review:` verdict (a spending-cap abort [BEH-494], an OOM [BEH-525]) leaves
+  the diff with **zero** qualitative review, yet its gate re-run still runs green
+  against the committed handoff. Substituting that mechanical gate for the review and
+  pushing would open a PR nobody reviewed while reporting "clear to push" — a silent
+  single point of failure. So `verify.Review` gates the push on `ReviewComplete`
+  (the verdict was emitted, surfaced by `ReviewQualitative`) **in addition to** green
+  gates + a clean worktree: a verdict-absent review is fail-closed — no push, no PR,
+  worktree kept so a resumed review can finish before the branch ever ships. The
+  BEH-494 retry-after-reset note already fired for the *session*; this is what makes
+  the *pipeline* honour it instead of pushing past it.
 - **A usage-policy refusal is retryable, not fatal ([BEH-389](https://linear.app/beherd/issue/BEH-389)).**
   Claude Code's "unable to respond … violate our Usage Policy" refusal is a known
   intermittent false-positive on long agentic sessions; it returns a terminal
@@ -604,7 +620,7 @@ ships. The `ready-for-agent` label remains the human gate on *what* runs unatten
   |---|---|---|---|
   | Clean success (ground-truth passes) | commit ahead → run review | gates green → push + PR → CI watch → CI green → run retrospective | `out.json` present → file findings → remove worktree, ticket done, next |
   | Crash / non-zero exit / timeout | log + breadcrumb, skip rest, next | log + breadcrumb, keep worktree (no push), next | log + breadcrumb, keep worktree, next |
-  | Ran but ground-truth fails | no commit → skip + breadcrumb | gates **red** → no push, breadcrumb, keep worktree, next; OR PR open but **CI red after auto-fix budget** → keep PR + worktree, print failing checks | `out.json` absent → breadcrumb, keep worktree, next |
+  | Ran but ground-truth fails | no commit → skip + breadcrumb | gates **red** (or dirty worktree, or **no verdict** — spending-cap/OOM, BEH-569) → no push, breadcrumb, keep worktree, next; OR PR open but **CI red after auto-fix budget** → keep PR + worktree, print failing checks | `out.json` absent → breadcrumb, keep worktree, next |
 
 - **Circuit breaker:** 3 consecutive ticket failures → stop and report (assume
   something environmental broke, e.g. expired auth or a broken base build —
