@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/beherd/agent-harness/internal/sandbox"
@@ -229,6 +230,14 @@ func sleepNote(wallElapsed, monoElapsed time.Duration) string {
 // reason on the console — otherwise the operator sees a bare exit code (BEH-316).
 func Run(dockerArgs []string, opts Options) Outcome {
 	cmd := exec.Command("docker", dockerArgs...) // allow-unbounded-exec: main docker run, bounded by the timer-based kill below
+	// Launch docker in its own process group so a Ctrl-C delivered to the harness's
+	// foreground process group (e.g. the long-running cmd/loop daemon) is NOT
+	// forwarded to this child and on to the container. The loop's signal handler
+	// instead flips a stop flag and lets the in-flight session finish; the running
+	// container is only killed on the explicit double-Ctrl-C hard abort. Without
+	// Setpgid the terminal would SIGINT the whole group, severing the session
+	// mid-ticket and defeating the graceful between-ticket stop.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		opts.Log.Event("session ✗ failed to pipe docker stdout: " + err.Error())

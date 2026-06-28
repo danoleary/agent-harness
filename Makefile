@@ -1,5 +1,5 @@
 # Agent harness — Go toolchain shortcuts. Requires Go 1.26+.
-.PHONY: build image smoke test implementation review retrospective pipeline vet fmt fmt-check check-exec check-bash3 check-buildvcs check-ci check tidy
+.PHONY: build image smoke test implementation review retrospective pipeline loop vet fmt fmt-check check-exec check-bash3 check-buildvcs check-ci check tidy
 
 # Build the tool binaries into ./bin.
 #
@@ -13,6 +13,7 @@ build:
 	go build -buildvcs=false -o bin/review ./cmd/review
 	go build -buildvcs=false -o bin/retrospective ./cmd/retrospective
 	go build -buildvcs=false -o bin/pipeline ./cmd/pipeline
+	go build -buildvcs=false -o bin/loop ./cmd/loop
 
 # Build the sandbox image the tools launch. Override the tag with IMAGE=...
 # (must match HARNESS_IMAGE if you set it).
@@ -56,6 +57,13 @@ retrospective:
 # ARGS, e.g.  make pipeline ARGS="BEH-362 --verbose"  or  ARGS="BEH-362 --dry-run"
 pipeline:
 	go run -buildvcs=false ./cmd/pipeline $(ARGS)
+
+# Run the autonomous daemon: it drives the single-ticket pipeline over the
+# ready-for-agent queue in a long-running loop, idling and re-polling when the
+# queue is empty. Takes no required args — Ctrl-C stops it gracefully after the
+# in-flight ticket; a second Ctrl-C hard-aborts and kills the running container.
+loop:
+	go run -buildvcs=false ./cmd/loop $(ARGS)
 
 vet:
 	go vet ./...
