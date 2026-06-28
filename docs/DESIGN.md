@@ -205,6 +205,14 @@ startup:
 
 loop:
   if stop requested (Ctrl-C or STOP file)   -> exit cleanly
+
+  --- disk reclaim (host-side, between tickets, ADR-0005) ---
+  if statfs(worktrees volume).free < DiskReclaimThreshold:   // cheap probe every iter; default ~8 GiB (> the 5 GiB sandbox floor)
+    run: scripts/prune-merged-worktrees.sh --yes             // removes ONLY merged-PR + clean worktrees (gh-aware); never main/dirty/no-PR
+    if still < threshold -> run: pnpm store prune            // cheap, non-destructive, network-free follow-up
+    narrate "reclaimed N worktree(s), freed X" only if it acted
+    # non-fatal: a failed prune (gh down / ENOSPC) is logged and the loop continues — NOT a ticket outcome, never touches the breaker
+
   ticket = selectNextTicket()               // Linear GraphQL, harness-owned
   if no ticket:                             // daemon: empty queue is IDLE, not done
     log "queue empty — idle, will re-poll"
@@ -457,6 +465,10 @@ loop:
     store prune`, `scripts/prune-merged-worktrees.sh`), so the disk is caught *before*
     the ticket is claimed rather than as an opaque exit-125 overlay2 teardown after.
     A statfs error is non-fatal — an unreadable probe doesn't block a launch.
+    The loop also reclaims *proactively* one tier above this floor: a between-ticket
+    `statfs` runs `prune-merged-worktrees.sh` when free space dips below a soft
+    `DiskReclaimThreshold` (~8 GiB), so the daemon self-heals merged-worktree creep
+    *before* the preflight ever has to refuse a launch ([ADR-0005](adr/0005-loop-reclaims-disk-by-pruning-merged-worktrees.md)).
   - **Graceful-degrade (where prevention can't reach):** a findings-dir `mkdir` that
     still races to ENOSPC is recognised (`isDiskFull`) and logged as a clear,
     actionable warning rather than a hard pipeline error that masquerades as a stage
