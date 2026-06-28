@@ -85,12 +85,12 @@ func main() {
 
 	// Bind each stage to the shared cfg/log/runID/args (--verbose and PreClaimed
 	// forward through args). The pipeline decides ordering; the stages do the work.
-	code := pipeline.Run(pipeline.Deps{
+	outcome := pipeline.Run(pipeline.Deps{
 		FetchMain:      func() error { return gitpkg.FetchMain(cfg.HerdPath) },
 		Implementation: func() stages.Result { return stages.Implementation(cfg, log, runID, args) },
 		Review:         func() stages.Result { return stages.Review(cfg, log, runID, args) },
 		Retrospective:  func() stages.Result { return stages.Retrospective(cfg, log, runID, args) },
 		Log:            log,
 	})
-	os.Exit(code)
+	os.Exit(outcome.ExitCode)
 }

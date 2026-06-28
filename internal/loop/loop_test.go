@@ -49,11 +49,14 @@ func TestStartupClearsStaleStopThenFetchesMain(t *testing.T) {
 		FetchMain:     func() error { r.order = append(r.order, "fetch-main"); return nil },
 		StopRequested: func() bool { return true }, // stop already requested at the first checkpoint
 		ResolveNext:   func() (string, bool) { r.order = append(r.order, "resolve"); return "", false },
-		RunPipeline:   func(string) int { r.order = append(r.order, "pipeline"); return 0 },
-		Sleep:         func(time.Duration) { r.order = append(r.order, "sleep") },
-		PollInterval:  time.Minute,
-		TickInterval:  2 * time.Second,
-		Log:           r,
+		RunPipeline: func(string) TicketOutcome {
+			r.order = append(r.order, "pipeline")
+			return TicketOutcome{ReachedPushedPR: true}
+		},
+		Sleep:        func(time.Duration) { r.order = append(r.order, "sleep") },
+		PollInterval: time.Minute,
+		TickInterval: 2 * time.Second,
+		Log:          r,
 	})
 	if code != 0 {
 		t.Errorf("exit code = %d, want 0 (a deliberate stop is a clean exit)", code)
@@ -80,11 +83,14 @@ func TestEmptyQueueIdlesThenRePollsNotExit(t *testing.T) {
 		FetchMain:     func() error { return nil },
 		StopRequested: stopAfter(6), // 1 checkpoint + 5 idle-tick checks pass, then stop at the next checkpoint
 		ResolveNext:   func() (string, bool) { r.order = append(r.order, "resolve"); return "", false },
-		RunPipeline:   func(string) int { r.order = append(r.order, "pipeline"); return 0 },
-		Sleep:         func(d time.Duration) { r.order = append(r.order, "sleep"); slept = append(slept, d) },
-		PollInterval:  10 * time.Second,
-		TickInterval:  2 * time.Second,
-		Log:           r,
+		RunPipeline: func(string) TicketOutcome {
+			r.order = append(r.order, "pipeline")
+			return TicketOutcome{ReachedPushedPR: true}
+		},
+		Sleep:        func(d time.Duration) { r.order = append(r.order, "sleep"); slept = append(slept, d) },
+		PollInterval: 10 * time.Second,
+		TickInterval: 2 * time.Second,
+		Log:          r,
 	})
 	if code != 0 {
 		t.Errorf("exit code = %d, want 0 (an empty queue then stop is a clean exit)", code)
@@ -125,10 +131,10 @@ func TestTicketRunsPipelineThenFetchesMainAndContinues(t *testing.T) {
 		FetchMain:     func() error { fetches++; r.order = append(r.order, "fetch"); return nil },
 		StopRequested: stopAfter(1), // run one ticket, then stop at the 2nd checkpoint
 		ResolveNext:   func() (string, bool) { r.order = append(r.order, "resolve"); return "BEH-100", true },
-		RunPipeline: func(id string) int {
+		RunPipeline: func(id string) TicketOutcome {
 			r.order = append(r.order, "pipeline")
 			ranWith = id
-			return 0
+			return TicketOutcome{ReachedPushedPR: true}
 		},
 		Sleep:        func(time.Duration) { r.order = append(r.order, "sleep") },
 		PollInterval: time.Minute,
@@ -165,7 +171,7 @@ func TestGracefulStopBetweenTicketsRunsTwoThenStops(t *testing.T) {
 		FetchMain:     func() error { return nil },
 		StopRequested: stopAfter(2), // two tickets, stop at the 3rd checkpoint
 		ResolveNext:   func() (string, bool) { return "BEH-1", true },
-		RunPipeline:   func(string) int { ran++; return 0 },
+		RunPipeline:   func(string) TicketOutcome { ran++; return TicketOutcome{ReachedPushedPR: true} },
 		Sleep:         func(time.Duration) {},
 		PollInterval:  time.Minute,
 		TickInterval:  2 * time.Second,
@@ -179,6 +185,70 @@ func TestGracefulStopBetweenTicketsRunsTwoThenStops(t *testing.T) {
 	}
 	if !r.saw("stop requested") {
 		t.Errorf("expected a 'stop requested' wind-down narration; events = %v", r.events)
+	}
+}
+
+// TestBreakerTripsAndExitsAfterThreeNoPRTickets proves the circuit breaker keys on
+// "did the ticket reach a pushed PR?" — NOT the exit code — and trips the daemon
+// down the graceful wind-down path (exit 0) after three consecutive no-PR tickets.
+// No stop is ever requested here: the ONLY thing that ends this otherwise-infinite
+// loop is the breaker. When all three failures share one ticket id (a poison
+// top-of-queue ticket, re-selected after each crash), the loud report names it.
+func TestBreakerTripsAndExitsAfterThreeNoPRTickets(t *testing.T) {
+	r := &recorder{}
+	var ran int
+	code := Run(Deps{
+		ClearStopFile:          func() error { return nil },
+		FetchMain:              func() error { return nil },
+		StopRequested:          func() bool { return false }, // never stopped — only the breaker can end this
+		ResolveNext:            func() (string, bool) { return "BEH-99", true },
+		RunPipeline:            func(string) TicketOutcome { ran++; return TicketOutcome{ReachedPushedPR: false} },
+		Sleep:                  func(time.Duration) {},
+		PollInterval:           time.Minute,
+		TickInterval:           2 * time.Second,
+		MaxConsecutiveFailures: 3,
+		Log:                    r,
+	})
+	if code != 0 {
+		t.Errorf("exit code = %d, want 0 (a breaker trip is a deliberate wind-down, same path as STOP)", code)
+	}
+	if ran != 3 {
+		t.Errorf("RunPipeline ran %d tickets, want exactly 3 (the breaker must stop consuming the queue at the threshold)", ran)
+	}
+	if !r.saw("circuit breaker") {
+		t.Errorf("expected a loud 'circuit breaker' wind-down report; events = %v", r.events)
+	}
+	if !r.saw("BEH-99") {
+		t.Errorf("the trip report must name the repeat offender BEH-99; events = %v", r.events)
+	}
+}
+
+// TestBreakerDoesNotTripWhenTicketsKeepShipping proves a healthy daemon never
+// trips: a long run of pushed-PR tickets keeps the counter at 0, so the loop only
+// ends on the arranged stop, not the breaker.
+func TestBreakerDoesNotTripWhenTicketsKeepShipping(t *testing.T) {
+	r := &recorder{}
+	var ran int
+	code := Run(Deps{
+		ClearStopFile:          func() error { return nil },
+		FetchMain:              func() error { return nil },
+		StopRequested:          stopAfter(5), // five shipped tickets, then stop
+		ResolveNext:            func() (string, bool) { return "BEH-1", true },
+		RunPipeline:            func(string) TicketOutcome { ran++; return TicketOutcome{ReachedPushedPR: true} },
+		Sleep:                  func(time.Duration) {},
+		PollInterval:           time.Minute,
+		TickInterval:           2 * time.Second,
+		MaxConsecutiveFailures: 3,
+		Log:                    r,
+	})
+	if code != 0 {
+		t.Errorf("exit code = %d, want 0", code)
+	}
+	if ran != 5 {
+		t.Errorf("RunPipeline ran %d tickets, want 5 (shipping tickets never trip the breaker)", ran)
+	}
+	if r.saw("circuit breaker") {
+		t.Errorf("a daemon shipping every ticket must NOT trip the breaker; events = %v", r.events)
 	}
 }
 
@@ -208,11 +278,14 @@ func TestIdleSleepIsBrokenIntoTicksAndStopsEarly(t *testing.T) {
 		FetchMain:     func() error { return nil },
 		StopRequested: stop,
 		ResolveNext:   func() (string, bool) { return "", false }, // always empty → idle
-		RunPipeline:   func(string) int { t.Fatal("RunPipeline must not run on an empty queue"); return 0 },
-		Sleep:         func(d time.Duration) { ticks++ },
-		PollInterval:  poll,
-		TickInterval:  tick,
-		Log:           r,
+		RunPipeline: func(string) TicketOutcome {
+			t.Fatal("RunPipeline must not run on an empty queue")
+			return TicketOutcome{}
+		},
+		Sleep:        func(d time.Duration) { ticks++ },
+		PollInterval: poll,
+		TickInterval: tick,
+		Log:          r,
 	})
 	if code != 0 {
 		t.Errorf("exit code = %d, want 0", code)

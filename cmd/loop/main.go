@@ -50,6 +50,12 @@ const (
 	defaultTickInterval = 2 * time.Second
 )
 
+// defaultMaxConsecutiveFailures is the circuit-breaker threshold: after this many
+// consecutive tickets fail to reach a pushed PR, the daemon trips and winds down
+// (DESIGN.md §Circuit breaker). Hardcoded here; the LOOP_MAX_CONSECUTIVE_FAILURES
+// env override arrives with the loop's config knobs (BEH-577).
+const defaultMaxConsecutiveFailures = 3
+
 // killDockerTimeout bounds the hard-abort docker calls so a wedged daemon can't
 // hang the exit path (BEH-388) — the second Ctrl-C must always terminate promptly.
 const killDockerTimeout = 10 * time.Second
@@ -100,11 +106,12 @@ func main() {
 			}
 			return sel.Identifier, true
 		},
-		RunPipeline:  func(id string) int { return runPipeline(cfg, id) },
-		Sleep:        time.Sleep,
-		PollInterval: defaultPollInterval,
-		TickInterval: defaultTickInterval,
-		Log:          log,
+		RunPipeline:            func(id string) loop.TicketOutcome { return runPipeline(cfg, id) },
+		Sleep:                  time.Sleep,
+		PollInterval:           defaultPollInterval,
+		TickInterval:           defaultTickInterval,
+		MaxConsecutiveFailures: defaultMaxConsecutiveFailures,
+		Log:                    log,
 	})
 	os.Exit(code)
 }
@@ -115,20 +122,28 @@ func main() {
 // stage args carry PreClaimed=true because the loop's ResolveNext claimed the
 // ticket on selection, so the implementation stage skips its own claim and releases
 // on a preflight failure (ADR-0003).
-func runPipeline(cfg config.Config, identifier string) int {
+func runPipeline(cfg config.Config, identifier string) loop.TicketOutcome {
 	_, log, runID, err := stages.Setup(identifier)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
-		return 1
+		// A setup failure produced no PR; surface it as a plain no-PR outcome so the
+		// breaker counts it like any other failure to ship.
+		return loop.TicketOutcome{}
 	}
 	args := stages.Args{Identifier: identifier, PreClaimed: true}
-	return pipeline.Run(pipeline.Deps{
+	out := pipeline.Run(pipeline.Deps{
 		FetchMain:      func() error { return gitpkg.FetchMain(cfg.HerdPath) },
 		Implementation: func() stages.Result { return stages.Implementation(cfg, log, runID, args) },
 		Review:         func() stages.Result { return stages.Review(cfg, log, runID, args) },
 		Retrospective:  func() stages.Result { return stages.Retrospective(cfg, log, runID, args) },
 		Log:            log,
 	})
+	// Translate the pipeline's typed Outcome into the breaker's signals — the loop
+	// keys on "did it ship?", not the exit code.
+	return loop.TicketOutcome{
+		ReachedPushedPR:  out.ReachedPushedPR,
+		SpendingCapAbort: out.SpendingCapAbort,
+	}
 }
 
 // installSignalHandler wires the two-stage SIGINT contract (DESIGN.md "Stop

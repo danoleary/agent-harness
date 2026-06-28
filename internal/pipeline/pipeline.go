@@ -32,6 +32,24 @@ type Deps struct {
 	Log            Narrator
 }
 
+// Outcome is the pipeline's typed result. It carries the process ExitCode (what
+// the standalone cmd wrapper exits with) plus the two signals the autonomous loop's
+// circuit breaker keys on — ReachedPushedPR (the ticket shipped) and
+// SpendingCapAbort (a retry-after-reset control signal) — so the loop never has to
+// infer "did this ticket ship?" from the opaque exit code (DESIGN.md §Circuit
+// breaker).
+type Outcome struct {
+	// ExitCode is 0 iff every stage that ran succeeded, 1 otherwise.
+	ExitCode int
+	// ReachedPushedPR is true iff the review stage pushed the branch and opened a
+	// PR — the breaker's success signal, decoupled from ExitCode (a PR can exist on
+	// a non-zero exit, e.g. CI red after the auto-fix budget).
+	ReachedPushedPR bool
+	// SpendingCapAbort is true iff any stage was aborted by an external spending cap
+	// before finishing — the breaker stays blind to it (retry after the cap resets).
+	SpendingCapAbort bool
+}
+
 // Run executes the pipeline and returns the process exit code: 0 iff every stage
 // that *ran* succeeded, 1 otherwise. The order and skip rules (DESIGN.md):
 //
@@ -42,7 +60,11 @@ type Deps struct {
 //   - run retrospective ALWAYS, even after a prior-stage failure — a failed slice
 //     is exactly the run worth mining for findings (the one deliberate divergence
 //     from the loop's "if not OK -> skip rest").
-func Run(d Deps) int {
+//
+// It returns a typed Outcome (not a bare exit code) so the autonomous loop can read
+// the breaker signals — did the ticket reach a pushed PR, was it cap-aborted —
+// without parsing logs or inferring them from ExitCode.
+func Run(d Deps) Outcome {
 	// Fast-forward main once for the whole run: the three stages run seconds apart,
 	// so main won't meaningfully move mid-pipeline (DESIGN.md). A fetch failure is
 	// not fatal — keep going and let the stages' own checks surface any staleness.
@@ -82,10 +104,18 @@ func Run(d Deps) int {
 	narrateErr(d.Log, "retrospective", retro)
 
 	ok := impl.OK && (!reviewRan || review.OK) && retro.OK
+	exit := 1
 	if ok {
-		return 0
+		exit = 0
 	}
-	return 1
+	// Breaker signals, decoupled from the exit code: only review pushes, so
+	// ReachedPushedPR comes from it alone; a cap abort anywhere in the chain is
+	// retry-after-reset.
+	return Outcome{
+		ExitCode:         exit,
+		ReachedPushedPR:  review.ReachedPushedPR,
+		SpendingCapAbort: impl.SpendingCapAbort || review.SpendingCapAbort || retro.SpendingCapAbort,
+	}
 }
 
 // narrateErr surfaces a stage's hard setup/IO error (Linear fetch, Docker

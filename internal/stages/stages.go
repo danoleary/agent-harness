@@ -146,6 +146,16 @@ type Result struct {
 	// later run, or a healthy host, may get further); the pipeline re-attempts the
 	// stage once when it is set (BEH-543). Never set when OK is true.
 	Retryable bool
+	// ReachedPushedPR marks that this stage pushed the branch and opened a PR. Only
+	// the review stage sets it. It is the loop circuit breaker's success signal —
+	// "did the ticket ship?" — and is deliberately decoupled from OK: a PR can exist
+	// (ReachedPushedPR true) on a not-OK review (CI red after the auto-fix budget),
+	// which the breaker must NOT count as a failure (DESIGN.md §Circuit breaker).
+	ReachedPushedPR bool
+	// SpendingCapAbort marks a stage an external Anthropic spending cap aborted
+	// before it could finish its work. The loop treats it as a retry-after-reset
+	// control signal, not a ticket failure, so the breaker stays blind to it.
+	SpendingCapAbort bool
 }
 
 // LoadConfig loads the harness config: .env first (best-effort), then the

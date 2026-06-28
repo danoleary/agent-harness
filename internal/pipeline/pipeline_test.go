@@ -52,14 +52,14 @@ func (r *recorder) saw(event string) bool {
 func TestRunAllStagesSucceedExitsZeroInOrder(t *testing.T) {
 	r := &recorder{}
 	var fetched int
-	code := Run(Deps{
+	out := Run(Deps{
 		FetchMain:      func() error { fetched++; return nil },
 		Implementation: r.stage("impl", stages.Result{OK: true}),
 		Review:         r.stage("review", stages.Result{OK: true}),
 		Retrospective:  r.stage("retro", stages.Result{OK: true}),
 		Log:            r,
 	})
-	if code != 0 {
+	if code := out.ExitCode; code != 0 {
 		t.Errorf("exit code = %d, want 0", code)
 	}
 	if want := []string{"impl", "review", "retro"}; !reflect.DeepEqual(r.order, want) {
@@ -72,14 +72,14 @@ func TestRunAllStagesSucceedExitsZeroInOrder(t *testing.T) {
 
 func TestRunImplementationFailureSkipsReviewButRunsRetro(t *testing.T) {
 	r := &recorder{}
-	code := Run(Deps{
+	out := Run(Deps{
 		FetchMain:      func() error { return nil },
 		Implementation: r.stage("impl", stages.Result{OK: false}),
 		Review:         r.stage("review", stages.Result{OK: true}),
 		Retrospective:  r.stage("retro", stages.Result{OK: true}),
 		Log:            r,
 	})
-	if code != 1 {
+	if code := out.ExitCode; code != 1 {
 		t.Errorf("exit code = %d, want 1", code)
 	}
 	if want := []string{"impl", "retro"}; !reflect.DeepEqual(r.order, want) {
@@ -89,7 +89,7 @@ func TestRunImplementationFailureSkipsReviewButRunsRetro(t *testing.T) {
 
 func TestRunRetriesImplementationOnEnvCrashThenSucceeds(t *testing.T) {
 	r := &recorder{}
-	code := Run(Deps{
+	out := Run(Deps{
 		FetchMain: func() error { return nil },
 		// First attempt crashed environmentally with no commit (no worktree) —
 		// Retryable; the re-attempt lands on a healthy host and succeeds.
@@ -101,7 +101,7 @@ func TestRunRetriesImplementationOnEnvCrashThenSucceeds(t *testing.T) {
 		Retrospective: r.stage("retro", stages.Result{OK: true}),
 		Log:           r,
 	})
-	if code != 0 {
+	if code := out.ExitCode; code != 0 {
 		t.Errorf("exit code = %d, want 0 (a retried env-crash that then succeeds passes)", code)
 	}
 	if want := []string{"impl", "impl", "review", "retro"}; !reflect.DeepEqual(r.order, want) {
@@ -114,7 +114,7 @@ func TestRunRetriesImplementationOnEnvCrashThenSucceeds(t *testing.T) {
 
 func TestRunRetriesImplementationOnlyOnceThenGivesUp(t *testing.T) {
 	r := &recorder{}
-	code := Run(Deps{
+	out := Run(Deps{
 		FetchMain: func() error { return nil },
 		// Every attempt crashes environmentally (e.g. a persistently full disk).
 		Implementation: r.stageSeq("impl",
@@ -124,7 +124,7 @@ func TestRunRetriesImplementationOnlyOnceThenGivesUp(t *testing.T) {
 		Retrospective: r.stage("retro", stages.Result{OK: true}),
 		Log:           r,
 	})
-	if code != 1 {
+	if code := out.ExitCode; code != 1 {
 		t.Errorf("exit code = %d, want 1 (both attempts failed)", code)
 	}
 	if want := []string{"impl", "impl", "retro"}; !reflect.DeepEqual(r.order, want) {
@@ -134,7 +134,7 @@ func TestRunRetriesImplementationOnlyOnceThenGivesUp(t *testing.T) {
 
 func TestRunDoesNotRetryGenuineImplementationFailure(t *testing.T) {
 	r := &recorder{}
-	code := Run(Deps{
+	out := Run(Deps{
 		FetchMain: func() error { return nil },
 		// Ran to completion but produced no handoff diff — a real verification
 		// failure, not an environmental crash. Must NOT be re-attempted.
@@ -146,7 +146,7 @@ func TestRunDoesNotRetryGenuineImplementationFailure(t *testing.T) {
 		Retrospective: r.stage("retro", stages.Result{OK: true}),
 		Log:           r,
 	})
-	if code != 1 {
+	if code := out.ExitCode; code != 1 {
 		t.Errorf("exit code = %d, want 1 (a non-retryable failure fails the run)", code)
 	}
 	if want := []string{"impl", "retro"}; !reflect.DeepEqual(r.order, want) {
@@ -159,14 +159,14 @@ func TestRunDoesNotRetryGenuineImplementationFailure(t *testing.T) {
 
 func TestRunReviewFailureStillRunsRetroAndFails(t *testing.T) {
 	r := &recorder{}
-	code := Run(Deps{
+	out := Run(Deps{
 		FetchMain:      func() error { return nil },
 		Implementation: r.stage("impl", stages.Result{OK: true}),
 		Review:         r.stage("review", stages.Result{OK: false}),
 		Retrospective:  r.stage("retro", stages.Result{OK: true}),
 		Log:            r,
 	})
-	if code != 1 {
+	if code := out.ExitCode; code != 1 {
 		t.Errorf("exit code = %d, want 1", code)
 	}
 	if want := []string{"impl", "review", "retro"}; !reflect.DeepEqual(r.order, want) {
@@ -176,28 +176,28 @@ func TestRunReviewFailureStillRunsRetroAndFails(t *testing.T) {
 
 func TestRunRetrospectiveFailureFailsTheRun(t *testing.T) {
 	r := &recorder{}
-	code := Run(Deps{
+	out := Run(Deps{
 		FetchMain:      func() error { return nil },
 		Implementation: r.stage("impl", stages.Result{OK: true}),
 		Review:         r.stage("review", stages.Result{OK: true}),
 		Retrospective:  r.stage("retro", stages.Result{OK: false}),
 		Log:            r,
 	})
-	if code != 1 {
+	if code := out.ExitCode; code != 1 {
 		t.Errorf("exit code = %d, want 1 (a failed retrospective fails the run)", code)
 	}
 }
 
 func TestRunNarratesStageHardError(t *testing.T) {
 	r := &recorder{}
-	code := Run(Deps{
+	out := Run(Deps{
 		FetchMain:      func() error { return nil },
 		Implementation: r.stage("impl", stages.Result{Err: errors.New("linear fetch failed")}),
 		Review:         r.stage("review", stages.Result{OK: true}),
 		Retrospective:  r.stage("retro", stages.Result{OK: true}),
 		Log:            r,
 	})
-	if code != 1 {
+	if code := out.ExitCode; code != 1 {
 		t.Errorf("exit code = %d, want 1 (a stage hard error fails the run)", code)
 	}
 	if !r.saw("linear fetch failed") {
@@ -207,14 +207,14 @@ func TestRunNarratesStageHardError(t *testing.T) {
 
 func TestRunFetchMainFailureIsWarnOnlyAndStagesStillRun(t *testing.T) {
 	r := &recorder{}
-	code := Run(Deps{
+	out := Run(Deps{
 		FetchMain:      func() error { return errors.New("network down") },
 		Implementation: r.stage("impl", stages.Result{OK: true}),
 		Review:         r.stage("review", stages.Result{OK: true}),
 		Retrospective:  r.stage("retro", stages.Result{OK: true}),
 		Log:            r,
 	})
-	if code != 0 {
+	if code := out.ExitCode; code != 0 {
 		t.Errorf("exit code = %d, want 0 (a fetch failure must not abort the pipeline)", code)
 	}
 	if len(r.order) != 3 {
@@ -222,5 +222,45 @@ func TestRunFetchMainFailureIsWarnOnlyAndStagesStillRun(t *testing.T) {
 	}
 	if !r.saw("origin/main") {
 		t.Errorf("expected a warning naming origin/main on fetch failure; events = %v", r.events)
+	}
+}
+
+// The review stage's ReachedPushedPR must propagate to the Outcome even when the
+// run as a whole fails — a PR that shipped but went CI-red after the auto-fix budget
+// is exit-1 yet "reached a pushed PR", the exact case the loop breaker must read as
+// a success (no increment), NOT infer from the exit code.
+func TestRunPropagatesReachedPushedPRFromReviewEvenOnFailure(t *testing.T) {
+	r := &recorder{}
+	out := Run(Deps{
+		FetchMain:      func() error { return nil },
+		Implementation: r.stage("impl", stages.Result{OK: true}),
+		Review:         r.stage("review", stages.Result{OK: false, ReachedPushedPR: true}), // PR shipped, CI red after budget
+		Retrospective:  r.stage("retro", stages.Result{OK: true}),
+		Log:            r,
+	})
+	if out.ExitCode != 1 {
+		t.Errorf("exit code = %d, want 1 (a not-OK review fails the run)", out.ExitCode)
+	}
+	if !out.ReachedPushedPR {
+		t.Error("Outcome.ReachedPushedPR must be true — the review pushed a PR even though the run failed")
+	}
+}
+
+// A spending-cap abort in ANY stage propagates to the Outcome so the loop reads
+// retry-after-reset and keeps the breaker blind to it.
+func TestRunPropagatesSpendingCapAbortFromAnyStage(t *testing.T) {
+	r := &recorder{}
+	out := Run(Deps{
+		FetchMain:      func() error { return nil },
+		Implementation: r.stage("impl", stages.Result{OK: false, SpendingCapAbort: true}), // capped before any PR
+		Review:         r.stage("review", stages.Result{OK: true}),
+		Retrospective:  r.stage("retro", stages.Result{OK: true}),
+		Log:            r,
+	})
+	if !out.SpendingCapAbort {
+		t.Error("Outcome.SpendingCapAbort must be true when a stage cap-aborted")
+	}
+	if out.ReachedPushedPR {
+		t.Error("a cap abort before review pushed nothing — ReachedPushedPR must be false")
 	}
 }

@@ -327,8 +327,11 @@ func Review(cfg config.Config, log *runlog.Logger, runID string, args Args) Resu
 			}
 		}
 		// Red/crash/dirty → keep the worktree (recoverable artifact), do not push.
+		// A spending-cap abort that killed the review before it could ship is surfaced
+		// so the loop classifies this as retry-after-reset (breaker-neutral), not a
+		// ship failure that should advance the circuit breaker.
 		log.Event(fmt.Sprintf("review ✗ %s (gate exit %d) — keeping worktree, nothing pushed", result.Reason, gateExit))
-		return Result{OK: false}
+		return Result{OK: false, SpendingCapAbort: reviewOutcome.SpendingCapAbort}
 	}
 	log.Event("review ✓ " + result.Reason)
 
@@ -371,6 +374,11 @@ func Review(cfg config.Config, log *runlog.Logger, runID string, args Args) Resu
 	}
 	log.Event("review ✓ PR opened: " + url)
 
+	// The branch is pushed and the PR is open: from here on the ticket has "reached a
+	// pushed PR" regardless of how the CI watch turns out, so the loop's circuit
+	// breaker must treat it as a success (reset), never a ship failure (DESIGN.md
+	// §Circuit breaker). Carry the signal on every return below.
+
 	// --- post-PR: watch CI and auto-fix red checks (host-side, BEH-414) ---
 	// Local gates passing is not CI passing (env/toolchain/flake/lockfile skew).
 	// Poll the PR head's checks; on a real failure, run a sandboxed fix session
@@ -397,18 +405,20 @@ func Review(cfg config.Config, log *runlog.Logger, runID string, args Args) Resu
 		// class (↻) so a re-dispatch after the cap resets lands the fix, instead of a
 		// spurious "CI did not go green" failure (BEH-571). PR + worktree are kept.
 		log.Event("review ↻ CI auto-fix deferred — spending cap reached, retry after reset (BEH-494) — keeping PR + worktree")
-		return Result{OK: false}
+		return Result{OK: false, ReachedPushedPR: true, SpendingCapAbort: true}
 	}
 	if !ciResult.OK {
 		log.Event("review ✗ CI did not go green: " + ciResult.Reason + " — keeping PR + worktree")
 		if s := ci.Summarize(ciResult.Failing); s != "" {
 			fmt.Fprintf(os.Stderr, "\nFailing CI checks for %s:\n%s", gitpkg.BranchName(slug), s)
 		}
-		return Result{OK: false}
+		// CI red after the auto-fix budget still leaves a reviewable PR for a human to
+		// take over — NOT a ship failure, so the breaker must not count it.
+		return Result{OK: false, ReachedPushedPR: true}
 	}
 	log.Event("review ✓ " + ciResult.Reason)
 
-	return Result{OK: true}
+	return Result{OK: true, ReachedPushedPR: true}
 }
 
 // ciFixRunner returns the ci.GhDriver's fix callback: it launches a sandboxed

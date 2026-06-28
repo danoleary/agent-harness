@@ -355,6 +355,8 @@ func Implementation(cfg config.Config, log *runlog.Logger, runID string, args Ar
 
 	// Surface an environmental no-worktree crash to the pipeline so it can
 	// re-attempt the whole stage once rather than discarding the slice (BEH-543).
-	// A successful run is never retryable.
-	return Result{OK: result.OK, Retryable: !result.OK && retryableEnvCrash(truth, capAborted)}
+	// A successful run is never retryable. Surface a spending-cap abort too so the
+	// loop classifies a capped implementation as retry-after-reset (breaker-neutral)
+	// rather than a ship failure.
+	return Result{OK: result.OK, Retryable: !result.OK && retryableEnvCrash(truth, capAborted), SpendingCapAbort: capAborted}
 }

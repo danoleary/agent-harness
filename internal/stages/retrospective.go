@@ -188,7 +188,10 @@ func Retrospective(cfg config.Config, log *runlog.Logger, runID string, args Arg
 
 	if !result.OK {
 		// Keep the worktree as a recoverable breadcrumb (DESIGN.md failure matrix).
-		return Result{OK: false}
+		// Surface a spending-cap abort so the loop reads retry-after-reset; a
+		// retrospective-only failure never blocks shipping (the PR already exists), so
+		// the breaker keys off review's ReachedPushedPR, not this OK.
+		return Result{OK: false, SpendingCapAbort: outcome.SpendingCapAbort}
 	}
 
 	// Clean ticket: retrospective filed AND the branch reached origin (review's
