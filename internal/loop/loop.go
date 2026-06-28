@@ -56,11 +56,16 @@ type Deps struct {
 	// ResolveNext selects and claims the top-of-queue eligible ticket, returning
 	// its identifier and ok=false when the queue is empty.
 	ResolveNext func() (identifier string, ok bool)
-	// ReleaseTicket returns a claimed ticket to Todo after a spending-cap abort made
-	// no progress, so it isn't stranded In Progress while the daemon backs off
-	// (DESIGN.md §Spending-cap abort backoff). A release failure is narrated, not
-	// fatal — the daemon still backs off and re-polls.
+	// ReleaseTicket returns a claimed ticket to Todo after a run made no progress —
+	// a spending-cap abort (DESIGN.md §Spending-cap abort backoff) or any other no-PR
+	// run (BEH-590) — so it isn't stranded In Progress. A release failure is narrated,
+	// not fatal — the daemon still backs off / continues and re-polls.
 	ReleaseTicket func(identifier string) error
+	// CommentTicket posts a breadcrumb on the released ticket noting the run died and
+	// why (BEH-590), so a repeatedly-failing ticket is visible on the board rather
+	// than silently bouncing Todo↔In Progress. Best-effort: a nil func or a post
+	// failure is tolerated (the release is what matters; the comment is the breadcrumb).
+	CommentTicket func(identifier, body string) error
 	// RunPipeline runs the full implementation→review→retrospective pipeline over
 	// one ticket and returns the typed outcome the breaker keys on (did it reach a
 	// pushed PR?), not the opaque exit code.
@@ -177,6 +182,7 @@ func Run(d Deps) int {
 			if err := d.ReleaseTicket(identifier); err != nil {
 				d.Log.Event("loop … warning: could not release " + identifier + " to Todo after cap abort: " + err.Error())
 			}
+			d.comment(identifier, "Autonomous run aborted by the Anthropic spending cap before it could ship — released back to Todo. The daemon backs off and auto-resumes once the cap window resets, so this should retry on its own.")
 			d.interruptibleSleep(d.CapBackoff)
 			continue
 		}
@@ -185,6 +191,24 @@ func Run(d Deps) int {
 		// merge-base honest across the loop's long run.
 		if err := d.FetchMain(); err != nil {
 			d.Log.Event("loop … warning: could not fast-forward origin/main after ticket: " + err.Error())
+		}
+
+		// Release-on-no-PR (BEH-590): a run that finished WITHOUT opening a pushed PR —
+		// any non-cap failure mode: OOM, sandbox crash, a review stage that died before
+		// pushing, an empty-diff verification failure — left the ticket claimed In
+		// Progress with nothing to show for it. The dispatch claimed it on select, so
+		// unless we undo the claim the board reads as "in flight" forever and the
+		// dispatch guard never re-grabs it. The cap-abort branch above already released
+		// (and continued), so this only fires for the non-cap no-PR case. A shipped PR
+		// (ReachedPushedPR) is the success signal — never released, even on a non-zero
+		// exit (CI red after the auto-fix budget). Best-effort: a Linear hiccup here is
+		// warned, never fatal — the daemon must keep running.
+		if !outcome.ReachedPushedPR {
+			d.Log.Event("loop — " + identifier + " produced no PR; releasing back to Todo so it isn't stranded In Progress (BEH-590)")
+			if err := d.ReleaseTicket(identifier); err != nil {
+				d.Log.Event("loop … warning: could not release " + identifier + " to Todo after a no-PR run: " + err.Error())
+			}
+			d.comment(identifier, "Autonomous run finished with no PR for this ticket — released back to Todo so a later run can re-grab it. Repeated occurrences here mean the ticket keeps failing to ship; see the run logs for the cause.")
 		}
 
 		// Fold the ticket into the breaker. The success signal is "did it reach a
@@ -200,6 +224,19 @@ func Run(d Deps) int {
 			d.Log.Event("loop ✗ " + b.report() + " — winding down; fix the environment and relaunch")
 			return 0
 		}
+	}
+}
+
+// comment posts a best-effort breadcrumb on a released ticket (BEH-590). It is a
+// no-op when no CommentTicket is wired, and a post failure is narrated rather than
+// fatal — the release already happened, and a missing breadcrumb must never sink
+// the daemon (mirrors AddComment's best-effort contract).
+func (d Deps) comment(identifier, body string) {
+	if d.CommentTicket == nil {
+		return
+	}
+	if err := d.CommentTicket(identifier, body); err != nil {
+		d.Log.Event("loop … warning: could not comment on " + identifier + " after release: " + err.Error())
 	}
 }
 

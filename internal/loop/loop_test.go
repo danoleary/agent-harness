@@ -197,12 +197,14 @@ func TestGracefulStopBetweenTicketsRunsTwoThenStops(t *testing.T) {
 func TestBreakerTripsAndExitsAfterThreeNoPRTickets(t *testing.T) {
 	r := &recorder{}
 	var ran int
+	var released []string
 	code := Run(Deps{
 		ClearStopFile:          func() error { return nil },
 		FetchMain:              func() error { return nil },
 		StopRequested:          func() bool { return false }, // never stopped — only the breaker can end this
 		ResolveNext:            func() (string, bool) { return "BEH-99", true },
 		RunPipeline:            func(string) TicketOutcome { ran++; return TicketOutcome{ReachedPushedPR: false} },
+		ReleaseTicket:          func(id string) error { released = append(released, id); return nil },
 		Sleep:                  func(time.Duration) {},
 		PollInterval:           time.Minute,
 		TickInterval:           2 * time.Second,
@@ -215,11 +217,128 @@ func TestBreakerTripsAndExitsAfterThreeNoPRTickets(t *testing.T) {
 	if ran != 3 {
 		t.Errorf("RunPipeline ran %d tickets, want exactly 3 (the breaker must stop consuming the queue at the threshold)", ran)
 	}
+	// Each no-PR run releases the ticket back to Todo (BEH-590), even on the way to a
+	// breaker trip — so a tripped daemon leaves the offender in Todo, not stranded.
+	if want := []string{"BEH-99", "BEH-99", "BEH-99"}; !reflect.DeepEqual(released, want) {
+		t.Errorf("released = %v, want %v (every no-PR run releases the ticket, including the trip-causing ones)", released, want)
+	}
 	if !r.saw("circuit breaker") {
 		t.Errorf("expected a loud 'circuit breaker' wind-down report; events = %v", r.events)
 	}
 	if !r.saw("BEH-99") {
 		t.Errorf("the trip report must name the repeat offender BEH-99; events = %v", r.events)
+	}
+}
+
+// TestNoPRRunReleasesTicketBackToTodo is the tracer bullet for BEH-590: a run that
+// ends WITHOUT reaching a pushed PR — and is NOT a spending-cap abort (OOM, sandbox
+// crash, review crash, empty-diff verification failure) — must release the ticket
+// back to Todo rather than strand it In Progress. The dispatch claimed it on select,
+// so when the run dies without a PR the claim has to be undone or the board reads as
+// "in flight" forever and the dispatch guard never re-grabs it. A single failure
+// with a generous breaker threshold isolates the release from the breaker trip.
+func TestNoPRRunReleasesTicketBackToTodo(t *testing.T) {
+	r := &recorder{}
+	var released []string
+	code := Run(Deps{
+		ClearStopFile: func() error { return nil },
+		FetchMain:     func() error { return nil },
+		StopRequested: stopAfter(1), // one ticket, then stop at the 2nd checkpoint
+		ResolveNext:   func() (string, bool) { return "BEH-42", true },
+		RunPipeline: func(string) TicketOutcome {
+			return TicketOutcome{ReachedPushedPR: false} // ran, but no PR (not a cap abort)
+		},
+		ReleaseTicket:          func(id string) error { released = append(released, id); return nil },
+		Sleep:                  func(time.Duration) {},
+		PollInterval:           time.Minute,
+		TickInterval:           2 * time.Second,
+		MaxConsecutiveFailures: 3, // generous — one failure must not trip it
+		Log:                    r,
+	})
+	if code != 0 {
+		t.Errorf("exit code = %d, want 0 (a no-PR run then stop is a clean exit)", code)
+	}
+	if want := []string{"BEH-42"}; !reflect.DeepEqual(released, want) {
+		t.Errorf("released = %v, want %v (a run that produced no PR must be released to Todo, not left In Progress)", released, want)
+	}
+}
+
+// commentRec records the (identifier, body) of each comment posted, so a test can
+// assert the release leaves a visible breadcrumb on the ticket.
+type commentRec struct {
+	ids    []string
+	bodies []string
+}
+
+func (c *commentRec) post(id, body string) error {
+	c.ids = append(c.ids, id)
+	c.bodies = append(c.bodies, body)
+	return nil
+}
+
+// TestNoPRRunCommentsOnRelease proves the release-on-no-PR path leaves a comment on
+// the ticket (BEH-590 acceptance: "leave a comment noting the run died"), so a
+// repeatedly-failing ticket is visible on the board rather than silently bouncing
+// Todo↔In Progress forever. The comment names the ticket and explains it produced
+// no PR.
+func TestNoPRRunCommentsOnRelease(t *testing.T) {
+	r := &recorder{}
+	c := &commentRec{}
+	code := Run(Deps{
+		ClearStopFile:          func() error { return nil },
+		FetchMain:              func() error { return nil },
+		StopRequested:          stopAfter(1),
+		ResolveNext:            func() (string, bool) { return "BEH-42", true },
+		RunPipeline:            func(string) TicketOutcome { return TicketOutcome{ReachedPushedPR: false} },
+		ReleaseTicket:          func(string) error { return nil },
+		CommentTicket:          c.post,
+		Sleep:                  func(time.Duration) {},
+		PollInterval:           time.Minute,
+		TickInterval:           2 * time.Second,
+		MaxConsecutiveFailures: 3,
+		Log:                    r,
+	})
+	if code != 0 {
+		t.Errorf("exit code = %d, want 0", code)
+	}
+	if want := []string{"BEH-42"}; !reflect.DeepEqual(c.ids, want) {
+		t.Errorf("commented on %v, want %v (the no-PR release must leave a breadcrumb on the ticket)", c.ids, want)
+	}
+	if len(c.bodies) != 1 || !strings.Contains(c.bodies[0], "no PR") {
+		t.Errorf("comment body = %q, want one mentioning 'no PR'", c.bodies)
+	}
+}
+
+// TestCapAbortReleaseCommentsWithReason proves the spending-cap abort release also
+// leaves a breadcrumb (BEH-590 acceptance: note the run died + why), distinct from
+// the generic no-PR comment so the board shows a cap abort will auto-retry rather
+// than reading as a plain failure. A stop arranged after one backoff cycle ends the
+// loop.
+func TestCapAbortReleaseCommentsWithReason(t *testing.T) {
+	r := &recorder{}
+	c := &commentRec{}
+	code := Run(Deps{
+		ClearStopFile: func() error { return nil },
+		FetchMain:     func() error { return nil },
+		StopRequested: stopAfter(6), // 1 top checkpoint + 5 backoff ticks, then stop
+		ResolveNext:   func() (string, bool) { return "BEH-7", true },
+		RunPipeline:   func(string) TicketOutcome { return TicketOutcome{SpendingCapAbort: true} },
+		ReleaseTicket: func(string) error { return nil },
+		CommentTicket: c.post,
+		Sleep:         func(time.Duration) {},
+		PollInterval:  time.Minute,
+		TickInterval:  2 * time.Second,
+		CapBackoff:    10 * time.Second,
+		Log:           r,
+	})
+	if code != 0 {
+		t.Errorf("exit code = %d, want 0", code)
+	}
+	if want := []string{"BEH-7"}; !reflect.DeepEqual(c.ids, want) {
+		t.Errorf("commented on %v, want %v (a cap-abort release must leave a breadcrumb)", c.ids, want)
+	}
+	if len(c.bodies) != 1 || !strings.Contains(c.bodies[0], "spending cap") {
+		t.Errorf("comment body = %q, want one mentioning 'spending cap'", c.bodies)
 	}
 }
 

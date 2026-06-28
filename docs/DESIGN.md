@@ -285,11 +285,23 @@ loop:
   // If ANY stage ended in an external Anthropic spending-cap abort:
   if any stage SpendingCapAbort:
     release ticket -> Todo            // no progress was made; don't strand it In Progress
+    comment on ticket: cap-abort, auto-resumes after the cap resets (breadcrumb, BEH-590)
     do NOT touch the breaker counter  // not the diff's fault; breaker stays blind to it by design
     long backoff sleep (interruptible by STOP, same as idle; default ~30–60 min)
     continue                          // auto-resume: re-poll after the cap window resets
 
   fetch + fast-forward origin/main
+
+  // RELEASE-ON-NO-PR (BEH-590): any non-cap run that did NOT reach a pushed PR — OOM,
+  // sandbox crash, a review stage that died before pushing, an empty-diff verification
+  // failure — left the ticket claimed In Progress with nothing to show. The dispatch
+  // claimed it on select, so undo the claim or the board reads "in flight" forever and
+  // the dispatch guard never re-grabs it. A shipped PR is the success signal and is
+  // never released, even on a non-zero exit (CI red after the auto-fix budget).
+  if NOT reached a pushed PR:
+    release ticket -> Todo            // don't strand it In Progress; a later run re-grabs it
+    comment on ticket: run produced no PR, released to Todo (breadcrumb, BEH-590)
+
   // breaker signal = "did this ticket reach a PUSHED PR?", NOT the pipeline exit code
   if ticket reached a pushed PR -> reset consecutive-failure counter to 0
   else                          -> increment consecutive-failure counter
@@ -683,11 +695,12 @@ ships. The `ready-for-agent` label remains the human gate on *what* runs unatten
     over) do **not** count — otherwise three genuinely-hard-but-shipped tickets
     could trip the breaker while the harness is working fine. An idle/empty-queue
     tick is neutral: it neither increments nor resets.
-  - **A "poison" top-of-queue ticket trips the breaker by design (v1).** Because a
-    no-worktree implementation crash *releases the ticket back to Todo* (BEH-543),
-    the loop re-selects that same top-of-queue ticket on the next iteration and
-    fails identically — so three such iterations trip the breaker and the daemon
-    exits. This is intended: a ticket that fails 3× in a row is exactly the "a human
+  - **A "poison" top-of-queue ticket trips the breaker by design (v1).** Because any
+    run that did not reach a pushed PR *releases the ticket back to Todo* (BEH-590,
+    generalising the no-worktree-crash release of BEH-543), the loop re-selects that
+    same top-of-queue ticket on the next iteration and fails identically — so three
+    such iterations trip the breaker and the daemon exits. This is intended: a
+    ticket that fails 3× in a row is exactly the "a human
     should look" signal, and the cause is usually environmental (full disk, broken
     base build) that would sink the *next* ticket too, not poison specific to that
     id. The breaker bounds the wasted respin to 3 attempts. **The trip report names
@@ -703,9 +716,10 @@ ships. The `ready-for-agent` label remains the human gate on *what* runs unatten
   capped account aborts *every* session at start, which would spin the loop through
   the whole queue in seconds, producing nothing. So a cap-abort is handled as
   control flow, not a verdict: the daemon **releases the ticket to Todo** (no
-  progress to protect), leaves the breaker counter untouched, and enters a **long
-  interruptible backoff** (default ~30–60 min) before re-polling, auto-resuming once
-  the cap window resets. Parsing the exact reset time from the abort message is
+  progress to protect), leaves a **breadcrumb comment** on the ticket noting the
+  cap-abort + auto-resume (BEH-590), leaves the breaker counter untouched, and enters
+  a **long interruptible backoff** (default ~30–60 min) before re-polling, auto-resuming
+  once the cap window resets. Parsing the exact reset time from the abort message is
   deliberately *not* done — fragile string-parsing for minutes of saved latency; the
   fixed backoff + re-poll is robust.
 

@@ -106,6 +106,7 @@ func main() {
 		},
 		RunPipeline:            func(id string) loop.TicketOutcome { return runPipeline(cfg, id) },
 		ReleaseTicket:          func(id string) error { return client.ReleaseToTodo(id) },
+		CommentTicket:          func(id, body string) error { return client.AddComment(id, body) },
 		Sleep:                  time.Sleep,
 		Now:                    time.Now,
 		PollInterval:           cfg.LoopPollInterval,
