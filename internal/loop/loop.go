@@ -83,6 +83,18 @@ type Deps struct {
 	// consecutive tickets fail to reach a pushed PR, the daemon trips and winds down
 	// (DESIGN.md §Circuit breaker). A non-positive value disables the breaker.
 	MaxConsecutiveFailures int
+	// MaxTickets is the optional ceiling on *attempted* tickets: once this many
+	// tickets have been run, the daemon winds down on the clean stop path (a
+	// deliberate stop, not a failure) — the AFK safety valve. Zero or negative means
+	// unlimited (DESIGN.md §cmd/loop config knobs).
+	MaxTickets int
+	// MaxRuntime is the optional wall-clock ceiling: once the daemon has been running
+	// this long, it winds down on the clean stop path at the next between-ticket
+	// checkpoint. Zero or negative means unlimited (DESIGN.md §cmd/loop config knobs).
+	MaxRuntime time.Duration
+	// Now reports the current time for the MaxRuntime ceiling; injected so the ceiling
+	// is testable without real time. A nil Now defaults to time.Now.
+	Now func() time.Time
 	// Log is the narration sink.
 	Log Narrator
 }
@@ -102,12 +114,36 @@ func Run(d Deps) int {
 		d.Log.Event("loop … warning: could not fast-forward origin/main at startup: " + err.Error())
 	}
 
+	now := d.Now
+	if now == nil {
+		now = time.Now
+	}
+	start := now()
+
 	b := newBreaker(d.MaxConsecutiveFailures)
+	attempted := 0
 	for {
 		// Stop only ever lands BETWEEN tickets — a graceful, per-ticket checkpoint
 		// (DESIGN.md "Stop control"): stopping mid-ticket would strand a worktree.
 		if d.StopRequested() {
 			d.Log.Event("loop — stop requested; winding down")
+			return 0
+		}
+
+		// Optional AFK wall-clock ceiling: once the daemon has run for MaxRuntime, wind
+		// down on the same clean stop path between tickets — a deliberate stop, not a
+		// failure (DESIGN.md §cmd/loop config knobs). Zero/negative = unlimited.
+		if d.MaxRuntime > 0 && now().Sub(start) >= d.MaxRuntime {
+			d.Log.Event("loop — max runtime reached; winding down")
+			return 0
+		}
+
+		// Optional AFK ceiling: once MaxTickets tickets have been attempted, wind down
+		// on the same clean stop path as STOP — a deliberate stop, not a failure
+		// (DESIGN.md §cmd/loop config knobs). Checked here, between tickets, so the
+		// (N+1)th ticket is never even selected. Zero/negative = unlimited.
+		if d.MaxTickets > 0 && attempted >= d.MaxTickets {
+			d.Log.Event("loop — max tickets reached; winding down")
 			return 0
 		}
 
@@ -122,8 +158,11 @@ func Run(d Deps) int {
 			d.idleWait()
 			continue
 		}
-		// Run the full pipeline over the claimed ticket.
+		// Run the full pipeline over the claimed ticket. Count it as attempted before
+		// any outcome branching — a cap-aborted run was still an attempt, so it counts
+		// toward the MaxTickets ceiling like any other.
 		outcome := d.RunPipeline(identifier)
+		attempted++
 
 		// A spending-cap abort is a control-flow signal, NOT a ticket verdict
 		// (DESIGN.md §Spending-cap abort backoff): an external Anthropic cap aborted

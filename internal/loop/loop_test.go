@@ -412,6 +412,149 @@ func TestBreakerDoesNotTripWhenTicketsKeepShipping(t *testing.T) {
 	}
 }
 
+// TestMaxTicketsStopsCleanlyAfterCeiling proves the optional attempted-ticket
+// ceiling: with MaxTickets=2 and no stop ever requested, the loop runs exactly two
+// tickets then winds down on the clean stop path (exit 0), narrating the ceiling.
+// It's the AFK safety valve — a non-zero ceiling bounds an overnight run.
+func TestMaxTicketsStopsCleanlyAfterCeiling(t *testing.T) {
+	r := &recorder{}
+	var ran int
+	code := Run(Deps{
+		ClearStopFile:          func() error { return nil },
+		FetchMain:              func() error { return nil },
+		StopRequested:          func() bool { return false }, // never stopped — only the ceiling ends this
+		ResolveNext:            func() (string, bool) { return "BEH-1", true },
+		RunPipeline:            func(string) TicketOutcome { ran++; return TicketOutcome{ReachedPushedPR: true} },
+		Sleep:                  func(time.Duration) {},
+		PollInterval:           time.Minute,
+		TickInterval:           2 * time.Second,
+		MaxConsecutiveFailures: 3,
+		MaxTickets:             2,
+		Log:                    r,
+	})
+	if code != 0 {
+		t.Errorf("exit code = %d, want 0 (a ceiling is a deliberate wind-down, like STOP)", code)
+	}
+	if ran != 2 {
+		t.Errorf("RunPipeline ran %d tickets, want exactly 2 (the ceiling must stop consuming the queue)", ran)
+	}
+	if !r.saw("max tickets") {
+		t.Errorf("expected a 'max tickets reached' wind-down narration; events = %v", r.events)
+	}
+}
+
+// TestMaxTicketsZeroIsUnlimited proves the default ceiling of 0 imposes no bound:
+// with MaxTickets=0 the loop runs well past any small N and only ends on the
+// arranged stop, exactly as the long-running daemon should.
+func TestMaxTicketsZeroIsUnlimited(t *testing.T) {
+	r := &recorder{}
+	var ran int
+	code := Run(Deps{
+		ClearStopFile:          func() error { return nil },
+		FetchMain:              func() error { return nil },
+		StopRequested:          stopAfter(5), // five tickets, then stop — not the ceiling
+		ResolveNext:            func() (string, bool) { return "BEH-1", true },
+		RunPipeline:            func(string) TicketOutcome { ran++; return TicketOutcome{ReachedPushedPR: true} },
+		Sleep:                  func(time.Duration) {},
+		PollInterval:           time.Minute,
+		TickInterval:           2 * time.Second,
+		MaxConsecutiveFailures: 10,
+		MaxTickets:             0, // unlimited
+		Log:                    r,
+	})
+	if code != 0 {
+		t.Errorf("exit code = %d, want 0", code)
+	}
+	if ran != 5 {
+		t.Errorf("RunPipeline ran %d tickets, want 5 (MaxTickets=0 imposes no ceiling)", ran)
+	}
+	if r.saw("max tickets") {
+		t.Errorf("MaxTickets=0 must never narrate a ceiling; events = %v", r.events)
+	}
+}
+
+// clockFrom returns a Now func that reports start on its first call and advances by
+// step on each subsequent call — a deterministic fake clock so the runtime-ceiling
+// test needs no real time.
+func clockFrom(start time.Time, step time.Duration) func() time.Time {
+	t := start
+	first := true
+	return func() time.Time {
+		if first {
+			first = false
+			return t
+		}
+		t = t.Add(step)
+		return t
+	}
+}
+
+// TestMaxRuntimeStopsCleanlyAfterCeiling proves the optional wall-clock ceiling:
+// with the clock advancing 1m per between-ticket check and MaxRuntime=90s, the loop
+// runs one ticket (elapsed 1m < 90s) and on the next checkpoint (elapsed 2m ≥ 90s)
+// winds down on the clean stop path (exit 0), narrating the ceiling. No stop is ever
+// requested — only the runtime ceiling ends this.
+func TestMaxRuntimeStopsCleanlyAfterCeiling(t *testing.T) {
+	r := &recorder{}
+	var ran int
+	origin := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	code := Run(Deps{
+		ClearStopFile:          func() error { return nil },
+		FetchMain:              func() error { return nil },
+		StopRequested:          func() bool { return false },
+		ResolveNext:            func() (string, bool) { return "BEH-1", true },
+		RunPipeline:            func(string) TicketOutcome { ran++; return TicketOutcome{ReachedPushedPR: true} },
+		Sleep:                  func(time.Duration) {},
+		Now:                    clockFrom(origin, time.Minute),
+		PollInterval:           time.Minute,
+		TickInterval:           2 * time.Second,
+		MaxConsecutiveFailures: 10,
+		MaxRuntime:             90 * time.Second,
+		Log:                    r,
+	})
+	if code != 0 {
+		t.Errorf("exit code = %d, want 0 (a runtime ceiling is a deliberate wind-down)", code)
+	}
+	if ran != 1 {
+		t.Errorf("RunPipeline ran %d tickets, want 1 (elapsed crosses 90s before the 2nd ticket)", ran)
+	}
+	if !r.saw("max runtime") {
+		t.Errorf("expected a 'max runtime reached' wind-down narration; events = %v", r.events)
+	}
+}
+
+// TestMaxRuntimeZeroIsUnlimited proves the default of 0 imposes no wall-clock bound:
+// even with the clock leaping an hour per check, the loop only ends on the arranged
+// stop, never on runtime.
+func TestMaxRuntimeZeroIsUnlimited(t *testing.T) {
+	r := &recorder{}
+	var ran int
+	origin := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	code := Run(Deps{
+		ClearStopFile:          func() error { return nil },
+		FetchMain:              func() error { return nil },
+		StopRequested:          stopAfter(3),
+		ResolveNext:            func() (string, bool) { return "BEH-1", true },
+		RunPipeline:            func(string) TicketOutcome { ran++; return TicketOutcome{ReachedPushedPR: true} },
+		Sleep:                  func(time.Duration) {},
+		Now:                    clockFrom(origin, time.Hour), // leaps an hour per check
+		PollInterval:           time.Minute,
+		TickInterval:           2 * time.Second,
+		MaxConsecutiveFailures: 10,
+		MaxRuntime:             0, // unlimited
+		Log:                    r,
+	})
+	if code != 0 {
+		t.Errorf("exit code = %d, want 0", code)
+	}
+	if ran != 3 {
+		t.Errorf("RunPipeline ran %d tickets, want 3 (MaxRuntime=0 imposes no ceiling)", ran)
+	}
+	if r.saw("max runtime") {
+		t.Errorf("MaxRuntime=0 must never narrate a ceiling; events = %v", r.events)
+	}
+}
+
 // TestIdleSleepIsBrokenIntoTicksAndStopsEarly proves the idle wait is responsive:
 // instead of one opaque PollInterval sleep, the loop sleeps in TickInterval chunks
 // and re-checks stop between them, so a stop landing mid-idle is observed within

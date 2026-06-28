@@ -262,6 +262,108 @@ func TestLoadDotEnvAbsentFileIsNoOp(t *testing.T) {
 	LoadDotEnv(filepath.Join(t.TempDir(), "does-not-exist.env"))
 }
 
+// The cmd/loop config knobs default to the values in DESIGN.md §cmd/loop config
+// knobs: the prior slices' hardcoded values, now env-overridable. The two run
+// ceilings default to unlimited (0) because the loop is deliberately long-running.
+func TestLoadLoopDefaults(t *testing.T) {
+	cfg, err := Load(fullEnv(nil))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.LoopPollInterval != time.Minute {
+		t.Errorf("LoopPollInterval = %v, want 60s", cfg.LoopPollInterval)
+	}
+	if cfg.LoopCapBackoff != 45*time.Minute {
+		t.Errorf("LoopCapBackoff = %v, want 45m", cfg.LoopCapBackoff)
+	}
+	if cfg.LoopMaxConsecutiveFailures != 3 {
+		t.Errorf("LoopMaxConsecutiveFailures = %d, want 3", cfg.LoopMaxConsecutiveFailures)
+	}
+	if cfg.LoopMaxTickets != 0 {
+		t.Errorf("LoopMaxTickets = %d, want 0 (unlimited)", cfg.LoopMaxTickets)
+	}
+	if cfg.LoopMaxRuntime != 0 {
+		t.Errorf("LoopMaxRuntime = %v, want 0 (unlimited)", cfg.LoopMaxRuntime)
+	}
+	if cfg.StopFile != "agent-harness/STOP" {
+		t.Errorf("StopFile = %q, want agent-harness/STOP", cfg.StopFile)
+	}
+}
+
+// Every loop knob is env-overridable; the *_MS knobs are milliseconds.
+func TestLoadLoopOverrides(t *testing.T) {
+	cfg, err := Load(fullEnv(map[string]string{
+		"LOOP_POLL_INTERVAL_MS":         "5000",   // 5s
+		"LOOP_CAP_BACKOFF_MS":           "120000", // 2m
+		"LOOP_MAX_CONSECUTIVE_FAILURES": "5",
+		"LOOP_MAX_TICKETS":              "10",
+		"LOOP_MAX_RUNTIME_MS":           "3600000", // 1h
+		"STOP_FILE":                     "/tmp/custom-stop",
+	}))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.LoopPollInterval != 5*time.Second {
+		t.Errorf("LoopPollInterval = %v, want 5s", cfg.LoopPollInterval)
+	}
+	if cfg.LoopCapBackoff != 2*time.Minute {
+		t.Errorf("LoopCapBackoff = %v, want 2m", cfg.LoopCapBackoff)
+	}
+	if cfg.LoopMaxConsecutiveFailures != 5 {
+		t.Errorf("LoopMaxConsecutiveFailures = %d, want 5", cfg.LoopMaxConsecutiveFailures)
+	}
+	if cfg.LoopMaxTickets != 10 {
+		t.Errorf("LoopMaxTickets = %d, want 10", cfg.LoopMaxTickets)
+	}
+	if cfg.LoopMaxRuntime != time.Hour {
+		t.Errorf("LoopMaxRuntime = %v, want 1h", cfg.LoopMaxRuntime)
+	}
+	if cfg.StopFile != "/tmp/custom-stop" {
+		t.Errorf("StopFile = %q, want /tmp/custom-stop", cfg.StopFile)
+	}
+}
+
+// An explicit 0 for the two run ceilings is a valid value meaning "unlimited" — it
+// must not be rejected as nonsensical (it's the documented default).
+func TestLoadLoopCeilingsAcceptExplicitZero(t *testing.T) {
+	cfg, err := Load(fullEnv(map[string]string{
+		"LOOP_MAX_TICKETS":    "0",
+		"LOOP_MAX_RUNTIME_MS": "0",
+	}))
+	if err != nil {
+		t.Fatalf("explicit 0 ceilings must be accepted (unlimited), got: %v", err)
+	}
+	if cfg.LoopMaxTickets != 0 {
+		t.Errorf("LoopMaxTickets = %d, want 0", cfg.LoopMaxTickets)
+	}
+	if cfg.LoopMaxRuntime != 0 {
+		t.Errorf("LoopMaxRuntime = %v, want 0", cfg.LoopMaxRuntime)
+	}
+}
+
+// Nonsensical loop-knob overrides are rejected at load time with a message naming
+// the offending var — unlike the lenient *_MS timeouts, these fail loud before the
+// daemon launches.
+func TestLoadRejectsInvalidLoopKnobs(t *testing.T) {
+	cases := map[string]string{
+		"LOOP_POLL_INTERVAL_MS":         "0",   // must be positive
+		"LOOP_CAP_BACKOFF_MS":           "-1",  // must be positive
+		"LOOP_MAX_CONSECUTIVE_FAILURES": "0",   // must be positive
+		"LOOP_MAX_TICKETS":              "-1",  // must be non-negative
+		"LOOP_MAX_RUNTIME_MS":           "abc", // must be an integer
+	}
+	for key, bad := range cases {
+		_, err := Load(fullEnv(map[string]string{key: bad}))
+		if err == nil {
+			t.Errorf("%s=%q should be rejected", key, bad)
+			continue
+		}
+		if !strings.Contains(err.Error(), key) {
+			t.Errorf("error %q should name the offending var %s", err.Error(), key)
+		}
+	}
+}
+
 func TestLoadTimeoutFallback(t *testing.T) {
 	for _, value := range []string{"abc", "0", "-5", ""} {
 		cfg, err := Load(fullEnv(map[string]string{"TDD_TIMEOUT_MS": value}))

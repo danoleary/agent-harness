@@ -41,28 +41,12 @@ import (
 	"github.com/beherd/agent-harness/internal/stages"
 )
 
-// Idle re-poll cadence: how long the daemon waits before re-polling an empty
-// queue, and the granularity that wait is broken into so a stop landing mid-idle
-// is honoured within a few seconds, not a whole poll interval later. Both are
-// env-overridable for tests/ops without touching code.
-const (
-	defaultPollInterval = 30 * time.Second
-	defaultTickInterval = 2 * time.Second
-)
-
-// defaultMaxConsecutiveFailures is the circuit-breaker threshold: after this many
-// consecutive tickets fail to reach a pushed PR, the daemon trips and winds down
-// (DESIGN.md §Circuit breaker). Hardcoded here; the LOOP_MAX_CONSECUTIVE_FAILURES
-// env override arrives with the loop's config knobs (BEH-577).
-const defaultMaxConsecutiveFailures = 3
-
-// defaultCapBackoff is how long the daemon sleeps after an external Anthropic
-// spending-cap abort before re-polling, long enough to let the cap window reset so
-// the loop auto-resumes (DESIGN.md §Spending-cap abort backoff). Hardcoded here;
-// the LOOP_CAP_BACKOFF_MS env override arrives with the loop's config knobs
-// (BEH-577). It is broken into defaultTickInterval chunks so a STOP landing
-// mid-backoff is honoured within seconds, not ~45 minutes later.
-const defaultCapBackoff = 45 * time.Minute
+// tickInterval is the granularity the idle/backoff waits are broken into so a stop
+// landing mid-wait is honoured within a few seconds, not a whole poll/backoff
+// interval later. It is a fixed responsiveness floor, not an operator knob — the
+// idle cadence (LoopPollInterval) and cap backoff (LoopCapBackoff) are the
+// env-overridable durations (DESIGN.md §cmd/loop config knobs).
+const tickInterval = 2 * time.Second
 
 // killDockerTimeout bounds the hard-abort docker calls so a wedged daemon can't
 // hang the exit path (BEH-388) — the second Ctrl-C must always terminate promptly.
@@ -90,7 +74,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	stopFile := filepath.Join(cfg.HerdPath, "agent-harness", "STOP")
+	// STOP_FILE locates the sentinel used by startup-clear and the stop check. A
+	// relative override is resolved against HERD_PATH (the default "agent-harness/STOP"
+	// gives the same path as before); an absolute override is used as-is.
+	stopFile := cfg.StopFile
+	if !filepath.IsAbs(stopFile) {
+		stopFile = filepath.Join(cfg.HerdPath, stopFile)
+	}
 	client := linear.NewClient(linear.NewTransport(cfg.LinearAPIKey))
 
 	// sigStop is flipped by the first SIGINT; the loop folds it together with the
@@ -117,10 +107,13 @@ func main() {
 		RunPipeline:            func(id string) loop.TicketOutcome { return runPipeline(cfg, id) },
 		ReleaseTicket:          func(id string) error { return client.ReleaseToTodo(id) },
 		Sleep:                  time.Sleep,
-		PollInterval:           defaultPollInterval,
-		TickInterval:           defaultTickInterval,
-		CapBackoff:             defaultCapBackoff,
-		MaxConsecutiveFailures: defaultMaxConsecutiveFailures,
+		Now:                    time.Now,
+		PollInterval:           cfg.LoopPollInterval,
+		TickInterval:           tickInterval,
+		CapBackoff:             cfg.LoopCapBackoff,
+		MaxConsecutiveFailures: cfg.LoopMaxConsecutiveFailures,
+		MaxTickets:             cfg.LoopMaxTickets,
+		MaxRuntime:             cfg.LoopMaxRuntime,
 		Log:                    log,
 	})
 	os.Exit(code)

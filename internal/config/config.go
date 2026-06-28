@@ -73,6 +73,26 @@ type Config struct {
 	// DedupModel is the cheap model used for the semantic dedup pass — a small model
 	// is plenty for a one-token same-class-or-NONE classification.
 	DedupModel string
+
+	// LoopPollInterval is how long the cmd/loop daemon idles before re-polling an
+	// empty queue (DESIGN.md §cmd/loop config knobs).
+	LoopPollInterval time.Duration
+	// LoopCapBackoff is how long the daemon sleeps after a spending-cap abort before
+	// re-polling — long enough for the external cap window to reset and auto-resume.
+	LoopCapBackoff time.Duration
+	// LoopMaxConsecutiveFailures is the circuit-breaker threshold: consecutive no-PR
+	// tickets before the daemon trips and winds down.
+	LoopMaxConsecutiveFailures int
+	// LoopMaxTickets is the optional ceiling on *attempted* tickets; 0 = unlimited
+	// (the default, since the loop is deliberately long-running). A non-zero value
+	// stops the loop cleanly once reached.
+	LoopMaxTickets int
+	// LoopMaxRuntime is the optional wall-clock ceiling; 0 = unlimited (the default).
+	// A non-zero value stops the loop cleanly once reached.
+	LoopMaxRuntime time.Duration
+	// StopFile is the STOP sentinel path used by startup-clear and the stop check. A
+	// relative path is resolved against HerdPath by cmd/loop.
+	StopFile string
 }
 
 const (
@@ -88,6 +108,13 @@ const (
 	defaultCIFixBudget      = 30 * time.Minute
 	defaultCIPollInterval   = 30 * time.Second
 	defaultCIPollBudget     = 20 * time.Minute
+
+	defaultLoopPollInterval           = 60 * time.Second
+	defaultLoopCapBackoff             = 45 * time.Minute
+	defaultLoopMaxConsecutiveFailures = 3
+	defaultLoopMaxTickets             = 0 // unlimited
+	defaultLoopMaxRuntime             = time.Duration(0)
+	defaultStopFile                   = "agent-harness/STOP"
 )
 
 // Getenv looks up an environment variable by name, returning "" when unset.
@@ -131,6 +158,30 @@ func Load(get Getenv) (Config, error) {
 		return Config{}, err
 	}
 
+	// The cmd/loop knobs are validated strictly (a nonsensical override fails loud at
+	// load, before the daemon launches), unlike the lenient parseTimeout above whose
+	// fallback-on-junk contract predates this slice.
+	loopPoll, err := parsePositiveDurationMs(get, "LOOP_POLL_INTERVAL_MS", defaultLoopPollInterval)
+	if err != nil {
+		return Config{}, err
+	}
+	capBackoff, err := parsePositiveDurationMs(get, "LOOP_CAP_BACKOFF_MS", defaultLoopCapBackoff)
+	if err != nil {
+		return Config{}, err
+	}
+	maxFailures, err := parsePositiveIntStrict(get, "LOOP_MAX_CONSECUTIVE_FAILURES", defaultLoopMaxConsecutiveFailures)
+	if err != nil {
+		return Config{}, err
+	}
+	maxTickets, err := parseCeilingInt(get, "LOOP_MAX_TICKETS", defaultLoopMaxTickets)
+	if err != nil {
+		return Config{}, err
+	}
+	maxRuntime, err := parseCeilingDurationMs(get, "LOOP_MAX_RUNTIME_MS", defaultLoopMaxRuntime)
+	if err != nil {
+		return Config{}, err
+	}
+
 	cfg := Config{
 		LinearAPIKey:         linearKey,
 		HerdPath:             herdPath,
@@ -149,6 +200,13 @@ func Load(get Getenv) (Config, error) {
 
 		AnthropicAPIKey: get("ANTHROPIC_API_KEY"),
 		DedupModel:      orDefault(get("DEDUP_MODEL"), defaultDedupModel),
+
+		LoopPollInterval:           loopPoll,
+		LoopCapBackoff:             capBackoff,
+		LoopMaxConsecutiveFailures: maxFailures,
+		LoopMaxTickets:             maxTickets,
+		LoopMaxRuntime:             maxRuntime,
+		StopFile:                   orDefault(get("STOP_FILE"), defaultStopFile),
 	}
 	if err := validateIdleBelowCaps(cfg); err != nil {
 		return Config{}, err
@@ -243,4 +301,64 @@ func parsePositiveInt(raw string, fallback int) int {
 		return fallback
 	}
 	return n
+}
+
+// parsePositiveDurationMs parses a millisecond env value that MUST be a positive
+// integer when set, returning a clear error otherwise (the cmd/loop knobs reject
+// nonsensical overrides loudly at load, rather than silently falling back like the
+// older parseTimeout). An unset key uses the fallback.
+func parsePositiveDurationMs(get Getenv, key string, fallback time.Duration) (time.Duration, error) {
+	raw := get(key)
+	if raw == "" {
+		return fallback, nil
+	}
+	ms, err := strconv.Atoi(raw)
+	if err != nil || ms <= 0 {
+		return 0, fmt.Errorf("%s must be a positive integer (milliseconds), got %q", key, raw)
+	}
+	return time.Duration(ms) * time.Millisecond, nil
+}
+
+// parseCeilingDurationMs parses an optional millisecond ceiling: 0 means unlimited,
+// any positive value is the ceiling, and a negative or unparseable value is an
+// error. An unset key uses the fallback.
+func parseCeilingDurationMs(get Getenv, key string, fallback time.Duration) (time.Duration, error) {
+	raw := get(key)
+	if raw == "" {
+		return fallback, nil
+	}
+	ms, err := strconv.Atoi(raw)
+	if err != nil || ms < 0 {
+		return 0, fmt.Errorf("%s must be a non-negative integer (milliseconds; 0 = unlimited), got %q", key, raw)
+	}
+	return time.Duration(ms) * time.Millisecond, nil
+}
+
+// parseCeilingInt parses an optional integer ceiling: 0 means unlimited, any
+// positive value is the ceiling, and a negative or unparseable value is an error.
+// An unset key uses the fallback.
+func parseCeilingInt(get Getenv, key string, fallback int) (int, error) {
+	raw := get(key)
+	if raw == "" {
+		return fallback, nil
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 0 {
+		return 0, fmt.Errorf("%s must be a non-negative integer (0 = unlimited), got %q", key, raw)
+	}
+	return n, nil
+}
+
+// parsePositiveIntStrict parses an integer env value that MUST be positive when
+// set, returning a clear error otherwise. An unset key uses the fallback.
+func parsePositiveIntStrict(get Getenv, key string, fallback int) (int, error) {
+	raw := get(key)
+	if raw == "" {
+		return fallback, nil
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n <= 0 {
+		return 0, fmt.Errorf("%s must be a positive integer, got %q", key, raw)
+	}
+	return n, nil
 }
