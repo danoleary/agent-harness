@@ -38,8 +38,10 @@ import (
 	gitpkg "github.com/beherd/agent-harness/internal/git"
 	"github.com/beherd/agent-harness/internal/linear"
 	"github.com/beherd/agent-harness/internal/loop"
+	"github.com/beherd/agent-harness/internal/loopstream"
 	"github.com/beherd/agent-harness/internal/pipeline"
 	"github.com/beherd/agent-harness/internal/proc"
+	"github.com/beherd/agent-harness/internal/runlog"
 	"github.com/beherd/agent-harness/internal/sandbox"
 	"github.com/beherd/agent-harness/internal/stages"
 )
@@ -63,19 +65,7 @@ const (
 	storePruneTimeout = 2 * time.Minute
 )
 
-// consoleNarrator narrates loop-level events (startup, stop, between-ticket
-// transitions) before any ticket-keyed runlog exists — the loop runs across many
-// tickets, so its own narration can't live under one ticket's dir. It matches the
-// runlog's concise timestamped console format (DESIGN.md "Logging").
-type consoleNarrator struct{}
-
-func (consoleNarrator) Event(message string) {
-	fmt.Printf("%s  %s\n", time.Now().UTC().Format(time.RFC3339), message)
-}
-
 func main() {
-	log := consoleNarrator{}
-
 	// Config is loaded once for the whole daemon: HERD_PATH locates the STOP
 	// sentinel and the primary checkout to fast-forward; LINEAR_API_KEY backs
 	// selection. A bad config must fail loud before the loop starts.
@@ -84,6 +74,17 @@ func main() {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		os.Exit(1)
 	}
+
+	// The global loop.jsonl is the daemon→viewer contract (ADR-0005). Truncate it
+	// at clean startup so it is bounded to this one daemon run (like loop.log), then
+	// narrate loop-level events through a Console that mirrors structured events into
+	// it. The loop runs across many tickets, so its own narration can't live under
+	// one ticket's dir — but it feeds the SAME global stream the per-ticket loggers do.
+	stream := loopstream.NewStream(loopstream.PathUnder(stages.LogsRoot(cfg)))
+	if err := stream.Truncate(); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not truncate loop.jsonl at startup: %v\n", err)
+	}
+	log := runlog.NewConsole(stream)
 
 	// STOP_FILE locates the sentinel used by startup-clear and the stop check. A
 	// relative override is resolved against HERD_PATH (the default "agent-harness/STOP"

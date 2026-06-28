@@ -170,13 +170,20 @@ func LoadConfig() (config.Config, error) {
 // run id, and open the ticket-keyed runlog. The pipeline calls it once and
 // passes the results to all three stages (DESIGN.md: one config load, one
 // runlog); each standalone tool calls it for itself.
+// LogsRoot is the harness logs directory under the primary checkout — where the
+// per-ticket log dirs and the global loop.jsonl live. Exposed so the cmd
+// entrypoints can wire the same global stream the per-ticket loggers feed.
+func LogsRoot(cfg config.Config) string {
+	return filepath.Join(cfg.HerdPath, "agent-harness", "logs")
+}
+
 func Setup(identifier string) (config.Config, *runlog.Logger, string, error) {
 	cfg, err := LoadConfig()
 	if err != nil {
 		return config.Config{}, nil, "", err
 	}
 	runID := runlog.MakeRunID(time.Now())
-	log, err := runlog.New(filepath.Join(cfg.HerdPath, "agent-harness", "logs"), identifier)
+	log, err := runlog.New(LogsRoot(cfg), identifier)
 	if err != nil {
 		return cfg, nil, "", err
 	}

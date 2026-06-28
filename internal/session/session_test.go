@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/beherd/agent-harness/internal/loopstream"
 )
 
 // The wall-clock cap must count time the host spent asleep. We model a sleep as a
@@ -30,11 +32,16 @@ func TestWatchReasonFiresCapAcrossSleepJump(t *testing.T) {
 }
 
 type fakeLog struct {
-	teed   []string
-	events []string
+	teed    []string
+	events  []string
+	records []loopstream.Record
 }
 
-func (f *fakeLog) Event(msg string)      { f.events = append(f.events, msg) }
+func (f *fakeLog) Event(msg string) { f.events = append(f.events, msg) }
+func (f *fakeLog) Structured(r loopstream.Record) {
+	f.events = append(f.events, r.Message)
+	f.records = append(f.records, r)
+}
 func (f *fakeLog) TeeLine(_, raw string) { f.teed = append(f.teed, strings.TrimSuffix(raw, "\n")) }
 
 const (
@@ -46,6 +53,30 @@ const (
 	lineVerdict = `{"type":"assistant","message":{"content":[{"type":"text","text":"## Review: feat/x  (BEH-1 — intent)   2 files, +5/-1"}]}}`
 	lineBlocked = `{"type":"assistant","message":{"content":[{"type":"text","text":"## Review: feat/x  (BEH-1 — intent)   2 files, +5/-1\n\nDisposition: blocked — needs a human call"}]}}`
 )
+
+// Narrated stream events are mirrored into the global loop.jsonl with their
+// structured kind (ADR-0005): a tool_use turn is KindToolUse, a terminal result is
+// KindSessionResult — so the viewer counts activity and sees the session end
+// without re-parsing the console prose.
+func TestPumpStdoutMirrorsStructuredKinds(t *testing.T) {
+	log := &fakeLog{}
+	pumpStdout(strings.NewReader(lineSystem+"\n"+lineToolUse+"\n"+lineResult), "x.jsonl", false, log, &bytes.Buffer{})
+
+	var kinds []loopstream.Kind
+	for _, r := range log.records {
+		kinds = append(kinds, r.Kind)
+	}
+	// system/init narrates nothing; tool_use then result narrate two structured events.
+	want := []loopstream.Kind{loopstream.KindToolUse, loopstream.KindSessionResult}
+	if len(kinds) != len(want) {
+		t.Fatalf("structured kinds = %v, want %v", kinds, want)
+	}
+	for i := range want {
+		if kinds[i] != want[i] {
+			t.Errorf("structured kind[%d] = %q, want %q", i, kinds[i], want[i])
+		}
+	}
+}
 
 // pumpStdout reports whether the review session emitted its seven-lens verdict
 // (the "## Review:" report header — BEH-525), so Run can tell a completed review

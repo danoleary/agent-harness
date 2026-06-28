@@ -52,6 +52,18 @@ build happens, pre-build it: `make image`.
 ./scripts/loop-start.sh
 ```
 
+**Watch it run** — a read-only live view of the current ticket and stage, tailing
+the global event stream (`logs/loop.jsonl`) the daemon and the pipeline write. It
+never controls the loop (Ctrl-C quits the viewer, not the daemon), and works
+against `make loop` **or** a single-shot `make pipeline`:
+
+```bash
+make watch
+```
+
+If no daemon/pipeline is running it prints a clear "loop not running" line and
+keeps polling, so it picks up once one starts. See ADR-0005.
+
 **One ticket, start to finish** — implementation → review → retrospective, then
 exits. Pass a ticket id, or `--next` to auto-select and claim the top of queue:
 

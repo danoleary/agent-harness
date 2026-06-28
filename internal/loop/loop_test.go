@@ -5,17 +5,36 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/beherd/agent-harness/internal/loopstream"
 )
 
 // recorder captures the order of injected calls and the narration emitted, so a
 // test can assert WHAT the loop did and IN WHAT ORDER without Docker, Linear, or
 // real signals — the same seam the pipeline tests use.
 type recorder struct {
-	order  []string
-	events []string
+	order   []string
+	events  []string
+	records []loopstream.Record
 }
 
 func (r *recorder) Event(msg string) { r.events = append(r.events, msg) }
+
+func (r *recorder) Structured(rec loopstream.Record) {
+	r.events = append(r.events, rec.Message)
+	r.records = append(r.records, rec)
+}
+
+// kindFor returns the structured kind recorded for the first record whose message
+// contains substr, so a test can assert the loop tagged an event correctly.
+func (r *recorder) kindFor(substr string) (loopstream.Kind, bool) {
+	for _, rec := range r.records {
+		if strings.Contains(rec.Message, substr) {
+			return rec.Kind, true
+		}
+	}
+	return "", false
+}
 
 func (r *recorder) saw(substr string) bool {
 	for _, e := range r.events {
@@ -114,6 +133,10 @@ func TestEmptyQueueIdlesThenRePollsNotExit(t *testing.T) {
 	}
 	if !r.saw("queue empty") {
 		t.Errorf("expected a 'queue empty — idling' narration; events = %v", r.events)
+	}
+	// The idle narration is tagged for the viewer's global stream (ADR-0005).
+	if k, ok := r.kindFor("queue empty"); !ok || k != loopstream.KindIdle {
+		t.Errorf("idle event kind = %q (found=%v), want %q", k, ok, loopstream.KindIdle)
 	}
 }
 
@@ -227,6 +250,13 @@ func TestBreakerTripsAndExitsAfterThreeNoPRTickets(t *testing.T) {
 	}
 	if !r.saw("BEH-99") {
 		t.Errorf("the trip report must name the repeat offender BEH-99; events = %v", r.events)
+	}
+	// The trip report and the no-PR releases are tagged for the viewer (ADR-0005).
+	if k, ok := r.kindFor("circuit breaker"); !ok || k != loopstream.KindBreakerTrip {
+		t.Errorf("breaker-trip event kind = %q (found=%v), want %q", k, ok, loopstream.KindBreakerTrip)
+	}
+	if k, ok := r.kindFor("produced no PR"); !ok || k != loopstream.KindTicketReleased {
+		t.Errorf("no-PR release event kind = %q (found=%v), want %q", k, ok, loopstream.KindTicketReleased)
 	}
 }
 

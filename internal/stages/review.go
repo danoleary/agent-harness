@@ -11,6 +11,7 @@ import (
 	"github.com/beherd/agent-harness/internal/config"
 	gitpkg "github.com/beherd/agent-harness/internal/git"
 	"github.com/beherd/agent-harness/internal/linear"
+	"github.com/beherd/agent-harness/internal/loopstream"
 	"github.com/beherd/agent-harness/internal/pr"
 	"github.com/beherd/agent-harness/internal/proc"
 	"github.com/beherd/agent-harness/internal/prompt"
@@ -71,7 +72,7 @@ func Review(cfg config.Config, log *runlog.Logger, runID string, args Args) Resu
 	if args.DryRun {
 		dry = " (dry-run)"
 	}
-	log.Event(fmt.Sprintf("run %s — review %s%s", runID, args.Identifier, dry))
+	log.Structured(loopstream.Record{Kind: loopstream.KindStageStart, Ticket: args.Identifier, Stage: "review", Message: fmt.Sprintf("run %s — review %s%s", runID, args.Identifier, dry)})
 
 	client := linear.NewClient(linear.NewTransport(cfg.LinearAPIKey))
 
@@ -209,7 +210,7 @@ func Review(cfg config.Config, log *runlog.Logger, runID string, args Args) Resu
 
 	// --- review session (cold /review-worktree; fixes committed locally) ---
 	transcriptFile := runlog.TranscriptName(reviewSession, runID)
-	log.Event(fmt.Sprintf("launching review session (cap %d min)", int(cfg.ReviewTimeout.Minutes())))
+	log.Structured(loopstream.Record{Kind: loopstream.KindSandboxLaunch, Ticket: args.Identifier, Stage: "review", Message: fmt.Sprintf("launching review session (cap %d min)", int(cfg.ReviewTimeout.Minutes()))})
 	reviewOutcome := session.Run(dockerArgs, session.Options{
 		ContainerName:  containerName,
 		TranscriptFile: transcriptFile,
@@ -396,7 +397,7 @@ func Review(cfg config.Config, log *runlog.Logger, runID string, args Args) Resu
 		log.Event("review ✗ gh pr create failed: " + err.Error() + " — branch pushed, open the PR manually")
 		return Result{OK: false}
 	}
-	log.Event("review ✓ PR opened: " + url)
+	log.Structured(loopstream.Record{Kind: loopstream.KindPROpened, Ticket: args.Identifier, Stage: "review", Message: "review ✓ PR opened: " + url})
 
 	// The branch is pushed and the PR is open: from here on the ticket has "reached a
 	// pushed PR" regardless of how the CI watch turns out, so the loop's circuit

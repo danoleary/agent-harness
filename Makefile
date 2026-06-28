@@ -1,5 +1,5 @@
 # Agent harness — Go toolchain shortcuts. Requires Go 1.26+.
-.PHONY: build image smoke test implementation review retrospective pipeline loop vet fmt fmt-check check-exec check-bash3 check-buildvcs check-ci check-scripts check tidy
+.PHONY: build image smoke test implementation review retrospective pipeline loop watch vet fmt fmt-check check-exec check-bash3 check-buildvcs check-ci check-scripts check tidy
 
 # Build the tool binaries into ./bin.
 #
@@ -14,6 +14,7 @@ build:
 	go build -buildvcs=false -o bin/retrospective ./cmd/retrospective
 	go build -buildvcs=false -o bin/pipeline ./cmd/pipeline
 	go build -buildvcs=false -o bin/loop ./cmd/loop
+	go build -buildvcs=false -o bin/watch ./cmd/watch
 
 # Build the sandbox image the tools launch. Override the tag with IMAGE=...
 # (must match HARNESS_IMAGE if you set it).
@@ -64,6 +65,14 @@ pipeline:
 # in-flight ticket; a second Ctrl-C hard-aborts and kills the running container.
 loop:
 	go run -buildvcs=false ./cmd/loop $(ARGS)
+
+# Tail the global structured event stream (logs/loop.jsonl) and print live
+# plain-text lines showing the current ticket + stage (ADR-0005). Read-only — it
+# never controls the loop; Ctrl-C quits the viewer without touching the daemon. It
+# works against `make loop` AND a single-shot `make pipeline`, since both write the
+# stream. Pass a path in ARGS to tail a specific file.
+watch:
+	go run -buildvcs=false ./cmd/watch $(ARGS)
 
 vet:
 	go vet ./...

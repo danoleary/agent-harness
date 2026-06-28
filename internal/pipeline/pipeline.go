@@ -9,13 +9,17 @@ package pipeline
 import (
 	"fmt"
 
+	"github.com/beherd/agent-harness/internal/loopstream"
 	"github.com/beherd/agent-harness/internal/stages"
 )
 
 // Narrator is the slice of *runlog.Logger the orchestration needs: one-line
-// console narration mirrored to run.jsonl. An interface keeps Run testable.
+// console narration mirrored to run.jsonl, plus Structured for events that also
+// feed the global loop.jsonl the viewer tails (ADR-0005). An interface keeps Run
+// testable.
 type Narrator interface {
 	Event(string)
+	Structured(loopstream.Record)
 }
 
 // Stage is a pre-bound stage invocation — the caller captures cfg/log/runID/args

@@ -16,14 +16,17 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/beherd/agent-harness/internal/loopstream"
 	"github.com/beherd/agent-harness/internal/sandbox"
 	"github.com/beherd/agent-harness/internal/stream"
 )
 
 // Logger is the narration + transcript sink a session writes through
-// (*runlog.Logger satisfies it).
+// (*runlog.Logger satisfies it). Structured mirrors tool-use / session-result
+// events into the global loop.jsonl the viewer tails (ADR-0005).
 type Logger interface {
 	Event(msg string)
+	Structured(loopstream.Record)
 	TeeLine(file, raw string)
 }
 
@@ -355,8 +358,13 @@ func pumpStdout(r io.Reader, transcriptFile string, verbose bool, log Logger, ec
 			fmt.Fprintln(echo, line)
 			continue
 		}
-		if msg, ok := stream.Narrate(line); ok {
-			log.Event(msg)
+		if msg, kind, ok := stream.NarrateRecord(line); ok {
+			// Mirror to the global stream with the structured kind (tool-use vs
+			// session-result) so the viewer counts activity / sees the session end
+			// without re-parsing the prose (ADR-0005). The ticket/stage are left to the
+			// viewer's carried-forward state — the session doesn't know them, and the
+			// preceding stage-start record already set them.
+			log.Structured(loopstream.Record{Kind: kind, Message: msg})
 		}
 	}
 	return flags

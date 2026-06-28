@@ -11,6 +11,7 @@ import (
 	"github.com/beherd/agent-harness/internal/filing"
 	gitpkg "github.com/beherd/agent-harness/internal/git"
 	"github.com/beherd/agent-harness/internal/linear"
+	"github.com/beherd/agent-harness/internal/loopstream"
 	"github.com/beherd/agent-harness/internal/prompt"
 	"github.com/beherd/agent-harness/internal/runlog"
 	"github.com/beherd/agent-harness/internal/sandbox"
@@ -93,7 +94,7 @@ func Implementation(cfg config.Config, log *runlog.Logger, runID string, args Ar
 	if args.DryRun {
 		dry = " (dry-run)"
 	}
-	log.Event(fmt.Sprintf("run %s — implementation %s%s", runID, args.Identifier, dry))
+	log.Structured(loopstream.Record{Kind: loopstream.KindStageStart, Ticket: args.Identifier, Stage: "implementation", Message: fmt.Sprintf("run %s — implementation %s%s", runID, args.Identifier, dry)})
 
 	client := linear.NewClient(linear.NewTransport(cfg.LinearAPIKey))
 
@@ -238,7 +239,7 @@ func Implementation(cfg config.Config, log *runlog.Logger, runID string, args Ar
 			))
 		}
 
-		log.Event(fmt.Sprintf("launching sandbox (cap %d min)", int(cfg.TddTimeout.Minutes())))
+		log.Structured(loopstream.Record{Kind: loopstream.KindSandboxLaunch, Ticket: args.Identifier, Stage: "implementation", Message: fmt.Sprintf("launching sandbox (cap %d min)", int(cfg.TddTimeout.Minutes()))})
 		// Retry a transient launch failure (overlay2/read-only-fs exit 125, or a 137
 		// OOM-kill) before it becomes the verdict (BEH-542). Such a crash at the
 		// worktree-creation step — the session's very first heavy host I/O — otherwise

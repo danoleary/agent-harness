@@ -4,6 +4,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/beherd/agent-harness/internal/loopstream"
 	"github.com/beherd/agent-harness/internal/ticket"
 )
 
@@ -45,6 +46,14 @@ func TestResolveNextSelectsAndClaims(t *testing.T) {
 	}
 	if len(r.moved) != 1 || r.moved[0] != "BEH-100" {
 		t.Errorf("claim mutations = %v, want exactly [BEH-100]", r.moved)
+	}
+	// The selection is tagged ticket-selected for the viewer's global stream, and
+	// carries the ticket so the viewer can surface "current ticket" (ADR-0005).
+	if len(rec.records) != 1 {
+		t.Fatalf("expected exactly one structured record, got %d", len(rec.records))
+	}
+	if got := rec.records[0]; got.Kind != loopstream.KindTicketSelected || got.Ticket != "BEH-100" {
+		t.Errorf("structured record = %+v, want kind=ticket-selected ticket=BEH-100", got)
 	}
 }
 

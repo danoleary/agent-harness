@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"math"
 	"strings"
+
+	"github.com/beherd/agent-harness/internal/loopstream"
 )
 
 type event struct {
@@ -157,11 +159,23 @@ func IsReviewBlocked(line string) bool {
 // console narration string, returning ok=false to skip it. The full raw stream
 // is teed to the per-run jsonl regardless; this is only the human-friendly
 // summary shown when the harness is not running --verbose. Never panics — a
-// malformed line is simply skipped so a single bad chunk can't kill the run.
+// malformed line is simply skipped so a single bad chunk can't kill the run. It is
+// a thin wrapper over NarrateRecord that drops the structured kind, so existing
+// console-only callers are unaffected.
 func Narrate(line string) (string, bool) {
+	msg, _, ok := NarrateRecord(line)
+	return msg, ok
+}
+
+// NarrateRecord is Narrate plus the structured loopstream.Kind for the line, so a
+// caller mirroring narration into the global event stream (ADR-0005) can classify
+// it without re-parsing the prose: a tool_use turn is KindToolUse, a terminal
+// result is KindSessionResult. ok=false (and an empty kind) for an
+// uninteresting/malformed line, exactly as Narrate.
+func NarrateRecord(line string) (string, loopstream.Kind, bool) {
 	var e event
 	if err := json.Unmarshal([]byte(line), &e); err != nil {
-		return "", false
+		return "", "", false
 	}
 
 	if e.Type == "result" {
@@ -184,16 +198,16 @@ func Narrate(line string) (string, bool) {
 		if e.IsError && subtype == "success" {
 			subtype = "error"
 		}
-		return fmt.Sprintf("%s session %s%s", mark, subtype, secs), true
+		return fmt.Sprintf("%s session %s%s", mark, subtype, secs), loopstream.KindSessionResult, true
 	}
 
 	if e.Type == "assistant" {
 		for _, block := range e.Message.Content {
 			if block.Type == "tool_use" && block.Name != "" {
-				return "⚒ " + block.Name, true
+				return "⚒ " + block.Name, loopstream.KindToolUse, true
 			}
 		}
 	}
 
-	return "", false
+	return "", "", false
 }

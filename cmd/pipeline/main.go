@@ -18,22 +18,14 @@ package main
 import (
 	"fmt"
 	"os"
-	"time"
 
 	gitpkg "github.com/beherd/agent-harness/internal/git"
 	"github.com/beherd/agent-harness/internal/linear"
+	"github.com/beherd/agent-harness/internal/loopstream"
 	"github.com/beherd/agent-harness/internal/pipeline"
+	"github.com/beherd/agent-harness/internal/runlog"
 	"github.com/beherd/agent-harness/internal/stages"
 )
-
-// consoleNarrator narrates the --next selection step before a ticket-keyed runlog
-// exists (selection runs first and may resolve no ticket). It matches the runlog's
-// concise timestamped console format (DESIGN.md "Logging").
-type consoleNarrator struct{}
-
-func (consoleNarrator) Event(message string) {
-	fmt.Printf("%s  %s\n", time.Now().UTC().Format(time.RFC3339), message)
-}
 
 func main() {
 	args, err := stages.ParseArgs("pipeline", os.Args[1:], true)
@@ -53,7 +45,11 @@ func main() {
 			os.Exit(1)
 		}
 		client := linear.NewClient(linear.NewTransport(cfg.LinearAPIKey))
-		sel := pipeline.ResolveNext(client, args.DryRun, consoleNarrator{})
+		// Selection narrates the ticket-selected event into the same global loop.jsonl
+		// the per-ticket logger feeds, so a single-shot `pipeline --next` is viewable by
+		// cmd/watch too (ADR-0005). A single-shot run does not truncate — only the daemon does.
+		console := runlog.NewConsole(loopstream.NewStream(loopstream.PathUnder(stages.LogsRoot(cfg))))
+		sel := pipeline.ResolveNext(client, args.DryRun, console)
 		if !sel.Proceed {
 			// Dry-run resolved a real ticket: print its plan before exiting.
 			if args.DryRun && sel.Identifier != "" {

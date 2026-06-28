@@ -10,6 +10,7 @@ import (
 	"github.com/beherd/agent-harness/internal/filing"
 	gitpkg "github.com/beherd/agent-harness/internal/git"
 	"github.com/beherd/agent-harness/internal/linear"
+	"github.com/beherd/agent-harness/internal/loopstream"
 	"github.com/beherd/agent-harness/internal/prompt"
 	"github.com/beherd/agent-harness/internal/runlog"
 	"github.com/beherd/agent-harness/internal/sandbox"
@@ -47,7 +48,7 @@ func Retrospective(cfg config.Config, log *runlog.Logger, runID string, args Arg
 	if args.DryRun {
 		dry = " (dry-run)"
 	}
-	log.Event(fmt.Sprintf("run %s — retrospective %s%s", runID, args.Identifier, dry))
+	log.Structured(loopstream.Record{Kind: loopstream.KindStageStart, Ticket: args.Identifier, Stage: "retrospective", Message: fmt.Sprintf("run %s — retrospective %s%s", runID, args.Identifier, dry)})
 
 	// Skip a misscheduled retrospective host-side, before the Linear fetch and the
 	// sandbox cap: a ticket whose upstream /tdd + /review steps produced neither a
@@ -136,7 +137,7 @@ func Retrospective(cfg config.Config, log *runlog.Logger, runID string, args Arg
 	}
 
 	transcriptFile := runlog.TranscriptName(retrospectiveSession, runID)
-	log.Event(fmt.Sprintf("launching sandbox (cap %d min)", int(cfg.RetrospectiveTimeout.Minutes())))
+	log.Structured(loopstream.Record{Kind: loopstream.KindSandboxLaunch, Ticket: args.Identifier, Stage: "retrospective", Message: fmt.Sprintf("launching sandbox (cap %d min)", int(cfg.RetrospectiveTimeout.Minutes()))})
 	outcome := session.Run(dockerArgs, session.Options{
 		ContainerName:  containerName,
 		TranscriptFile: transcriptFile,

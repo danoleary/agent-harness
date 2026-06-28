@@ -12,12 +12,21 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/beherd/agent-harness/internal/loopstream"
 )
 
 // Logger writes one ticket's logs under logs/<ticket-id>/.
 type Logger struct {
 	// Dir is the absolute path of this ticket's log directory.
 	Dir string
+	// ticketID is the human identifier (e.g. "BEH-370"); it stamps the global
+	// stream's records when the caller doesn't name a ticket itself.
+	ticketID string
+	// stream is the GLOBAL loop.jsonl (one level above Dir) every ticket's sessions
+	// feed, separate from the per-ticket run.jsonl. It is the daemon→viewer contract
+	// (ADR-0005); nil-safe so a hand-built Logger{} in tests never panics.
+	stream *loopstream.Stream
 }
 
 // MakeRunID builds a sortable, filesystem-safe run id from a timestamp,
@@ -34,7 +43,11 @@ func New(logsRoot, ticketID string) (*Logger, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
 	}
-	return &Logger{Dir: dir}, nil
+	return &Logger{
+		Dir:      dir,
+		ticketID: ticketID,
+		stream:   loopstream.NewStream(loopstream.PathUnder(logsRoot)),
+	}, nil
 }
 
 // TranscriptName is the filename for a session's stream-json transcript:
@@ -87,6 +100,30 @@ func (l *Logger) FindingsDir(session string) string {
 
 // Event emits one concise narration line to the console and mirrors it to run.jsonl.
 func (l *Logger) Event(message string) {
+	l.narrate(message)
+}
+
+// Structured emits a narrated event that ALSO carries structured fields for the
+// global loop.jsonl (ADR-0005). The console line and per-ticket run.jsonl are
+// written exactly as Event does (so those readers are unchanged); additionally the
+// record — with its kind/ticket/stage — is appended to the global stream the viewer
+// tails. A record with no Ticket is stamped with this logger's ticket; the TS is
+// shared with the console/run.jsonl line so the three stay aligned.
+func (l *Logger) Structured(r loopstream.Record) {
+	ts := l.narrate(r.Message)
+	if l.stream == nil {
+		return
+	}
+	if r.Ticket == "" {
+		r.Ticket = l.ticketID
+	}
+	r.TS = ts
+	_ = l.stream.Append(r)
+}
+
+// narrate writes one line to the console and mirrors it to run.jsonl, returning the
+// timestamp it stamped so a caller (Structured) can reuse it for the global stream.
+func (l *Logger) narrate(message string) string {
 	ts := time.Now().UTC().Format(time.RFC3339)
 	fmt.Printf("%s  %s\n", ts, message)
 	record, _ := json.Marshal(struct {
@@ -94,6 +131,7 @@ func (l *Logger) Event(message string) {
 		Message string `json:"message"`
 	}{TS: ts, Message: message})
 	l.append("run.jsonl", string(record)+"\n")
+	return ts
 }
 
 // TeeLine appends a raw transcript line (e.g. a claude stream-json chunk) to a

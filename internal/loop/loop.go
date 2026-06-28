@@ -17,6 +17,8 @@ package loop
 import (
 	"fmt"
 	"time"
+
+	"github.com/beherd/agent-harness/internal/loopstream"
 )
 
 // TicketOutcome is what the loop learns from running one ticket through the
@@ -35,9 +37,11 @@ type TicketOutcome struct {
 }
 
 // Narrator is the one-line console + run.jsonl narration sink (satisfied by
-// *runlog.Logger, as in the pipeline). An interface keeps Run testable.
+// *runlog.Logger, as in the pipeline). Structured additionally feeds the global
+// loop.jsonl the viewer tails (ADR-0005). An interface keeps Run testable.
 type Narrator interface {
 	Event(string)
+	Structured(loopstream.Record)
 }
 
 // Deps are the loop's injectable dependencies. Selection and pipeline execution
@@ -188,7 +192,7 @@ func Run(d Deps) int {
 			// rather than exiting (DESIGN.md "The loop"). The idle is broken into
 			// short ticks that re-check stop, so a SIGINT/sentinel landing mid-idle
 			// is honoured within one TickInterval, not a whole poll interval later.
-			d.Log.Event("loop — queue empty; idling before re-poll")
+			d.Log.Structured(loopstream.Record{Kind: loopstream.KindIdle, Message: "loop — queue empty; idling before re-poll"})
 			d.idleWait()
 			continue
 		}
@@ -207,7 +211,7 @@ func Run(d Deps) int {
 		// the cap window resets. A shipped PR wins: if the run still reached a pushed
 		// PR, it's a success, so fall through to the normal after-ticket fold.
 		if outcome.SpendingCapAbort && !outcome.ReachedPushedPR {
-			d.Log.Event("loop — spending-cap abort on " + identifier + "; releasing to Todo and backing off before re-poll")
+			d.Log.Structured(loopstream.Record{Kind: loopstream.KindCapAbort, Ticket: identifier, Message: "loop — spending-cap abort on " + identifier + "; releasing to Todo and backing off before re-poll"})
 			if err := d.ReleaseTicket(identifier); err != nil {
 				d.Log.Event("loop … warning: could not release " + identifier + " to Todo after cap abort: " + err.Error())
 			}
@@ -233,7 +237,7 @@ func Run(d Deps) int {
 		// exit (CI red after the auto-fix budget). Best-effort: a Linear hiccup here is
 		// warned, never fatal — the daemon must keep running.
 		if !outcome.ReachedPushedPR {
-			d.Log.Event("loop — " + identifier + " produced no PR; releasing back to Todo so it isn't stranded In Progress (BEH-590)")
+			d.Log.Structured(loopstream.Record{Kind: loopstream.KindTicketReleased, Ticket: identifier, Message: "loop — " + identifier + " produced no PR; releasing back to Todo so it isn't stranded In Progress (BEH-590)"})
 			if err := d.ReleaseTicket(identifier); err != nil {
 				d.Log.Event("loop … warning: could not release " + identifier + " to Todo after a no-PR run: " + err.Error())
 			}
@@ -250,7 +254,7 @@ func Run(d Deps) int {
 			// forces a human to investigate before more tickets are consumed, since 3
 			// identical failures are almost always environmental (expired auth, broken
 			// base build) that would sink the next ticket too.
-			d.Log.Event("loop ✗ " + b.report() + " — winding down; fix the environment and relaunch")
+			d.Log.Structured(loopstream.Record{Kind: loopstream.KindBreakerTrip, Ticket: identifier, Message: "loop ✗ " + b.report() + " — winding down; fix the environment and relaunch"})
 			return 0
 		}
 	}

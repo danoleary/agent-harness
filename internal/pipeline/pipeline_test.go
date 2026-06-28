@@ -6,16 +6,23 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/beherd/agent-harness/internal/loopstream"
 	"github.com/beherd/agent-harness/internal/stages"
 )
 
 // recorder captures the order stages ran in and the narration emitted.
 type recorder struct {
-	order  []string
-	events []string
+	order   []string
+	events  []string
+	records []loopstream.Record
 }
 
 func (r *recorder) Event(msg string) { r.events = append(r.events, msg) }
+
+func (r *recorder) Structured(rec loopstream.Record) {
+	r.events = append(r.events, rec.Message)
+	r.records = append(r.records, rec)
+}
 
 // stage returns a Stage that records it ran and yields the given Result.
 func (r *recorder) stage(name string, res stages.Result) Stage {

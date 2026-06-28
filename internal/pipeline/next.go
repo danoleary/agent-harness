@@ -3,6 +3,7 @@ package pipeline
 import (
 	"fmt"
 
+	"github.com/beherd/agent-harness/internal/loopstream"
 	"github.com/beherd/agent-harness/internal/ticket"
 )
 
@@ -61,7 +62,11 @@ func ResolveNext(r NextResolver, dryRun bool, log Narrator) NextSelection {
 		log.Event(fmt.Sprintf("pipeline — claiming %s failed: %v", t.Identifier, err))
 		return NextSelection{ExitCode: 1}
 	}
-	log.Event(fmt.Sprintf("selected %s (%s) — claimed → In Progress", t.Identifier, priorityOrNone(t.Priority)))
+	log.Structured(loopstream.Record{
+		Kind:    loopstream.KindTicketSelected,
+		Ticket:  t.Identifier,
+		Message: fmt.Sprintf("selected %s (%s) — claimed → In Progress", t.Identifier, priorityOrNone(t.Priority)),
+	})
 	return NextSelection{Identifier: t.Identifier, PreClaimed: true, Proceed: true}
 }
 
