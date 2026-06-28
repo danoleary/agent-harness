@@ -746,9 +746,30 @@ ships. The `ready-for-agent` label remains the human gate on *what* runs unatten
     visible at the tail rather than an opaque truncation needing a `run.jsonl`
     cross-reference (BEH-537).
   - `agent-harness/logs/BEH-NNN/findings/retrospective/out.json` — the dropbox.
-  - `agent-harness/logs/BEH-NNN/run.jsonl` — the structured event stream
-    (machine-readable mirror of the console).
+  - `agent-harness/logs/BEH-NNN/run.jsonl` — the per-ticket structured event
+    stream (machine-readable mirror of the console, scoped to one ticket's arc).
+  - `agent-harness/logs/loop.jsonl` — a **global** structured event stream across
+    all tickets and stages, written by the shared narration sink and truncated at
+    daemon startup (bounded to one daemon run). Each record is `{ts, kind, ticket,
+    stage, message, detail}`: `message` is the console line verbatim (a strict
+    superset of `loop.log`), and `kind` is a closed enum the **viewer** switches on
+    without re-parsing prose. This is the daemon→viewer contract (ADR-0005).
 - `--verbose` tees the raw agent stream to the console too; off by default.
+
+### The viewer (`cmd/watch`)
+
+The daemon runs detached, so its only window is `loop.log` — noisy and
+unstructured. The **viewer** is a separate, **read-only** binary that tails
+`logs/loop.jsonl` and renders a live dashboard: the current ticket, the stage
+(n of 3), the current step, daemon health, and a stateful ASCII pig whose state
+(working / waiting / sleeping / celebrating / hurt) follows the last event `kind`.
+It is **stdlib-only** (a redraw-on-a-ticker dashboard needs no TUI framework) and
+degrades to plain scrollback when stdout is not a TTY, `NO_COLOR` is set, or
+`--no-animation` is passed. It never controls the loop — `touch agent-harness/STOP`
+remains the only control path, and quitting the viewer does not touch the daemon.
+"Progress" is honest about being indeterminate: a stage indicator and a tool-call
+activity counter, never a percent-complete bar. See ADR-0005 for why a separate
+reader over a structured stream rather than a `--tui` flag on the daemon.
 
 ## Harness runtime (host side)
 
