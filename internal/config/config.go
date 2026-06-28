@@ -62,6 +62,11 @@ type Config struct {
 	CIPollInterval time.Duration
 	// CIPollBudget caps a single wait for CI checks to reach a terminal state.
 	CIPollBudget time.Duration
+	// CIPollStall is the no-progress window: once the pending check set stops
+	// changing for this long, the poll gives up early (ErrPollStalled) rather than
+	// burning the full CIPollBudget on a check wedged pending — the merge-queue /
+	// main-only context that GitHub reports as expected-but-never-run on a PR.
+	CIPollStall time.Duration
 	// AnthropicAPIKey is the host-only API key used for the cheap host-side semantic
 	// dedup model call when filing findings (BEH-573). Unlike the sandbox credential
 	// (which is validated for presence but never stored — it crosses into the
@@ -111,8 +116,13 @@ const (
 	defaultDedupModel       = "claude-haiku-4-5-20251001"
 	defaultCIMaxFixAttempts = 2
 	defaultCIFixBudget      = 30 * time.Minute
-	defaultCIPollInterval   = 30 * time.Second
-	defaultCIPollBudget     = 20 * time.Minute
+	defaultCIPollInterval   = 15 * time.Second
+	defaultCIPollBudget     = 12 * time.Minute
+	// defaultCIPollStall bails a wedged-pending watch ~4 min after the live run
+	// settles (the real PR checks finish in ~5 min, so this only ever fires once a
+	// merge-queue/main-only context is the lone thing left pending). It must comfortably
+	// exceed CIPollInterval so a still-progressing run is never cut short by it.
+	defaultCIPollStall = 4 * time.Minute
 
 	defaultLoopPollInterval           = 60 * time.Second
 	defaultLoopCapBackoff             = 45 * time.Minute
@@ -209,6 +219,7 @@ func Load(get Getenv) (Config, error) {
 		CIFixBudget:      parseTimeout(get("CI_FIX_BUDGET_MS"), defaultCIFixBudget),
 		CIPollInterval:   parseTimeout(get("CI_POLL_INTERVAL_MS"), defaultCIPollInterval),
 		CIPollBudget:     parseTimeout(get("CI_POLL_BUDGET_MS"), defaultCIPollBudget),
+		CIPollStall:      parseTimeout(get("CI_POLL_STALL_MS"), defaultCIPollStall),
 
 		AnthropicAPIKey: get("ANTHROPIC_API_KEY"),
 		DedupModel:      orDefault(get("DEDUP_MODEL"), defaultDedupModel),

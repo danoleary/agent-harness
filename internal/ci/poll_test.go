@@ -32,6 +32,21 @@ func testPollCfg() pollConfig {
 	return pollConfig{interval: 30 * time.Second, budget: 10 * time.Minute}
 }
 
+// scriptedChecks returns a fetch seam yielding the given check snapshots in
+// order (repeating the last once exhausted) and counts its calls — for stall
+// tests, where the snapshot's *shape* (not just one bucket) is what matters.
+func scriptedChecks(snaps ...[]Check) (func() ([]Check, error), *int) {
+	calls := 0
+	return func() ([]Check, error) {
+		i := calls
+		if i >= len(snaps) {
+			i = len(snaps) - 1
+		}
+		calls++
+		return snaps[i], nil
+	}, &calls
+}
+
 func TestPollReturnsImmediatelyWhenTerminalNoSleep(t *testing.T) {
 	clock := newFakeClock()
 	slept := 0
@@ -115,6 +130,67 @@ func TestPollTimesOutIfChecksNeverRegister(t *testing.T) {
 	_, _, err := poll(fetch, testPollCfg(), sleep, clock.now)
 	if !errors.Is(err, ErrPollTimeout) {
 		t.Fatalf("err = %v, want ErrPollTimeout", err)
+	}
+}
+
+func TestPollStallsOnFrozenPendingBeforeBudget(t *testing.T) {
+	clock := newFakeClock()
+	sleep := func(d time.Duration) { clock.sleep(d) }
+	// A merge-queue/main-only context wedged pending: the snapshot never changes.
+	fetch, calls := scriptedChecks([]Check{
+		{Name: "lint", Bucket: BucketPass},
+		{Name: "deploy", Bucket: BucketPending}, // never moves on a PR
+	})
+	cfg := pollConfig{interval: 30 * time.Second, budget: 20 * time.Minute, stall: 2 * time.Minute}
+	v, checks, err := poll(fetch, cfg, sleep, clock.now)
+	if !errors.Is(err, ErrPollStalled) {
+		t.Fatalf("err = %v, want ErrPollStalled", err)
+	}
+	if v != Pending {
+		t.Fatalf("verdict = %v, want Pending on stall", v)
+	}
+	if len(checks) == 0 {
+		t.Fatal("expected the wedged checks to be returned for the operator report")
+	}
+	// Fired at the 2m stall window (polls at t=0,30,60,90,120s), not the 20m budget.
+	if *calls != 5 {
+		t.Fatalf("fetched %d times, want 5 (bailed at the stall window, not the budget)", *calls)
+	}
+}
+
+func TestPollDoesNotStallWhileProgressing(t *testing.T) {
+	clock := newFakeClock()
+	sleep := func(d time.Duration) { clock.sleep(d) }
+	// The check set keeps changing each poll (jobs flipping as the run advances),
+	// so even though each individual snapshot is pending, the stall window must keep
+	// resetting and the run is allowed to reach its terminal pass.
+	fetch, calls := scriptedChecks(
+		[]Check{{Name: "lint", Bucket: BucketPending}},
+		[]Check{{Name: "lint", Bucket: BucketPass}, {Name: "test", Bucket: BucketPending}},
+		[]Check{{Name: "lint", Bucket: BucketPass}, {Name: "test", Bucket: BucketPass}},
+	)
+	cfg := pollConfig{interval: 30 * time.Second, budget: 20 * time.Minute, stall: 10 * time.Second}
+	v, _, err := poll(fetch, cfg, sleep, clock.now)
+	if err != nil {
+		t.Fatalf("poll: %v (a progressing run must not be cut short by the stall window)", err)
+	}
+	if v != Passed {
+		t.Fatalf("verdict = %v, want Passed", v)
+	}
+	if *calls != 3 {
+		t.Fatalf("fetched %d times, want 3", *calls)
+	}
+}
+
+func TestPollZeroStallDisablesStallDetection(t *testing.T) {
+	clock := newFakeClock()
+	sleep := func(d time.Duration) { clock.sleep(d) }
+	fetch, _ := scriptedChecks([]Check{{Name: "deploy", Bucket: BucketPending}}) // frozen
+	cfg := pollConfig{interval: 30 * time.Second, budget: 10 * time.Minute, stall: 0}
+	_, _, err := poll(fetch, cfg, sleep, clock.now)
+	// With stall disabled a frozen-pending run rides the full budget to ErrPollTimeout.
+	if !errors.Is(err, ErrPollTimeout) {
+		t.Fatalf("err = %v, want ErrPollTimeout (stall disabled)", err)
 	}
 }
 

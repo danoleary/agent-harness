@@ -305,6 +305,20 @@ func TestWatchReportsPollTimeout(t *testing.T) {
 	}
 }
 
+func TestWatchReportsPollStalled(t *testing.T) {
+	d := &fakeDriver{polls: []pollResult{{v: Pending, checks: []Check{{Name: "deploy", Bucket: BucketPending}}, err: ErrPollStalled}}}
+	out := WatchAndFix(d, testWatchCfg(), newFakeClock().now)
+	if out.OK {
+		t.Fatalf("expected non-OK on a stalled poll, got %+v", out)
+	}
+	if !strings.Contains(strings.ToLower(out.Reason), "stall") {
+		t.Fatalf("reason %q should explain CI stalled while pending", out.Reason)
+	}
+	if len(out.Failing) == 0 {
+		t.Fatal("expected the wedged checks carried for the operator report")
+	}
+}
+
 func TestWatchSurfacesRerunError(t *testing.T) {
 	boom := errors.New("gh run rerun: not found")
 	d := &fakeDriver{

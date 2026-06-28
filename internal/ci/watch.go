@@ -60,6 +60,11 @@ type Config struct {
 	PollInterval time.Duration
 	// PollBudget caps a single wait for checks to reach a terminal state.
 	PollBudget time.Duration
+	// PollStall is the no-progress window: once the pending check set stops
+	// changing for this long, the run is treated as wedged (a merge-queue/main-only
+	// context reported as expected-but-never-run on the PR) and the poll bails with
+	// ErrPollStalled instead of burning the full PollBudget. Zero disables it.
+	PollStall time.Duration
 }
 
 // ErrSpendingCapActive is the sentinel a Fix callback returns when the auto-fix
@@ -267,6 +272,13 @@ const unobservableReason = "CI status unobservable with this token — skipping 
 func pollErrOutcome(err error, checks []Check) Outcome {
 	if errors.Is(err, errChecksUnobservable) {
 		return Outcome{OK: true, Reason: unobservableReason}
+	}
+	if errors.Is(err, ErrPollStalled) {
+		return Outcome{
+			OK:      false,
+			Reason:  "CI stalled while still pending (a required check is wedged — likely a merge-queue/main-only context that won't run on the PR); check the PR manually",
+			Failing: notGreen(checks),
+		}
 	}
 	if errors.Is(err, ErrPollTimeout) {
 		return Outcome{
