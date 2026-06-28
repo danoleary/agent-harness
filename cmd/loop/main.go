@@ -56,6 +56,14 @@ const (
 // env override arrives with the loop's config knobs (BEH-577).
 const defaultMaxConsecutiveFailures = 3
 
+// defaultCapBackoff is how long the daemon sleeps after an external Anthropic
+// spending-cap abort before re-polling, long enough to let the cap window reset so
+// the loop auto-resumes (DESIGN.md §Spending-cap abort backoff). Hardcoded here;
+// the LOOP_CAP_BACKOFF_MS env override arrives with the loop's config knobs
+// (BEH-577). It is broken into defaultTickInterval chunks so a STOP landing
+// mid-backoff is honoured within seconds, not ~45 minutes later.
+const defaultCapBackoff = 45 * time.Minute
+
 // killDockerTimeout bounds the hard-abort docker calls so a wedged daemon can't
 // hang the exit path (BEH-388) — the second Ctrl-C must always terminate promptly.
 const killDockerTimeout = 10 * time.Second
@@ -107,9 +115,11 @@ func main() {
 			return sel.Identifier, true
 		},
 		RunPipeline:            func(id string) loop.TicketOutcome { return runPipeline(cfg, id) },
+		ReleaseTicket:          func(id string) error { return client.ReleaseToTodo(id) },
 		Sleep:                  time.Sleep,
 		PollInterval:           defaultPollInterval,
 		TickInterval:           defaultTickInterval,
+		CapBackoff:             defaultCapBackoff,
 		MaxConsecutiveFailures: defaultMaxConsecutiveFailures,
 		Log:                    log,
 	})

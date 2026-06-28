@@ -7,8 +7,10 @@
 // empty queue, stop between tickets, trip-and-exit at the breaker threshold — is
 // unit-testable without Docker, Linear, or real signals.
 //
-// It does NOT yet have the spending-cap backoff (release-to-Todo + long sleep);
-// that layers on later. The breaker is deliberately blind to a cap abort (it is a
+// A spending-cap abort is handled as a control-flow signal, not a ticket verdict:
+// the run's ticket is released back to Todo and the daemon enters a long
+// interruptible backoff before re-polling (auto-resuming once the cap window
+// resets) — see Run. The breaker is deliberately blind to a cap abort (it is a
 // retry-after-reset control signal, not a ship failure) — see breaker.go.
 package loop
 
@@ -54,6 +56,11 @@ type Deps struct {
 	// ResolveNext selects and claims the top-of-queue eligible ticket, returning
 	// its identifier and ok=false when the queue is empty.
 	ResolveNext func() (identifier string, ok bool)
+	// ReleaseTicket returns a claimed ticket to Todo after a spending-cap abort made
+	// no progress, so it isn't stranded In Progress while the daemon backs off
+	// (DESIGN.md §Spending-cap abort backoff). A release failure is narrated, not
+	// fatal — the daemon still backs off and re-polls.
+	ReleaseTicket func(identifier string) error
 	// RunPipeline runs the full implementation→review→retrospective pipeline over
 	// one ticket and returns the typed outcome the breaker keys on (did it reach a
 	// pushed PR?), not the opaque exit code.
@@ -66,6 +73,12 @@ type Deps struct {
 	// TickInterval is the granularity the idle wait is broken into so stop stays
 	// responsive during the idle window.
 	TickInterval time.Duration
+	// CapBackoff is how long the daemon sleeps after a spending-cap abort before
+	// re-polling — long enough to let the external cap window reset, auto-resuming
+	// once it does (DESIGN.md §Spending-cap abort backoff). Broken into the same
+	// TickInterval chunks as the idle wait, so a stop landing mid-backoff is honoured
+	// within one tick rather than ~45 minutes later.
+	CapBackoff time.Duration
 	// MaxConsecutiveFailures is the circuit-breaker threshold: after this many
 	// consecutive tickets fail to reach a pushed PR, the daemon trips and winds down
 	// (DESIGN.md §Circuit breaker). A non-positive value disables the breaker.
@@ -109,10 +122,28 @@ func Run(d Deps) int {
 			d.idleWait()
 			continue
 		}
-		// Run the full pipeline over the claimed ticket, then fetch main again —
-		// "pull main after every session" keeps the next ticket's merge-base honest
-		// across the loop's long run.
+		// Run the full pipeline over the claimed ticket.
 		outcome := d.RunPipeline(identifier)
+
+		// A spending-cap abort is a control-flow signal, NOT a ticket verdict
+		// (DESIGN.md §Spending-cap abort backoff): an external Anthropic cap aborted
+		// the run before it could ship, so no progress was made and it is not the
+		// diff's fault. Release the ticket back to Todo (don't strand it In Progress),
+		// leave the breaker untouched (it stays blind to the cap runaway by design),
+		// and enter a long interruptible backoff before re-polling — auto-resuming once
+		// the cap window resets. A shipped PR wins: if the run still reached a pushed
+		// PR, it's a success, so fall through to the normal after-ticket fold.
+		if outcome.SpendingCapAbort && !outcome.ReachedPushedPR {
+			d.Log.Event("loop — spending-cap abort on " + identifier + "; releasing to Todo and backing off before re-poll")
+			if err := d.ReleaseTicket(identifier); err != nil {
+				d.Log.Event("loop … warning: could not release " + identifier + " to Todo after cap abort: " + err.Error())
+			}
+			d.interruptibleSleep(d.CapBackoff)
+			continue
+		}
+
+		// Fetch main again — "pull main after every session" keeps the next ticket's
+		// merge-base honest across the loop's long run.
 		if err := d.FetchMain(); err != nil {
 			d.Log.Event("loop … warning: could not fast-forward origin/main after ticket: " + err.Error())
 		}
@@ -134,18 +165,23 @@ func Run(d Deps) int {
 }
 
 // idleWait waits out one PollInterval before the loop re-polls an empty queue,
-// but breaks the wait into TickInterval chunks and re-checks StopRequested
-// between each chunk. A stop (SIGINT/sentinel) landing mid-idle is therefore
-// observed within one TickInterval, not a whole PollInterval later — the
-// responsiveness the daemon's "idle is an interruptible stop point" (ADR-0004)
-// depends on. A non-positive TickInterval degrades to a single PollInterval
+// interruptibly — see interruptibleSleep. The cap-abort backoff uses the same
+// mechanism with CapBackoff, so a stop is honoured within one tick during either
+// wait (DESIGN.md §The loop, §Spending-cap abort backoff).
+func (d Deps) idleWait() { d.interruptibleSleep(d.PollInterval) }
+
+// interruptibleSleep waits out total, but breaks the wait into TickInterval chunks
+// and re-checks StopRequested between each chunk. A stop (SIGINT/sentinel) landing
+// mid-wait is therefore observed within one TickInterval, not a whole total later —
+// the responsiveness the daemon's "idle/backoff is an interruptible stop point"
+// (ADR-0004) depends on. A non-positive TickInterval degrades to a single total
 // sleep so a misconfigured tick can't spin.
-func (d Deps) idleWait() {
+func (d Deps) interruptibleSleep(total time.Duration) {
 	if d.TickInterval <= 0 {
-		d.Sleep(d.PollInterval)
+		d.Sleep(total)
 		return
 	}
-	for waited := time.Duration(0); waited < d.PollInterval; waited += d.TickInterval {
+	for waited := time.Duration(0); waited < total; waited += d.TickInterval {
 		if d.StopRequested() {
 			return
 		}

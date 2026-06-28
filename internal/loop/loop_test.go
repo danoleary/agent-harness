@@ -223,6 +223,166 @@ func TestBreakerTripsAndExitsAfterThreeNoPRTickets(t *testing.T) {
 	}
 }
 
+// TestSpendingCapAbortReleasesTicketBacksOffAndLeavesBreakerNeutral is the
+// tracer bullet for the cap-abort control flow (DESIGN.md §Spending-cap abort
+// backoff): a run that ends in a spending-cap abort (no PR) must (1) release the
+// ticket back to Todo so it isn't stranded In Progress, (2) NOT trip the circuit
+// breaker — proven here with the most aggressive possible threshold of 1, which a
+// single counted failure would trip — and (3) enter a long interruptible backoff
+// (slept in TickInterval chunks) before re-polling. A stop arranged to land after
+// one full backoff cycle ends the otherwise-infinite loop.
+func TestSpendingCapAbortReleasesTicketBacksOffAndLeavesBreakerNeutral(t *testing.T) {
+	r := &recorder{}
+	var released []string
+	var ran int
+	var slept []time.Duration
+	// CapBackoff/TickInterval = 10s/2s = 5 ticks for a full, uninterrupted backoff.
+	// One top checkpoint (pass) + 5 backoff-tick stop-checks pass, then stop at the
+	// next top checkpoint: stopAfter(6).
+	code := Run(Deps{
+		ClearStopFile: func() error { return nil },
+		FetchMain:     func() error { return nil },
+		StopRequested: stopAfter(6),
+		ResolveNext:   func() (string, bool) { return "BEH-7", true },
+		RunPipeline: func(string) TicketOutcome {
+			ran++
+			return TicketOutcome{SpendingCapAbort: true}
+		},
+		ReleaseTicket: func(id string) error { released = append(released, id); return nil },
+		Sleep:         func(d time.Duration) { slept = append(slept, d) },
+		PollInterval:  time.Minute,
+		TickInterval:  2 * time.Second,
+		CapBackoff:    10 * time.Second,
+		// Threshold 1: a single counted failure would trip immediately. It must NOT.
+		MaxConsecutiveFailures: 1,
+		Log:                    r,
+	})
+	if code != 0 {
+		t.Errorf("exit code = %d, want 0 (a cap abort then stop is a clean exit)", code)
+	}
+	if ran != 1 {
+		t.Errorf("RunPipeline ran %d times, want 1", ran)
+	}
+	if want := []string{"BEH-7"}; !reflect.DeepEqual(released, want) {
+		t.Errorf("released = %v, want %v (a cap abort must release the ticket to Todo)", released, want)
+	}
+	if r.saw("circuit breaker") {
+		t.Errorf("a cap abort must NOT trip the breaker (threshold 1); events = %v", r.events)
+	}
+	// All sleeps here are backoff ticks (the queue is never empty). A full 10s backoff
+	// in 2s ticks is 5 ticks — proving the loop actually entered the backoff wait.
+	if len(slept) != 5 {
+		t.Errorf("backoff slept %d ticks, want 5 (CapBackoff/TickInterval = 10s/2s)", len(slept))
+	}
+	for i, d := range slept {
+		if d != 2*time.Second {
+			t.Errorf("backoff tick %d slept %v, want one TickInterval (2s)", i, d)
+		}
+	}
+	if !r.saw("spending-cap") {
+		t.Errorf("expected a 'spending-cap abort — backing off' narration; events = %v", r.events)
+	}
+}
+
+// TestCapBackoffIsInterruptibleByStop proves the cap-abort backoff is responsive to
+// STOP/SIGINT (same short-tick mechanism as the idle wait): instead of one opaque
+// ~45-minute sleep, the backoff sleeps in TickInterval chunks and re-checks stop
+// between them, so a stop landing mid-backoff is observed within one tick. With
+// CapBackoff=10*Tick and a stop arranged to land after a few backoff ticks, the
+// loop must wake well before the 10 ticks a full backoff would take.
+func TestCapBackoffIsInterruptibleByStop(t *testing.T) {
+	r := &recorder{}
+	tick := 10 * time.Millisecond
+	backoff := 10 * tick // a full backoff would be 10 ticks
+
+	// Pass the first (top) checkpoint so we run the ticket and enter the backoff,
+	// then report stop once we've slept a few backoff ticks — modelling a mid-backoff SIGINT.
+	var stopChecks int
+	stop := func() bool {
+		stopChecks++
+		return stopChecks > 4 // 1 top checkpoint + a few backoff-tick checks, then stop
+	}
+
+	var ticks int
+	code := Run(Deps{
+		ClearStopFile: func() error { return nil },
+		FetchMain:     func() error { return nil },
+		StopRequested: stop,
+		ResolveNext:   func() (string, bool) { return "BEH-7", true },
+		RunPipeline:   func(string) TicketOutcome { return TicketOutcome{SpendingCapAbort: true} },
+		ReleaseTicket: func(string) error { return nil },
+		Sleep:         func(time.Duration) { ticks++ },
+		PollInterval:  time.Minute,
+		TickInterval:  tick,
+		CapBackoff:    backoff,
+		Log:           r,
+	})
+	if code != 0 {
+		t.Errorf("exit code = %d, want 0", code)
+	}
+	if ticks == 0 {
+		t.Errorf("backoff slept 0 ticks, want a few (the backoff must actually wait in TickInterval chunks)")
+	}
+	if ticks >= 10 {
+		t.Errorf("backoff slept %d ticks, want fewer than a full %d-tick backoff (a mid-backoff stop must wake early)", ticks, 10)
+	}
+}
+
+// TestCapAbortThenNormalRunAutoResumes proves auto-resume (DESIGN.md §Spending-cap
+// abort backoff): after a cap abort releases its ticket and the daemon backs off,
+// the loop re-polls and a subsequent non-capped run behaves exactly as before — it
+// runs the next ticket, fetches main after the session, and resets the breaker. The
+// cap-aborted run skips the after-ticket fetch (no work shipped), so only startup +
+// the normal run fetch main: two fetches total.
+func TestCapAbortThenNormalRunAutoResumes(t *testing.T) {
+	r := &recorder{}
+	var released []string
+	var ranWith []string
+	var fetches int
+	var run int
+	code := Run(Deps{
+		ClearStopFile: func() error { return nil },
+		FetchMain:     func() error { fetches++; return nil },
+		StopRequested: stopAfter(4), // top, 2 backoff ticks, top → run the 2nd ticket, then stop at the 3rd top checkpoint
+		ResolveNext: func() (string, bool) {
+			if run == 0 {
+				return "BEH-A", true
+			}
+			return "BEH-B", true
+		},
+		RunPipeline: func(id string) TicketOutcome {
+			run++
+			ranWith = append(ranWith, id)
+			if id == "BEH-A" {
+				return TicketOutcome{SpendingCapAbort: true} // first run: capped
+			}
+			return TicketOutcome{ReachedPushedPR: true} // auto-resumed run: ships normally
+		},
+		ReleaseTicket:          func(id string) error { released = append(released, id); return nil },
+		Sleep:                  func(time.Duration) {},
+		PollInterval:           time.Minute,
+		TickInterval:           2 * time.Second,
+		CapBackoff:             4 * time.Second, // 2 ticks
+		MaxConsecutiveFailures: 3,
+		Log:                    r,
+	})
+	if code != 0 {
+		t.Errorf("exit code = %d, want 0", code)
+	}
+	if want := []string{"BEH-A", "BEH-B"}; !reflect.DeepEqual(ranWith, want) {
+		t.Errorf("ran tickets %v, want %v (cap abort, back off, then auto-resume the next ticket)", ranWith, want)
+	}
+	if want := []string{"BEH-A"}; !reflect.DeepEqual(released, want) {
+		t.Errorf("released = %v, want %v (only the capped ticket is released; the shipped one is not)", released, want)
+	}
+	if fetches != 2 {
+		t.Errorf("FetchMain called %d times, want 2 (startup + after the normal run; the cap-aborted run skips the fetch)", fetches)
+	}
+	if r.saw("circuit breaker") {
+		t.Errorf("a cap abort then a shipped ticket must not trip the breaker; events = %v", r.events)
+	}
+}
+
 // TestBreakerDoesNotTripWhenTicketsKeepShipping proves a healthy daemon never
 // trips: a long run of pushed-PR tickets keeps the counter at 0, so the loop only
 // ends on the arranged stop, not the breaker.
