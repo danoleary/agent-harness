@@ -9,13 +9,17 @@ import (
 	"github.com/beherd/agent-harness/internal/ticket"
 )
 
-// bashQuirkSteer warns the sandboxed agent off the command pattern that the
-// pinned Claude CLI's bash wrapper intermittently mangles (BEH-401): chaining a
-// pipe into `head`/`tail` together with a command substitution like `cd "$(...)"`
-// in a single Bash call gets misparsed into opaque errors (`head: invalid number
-// of bytes`, `cd: too many arguments`) that read like the agent's own bug. The
-// harness can't patch the upstream CLI, so it steers around the trigger instead.
-const bashQuirkSteer = "Sandbox bash quirk (BEH-401): the bundled Claude CLI intermittently mangles a single Bash call that BOTH pipes into `head`/`tail` AND uses a command substitution like `cd \"$(...)\"`, producing opaque errors (`head: invalid number of bytes: 'set -euo pipefail; ...'`, `cd: too many arguments`) that look like a bug in your command but are an environment quirk. Work around it: run one command per Bash call, prefer absolute paths over `cd \"$(...)\"`, and don't tack `| head -n N` onto a compound command — if a check misfires this way, retrying it verbatim won't help, so split it up."
+// bashQuirkSteer warns the sandboxed agent off two opaque-error surfaces in the
+// pinned Claude CLI's bash wrapper that read like the agent's own bug but are an
+// environment artifact. (BEH-401) Chaining a pipe into `head`/`tail` with a
+// command substitution like `cd "$(...)"` in a single Bash call gets misparsed
+// into errors like `head: invalid number of bytes` / `cd: too many arguments`.
+// (BEH-598) When a plain command exits non-zero BY DESIGN, the tool can collapse
+// that into a bare `Error` string with the real exit code and stderr stripped —
+// e.g. `git merge-base` exits 1 on disjoint histories (an expected signal, not a
+// failure), but the agent can't tell that from a real break. The harness can't
+// patch the upstream CLI, so it steers around both instead.
+const bashQuirkSteer = "Sandbox bash quirk (BEH-401/BEH-598): the bundled Claude CLI's Bash tool can surface opaque errors that look like a bug in your command but are an environment artifact, in two ways. (1) It intermittently mangles a single Bash call that BOTH pipes into `head`/`tail` AND uses a command substitution like `cd \"$(...)\"`, producing errors like `head: invalid number of bytes: 'set -euo pipefail; ...'` or `cd: too many arguments`. (2) When a plain command exits non-zero BY DESIGN, the tool can collapse that into a bare `Error` string with the real exit code and stderr stripped — e.g. `git merge-base HEAD origin/main` exits 1 when two commits share no common ancestor, which is an expected signal, not a failure. Work around both: run one command per Bash call, prefer absolute paths over `cd \"$(...)\"`, and don't tack `| head -n N` onto a compound command; and when a plain command returns a bare `Error`, do NOT assume it broke — re-run it capturing the exit code explicitly (append `; echo exit=$?`, or use `cmd || echo \"exit $?\"`) to tell an expected non-zero exit from a real failure. Retrying verbatim won't help in either case — split it up, or inspect the exit code."
 
 // BuildTdd builds the `-p` prompt for the sandboxed /tdd session. The harness
 // has already claimed the ticket and owns all Linear I/O (ADR-0001), so the

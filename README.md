@@ -147,13 +147,25 @@ internal/          config, linear, prompt, sandbox, session, verify, filing, git
 Dockerfile         the node-based sandbox image (runs claude + herd's pnpm build)
 ```
 
-## Known gotcha: mangled multi-arg bash in the sandbox (BEH-401)
+## Known gotcha: opaque bash errors in the sandbox (BEH-401, BEH-598)
 
-The pinned `claude` CLI inside the sandbox intermittently mis-parses a single
-Bash call that both pipes into `head`/`tail` and uses a command substitution like
-`cd "$(...)"`, surfacing as opaque errors that look like the agent's own bug
-(`head: invalid number of bytes`, `cd: too many arguments`). Retrying verbatim
-doesn't help. The bug is in the bundled CLI's bash wrapper, so the harness can't
-patch it; instead every prompt carries a steer (`internal/prompt`) telling the
-agent to run one command per Bash call and avoid `cd "$(...)"`. Bump the pinned
-`CLAUDE_VERSION` (Dockerfile) if a newer release fixes it upstream.
+The pinned `claude` CLI's Bash tool surfaces opaque errors that look like the
+agent's own bug but are an environment artifact, in two ways:
+
+1. **Mangled multi-arg bash (BEH-401).** It intermittently mis-parses a single
+   Bash call that both pipes into `head`/`tail` and uses a command substitution
+   like `cd "$(...)"`, surfacing as `head: invalid number of bytes` /
+   `cd: too many arguments`.
+2. **Bare `Error` on a plain non-zero exit (BEH-598).** When a plain command
+   exits non-zero _by design_, the tool can collapse that into a bare `Error`
+   string with the real exit code and stderr stripped — e.g. `git merge-base`
+   exits 1 on disjoint histories (an expected signal), but the agent can't tell
+   that from a real break.
+
+Retrying verbatim doesn't help in either case. The bug is in the bundled CLI's
+bash wrapper, so the harness can't patch it; instead every prompt carries a steer
+(`internal/prompt`) telling the agent to run one command per Bash call, avoid
+`cd "$(...)"`, and re-run a bare-`Error` command capturing the exit code
+explicitly (`; echo exit=$?`) to tell an expected non-zero exit from a failure.
+Bump the pinned `CLAUDE_VERSION` (Dockerfile) if a newer release fixes it
+upstream.

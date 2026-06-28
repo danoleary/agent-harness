@@ -60,6 +60,20 @@ func assertCarriesBashQuirkSteer(t *testing.T, p, label string) {
 	if !regexp.MustCompile(`(?i)one .{0,20}per (Bash )?call|single .{0,20}call`).MatchString(p) {
 		t.Errorf("%s does not give the one-command-per-call workaround", label)
 	}
+	// BEH-598: the same opaque-error surface ALSO hits a plain command that exits
+	// non-zero BY DESIGN — `git merge-base` on disjoint histories exits 1 and the
+	// tool collapses it to a bare `Error` with the exit code + stderr stripped, so
+	// the agent can't tell an expected non-zero exit from a real break. The steer
+	// must name that second case and give the inspect-the-exit-code workaround.
+	if !regexp.MustCompile(`(?i)merge-base`).MatchString(p) {
+		t.Errorf("%s does not name the plain non-zero-exit case (git merge-base)", label)
+	}
+	if !regexp.MustCompile(`(?i)non-?zero`).MatchString(p) {
+		t.Errorf("%s does not mention a non-zero exit collapsing to a bare Error", label)
+	}
+	if !regexp.MustCompile(`(?i)exit code|echo exit|\$\?`).MatchString(p) {
+		t.Errorf("%s does not give the inspect-the-exit-code workaround", label)
+	}
 }
 
 // BEH-544: a ticket can be dispatched as live work after its fix already merged
