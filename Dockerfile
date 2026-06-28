@@ -7,6 +7,7 @@ FROM node:24-bookworm
 # claude must be pinned (AC); bump deliberately, never float to latest in a real build.
 ARG CLAUDE_VERSION=2.0.14
 ARG SUPABASE_VERSION=2.20.5
+ARG GO_VERSION=1.26.2
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -32,6 +33,23 @@ RUN arch="$(dpkg --print-architecture)" \
 	&& curl -fsSL "https://github.com/supabase/cli/releases/download/v${SUPABASE_VERSION}/supabase_${SUPABASE_VERSION}_linux_${arch}.deb" -o /tmp/supabase.deb \
 	&& dpkg -i /tmp/supabase.deb \
 	&& rm /tmp/supabase.deb
+
+# Go toolchain, pinned, baked in so agent-harness/ (pure-Go) tickets get the same
+# in-session red-green + build + gofmt gates that web/ (pnpm) tickets get. Without
+# it the node-based image has no `go`/`gofmt`, so `make check`/`make test`/`make
+# build`/`make fmt-check` can't run in-session and a Go-only diff ships to the
+# review session unverified (BEH-585). Installed from the official go.dev tarball
+# (arch-matched, like supabase above) rather than apt's unpinned `golang` so the
+# version is reproducible. GO_VERSION must satisfy agent-harness/go.mod's `go`
+# directive (Makefile requires Go 1.26+) — bump it deliberately like
+# CLAUDE_VERSION/PLAYWRIGHT_VERSION; the TestBakedGoVersionSatisfiesGoMod
+# invariant fails CI on a drift. PATH puts /usr/local/go/bin ahead so the
+# unprivileged `node` user the entrypoint execs under can invoke the toolchain.
+ENV PATH=/usr/local/go/bin:$PATH
+RUN arch="$(dpkg --print-architecture)" \
+	&& curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${arch}.tar.gz" -o /tmp/go.tar.gz \
+	&& tar -C /usr/local -xzf /tmp/go.tar.gz \
+	&& rm /tmp/go.tar.gz
 
 # pnpm via corepack (matches herd's package manager).
 RUN corepack enable
