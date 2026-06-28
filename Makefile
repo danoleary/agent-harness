@@ -1,5 +1,5 @@
 # Agent harness — Go toolchain shortcuts. Requires Go 1.26+.
-.PHONY: build image smoke test implementation review retrospective pipeline loop vet fmt fmt-check check-exec check-bash3 check-buildvcs check-ci check tidy
+.PHONY: build image smoke test implementation review retrospective pipeline loop vet fmt fmt-check check-exec check-bash3 check-buildvcs check-ci check-scripts check tidy
 
 # Build the tool binaries into ./bin.
 #
@@ -99,8 +99,18 @@ check-buildvcs:
 check-ci:
 	@./scripts/check-ci-runs-check.sh
 
+# Run the agent-harness shell tests (scripts/test-*.sh) so a behavioral
+# regression in a load-bearing harness script (loop-start.sh, the check-* guards)
+# fails the gate instead of shipping green — the tests passed by hand but nothing
+# ran them (BEH-591). Diff-based coverage enforcement (a changed script whose
+# sibling test-<name>.sh isn't touched) lives as a separate CI step in
+# agent-harness.yaml, mirroring the repo-root split, so `make check` stays
+# offline-runnable.
+check-scripts:
+	@./scripts/run-script-tests.sh
+
 # The pre-push gate: format check, vet, the script guards, and the full test suite.
-check: fmt-check vet check-exec check-bash3 check-buildvcs check-ci test
+check: fmt-check vet check-exec check-bash3 check-buildvcs check-ci check-scripts test
 
 tidy:
 	go mod tidy
