@@ -51,9 +51,12 @@ the daemon.
   sleeping / celebrating / hurt) is driven by the last `kind`. This needs no
   component model, mouse, or raw-mode input (Ctrl-C quits), so it is hand-rolled
   ANSI with no new entry in the harness `go.sum`.
-- **It degrades to plain text.** When stdout is not a TTY, or `NO_COLOR` is set, or
-  `--no-animation` is passed, the viewer prints plain scrollback lines instead of
-  the animated screen, so piping/redirecting it stays clean.
+- **It degrades to plain text.** When stdout is not a TTY, or `NO_COLOR` is set,
+  the viewer prints plain scrollback lines (and no pig) instead of the animated
+  screen, so piping/redirecting it stays clean. `--no-animation` is a separate,
+  reduced-motion toggle: it keeps the full dashboard but freezes the pig to a single
+  static frame (the rest of the view still updates live), rather than dropping to
+  plain text.
 
 ## Alternatives considered
 

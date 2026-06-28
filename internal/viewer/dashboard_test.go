@@ -16,7 +16,7 @@ func TestDashboardSurfacesTicketAndStageIndicator(t *testing.T) {
 	d.Observe(loopstream.Record{Kind: loopstream.KindTicketSelected, Ticket: "BEH-7", Message: "selected BEH-7 (Urgent) — claimed → In Progress"})
 	d.Observe(loopstream.Record{Kind: loopstream.KindStageStart, Ticket: "BEH-7", Stage: "implementation", Message: "run X — implementation BEH-7"})
 
-	frame := d.Render(time.Unix(0, 0), true)
+	frame := d.Render(time.Unix(0, 0), true, 0, false)
 	if !strings.Contains(frame, "BEH-7") {
 		t.Fatalf("expected ticket id in frame, got:\n%s", frame)
 	}
@@ -44,7 +44,7 @@ func TestDashboardRendersFullLayoutForEventSequence(t *testing.T) {
 		d.Observe(r)
 	}
 	now, _ := time.Parse(time.RFC3339, "2026-06-28T12:00:07Z")
-	frame := d.Render(now, true)
+	frame := d.Render(now, true, 0, false)
 
 	// Each panel header is present, in top-to-bottom order.
 	mustOrder(t, frame, "ticket:", "stage:", "step:", "health:", "recent:")
@@ -82,7 +82,7 @@ func TestDashboardStageIndicatorCountsAllThreeStages(t *testing.T) {
 	} {
 		d := NewDashboard()
 		d.Observe(loopstream.Record{Kind: loopstream.KindStageStart, Ticket: "BEH-1", Stage: tc.stage, Message: "m"})
-		frame := d.Render(time.Unix(0, 0), true)
+		frame := d.Render(time.Unix(0, 0), true, 0, false)
 		if !strings.Contains(frame, tc.want) {
 			t.Fatalf("stage %q: expected %q in frame, got:\n%s", tc.stage, tc.want, frame)
 		}
@@ -95,7 +95,7 @@ func TestDashboardTracksCurrentStepAndToolCounter(t *testing.T) {
 	d.Observe(loopstream.Record{Kind: loopstream.KindToolUse, Message: "⚒ Read"})
 	d.Observe(loopstream.Record{Kind: loopstream.KindToolUse, Message: "⚒ Bash"})
 
-	frame := d.Render(time.Unix(0, 0), true)
+	frame := d.Render(time.Unix(0, 0), true, 0, false)
 	if !strings.Contains(frame, "⚒ Bash") {
 		t.Fatalf("expected the latest tool-use as the current step, got:\n%s", frame)
 	}
@@ -106,7 +106,7 @@ func TestDashboardTracksCurrentStepAndToolCounter(t *testing.T) {
 	// A new stage resets the per-stage tool counter.
 	d.Observe(loopstream.Record{Kind: loopstream.KindStageStart, Ticket: "BEH-7", Stage: "review", Message: "m"})
 	d.Observe(loopstream.Record{Kind: loopstream.KindToolUse, Message: "⚒ Grep"})
-	frame = d.Render(time.Unix(0, 0), true)
+	frame = d.Render(time.Unix(0, 0), true, 0, false)
 	if !strings.Contains(frame, "⚒ Grep") {
 		t.Fatalf("expected the new stage's tool-use as current step, got:\n%s", frame)
 	}
@@ -135,7 +135,7 @@ func TestDashboardScrollbackTailIsBoundedToRecentEvents(t *testing.T) {
 	for i := 0; i < tailMax+5; i++ {
 		d.Observe(loopstream.Record{Kind: loopstream.KindIdle, Message: "event-" + strconv.Itoa(i)})
 	}
-	frame := d.Render(time.Unix(0, 0), true)
+	frame := d.Render(time.Unix(0, 0), true, 0, false)
 	newest := "event-" + strconv.Itoa(tailMax+4)
 	oldest := "event-0"
 	if !strings.Contains(frame, newest) {
@@ -150,7 +150,7 @@ func TestDashboardScrollbackTailIsBoundedToRecentEvents(t *testing.T) {
 func TestDashboardShowsDaemonDownState(t *testing.T) {
 	d := NewDashboard()
 	d.Observe(loopstream.Record{Kind: loopstream.KindStageStart, Ticket: "BEH-7", Stage: "implementation", Message: "m"})
-	frame := d.Render(time.Unix(100, 0), false)
+	frame := d.Render(time.Unix(100, 0), false, 0, false)
 	if !strings.Contains(strings.ToLower(frame), "down") {
 		t.Fatalf("a down daemon must render a clear down state, got:\n%s", frame)
 	}
@@ -165,7 +165,7 @@ func TestDashboardShowsRunningWithLastEventAge(t *testing.T) {
 	d := NewDashboard()
 	d.Observe(loopstream.Record{TS: "2026-06-28T12:00:00Z", Kind: loopstream.KindToolUse, Ticket: "BEH-7", Stage: "implementation", Message: "⚒ Bash"})
 	now, _ := time.Parse(time.RFC3339, "2026-06-28T12:00:05Z")
-	frame := d.Render(now, true)
+	frame := d.Render(now, true, 0, false)
 	if !strings.Contains(strings.ToLower(frame), "running") {
 		t.Fatalf("a live daemon must render as running, got:\n%s", frame)
 	}
@@ -185,7 +185,7 @@ func TestDashboardClearsStaleStageOnNewTicket(t *testing.T) {
 	// A new ticket is selected (no Stage on the record).
 	d.Observe(loopstream.Record{Kind: loopstream.KindTicketSelected, Ticket: "BEH-8", Message: "selected BEH-8 (Urgent) — claimed → In Progress"})
 
-	frame := d.Render(time.Unix(0, 0), true)
+	frame := d.Render(time.Unix(0, 0), true, 0, false)
 	// Assert on the header panels only — the scrollback tail legitimately preserves
 	// the prior ticket's historical lines (retrospective, ⚒ Bash).
 	header := frame[:strings.Index(frame, "recent:")]
@@ -200,6 +200,39 @@ func TestDashboardClearsStaleStageOnNewTicket(t *testing.T) {
 	}
 }
 
+// AC1: the pig's state is selected from the most recent event and updates live as
+// events arrive — and before any event it sleeps (queue empty).
+func TestDashboardPigReflectsMostRecentEvent(t *testing.T) {
+	d := NewDashboard()
+	// No events yet → sleeping.
+	if frame := d.Render(time.Unix(0, 0), true, 0, false); !strings.Contains(frame, "pig: sleeping") {
+		t.Fatalf("a fresh dashboard with no events should show a sleeping pig, got:\n%s", frame)
+	}
+	// A tool-use makes it work; a later pr-opened makes it celebrate (most recent wins).
+	d.Observe(loopstream.Record{Kind: loopstream.KindToolUse, Message: "⚒ Bash"})
+	if frame := d.Render(time.Unix(0, 0), true, 0, false); !strings.Contains(frame, "pig: working") {
+		t.Fatalf("a recent tool-use should show a working pig, got:\n%s", frame)
+	}
+	d.Observe(loopstream.Record{Kind: loopstream.KindPROpened, Ticket: "BEH-7", Stage: "review", Message: "review ✓ PR opened: http://x"})
+	if frame := d.Render(time.Unix(0, 0), true, 0, false); !strings.Contains(frame, "pig: celebrating") {
+		t.Fatalf("a recent pr-opened should show a celebrating pig, got:\n%s", frame)
+	}
+}
+
+// AC2 at the dashboard layer: with animation on, the pig frame advances with the
+// tick; with animation off, the rendered pig is identical across ticks.
+func TestDashboardPigAnimatesOnlyWhenEnabled(t *testing.T) {
+	d := NewDashboard()
+	d.Observe(loopstream.Record{Kind: loopstream.KindToolUse, Message: "⚒ Bash"})
+
+	if a, b := d.Render(time.Unix(0, 0), true, 0, true), d.Render(time.Unix(0, 0), true, 1, true); a == b {
+		t.Fatalf("animating: the pig must differ between ticks 0 and 1")
+	}
+	if a, b := d.Render(time.Unix(0, 0), true, 0, false), d.Render(time.Unix(0, 0), true, 1, false); a != b {
+		t.Fatalf("static (--no-animation): the pig must be identical across ticks")
+	}
+}
+
 // Late attach (AC2): a viewer that attaches mid-ticket reads a record carrying the
 // structured ticket/stage fields and renders the panel immediately — without ever
 // having seen the ticket-selected event that started the ticket.
@@ -207,7 +240,7 @@ func TestDashboardLateAttachRendersFromStructuredFields(t *testing.T) {
 	d := NewDashboard()
 	// First and only record the late viewer sees: a stage-start mid-ticket.
 	d.Observe(loopstream.Record{Kind: loopstream.KindStageStart, Ticket: "BEH-42", Stage: "review", Message: "run X — review BEH-42"})
-	frame := d.Render(time.Unix(0, 0), true)
+	frame := d.Render(time.Unix(0, 0), true, 0, false)
 	if !strings.Contains(frame, "BEH-42") || !strings.Contains(frame, "review") || !strings.Contains(frame, "2 of 3") {
 		t.Fatalf("late attach should render ticket+stage immediately, got:\n%s", frame)
 	}

@@ -31,7 +31,7 @@ func TestDashboardTailerFeedsModelFromFile(t *testing.T) {
 	if err != nil || !running {
 		t.Fatalf("poll: running=%v err=%v", running, err)
 	}
-	frame := dt.Dashboard().Render(time.Unix(0, 0), true)
+	frame := dt.Dashboard().Render(time.Unix(0, 0), true, 0, false)
 	if !strings.Contains(frame, "BEH-3") || !strings.Contains(frame, "implementation") || !strings.Contains(frame, "1 of 3") {
 		t.Fatalf("expected the model fed from file, got:\n%s", frame)
 	}

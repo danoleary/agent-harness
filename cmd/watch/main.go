@@ -1,11 +1,13 @@
 // Command watch is the read-only loop viewer (ADR-0005): it tails the global
 // structured event stream (agent-harness/logs/loop.jsonl) the daemon and the
 // single-shot pipeline write. On an interactive TTY it renders a live, redraw-on-a-
-// ticker dashboard — a current-ticket panel, a stage indicator (n of 3), the
-// current step plus a tool-call counter, daemon health, and a scrollback tail. When
-// stdout is not a TTY, or NO_COLOR is set, or --no-animation is passed, it falls
-// back to plain scrollback lines (one per event), so piping or redirecting stays
-// clean and no ANSI escapes leak into a pipe.
+// ticker dashboard — a stateful ASCII pig, a current-ticket panel, a stage
+// indicator (n of 3), the current step plus a tool-call counter, daemon health, and
+// a scrollback tail. --no-animation keeps the dashboard but freezes the pig to a
+// single static frame (reduced motion); the rest of the view still updates live.
+// When stdout is not a TTY, or NO_COLOR is set, it falls back to plain scrollback
+// lines (one per event, no pig), so piping or redirecting stays clean and no ANSI
+// escapes leak into a pipe.
 //
 // It NEVER controls the loop — `touch agent-harness/STOP` remains the only control
 // path, and quitting the viewer (Ctrl-C) does not touch the daemon. It holds no
@@ -43,8 +45,8 @@ func main() {
 	argv, noAnimation := parseArgs(os.Args[1:])
 	path := resolvePath(argv)
 
-	if useDashboard(isTTY(os.Stdout), noAnimation, os.Getenv) {
-		runDashboard(path, resolvePidPath(path))
+	if useDashboard(isTTY(os.Stdout), os.Getenv) {
+		runDashboard(path, resolvePidPath(path), animateFromFlag(noAnimation))
 		return
 	}
 	runPlain(path)
@@ -52,14 +54,16 @@ func main() {
 
 // runDashboard redraws the live full-screen dashboard each tick. It owns no control
 // over the loop: it only reads the stream and probes the pidfile for liveness, so
-// Ctrl-C (which kills this process) never touches the daemon.
-func runDashboard(path, pidPath string) {
+// Ctrl-C (which kills this process) never touches the daemon. animate is false
+// under --no-animation, which freezes the pig to its single static frame while the
+// rest of the dashboard keeps updating; tick advances the pig's animation frame.
+func runDashboard(path, pidPath string, animate bool) {
 	dt := viewer.NewDashboardTailer(path)
-	for {
+	for tick := 0; ; tick++ {
 		if _, err := dt.Poll(); err != nil {
 			fmt.Fprintf(os.Stderr, "watch: %v\n", err)
 		}
-		frame := viewer.Frame(dt.Dashboard().Render(time.Now(), daemonAlive(pidPath)))
+		frame := viewer.Frame(dt.Dashboard().Render(time.Now(), daemonAlive(pidPath), tick, animate))
 		fmt.Fprint(os.Stdout, frame)
 		time.Sleep(pollInterval)
 	}
@@ -98,16 +102,23 @@ func parseArgs(argv []string) (positional []string, noAnimation bool) {
 	return positional, noAnimation
 }
 
-// useDashboard decides between the animated dashboard and the plain fallback. The
-// dashboard is used only on an interactive TTY with animation allowed: NO_COLOR or
-// --no-animation, or a non-TTY (a pipe/redirect), force the plain path so escapes
-// never reach a file or downstream process (ADR-0005). getenv is injected for test.
-func useDashboard(tty, noAnimation bool, getenv func(string) string) bool {
-	if !tty || noAnimation {
+// useDashboard decides between the full dashboard and the plain fallback. The
+// dashboard is used on an interactive TTY unless NO_COLOR is set; a non-TTY (a
+// pipe/redirect) or NO_COLOR forces the plain path so escapes never reach a file or
+// downstream process, and the plain path carries no pig (ADR-0005 / AC4). Note
+// --no-animation is NOT a fallback trigger: it keeps the dashboard but freezes the
+// pig to a static frame (animateFromFlag). getenv is injected for test.
+func useDashboard(tty bool, getenv func(string) string) bool {
+	if !tty {
 		return false
 	}
 	return getenv("NO_COLOR") == ""
 }
+
+// animateFromFlag maps the --no-animation flag to the dashboard's animate decision:
+// the flag is reduced-motion, so it renders a single static pig frame rather than
+// cycling, while the rest of the dashboard still updates live (AC2).
+func animateFromFlag(noAnimation bool) bool { return !noAnimation }
 
 // isTTY reports whether f is an interactive terminal (a character device), the
 // signal that the animated dashboard has a screen to redraw on.

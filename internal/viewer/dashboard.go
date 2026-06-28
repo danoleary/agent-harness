@@ -52,12 +52,13 @@ func Frame(body string) string { return clearHome + body }
 // fallback): the model holds structured state so a late-attaching viewer renders
 // the current ticket/stage immediately, without waiting for the next event.
 type Dashboard struct {
-	ticket     string // current ticket id
-	ticketLine string // the ticket-selected message verbatim (carries priority)
-	stage      string // current stage name
-	step       string // latest tool-use message (the current step)
-	toolCount  int    // tool-use count within the current stage
-	lastTS     string // RFC3339 timestamp of the most recent observed event
+	ticket     string   // current ticket id
+	ticketLine string   // the ticket-selected message verbatim (carries priority)
+	stage      string   // current stage name
+	step       string   // latest tool-use message (the current step)
+	toolCount  int      // tool-use count within the current stage
+	lastTS     string   // RFC3339 timestamp of the most recent observed event
+	pig        pigState // mascot mood, selected from the most recent event's kind
 
 	// view renders each observed record into a plain scrollback line, reused for the
 	// tail so the dashboard's scrollback matches the non-TTY fallback exactly.
@@ -65,8 +66,9 @@ type Dashboard struct {
 	tail []string // ring buffer of the most recent rendered lines (≤ tailMax)
 }
 
-// NewDashboard returns a fresh Dashboard with no current ticket or stage.
-func NewDashboard() *Dashboard { return &Dashboard{view: New()} }
+// NewDashboard returns a fresh Dashboard with no current ticket or stage. Before
+// any event the pig sleeps — the queue-empty resting state.
+func NewDashboard() *Dashboard { return &Dashboard{view: New(), pig: pigSleeping} }
 
 // Observe folds one record into the model state. Non-empty Ticket/Stage update the
 // tracked values; a ticket-selected record additionally captures its message for
@@ -101,6 +103,8 @@ func (d *Dashboard) Observe(r loopstream.Record) {
 	if r.TS != "" {
 		d.lastTS = r.TS
 	}
+	// The pig reflects the most recent event, whatever its kind (AC1).
+	d.pig = pigStateFor(r)
 	if line, ok := d.view.Observe(r); ok {
 		d.tail = append(d.tail, line)
 		if len(d.tail) > tailMax {
@@ -112,8 +116,12 @@ func (d *Dashboard) Observe(r loopstream.Record) {
 // Render returns the dashboard frame body (no clear-screen escape — see Frame) for
 // the model's current state. now and alive are injected so the render is pure and
 // testable: alive is the daemon's liveness, now anchors the "age of last event".
-func (d *Dashboard) Render(now time.Time, alive bool) string {
+// frame is the redraw tick (advanced by the command) the pig animates on; animate
+// is false under --no-animation, freezing the pig to its single static frame.
+func (d *Dashboard) Render(now time.Time, alive bool, frame int, animate bool) string {
 	var b strings.Builder
+	b.WriteString(renderPig(d.pig, frame, animate))
+	b.WriteString("\n")
 	b.WriteString("ticket:  ")
 	b.WriteString(d.ticket)
 	b.WriteString("\n")

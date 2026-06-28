@@ -16,20 +16,35 @@ func TestUseDashboardOnlyOnInteractiveTTY(t *testing.T) {
 		return ""
 	}
 	for _, tc := range []struct {
-		name        string
-		isTTY       bool
-		noAnimation bool
-		getenv      func(string) string
-		want        bool
+		name   string
+		isTTY  bool
+		getenv func(string) string
+		want   bool
 	}{
-		{"interactive tty", true, false, noEnv, true},
-		{"not a tty (piped)", false, false, noEnv, false},
-		{"no-animation flag", true, true, noEnv, false},
-		{"NO_COLOR set", true, false, withNoColor, false},
+		{"interactive tty", true, noEnv, true},
+		{"not a tty (piped)", false, noEnv, false},
+		{"NO_COLOR set", true, withNoColor, false},
 	} {
-		if got := useDashboard(tc.isTTY, tc.noAnimation, tc.getenv); got != tc.want {
+		if got := useDashboard(tc.isTTY, tc.getenv); got != tc.want {
 			t.Fatalf("%s: useDashboard=%v, want %v", tc.name, got, tc.want)
 		}
+	}
+}
+
+// --no-animation is a reduced-motion toggle on the dashboard (a static pig), NOT a
+// reason to drop to the plain fallback: on a TTY the dashboard is still used, and
+// the flag only flips the animate decision. Only a non-TTY / NO_COLOR drops to
+// plain (AC4). animateFromFlag is the thin derivation the command threads to Render.
+func TestNoAnimationKeepsDashboardButStopsAnimating(t *testing.T) {
+	noEnv := func(string) string { return "" }
+	if !useDashboard(true, noEnv) {
+		t.Fatalf("a TTY must use the dashboard even with --no-animation")
+	}
+	if animateFromFlag(true) {
+		t.Fatalf("--no-animation (noAnimation=true) must disable animation")
+	}
+	if !animateFromFlag(false) {
+		t.Fatalf("without --no-animation, animation is on")
 	}
 }
 
