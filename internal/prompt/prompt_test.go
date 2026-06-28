@@ -74,6 +74,21 @@ func assertCarriesBashQuirkSteer(t *testing.T, p, label string) {
 	if !regexp.MustCompile(`(?i)exit code|echo exit|\$\?`).MatchString(p) {
 		t.Errorf("%s does not give the inspect-the-exit-code workaround", label)
 	}
+	// BEH-601: a THIRD face of the same quirk — a `VAR=value; cmd "$VAR"`
+	// assignment-then-use within ONE Bash call can expand $VAR to the empty
+	// string, so the failure is silent (empty output) or surfaces as a path with
+	// the prefix missing (e.g. `/dist`). `&&`-chaining the assignment to its use
+	// expands fine; `;`-separating it is what drops the variable. The steer must
+	// name the variable-assignment case and give a workaround.
+	if !regexp.MustCompile(`(?i)assign`).MatchString(p) {
+		t.Errorf("%s does not name the intra-call variable-assignment case", label)
+	}
+	if !regexp.MustCompile(`(?i)empty`).MatchString(p) {
+		t.Errorf("%s does not say the assignment can expand to the empty string", label)
+	}
+	if !strings.Contains(p, "&&") {
+		t.Errorf("%s does not give the &&-chain workaround for the assignment case", label)
+	}
 }
 
 // BEH-544: a ticket can be dispatched as live work after its fix already merged
