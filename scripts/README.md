@@ -1,5 +1,50 @@
 # Agent Harness Scripts
 
+## loop-start.sh
+
+Launch the autonomous loop daemon (`cmd/loop`) as a detached background process —
+no tmux, no supervisor (BEH-578).
+
+### Purpose
+
+The loop's intended run model is a plain detached process the operator walks away
+from (DESIGN.md §Run model). This thin launcher `nohup`s `bin/loop` into the
+background so it survives the operator logging out, appends its output to a
+logfile, and records the PID in a pidfile for a hard `kill` if ever needed.
+Graceful stop stays `touch agent-harness/STOP`; the pidfile is the escape hatch,
+not the normal stop. No supervisor means no auto-restart — a crash or a
+circuit-breaker trip stays down until the operator relaunches, which the loop's
+exit-code contract (0 = deliberate stop, non-zero = crash) keeps safe for a
+future, deferred launchd/systemd unit.
+
+### What it does
+
+- Refuses to launch a second daemon over a live one (a running pid in the
+  pidfile), since two would race the same `agent-ready` queue; clears a **stale**
+  pidfile (its process is gone) so a crashed run can't wedge restarts.
+- Fails loud if `bin/loop` isn't built/executable, rather than `nohup`'ing a
+  non-existent path (which would record a pidfile for an instantly-dead process).
+- `nohup bin/loop >> <log> 2>&1 &`, then writes `$!` to the pidfile.
+
+Paths default to `bin/loop`, `loop.pid`, and `loop.log` under the harness dir and
+are env-overridable (`LOOP_BIN` / `LOOP_PIDFILE` / `LOOP_LOGFILE`) — the overrides
+are what let the test drive it with a fake binary instead of the real daemon. It
+is bash-3.2-safe.
+
+### Usage
+
+```bash
+cd agent-harness
+make build               # build bin/loop first
+./scripts/loop-start.sh  # detached launch; touch agent-harness/STOP to stop
+```
+
+### Testing
+
+```bash
+./scripts/test-loop-start.sh
+```
+
 ## check-buildvcs.sh
 
 Guard against VCS-stamping Go commands in Makefiles that omit `-buildvcs=false`

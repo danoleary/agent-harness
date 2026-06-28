@@ -1,6 +1,9 @@
 .env
 logs/
 STOP
+# Runtime artifacts of scripts/loop-start.sh (the detached daemon's log + pidfile).
+loop.log
+loop.pid
 /bin/
 # Compiled tool binaries built by `go build -o <name> ./cmd/<name>` (CI/Make use /bin/).
 /implementation

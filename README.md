@@ -150,12 +150,51 @@ the Claude credential and no longer pushes (ADR-0002).
 > watch degrades gracefully (the PR still ships — you just check CI by hand), but
 > only a classic `repo`-scoped PAT enables the watch (BEH-476).
 
+## Running the loop (standalone daemon)
+
+`cmd/loop` is the autonomous daemon: it drives the single-ticket pipeline over
+the `agent-ready` queue in a long-running loop, idling and re-polling when the
+queue is empty. The intended run model is a **plain detached background process
+the operator walks away from — no tmux, no supervisor** (DESIGN.md §Run model):
+
+```bash
+cd agent-harness
+make build                  # build bin/loop (and the other tool binaries)
+./scripts/loop-start.sh     # nohup bin/loop into the background; logs to loop.log, pid to loop.pid
+```
+
+`scripts/loop-start.sh` `nohup`s `bin/loop` detached, appends its output to
+`loop.log`, and records the PID in `loop.pid` for a hard `kill` if ever needed.
+It refuses to launch a second daemon over a live one (two would race the same
+queue) and clears a stale pidfile left by a crashed run. Override `LOOP_BIN`,
+`LOOP_PIDFILE`, or `LOOP_LOGFILE` to relocate any of the three.
+
+**No supervisor means no auto-restart.** A crash, a circuit-breaker trip, or a
+`LOOP_MAX_*` ceiling stays down until the operator relaunches — the breaker
+deliberately wants a human to look before more tickets are consumed. `launchd`/
+`systemd` is explicitly **deferred**; if ever added it must **not** auto-restart a
+clean (exit-0) stop, which the exit-code contract below is what makes safe.
+
+### Exit-code contract
+
+The loop's exit code distinguishes "stopped on purpose" from "died", so a future
+supervisor (or a human reading `loop.log`) can tell them apart:
+
+| Exit | Meaning | Causes |
+|---|---|---|
+| `0` | a **deliberate** terminal stop | STOP requested, circuit breaker tripped, or a `LOOP_MAX_TICKETS`/`LOOP_MAX_RUNTIME_MS` ceiling reached |
+| non-zero | an **unexpected** crash | panic, docker daemon gone, config error (`1`); hard-abort second Ctrl-C (`130`) |
+
+With no supervisor nothing acts on this today, but it is the discipline that keeps
+a future `launchd` `SuccessfulExit=false` from resurrecting an intentional stop.
+
 ## Stopping it
 
 - **Ctrl-C** once: finishes the current ticket, then exits (`will stop after current ticket`).
-- **`touch agent-harness/STOP`**: same, for unattended/AFK runs.
+- **`touch agent-harness/STOP`**: same, for unattended/AFK runs — the graceful stop for a detached `loop-start.sh` daemon.
 - **Ctrl-C twice**: hard abort — kills the running container and exits now,
   leaving the worktree for later review.
+- **`kill $(cat loop.pid)`**: hard kill of a detached daemon (the pidfile escape hatch); prefer the STOP file for a graceful wind-down.
 
 ## Logs
 
