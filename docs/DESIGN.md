@@ -235,7 +235,12 @@ loop:
                 // never the agent's self-report; a green gate is NOT a review (BEH-569)
   if OK     -> git -C <worktree> rebase origin/main   // BEH-570: replay onto the fresh base
                  - clean replay  -> continue (the long pipeline let main move; PR opens current)
-                 - content conflict -> abort (branch untouched) + KEEP worktree, leave for a human
+                 - content conflict -> NO dead-end (BEH-581): launch a sandboxed conflict-resolution
+                     session over the worktree (rebase + resolve + commit, like the CI auto-fix),
+                     verify ground truth (clean tree AND branch actually rebased — not abort-to-stale),
+                     re-run the host gate on the resolved tree; only then push. If it can't land a
+                     clean, re-gated rebase -> abort + KEEP worktree + Linear breadcrumb (a spending-cap
+                     abort defers quietly). A genuine unresolvable conflict still ends with a human.
                git -C $HERD_PATH push origin feat/beh-nnn
                gh pr create --repo <origin> --head feat/beh-nnn --base main \
                             --title <templated> --body <templated: ticket id + commit subjects>

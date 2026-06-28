@@ -246,6 +246,44 @@ func BuildCIFix(t ticket.Ticket, slug, worktreePath, ciLogs string, logAvailable
 	return strings.Join(lines, "\n")
 }
 
+// BuildRebaseFix builds the `-p` prompt for the sandboxed conflict-resolution
+// session the review stage launches when the proactive pre-push rebase hits a
+// genuine content conflict (BEH-581). The branch already passed the cold review +
+// the harness gate, but a sibling PR advanced origin/main underneath it and the
+// two diffs genuinely overlap, so the automatic replay can't apply. Rather than
+// dead-end and strand the reviewed work, the harness runs this session to rebase +
+// resolve in the worktree — mirroring BuildCIFix's local-commit-only contract. The
+// harness then independently re-runs the gate host-side before pushing, so the
+// session never pushes or touches the remote/Linear itself.
+func BuildRebaseFix(t ticket.Ticket, slug, worktreePath string) string {
+	lines := []string{
+		"A pre-push rebase for " + t.Identifier + " hit a genuine content conflict. The branch already passed the cold review and the harness gate, but origin/main advanced underneath it (a sibling PR merged) and the changes overlap, so it cannot be replayed automatically. The worktree already exists at `" + worktreePath + "` on branch `feat/" + slug + "` — work in it; do NOT create a new worktree.",
+		"",
+		"Your job: in the worktree, run `git rebase origin/main`, resolve every conflict by hand, `git add` the resolved files, and `git rebase --continue` until the rebase completes cleanly and `git status` is clean. origin/main is already fetched locally (this sandbox has NO network), so the rebase works offline.",
+		"",
+		"Resolve conflicts to preserve the intent of BOTH sides: keep this ticket's change AND the incoming change from main. Do NOT blindly take one side (`--ours`/`--theirs`) — read both hunks and merge them so neither feature is lost. When in doubt, the ticket's intent is below.",
+		"",
+		"Do NOT run `git rebase --abort` or otherwise give up — aborting would strand the branch on its stale base, which is exactly the dead-end this session exists to fix. If a hunk is genuinely impossible to reconcile, make your best-effort merge and leave a clear note in the commit; the harness re-runs the full gate host-side and watches CI, so a mistake surfaces there rather than silently shipping.",
+		"",
+		"Ticket context (the intent to preserve — already fetched for you):",
+		"",
+		"# " + t.Identifier + ": " + t.Title,
+		"",
+		t.Description,
+		"",
+		"---",
+		"",
+		"Leave the resolved rebase committed in the worktree and stop there. Do NOT push, do NOT run `gh`, do NOT open or comment on a PR. The harness owns all remote git I/O (ADR-0002): after you finish the rebase, it independently re-runs the quality gates host-side and, only if they pass, pushes the rebased branch and opens the PR itself.",
+		"",
+		"Do NOT touch Linear — do not call any `mcp__linear-server__*` tool, do not move the ticket, do not open or comment on issues. The harness owns all Linear I/O (ADR-0001).",
+		"",
+		"Do NOT emit or file any harness-improvement findings, and do NOT write `/findings/out.json`. The retrospective tool owns findings — your only output is the resolved, rebased worktree.",
+		"",
+		bashQuirkSteer,
+	}
+	return strings.Join(lines, "\n")
+}
+
 // BuildReview builds the `-p` prompt for the sandboxed /review-worktree session
 // (the second tool). The implementation slice already left a worktree + handoff
 // commit; review reads that diff *cold* and applies fixes as a local commit. The

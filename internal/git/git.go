@@ -314,6 +314,35 @@ func rebaseOntoMain(worktreePath string, run commandRunner) RebaseResult {
 	return RebaseClean
 }
 
+// IsRebasedOnto reports whether ref (e.g. "origin/main") is an ancestor of the
+// worktree's HEAD — i.e. the branch genuinely contains the latest base. It is the
+// ground-truth guard the pre-push conflict-resolution path needs (BEH-581): a
+// sandboxed session that gives up and runs `git rebase --abort` leaves a CLEAN
+// worktree on the original stale tip, so WorktreeClean alone would wave it
+// through. Confirming the rebase actually landed stops the harness re-gating and
+// pushing a still-stale branch. Read host-side via the real-path mount; any git
+// failure (the non-ancestor exit, or git refusing) reads as not-rebased.
+func IsRebasedOnto(worktreePath, ref string) bool {
+	return isRebasedOnto(worktreePath, ref, execRun)
+}
+
+func isRebasedOnto(worktreePath, ref string, run commandRunner) bool {
+	return run("git", "-C", worktreePath, "merge-base", "--is-ancestor", ref, "HEAD") == nil
+}
+
+// AbortRebase restores a worktree a conflict-resolution session left mid-rebase
+// to a clean, on-branch state before the harness keeps it for a human (BEH-581).
+// Best-effort: if no rebase is in progress, `rebase --abort` fails harmlessly, so
+// there is nothing to surface — callers fire it unconditionally on a failed
+// resolution.
+func AbortRebase(worktreePath string) {
+	abortRebase(worktreePath, execRun)
+}
+
+func abortRebase(worktreePath string, run commandRunner) {
+	_ = run("git", "-C", worktreePath, "rebase", "--abort")
+}
+
 // Push pushes the feature branch to origin from the main checkout (ADR-0002: the
 // harness owns the push, host-side; the sandbox never reaches a remote). Run only
 // after the harness's own gate re-run is green.

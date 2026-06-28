@@ -268,33 +268,42 @@ func Review(cfg config.Config, log *runlog.Logger, runID string, args Args) Resu
 	// which would flip a genuinely green branch red and push nothing. A 137 is
 	// environmental, never the diff — a real gate failure (check/typecheck error)
 	// returns a non-137 code and is final on the first attempt.
-	gateTranscript := runlog.GateTranscriptName(runID)
-	gateBackoff := session.ExponentialBackoff(gateOOMBackoffBase, gateOOMBackoffCap)
-	log.Event(fmt.Sprintf("re-running gates host-side (cap %d min)", int(cfg.ReviewTimeout.Minutes())))
-	gateOutcome, _ := session.RetryTransient(gateOOMMaxAttempts, gateBackoff, time.Sleep, func(attempt int) session.Outcome {
-		name, transcript := gateName, gateTranscript
-		if attempt > 1 {
-			name = fmt.Sprintf("%s-retry%d", gateName, attempt)
-			transcript = runlog.GateTranscriptName(fmt.Sprintf("%s-retry%d", runID, attempt))
-			log.Event(fmt.Sprintf(
-				"review ↻ host-side gate OOM-killed (exit 137) — retry %d/%d after %s (BEH-530)",
-				attempt-1, gateOOMMaxAttempts-1, gateBackoff(attempt-1),
-			))
-		}
-		out := session.Run(buildGateArgs(name), session.Options{
-			ContainerName:  name,
-			TranscriptFile: transcript,
-			Timeout:        cfg.ReviewTimeout,
-			IdleTimeout:    cfg.SessionIdleTimeout,
-			Verbose:        args.Verbose,
-			Log:            log,
+	// runHostGate runs `pnpm check && typecheck` in a throwaway container under the
+	// OOM-retry, keyed by a base container name + a transcript tag so it can run more
+	// than once per stage (the pre-push conflict path re-gates the resolved tree —
+	// BEH-581). baseName/transcriptTag are the (runID-derived) first-attempt names;
+	// retries suffix them.
+	runHostGate := func(baseName, transcriptTag string) session.Outcome {
+		gateBackoff := session.ExponentialBackoff(gateOOMBackoffBase, gateOOMBackoffCap)
+		outcome, _ := session.RetryTransient(gateOOMMaxAttempts, gateBackoff, time.Sleep, func(attempt int) session.Outcome {
+			name, transcript := baseName, runlog.GateTranscriptName(transcriptTag)
+			if attempt > 1 {
+				name = fmt.Sprintf("%s-retry%d", baseName, attempt)
+				transcript = runlog.GateTranscriptName(fmt.Sprintf("%s-retry%d", transcriptTag, attempt))
+				log.Event(fmt.Sprintf(
+					"review ↻ host-side gate OOM-killed (exit 137) — retry %d/%d after %s (BEH-530)",
+					attempt-1, gateOOMMaxAttempts-1, gateBackoff(attempt-1),
+				))
+			}
+			out := session.Run(buildGateArgs(name), session.Options{
+				ContainerName:  name,
+				TranscriptFile: transcript,
+				Timeout:        cfg.ReviewTimeout,
+				IdleTimeout:    cfg.SessionIdleTimeout,
+				Verbose:        args.Verbose,
+				Log:            log,
+			})
+			// Raw-stdout step log: the gate's `pnpm install`/`tsgo` just stops mid-output
+			// on an OOM-kill. Stamp the exit so the abrupt end is self-describing rather
+			// than needing a run.jsonl cross-reference to confirm the 137 (BEH-537).
+			log.TeeLine(transcript, runlog.StepFooter(out.ExitCode))
+			return out
 		})
-		// Raw-stdout step log: the gate's `pnpm install`/`tsgo` just stops mid-output
-		// on an OOM-kill. Stamp the exit so the abrupt end is self-describing rather
-		// than needing a run.jsonl cross-reference to confirm the 137 (BEH-537).
-		log.TeeLine(transcript, runlog.StepFooter(out.ExitCode))
-		return out
-	})
+		return outcome
+	}
+
+	log.Event(fmt.Sprintf("re-running gates host-side (cap %d min)", int(cfg.ReviewTimeout.Minutes())))
+	gateOutcome := runHostGate(gateName, runID)
 	gateExit := gateOutcome.ExitCode
 
 	// The gate runs against the worktree's working tree (committed + uncommitted),
@@ -346,17 +355,32 @@ func Review(cfg config.Config, log *runlog.Logger, runID string, args Args) Resu
 	if err := gitpkg.FetchMain(cfg.HerdPath); err != nil {
 		log.Event("review … warning: could not re-fetch origin/main before rebase: " + err.Error())
 	}
+	// comment posts a best-effort Linear breadcrumb so a gate-green, reviewed branch
+	// that can't ship autonomously surfaces on the ticket instead of sitting silent
+	// in a worktree (BEH-581). A failure to comment is logged, never fatal.
+	comment := func(body string) {
+		if err := client.AddComment(args.Identifier, body); err != nil {
+			log.Event("review … warning: could not post Linear breadcrumb: " + err.Error())
+		}
+	}
+
 	// Rebase onto origin/main before pushing so a sibling PR that merged during this long
 	// pipeline can't strand the branch on a stale base — the merge-conflict dead-end
 	// BEH-570 hit, where the conflict only surfaced post-PR in the CI watch and was left
 	// as a manual step. The worktree is clean here (verified just above), which git rebase
-	// requires. A clean replay moves the tip onto the current base; a genuine content
-	// conflict aborts (branch untouched) and is left for a human rather than opening a PR
-	// that cannot merge. The host gate validated the pre-rebase tree; CI's full run on the
-	// rebased commit (watched below) is the backstop for the small rebase delta.
+	// requires. A clean replay moves the tip onto the current base. A genuine content
+	// conflict no longer dead-ends (BEH-581): rather than strand ~30 min of reviewed,
+	// gate-green work, the harness launches a bounded sandboxed conflict-resolution
+	// session over the worktree (mirroring the post-PR ciFixRunner), re-runs the host
+	// gate on the resolved tree, and only then pushes. resolvePrePushConflict returns
+	// false when it could not land a clean, re-gated rebase — keeping the worktree and
+	// leaving a Linear breadcrumb so the work surfaces autonomously.
 	if gitpkg.RebaseOntoMain(worktreePath) == gitpkg.RebaseConflict {
-		log.Event("review ✗ branch conflicts with origin/main and can't be auto-rebased — resolve the conflict and re-push; keeping worktree")
-		return Result{OK: false}
+		resolved := resolvePrePushConflict(cfg, args, slug, worktreePath, runID, t, log, comment,
+			func() session.Outcome { return runHostGate(gateName+"-postrebase", runID+"-postrebase") })
+		if !resolved {
+			return Result{OK: false}
+		}
 	}
 	log.Event("rebased " + gitpkg.BranchName(slug) + " onto origin/main")
 
@@ -474,6 +498,89 @@ func ciFixRunner(cfg config.Config, args Args, slug, worktreePath, runID string,
 		}
 		return nil
 	}
+}
+
+// resolvePrePushConflict launches a bounded sandboxed conflict-resolution session
+// when the proactive pre-push rebase hits a genuine content conflict (BEH-581) —
+// the dead-end that previously stranded a fully-reviewed, gate-green branch in a
+// worktree with no autonomous recovery. It mirrors ciFixRunner's pattern: a Claude
+// session over the existing worktree (steered by BuildRebaseFix to rebase onto
+// origin/main, resolve, and commit), then ground-truth enforcement — the verdict
+// is never the agent's say-so but verify.RebaseResolution over the worktree's git
+// state (session exit, clean tree, branch actually rebased). On a clean resolution
+// it re-runs the host gate over the rewritten tree (regate) and only returns true
+// when that gate is green and the worktree clean, authorising the push. Any failure
+// keeps the worktree and leaves a Linear breadcrumb so the work surfaces (a
+// spending-cap abort defers quietly — it retries after reset, not a conflict).
+func resolvePrePushConflict(
+	cfg config.Config, args Args, slug, worktreePath, runID string,
+	t ticket.Ticket, log *runlog.Logger, comment func(string),
+	regate func() session.Outcome,
+) bool {
+	log.Event("review ↻ pre-push rebase hit a content conflict — launching a sandboxed conflict-resolution session (BEH-581)")
+	fixPrompt := prompt.BuildRebaseFix(t, slug, worktreePath)
+	containerName := fmt.Sprintf("herd-harness-%s-%d-rebasefix", runID, os.Getpid())
+	fixArgs := sandbox.BuildDockerRunArgs(sandbox.Config{
+		Image:           cfg.Image,
+		HerdPath:        cfg.HerdPath,
+		FindingsDir:     "",
+		PnpmStoreVolume: cfg.PnpmStoreVolume,
+		Prompt:          fixPrompt,
+		Model:           cfg.Model,
+		ContainerName:   containerName,
+	})
+	transcript := runlog.TranscriptName("rebasefix", runID)
+	log.Event(fmt.Sprintf("launching conflict-resolution session (cap %d min)", int(cfg.ReviewTimeout.Minutes())))
+	outcome := session.Run(fixArgs, session.Options{
+		ContainerName:  containerName,
+		TranscriptFile: transcript,
+		Timeout:        cfg.ReviewTimeout,
+		IdleTimeout:    cfg.SessionIdleTimeout,
+		Verbose:        args.Verbose,
+		Log:            log,
+	})
+	log.Event(fmt.Sprintf("conflict-resolution session exited (code %d)", outcome.ExitCode))
+
+	// Ground truth over the worktree, never the agent's report: did the session
+	// actually rebase onto origin/main and leave a clean tree?
+	res := verify.RebaseResolution(verify.RebaseResolutionOutcome{
+		SessionExit:      outcome.ExitCode,
+		SpendingCapAbort: outcome.SpendingCapAbort,
+		WorktreeClean:    gitpkg.WorktreeClean(worktreePath),
+		Rebased:          gitpkg.IsRebasedOnto(worktreePath, "origin/main"),
+	})
+	if !res.OK {
+		// Restore a clean, on-branch worktree for the next resume (a failed session may
+		// have left it mid-rebase). Best-effort: a no-op when none is in progress.
+		gitpkg.AbortRebase(worktreePath)
+		if res.SpendingCapAbort {
+			// Retry-after-reset, not a content conflict: defer quietly, no breadcrumb.
+			log.Event("review ↻ conflict resolution deferred — spending cap reached, retry after reset (BEH-494) — keeping worktree")
+			return false
+		}
+		log.Event("review ✗ " + res.Reason + " — keeping worktree, nothing pushed")
+		comment(fmt.Sprintf(
+			"Pre-push auto-rebase onto `main` could not be completed for `%s`: %s This branch passed cold review and the harness gate, but it now needs a manual rebase onto `main`. It is waiting in a worktree. (BEH-581)",
+			gitpkg.BranchName(slug), res.Reason,
+		))
+		return false
+	}
+	log.Event("review ✓ " + res.Reason)
+
+	// The resolution rewrote the tree, so the earlier host-gate result is stale —
+	// re-run it before trusting the push (the ticket's "re-run the gate before
+	// pushing"). Push only on a green gate over a still-clean worktree.
+	gateOutcome := regate()
+	if gateOutcome.ExitCode != 0 || !gitpkg.WorktreeClean(worktreePath) {
+		log.Event(fmt.Sprintf("review ✗ post-rebase gate re-run failed (exit %d) — keeping worktree, nothing pushed", gateOutcome.ExitCode))
+		comment(fmt.Sprintf(
+			"Pre-push conflict was auto-resolved on `%s`, but the post-rebase gate re-run failed (exit %d). The rebased branch is waiting in a worktree for a look. (BEH-581)",
+			gitpkg.BranchName(slug), gateOutcome.ExitCode,
+		))
+		return false
+	}
+	log.Event("review ✓ post-rebase gate re-run is green — clear to push")
+	return true
 }
 
 // fixSessionError maps a finished auto-fix session's outcome to the error the

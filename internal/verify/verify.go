@@ -203,3 +203,59 @@ func ReviewQualitative(exitCode int, verdictEmitted bool) ReviewCompleteness {
 	}
 	return ReviewCompleteness{Complete: false, Reason: fmt.Sprintf("review session exited %d before emitting a verdict — qualitative review incomplete", exitCode)}
 }
+
+// RebaseResolutionOutcome is the git ground truth a sandboxed pre-push
+// conflict-resolution session left behind (BEH-581), the inputs that decide
+// whether the rebased branch may proceed to a re-gate + push. SessionExit is the
+// resolution session's container exit code; SpendingCapAbort marks the session
+// killed by an active billing cap before it could resolve anything; WorktreeClean
+// is true iff the worktree had no uncommitted changes afterwards; Rebased is true
+// iff origin/main is now an ancestor of the branch tip (the rebase actually
+// landed, vs. a session that gave up and `rebase --abort`ed back to the stale tip).
+type RebaseResolutionOutcome struct {
+	SessionExit      int
+	SpendingCapAbort bool
+	WorktreeClean    bool
+	Rebased          bool
+}
+
+// RebaseResolutionResult is RebaseResolution's verdict. SpendingCapAbort
+// distinguishes the retry-after-reset class (the session never ran) so the caller
+// defers quietly instead of filing a "couldn't resolve the conflict" breadcrumb.
+type RebaseResolutionResult struct {
+	OK               bool
+	Reason           string
+	SpendingCapAbort bool
+}
+
+// RebaseResolution decides whether a sandboxed conflict-resolution session
+// actually rebased the branch onto origin/main cleanly — the gate on whether the
+// pre-push path re-gates + pushes, or keeps the worktree for a human (BEH-581).
+// Like every other harness gate it is judged on ground truth, never the agent's
+// self-report: a green verdict requires a clean session exit, a clean worktree,
+// AND the branch genuinely rebased onto base.
+//
+// Order matters. A spending-cap abort wins outright — the session took no real
+// action, so the worktree's incidental state says nothing, and it is the one
+// failure that must NOT surface as a content conflict (it just retries after the
+// cap resets). A non-zero exit is next (the session crashed/timed out). Then a
+// dirty worktree (unresolved or uncommitted conflict — the more actionable signal
+// than the not-rebased one that also holds when dirty). Finally the silent trap
+// the whole guard exists for: a CLEAN worktree still on the stale base, because
+// the session resolved nothing and `rebase --abort`ed — WorktreeClean alone would
+// wave that through and push a still-stale branch.
+func RebaseResolution(o RebaseResolutionOutcome) RebaseResolutionResult {
+	if o.SpendingCapAbort {
+		return RebaseResolutionResult{OK: false, SpendingCapAbort: true, Reason: "conflict-resolution session aborted before resolving — spending cap reached, retry after reset"}
+	}
+	if o.SessionExit != 0 {
+		return RebaseResolutionResult{OK: false, Reason: fmt.Sprintf("conflict-resolution session exited %d before resolving the rebase conflict", o.SessionExit)}
+	}
+	if !o.WorktreeClean {
+		return RebaseResolutionResult{OK: false, Reason: "conflict-resolution session left the worktree dirty (unresolved or uncommitted conflict) — rebase did not cleanly complete"}
+	}
+	if !o.Rebased {
+		return RebaseResolutionResult{OK: false, Reason: "conflict-resolution session left the branch on its stale base (origin/main is not an ancestor) — it aborted the rebase rather than resolving it"}
+	}
+	return RebaseResolutionResult{OK: true, Reason: "conflict resolved and branch rebased onto origin/main — re-gating before push"}
+}

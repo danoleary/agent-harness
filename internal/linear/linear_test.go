@@ -519,3 +519,53 @@ func labelIDsContain(labelIDs any, id string) bool {
 	}
 	return false
 }
+
+// BEH-581: when the pre-push conflict-resolution session can't land the rebase,
+// the harness posts a breadcrumb comment so the stranded-but-reviewed work
+// surfaces autonomously instead of sitting silent in a worktree. AddComment
+// resolves the issue's node UUID first (commentCreate keys off the UUID, not the
+// human identifier) then posts the comment body.
+func TestAddCommentResolvesIDThenComments(t *testing.T) {
+	var calls []call
+	tr := func(query string, variables map[string]any) (json.RawMessage, error) {
+		calls = append(calls, call{query: query, variables: variables})
+		// First call resolves the node id; second creates the comment.
+		if len(calls) == 1 {
+			return json.RawMessage(`{"issue":{"id":"node-uuid"}}`), nil
+		}
+		return json.RawMessage(`{"commentCreate":{"success":true}}`), nil
+	}
+
+	if err := NewClient(tr).AddComment("BEH-581", "branch needs a manual rebase"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(calls) != 2 {
+		t.Fatalf("expected an id-resolve then a commentCreate, got %d calls", len(calls))
+	}
+	// The id-resolve is keyed by the human identifier.
+	if calls[0].variables["id"] != "BEH-581" {
+		t.Errorf("first call should resolve by identifier, got %v", calls[0].variables["id"])
+	}
+	// The comment is posted against the resolved UUID with the given body.
+	input, ok := calls[1].variables["input"].(map[string]any)
+	if !ok {
+		t.Fatalf("commentCreate input not a map: %v", calls[1].variables["input"])
+	}
+	if input["issueId"] != "node-uuid" {
+		t.Errorf("comment should key off the resolved UUID, got %v", input["issueId"])
+	}
+	if input["body"] != "branch needs a manual rebase" {
+		t.Errorf("comment body = %v, want the passed body", input["body"])
+	}
+}
+
+// A failure resolving the issue surfaces as an error (the caller degrades on it
+// best-effort) — it must never silently swallow a missing issue.
+func TestAddCommentErrorsWhenIssueNotFound(t *testing.T) {
+	tr := func(string, map[string]any) (json.RawMessage, error) {
+		return json.RawMessage(`{"issue":null}`), nil
+	}
+	if err := NewClient(tr).AddComment("BEH-404", "x"); err == nil {
+		t.Error("expected an error when the issue does not resolve")
+	}
+}

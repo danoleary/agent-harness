@@ -274,3 +274,73 @@ func TestReviewQualitativeFlagsNonOomEndBeforeVerdict(t *testing.T) {
 		t.Errorf("a non-137 exit must not be labelled an OOM, got %q", r.Reason)
 	}
 }
+
+// BEH-581: after a sandboxed pre-push conflict-resolution session, RebaseResolution
+// decides whether the branch is cleanly rebased and ready to re-gate + push —
+// judged entirely on git ground truth (session exit, worktree clean, branch
+// actually rebased), never the agent's say-so.
+func TestRebaseResolutionPassesWhenResolvedRebasedAndClean(t *testing.T) {
+	r := RebaseResolution(RebaseResolutionOutcome{SessionExit: 0, WorktreeClean: true, Rebased: true})
+	if !r.OK {
+		t.Fatalf("a clean session that rebased onto base with a clean worktree should pass: %q", r.Reason)
+	}
+	if r.SpendingCapAbort {
+		t.Error("a normal pass must not be flagged a spending-cap abort")
+	}
+}
+
+// A spending-cap abort is its own retry-after-reset class: it took no real action,
+// so it must NOT be reported as a content conflict (no Linear breadcrumb) — just
+// deferred. It takes precedence over everything else, since a capped session never
+// resolved anything regardless of the worktree's incidental state.
+func TestRebaseResolutionSpendingCapTakesPrecedence(t *testing.T) {
+	r := RebaseResolution(RebaseResolutionOutcome{SessionExit: 1, SpendingCapAbort: true, WorktreeClean: true, Rebased: false})
+	if r.OK {
+		t.Fatal("a spending-cap abort did not resolve the conflict — must not pass")
+	}
+	if !r.SpendingCapAbort {
+		t.Fatal("a spending-cap abort must be flagged so the caller defers (no breadcrumb)")
+	}
+	if !regexp.MustCompile(`(?i)cap|retry`).MatchString(r.Reason) {
+		t.Errorf("reason %q should name the retry-after-reset class", r.Reason)
+	}
+}
+
+func TestRebaseResolutionFailsOnNonZeroSessionExit(t *testing.T) {
+	r := RebaseResolution(RebaseResolutionOutcome{SessionExit: 2, WorktreeClean: true, Rebased: true})
+	if r.OK {
+		t.Fatal("a non-zero session exit means the resolution session failed — must not pass")
+	}
+	if r.SpendingCapAbort {
+		t.Error("a plain non-zero exit is not a spending-cap abort")
+	}
+	if !regexp.MustCompile(`2`).MatchString(r.Reason) {
+		t.Errorf("reason %q should carry the exit code", r.Reason)
+	}
+}
+
+// The session ended clean but left the worktree dirty (unresolved/uncommitted
+// conflict): the rebase did not cleanly complete. The dirty signal is reported
+// even though the branch is also not rebased — dirty is the more actionable cause.
+func TestRebaseResolutionFailsWhenWorktreeDirty(t *testing.T) {
+	r := RebaseResolution(RebaseResolutionOutcome{SessionExit: 0, WorktreeClean: false, Rebased: false})
+	if r.OK {
+		t.Fatal("a dirty worktree means the rebase did not cleanly complete — must not pass")
+	}
+	if !regexp.MustCompile(`(?i)dirty|uncommitted|unresolved`).MatchString(r.Reason) {
+		t.Errorf("reason %q should name the dirty/unresolved worktree", r.Reason)
+	}
+}
+
+// The session left a CLEAN worktree but on the original stale tip — it aborted the
+// rebase rather than resolving it. WorktreeClean alone would wave this through, so
+// the not-rebased guard is what stops the harness pushing a stale-base branch.
+func TestRebaseResolutionFailsWhenNotRebased(t *testing.T) {
+	r := RebaseResolution(RebaseResolutionOutcome{SessionExit: 0, WorktreeClean: true, Rebased: false})
+	if r.OK {
+		t.Fatal("a clean worktree still on the stale base did not rebase — must not pass")
+	}
+	if !regexp.MustCompile(`(?i)rebas|abort|stale|base`).MatchString(r.Reason) {
+		t.Errorf("reason %q should explain the branch was not rebased onto base", r.Reason)
+	}
+}

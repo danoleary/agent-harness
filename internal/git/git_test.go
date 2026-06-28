@@ -212,6 +212,99 @@ func TestRebaseOntoMainAgainstRealGit(t *testing.T) {
 	})
 }
 
+// BEH-581: after a sandboxed conflict-resolution session, the harness must
+// confirm the branch was ACTUALLY rebased onto origin/main before re-gating +
+// pushing — a session that gave up and ran `git rebase --abort` leaves a clean
+// worktree on the original stale tip, which IsRebasedOnto must catch. It is true
+// iff the ref is an ancestor of HEAD (the branch contains the latest base).
+func TestIsRebasedOntoTrueWhenAncestor(t *testing.T) {
+	// `merge-base --is-ancestor` exits 0 → the ref is an ancestor → rebased.
+	run, calls := scriptedRunner(0, nil)
+	if !isRebasedOnto("/wt", "origin/main", run) {
+		t.Fatal("exit 0 from merge-base --is-ancestor should report rebased (true)")
+	}
+	got := strings.Join((*calls)[0], " ")
+	want := "git -C /wt merge-base --is-ancestor origin/main HEAD"
+	if got != want {
+		t.Fatalf("argv = %q, want %q", got, want)
+	}
+}
+
+func TestIsRebasedOntoFalseWhenNotAncestor(t *testing.T) {
+	// A non-zero exit (ref not an ancestor) → NOT rebased.
+	run, _ := scriptedRunner(1, errors.New("exit status 1"))
+	if isRebasedOnto("/wt", "origin/main", run) {
+		t.Fatal("a non-zero merge-base exit should report not-rebased (false)")
+	}
+}
+
+// Pins the real-git contract IsRebasedOnto rests on: a feat branch replayed onto
+// an advanced origin/main reads as rebased; the same branch BEFORE the rebase
+// (still on the stale base) reads as not-rebased.
+func TestIsRebasedOntoAgainstRealGit(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	repo := t.TempDir()
+	git := func(args ...string) {
+		t.Helper()
+		if err := execIn(repo, args...); err != nil {
+			t.Fatalf("git %v: %v", args, err)
+		}
+	}
+	write := func(name, contents string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(repo, name), []byte(contents), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	const slug = "beh-581-real"
+	git("init", "-q", "-b", "main")
+	git("config", "user.email", "t@example.com")
+	git("config", "user.name", "Test")
+	write("base.txt", "base\n")
+	git("add", "-A")
+	git("commit", "-q", "-m", "base")
+	git("checkout", "-q", "-b", BranchName(slug))
+	write("feat.txt", "feat\n")
+	git("add", "-A")
+	git("commit", "-q", "-m", "feat work")
+	// main advances on an unrelated file; origin/main tracks it.
+	git("checkout", "-q", "main")
+	write("unrelated.txt", "main\n")
+	git("add", "-A")
+	git("commit", "-q", "-m", "main moved")
+	git("update-ref", "refs/remotes/origin/main", "main")
+	git("checkout", "-q", BranchName(slug))
+
+	// Before rebasing, origin/main is NOT an ancestor of feat's tip.
+	if IsRebasedOnto(repo, "origin/main") {
+		t.Fatal("feat on its stale base should NOT read as rebased onto origin/main")
+	}
+	if res := RebaseOntoMain(repo); res != RebaseClean {
+		t.Fatalf("setup rebase = %v, want RebaseClean", res)
+	}
+	// After a clean replay, origin/main IS an ancestor.
+	if !IsRebasedOnto(repo, "origin/main") {
+		t.Fatal("after rebasing, feat should read as rebased onto origin/main")
+	}
+}
+
+// AbortRebase restores a worktree a session left mid-rebase to a clean state
+// before the harness keeps it for a human. It is best-effort (no return) — a
+// no-op `rebase --abort` when none is in progress fails harmlessly.
+func TestAbortRebaseRunsAbort(t *testing.T) {
+	run, calls := scriptedRunner(0, nil)
+	abortRebase("/wt", run)
+	if len(*calls) != 1 {
+		t.Fatalf("expected exactly one git call, got %d: %v", len(*calls), *calls)
+	}
+	got := strings.Join((*calls)[0], " ")
+	if want := "git -C /wt rebase --abort"; got != want {
+		t.Fatalf("argv = %q, want %q", got, want)
+	}
+}
+
 func TestStripWorktreeNodeModulesRemovesIt(t *testing.T) {
 	wt := t.TempDir()
 	binding := filepath.Join(wt, "web", "node_modules", "@oxlint", "binding-linux-arm64-gnu")

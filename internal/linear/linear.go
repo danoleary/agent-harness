@@ -203,6 +203,17 @@ const addCommentMutation = `
 	}
 `
 
+// issueIDQuery resolves an issue's node UUID from its human identifier, which
+// commentCreate keys off (its CommentCreateInput.issueId is the UUID, not the
+// BEH-NNN identifier).
+const issueIDQuery = `
+	query IssueID($id: String!) {
+		issue(id: $id) {
+			id
+		}
+	}
+`
+
 // findingsLabel scopes filing + dedup to harness-surfaced findings: filed issues
 // carry it and SearchFindings filters on it, so dedup never trips over unrelated
 // team issues.
@@ -399,6 +410,35 @@ func (c *Client) FileFinding(f findings.Finding, opts FileFindingOptions) (Creat
 		return CreatedIssue{}, fmt.Errorf("failed to file finding: %s", f.Title)
 	}
 	return *resp.IssueCreate.Issue, nil
+}
+
+// AddComment posts a comment to an issue identified by its human identifier
+// (e.g. "BEH-581"). It resolves the issue's node UUID first, then creates the
+// comment. Used by the pre-push conflict path (BEH-581) to leave an autonomous
+// breadcrumb when a gate-green, reviewed branch can't be auto-rebased — so the
+// stranded work surfaces on the ticket instead of sitting silent in a worktree.
+// The caller treats a failure best-effort (a missing breadcrumb must never sink
+// the run); a failed id-resolve is surfaced rather than silently swallowed.
+func (c *Client) AddComment(identifier, body string) error {
+	data, err := c.transport(issueIDQuery, map[string]any{"id": identifier})
+	if err != nil {
+		return err
+	}
+	var resp struct {
+		Issue *struct {
+			ID string `json:"id"`
+		} `json:"issue"`
+	}
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return err
+	}
+	if resp.Issue == nil {
+		return fmt.Errorf("Linear issue not found: %s", identifier)
+	}
+	_, err = c.transport(addCommentMutation, map[string]any{
+		"input": map[string]any{"issueId": resp.Issue.ID, "body": body},
+	})
+	return err
 }
 
 // SearchFindings lists the team's already-filed harness findings (scoped by the
