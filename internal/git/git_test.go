@@ -290,6 +290,138 @@ func TestIsRebasedOntoAgainstRealGit(t *testing.T) {
 	}
 }
 
+// BEH-597: IsDisjointFrom reports whether HEAD shares NO common ancestor with the
+// ref — the disjoint-history condition (an empty `git merge-base`) the pre-push
+// rebase must catch before mislabelling the inevitable collision a content
+// conflict. `git merge-base <ref> HEAD` exits 0 when a common ancestor exists.
+func TestIsDisjointFromFalseWhenCommonAncestor(t *testing.T) {
+	run, calls := scriptedRunner(0, nil)
+	if isDisjointFrom("/wt", "origin/main", run) {
+		t.Fatal("exit 0 from merge-base (a common ancestor exists) should report NOT disjoint")
+	}
+	got := strings.Join((*calls)[0], " ")
+	want := "git -C /wt merge-base origin/main HEAD"
+	if got != want {
+		t.Fatalf("argv = %q, want %q", got, want)
+	}
+}
+
+func TestIsDisjointFromTrueWhenNoCommonAncestor(t *testing.T) {
+	// A non-zero exit (no merge base — disjoint histories) → disjoint.
+	run, _ := scriptedRunner(1, errors.New("exit status 1"))
+	if !isDisjointFrom("/wt", "origin/main", run) {
+		t.Fatal("a non-zero merge-base exit (no common ancestor) should report disjoint (true)")
+	}
+}
+
+// Pins the real-git contract IsDisjointFrom rests on: two branches built from
+// `git init` in separate roots (no shared base) read as disjoint; a normal feature
+// branch off main reads as NOT disjoint.
+func TestIsDisjointFromAgainstRealGit(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	repo := t.TempDir()
+	git := func(args ...string) {
+		t.Helper()
+		if err := execIn(repo, args...); err != nil {
+			t.Fatalf("git %v: %v", args, err)
+		}
+	}
+	write := func(name, contents string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(repo, name), []byte(contents), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	git("init", "-q", "-b", "main")
+	git("config", "user.email", "t@example.com")
+	git("config", "user.name", "Test")
+	write("base.txt", "base\n")
+	git("add", "-A")
+	git("commit", "-q", "-m", "base")
+	git("update-ref", "refs/remotes/origin/main", "main")
+
+	// A normal feature branch off main shares main's history → NOT disjoint.
+	git("checkout", "-q", "-b", BranchName("beh-597-joined"))
+	write("feat.txt", "feat\n")
+	git("add", "-A")
+	git("commit", "-q", "-m", "feat work")
+	if IsDisjointFrom(repo, "origin/main") {
+		t.Fatal("a feature branch off main shares a common ancestor — must NOT read as disjoint")
+	}
+
+	// An orphan branch (built with no parent) shares NO history with main → disjoint.
+	git("checkout", "-q", "--orphan", BranchName("beh-597-orphan"))
+	write("orphan.txt", "orphan\n")
+	git("add", "-A")
+	git("commit", "-q", "-m", "orphan root")
+	if !IsDisjointFrom(repo, "origin/main") {
+		t.Fatal("an orphan branch with no common ancestor must read as disjoint")
+	}
+}
+
+// BEH-597: GatherTddGroundTruth must surface a disjoint history so verify.Tdd can
+// fail it. An orphan feature branch (no common ancestor with origin/main) is the
+// BEH-355 condition; a normal feature branch off main is not disjoint.
+func TestGatherTddGroundTruthFlagsDisjointHistory(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	mkRepo := func(orphan bool) (string, string) {
+		t.Helper()
+		repo := t.TempDir()
+		git := func(args ...string) {
+			t.Helper()
+			if err := execIn(repo, args...); err != nil {
+				t.Fatalf("git %v: %v", args, err)
+			}
+		}
+		write := func(name, contents string) {
+			t.Helper()
+			if err := os.WriteFile(filepath.Join(repo, name), []byte(contents), 0o644); err != nil {
+				t.Fatalf("write %s: %v", name, err)
+			}
+		}
+		git("init", "-q", "-b", "main")
+		git("config", "user.email", "t@example.com")
+		git("config", "user.name", "Test")
+		write("base.txt", "base\n")
+		git("add", "-A")
+		git("commit", "-q", "-m", "base")
+		git("update-ref", "refs/remotes/origin/main", "main")
+		const slug = "beh-597-gather"
+		if orphan {
+			git("checkout", "-q", "--orphan", BranchName(slug))
+		} else {
+			git("checkout", "-q", "-b", BranchName(slug))
+		}
+		write("feat.txt", "feat\n")
+		git("add", "-A")
+		git("commit", "-q", "-m", "handoff")
+		return repo, slug
+	}
+
+	t.Run("orphan branch is disjoint", func(t *testing.T) {
+		repo, slug := mkRepo(true)
+		truth := GatherTddGroundTruth(repo, slug)
+		if !truth.DisjointHistory {
+			t.Errorf("an orphan branch (no common ancestor) must be flagged disjoint, got %+v", truth)
+		}
+		if truth.CommitsAhead < 1 {
+			t.Errorf("a disjoint branch is still ahead by its own commits, got CommitsAhead=%d", truth.CommitsAhead)
+		}
+	})
+
+	t.Run("normal feature branch is not disjoint", func(t *testing.T) {
+		repo, slug := mkRepo(false)
+		truth := GatherTddGroundTruth(repo, slug)
+		if truth.DisjointHistory {
+			t.Errorf("a feature branch off main shares a common ancestor — must NOT be flagged disjoint, got %+v", truth)
+		}
+	})
+}
+
 // AbortRebase restores a worktree a session left mid-rebase to a clean state
 // before the harness keeps it for a human. It is best-effort (no return) — a
 // no-op `rebase --abort` when none is in progress fails harmlessly.

@@ -341,7 +341,11 @@ loop:
   the path is known without parsing model output: `…/.claude/worktrees/beh-nnn`
   on `feat/beh-nnn`.
 - **Success is ground-truth, never self-report.** Per tool: *implementation* = a
-  real commit ahead of merge-base; *review* = the harness's **own** re-run of the
+  real commit ahead of merge-base **that shares a common ancestor with `main`** — a
+  *disjoint* history (empty merge-base, e.g. the 963-commits-ahead
+  [BEH-355](https://linear.app/beherd/issue/BEH-355) branch) is a suspect ground
+  truth, not a healthy handoff, and fails the gate
+  ([BEH-597](https://linear.app/beherd/issue/BEH-597)); *review* = the harness's **own** re-run of the
   gates is green over a clean worktree **and** the review session emitted its
   seven-lens verdict (all three are the push gate — no branch reaches a PR on the
   agent's say-so); *retrospective* = `/findings/out.json` exists on disk (an empty

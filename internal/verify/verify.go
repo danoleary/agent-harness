@@ -15,6 +15,11 @@ type GroundTruth struct {
 	WorktreeExists bool
 	// CommitsAhead is the number of commits on `feat/<slug>` ahead of origin/main.
 	CommitsAhead int
+	// DisjointHistory reports whether `feat/<slug>` shares NO common ancestor with
+	// origin/main (an empty `git merge-base`). A disjoint branch is "ahead" by all
+	// of its own commits (963 in BEH-355), so it passes the CommitsAhead check, yet
+	// it is never a real single-ticket handoff and its rebase collides immediately.
+	DisjointHistory bool
 }
 
 // Result is the outcome of checking a tdd session against ground truth.
@@ -32,6 +37,15 @@ func Tdd(truth GroundTruth) Result {
 	}
 	if truth.CommitsAhead < 1 {
 		return Result{OK: false, Reason: "no handoff commit ahead of origin/main"}
+	}
+	// A disjoint history (no common ancestor with origin/main) is checked AFTER the
+	// commits-ahead gate because a disjoint branch always reads as ahead — by all of
+	// its own commits. It is a suspect ground truth, never a healthy handoff: the
+	// pre-push rebase would try to replay every disjoint commit onto main and collide
+	// immediately, and the BEH-355 incident showed it masquerading as a 963-commits-
+	// ahead success. Fail it here so the slice never reaches the push path (BEH-597).
+	if truth.DisjointHistory {
+		return Result{OK: false, Reason: "branch shares no common ancestor with origin/main (disjoint history / empty merge-base) — a suspect ground truth, not a real handoff"}
 	}
 	return Result{OK: true, Reason: "worktree present and branch is ahead of main"}
 }

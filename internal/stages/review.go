@@ -377,6 +377,23 @@ func Review(cfg config.Config, log *runlog.Logger, runID string, args Args) Resu
 	// false when it could not land a clean, re-gated rebase — keeping the worktree and
 	// leaving a Linear breadcrumb so the work surfaces autonomously.
 	if gitpkg.RebaseOntoMain(worktreePath) == gitpkg.RebaseConflict {
+		// A disjoint history (no common ancestor with origin/main) is NOT a content
+		// conflict (BEH-597): the rebase collided trying to replay every one of the
+		// branch's disjoint commits, so the BEH-581 conflict-resolution session is the
+		// wrong tool — it would burn a sandbox re-discovering the empty merge-base. The
+		// tdd gate now fails this upstream (verify.Tdd's DisjointHistory check), so a
+		// disjoint branch should never reach here; this is the defence-in-depth backstop
+		// for a resumed/standalone review. Keep the worktree for manual recovery
+		// (`git reset --hard origin/main` + cherry-pick the handoff commits) and surface it.
+		if gitpkg.IsDisjointFrom(worktreePath, "origin/main") {
+			gitpkg.AbortRebase(worktreePath)
+			log.Event("review ✗ disjoint branch history — no common ancestor with origin/main; not a content conflict, needs manual recovery (BEH-597) — keeping worktree, nothing pushed")
+			comment(fmt.Sprintf(
+				"Branch `%s` has a disjoint history from `main` (no common ancestor / empty merge-base), so it cannot be rebased or merged as-is. This is not a content conflict — the handoff commits need to be re-applied onto current `main` (e.g. `git reset --hard origin/main` then cherry-pick them). The branch passed cold review and the harness gate; it is waiting in a worktree. (BEH-597)",
+				gitpkg.BranchName(slug),
+			))
+			return Result{OK: false}
+		}
 		resolved := resolvePrePushConflict(cfg, args, slug, worktreePath, runID, t, log, comment,
 			func() session.Outcome { return runHostGate(gateName+"-postrebase", runID+"-postrebase") })
 		if !resolved {

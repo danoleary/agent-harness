@@ -32,6 +32,23 @@ func TestTddFailsWhenNoCommitAhead(t *testing.T) {
 	}
 }
 
+// BEH-597: a branch that shares NO common ancestor with origin/main (an empty
+// `git merge-base feat/<slug> origin/main`) is a disjoint history — the BEH-355
+// 963-commits-ahead condition. It satisfies the worktree + commits-ahead checks
+// (it is "ahead" by all of its own commits), so without an explicit disjoint
+// signal it sails through as a healthy pass and the pre-push rebase then collides
+// trying to replay every disjoint commit. A disjoint history is never a real
+// single-ticket handoff; it must be a suspect/FAILED ground truth, not success.
+func TestTddFailsWhenHistoryDisjoint(t *testing.T) {
+	r := Tdd(GroundTruth{WorktreeExists: true, CommitsAhead: 963, DisjointHistory: true})
+	if r.OK {
+		t.Error("a disjoint-history branch (no common ancestor) must NOT pass as a healthy handoff")
+	}
+	if !regexp.MustCompile(`(?i)disjoint|common ancestor|merge.base`).MatchString(r.Reason) {
+		t.Errorf("reason %q should name the disjoint history / missing common ancestor", r.Reason)
+	}
+}
+
 // Ground truth for retrospective is the *presence* of the findings dropbox: an
 // empty `[]` is a valid "ran, found nothing" (still present → success); an
 // absent file means the step never ran and is a failure (DESIGN.md).

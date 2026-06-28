@@ -330,6 +330,32 @@ func isRebasedOnto(worktreePath, ref string, run commandRunner) bool {
 	return run("git", "-C", worktreePath, "merge-base", "--is-ancestor", ref, "HEAD") == nil
 }
 
+// IsDisjointFrom reports whether the worktree's HEAD shares NO common ancestor
+// with ref (e.g. "origin/main") — the disjoint-history condition (BEH-597) that
+// passed the tdd gate as a 963-commits-ahead "success" in BEH-355. `git
+// merge-base <ref> HEAD` exits 0 and prints the common ancestor when one exists;
+// it exits non-zero with empty output when the histories are disjoint. The
+// pre-push rebase needs this to avoid mislabelling the inevitable replay-collision
+// of a disjoint branch as a content conflict and burning a sandboxed
+// conflict-resolution session on the wrong problem. Read host-side via the
+// real-path mount; at the call site both refs resolve, so any non-zero exit means
+// no common ancestor (disjoint), not an unresolved ref.
+func IsDisjointFrom(worktreePath, ref string) bool {
+	return isDisjointFrom(worktreePath, ref, execRun)
+}
+
+func isDisjointFrom(worktreePath, ref string, run commandRunner) bool {
+	return branchesDisjoint(worktreePath, ref, "HEAD", run)
+}
+
+// branchesDisjoint reports whether refA and refB share no common ancestor — `git
+// merge-base refA refB` exits non-zero with empty output for a disjoint history.
+// The shared core behind IsDisjointFrom (worktree HEAD vs a ref) and the tdd
+// ground-truth gather (feat/<slug> vs origin/main, read from the main checkout).
+func branchesDisjoint(dir, refA, refB string, run commandRunner) bool {
+	return run("git", "-C", dir, "merge-base", refA, refB) != nil
+}
+
 // AbortRebase restores a worktree a conflict-resolution session left mid-rebase
 // to a clean, on-branch state before the harness keeps it for a human (BEH-581).
 // Best-effort: if no rebase is in progress, `rebase --abort` fails harmlessly, so
@@ -403,7 +429,14 @@ func GatherTddGroundTruth(herdPath, slug string) verify.GroundTruth {
 		}
 	}
 
-	return verify.GroundTruth{WorktreeExists: worktreeExists, CommitsAhead: commitsAhead}
+	// Disjoint history: feat/<slug> shares no common ancestor with origin/main (an
+	// empty merge-base — the BEH-355 condition). Only checked when the branch is
+	// ahead, so both refs resolve and a non-zero merge-base means genuine disjoint
+	// rather than an unresolved ref; an absent/zero-ahead branch already fails the
+	// CommitsAhead gate (BEH-597).
+	disjoint := commitsAhead > 0 && branchesDisjoint(herdPath, "feat/"+slug, "origin/main", execRun)
+
+	return verify.GroundTruth{WorktreeExists: worktreeExists, CommitsAhead: commitsAhead, DisjointHistory: disjoint}
 }
 
 // BranchExists reports whether `feat/<slug>` resolves to a git revision in the
