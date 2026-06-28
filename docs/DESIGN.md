@@ -803,6 +803,7 @@ reader over a structured stream rather than a `--tui` flag on the daemon.
   | `LOOP_MAX_CONSECUTIVE_FAILURES` | `3` | circuit-breaker threshold (consecutive no-PR tickets → exit + report) |
   | `LOOP_MAX_TICKETS` | `0` (unlimited) | optional ceiling: stop after N *attempted* tickets |
   | `LOOP_MAX_RUNTIME_MS` | `0` (unlimited) | optional ceiling: stop after T wall-clock |
+  | `LOOP_DISK_RECLAIM_THRESHOLD_BYTES` | `8589934592` (8 GiB) | soft free-disk floor below which the loop prunes merged worktrees between tickets (ADR-0005); `0` disables reclaim |
   | `STOP_FILE` | `agent-harness/STOP` | sentinel path; cleared at clean startup, `touch` to wind down |
 
   `LOOP_MAX_TICKETS`/`LOOP_MAX_RUNTIME_MS` default to **unlimited** because the loop

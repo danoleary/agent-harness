@@ -721,3 +721,220 @@ func TestIdleSleepIsBrokenIntoTicksAndStopsEarly(t *testing.T) {
 		t.Errorf("idle slept %d ticks, want fewer than a full %d-tick poll (a mid-idle stop must wake early)", ticks, 10)
 	}
 }
+
+// gib is a readable byte-count for the disk-reclaim tests.
+const gib = 1 << 30
+
+// freeDiskSeq returns a FreeDisk stub that yields the given free-byte readings in
+// order, repeating the last value once exhausted — so a test can model the disk
+// changing across the reclaim step's successive statfs calls (gate → after-prune →
+// after-store-prune) without real I/O.
+func freeDiskSeq(vals ...uint64) func() (uint64, error) {
+	var i int
+	return func() (uint64, error) {
+		v := vals[i]
+		if i < len(vals)-1 {
+			i++
+		}
+		return v, nil
+	}
+}
+
+// TestDiskReclaimPrunesBelowThresholdBeforeSelecting is the tracer bullet for
+// ADR-0005: at the top of an iteration, when free disk is below the soft
+// DiskReclaimThreshold, the loop prunes merged worktrees BEFORE selecting the next
+// ticket. Here the first statfs reads below the threshold (→ prune) and the
+// re-check after the prune reads above it (→ no secondary store prune). Prune must
+// run, and it must run before ResolveNext.
+func TestDiskReclaimPrunesBelowThresholdBeforeSelecting(t *testing.T) {
+	r := &recorder{}
+	var storePruned bool
+	code := Run(Deps{
+		ClearStopFile:        func() error { return nil },
+		FetchMain:            func() error { return nil },
+		StopRequested:        stopAfter(1), // one iteration, then stop
+		DiskReclaimThreshold: 8 * gib,
+		FreeDisk:             freeDiskSeq(1*gib, 9*gib), // below at the gate, healthy after the prune
+		PruneMergedWorktrees: func() (int, error) { r.order = append(r.order, "prune"); return 2, nil },
+		StorePrune:           func() error { storePruned = true; return nil },
+		ResolveNext:          func() (string, bool) { r.order = append(r.order, "resolve"); return "", false },
+		RunPipeline:          func(string) TicketOutcome { return TicketOutcome{ReachedPushedPR: true} },
+		Sleep:                func(time.Duration) {},
+		PollInterval:         time.Minute,
+		TickInterval:         2 * time.Second,
+		Log:                  r,
+	})
+	if code != 0 {
+		t.Errorf("exit code = %d, want 0", code)
+	}
+	pruneIdx, resolveIdx := indexOf(r.order, "prune"), indexOf(r.order, "resolve")
+	if pruneIdx < 0 {
+		t.Fatalf("PruneMergedWorktrees never ran below the threshold; order = %v", r.order)
+	}
+	if resolveIdx < 0 || pruneIdx > resolveIdx {
+		t.Errorf("prune must run before ticket selection; order = %v", r.order)
+	}
+	if storePruned {
+		t.Errorf("store prune must NOT run when the worktree prune already brought free disk above the threshold")
+	}
+	if !r.saw("reclaimed 2 merged worktree(s)") {
+		t.Errorf("expected a 'reclaimed 2 merged worktree(s)' narration; events = %v", r.events)
+	}
+}
+
+// indexOf returns the first index of want in xs, or -1.
+func indexOf(xs []string, want string) int {
+	for i, x := range xs {
+		if x == want {
+			return i
+		}
+	}
+	return -1
+}
+
+// TestDiskReclaimSilentAtOrAboveThreshold proves the statfs gate: when free disk is
+// at or above the threshold the loop makes NO prune / store-prune calls and emits no
+// reclaim narration — disk pressure self-heals only when there actually is pressure.
+func TestDiskReclaimSilentAtOrAboveThreshold(t *testing.T) {
+	r := &recorder{}
+	var pruned, storePruned bool
+	var statfsCalls int
+	code := Run(Deps{
+		ClearStopFile:        func() error { return nil },
+		FetchMain:            func() error { return nil },
+		StopRequested:        stopAfter(1),
+		DiskReclaimThreshold: 8 * gib,
+		FreeDisk:             func() (uint64, error) { statfsCalls++; return 8 * gib, nil }, // exactly at the floor — healthy
+		PruneMergedWorktrees: func() (int, error) { pruned = true; return 0, nil },
+		StorePrune:           func() error { storePruned = true; return nil },
+		ResolveNext:          func() (string, bool) { return "", false },
+		RunPipeline:          func(string) TicketOutcome { return TicketOutcome{ReachedPushedPR: true} },
+		Sleep:                func(time.Duration) {},
+		PollInterval:         time.Minute,
+		TickInterval:         2 * time.Second,
+		Log:                  r,
+	})
+	if code != 0 {
+		t.Errorf("exit code = %d, want 0", code)
+	}
+	if pruned {
+		t.Errorf("PruneMergedWorktrees ran with free disk at the threshold — the statfs gate must suppress all shell-out when disk is healthy")
+	}
+	if storePruned {
+		t.Errorf("StorePrune ran with free disk at the threshold")
+	}
+	if statfsCalls != 1 {
+		t.Errorf("FreeDisk called %d times, want exactly 1 (the cheap gate check, nothing more) at/above the threshold", statfsCalls)
+	}
+	if r.saw("reclaimed") {
+		t.Errorf("a healthy-disk iteration must be silent; events = %v", r.events)
+	}
+}
+
+// TestDiskReclaimZeroThresholdDisables proves the 0-disables contract: with the
+// threshold zeroed, the loop never even statfs's — reclaim is fully off.
+func TestDiskReclaimZeroThresholdDisables(t *testing.T) {
+	r := &recorder{}
+	var statfsCalls int
+	code := Run(Deps{
+		ClearStopFile:        func() error { return nil },
+		FetchMain:            func() error { return nil },
+		StopRequested:        stopAfter(1),
+		DiskReclaimThreshold: 0, // disabled
+		FreeDisk:             func() (uint64, error) { statfsCalls++; return 0, nil },
+		PruneMergedWorktrees: func() (int, error) { t.Fatal("prune must not run when reclaim is disabled"); return 0, nil },
+		ResolveNext:          func() (string, bool) { return "", false },
+		RunPipeline:          func(string) TicketOutcome { return TicketOutcome{ReachedPushedPR: true} },
+		Sleep:                func(time.Duration) {},
+		PollInterval:         time.Minute,
+		TickInterval:         2 * time.Second,
+		Log:                  r,
+	})
+	if code != 0 {
+		t.Errorf("exit code = %d, want 0", code)
+	}
+	if statfsCalls != 0 {
+		t.Errorf("FreeDisk called %d times, want 0 (a zero threshold disables reclaim entirely — not even a statfs)", statfsCalls)
+	}
+}
+
+// TestDiskReclaimRunsStorePruneWhenStillBelowAfterWorktreePrune proves the secondary
+// reclaim is conditional: when the worktree prune leaves free disk STILL below the
+// threshold, the loop runs `pnpm store prune` as a cheap follow-up.
+func TestDiskReclaimRunsStorePruneWhenStillBelowAfterWorktreePrune(t *testing.T) {
+	r := &recorder{}
+	code := Run(Deps{
+		ClearStopFile:        func() error { return nil },
+		FetchMain:            func() error { return nil },
+		StopRequested:        stopAfter(1),
+		DiskReclaimThreshold: 8 * gib,
+		// Below at the gate, and STILL below after the worktree prune → store prune runs.
+		FreeDisk:             freeDiskSeq(1*gib, 2*gib, 3*gib),
+		PruneMergedWorktrees: func() (int, error) { r.order = append(r.order, "prune"); return 1, nil },
+		StorePrune:           func() error { r.order = append(r.order, "store-prune"); return nil },
+		ResolveNext:          func() (string, bool) { return "", false },
+		RunPipeline:          func(string) TicketOutcome { return TicketOutcome{ReachedPushedPR: true} },
+		Sleep:                func(time.Duration) {},
+		PollInterval:         time.Minute,
+		TickInterval:         2 * time.Second,
+		Log:                  r,
+	})
+	if code != 0 {
+		t.Errorf("exit code = %d, want 0", code)
+	}
+	pruneIdx, storeIdx := indexOf(r.order, "prune"), indexOf(r.order, "store-prune")
+	if storeIdx < 0 {
+		t.Fatalf("StorePrune never ran though free disk stayed below the threshold after the worktree prune; order = %v", r.order)
+	}
+	if pruneIdx < 0 || pruneIdx > storeIdx {
+		t.Errorf("store prune must run AFTER the worktree prune; order = %v", r.order)
+	}
+}
+
+// stubErr is a sentinel error for the prune-failure test.
+type stubErr string
+
+func (e stubErr) Error() string { return string(e) }
+
+// TestDiskReclaimPruneFailureIsSwallowedAndBreakerUntouched proves reclaim is never a
+// ticket outcome (ADR-0005): a failing prune is narrated as a warning, the loop keeps
+// running the queue, and the circuit breaker is never touched. With the most
+// aggressive threshold of 1, a reclaim failure that wrongly counted as a ticket
+// failure would trip the breaker after a single iteration — it must not. Two
+// successful tickets run despite the prune failing on every iteration; the breaker
+// (which keys only on "reached a pushed PR?") stays reset and the loop never trips.
+func TestDiskReclaimPruneFailureIsSwallowedAndBreakerUntouched(t *testing.T) {
+	r := &recorder{}
+	var ran int
+	code := Run(Deps{
+		ClearStopFile:          func() error { return nil },
+		FetchMain:              func() error { return nil },
+		StopRequested:          stopAfter(2), // two tickets, then stop at the 3rd checkpoint
+		DiskReclaimThreshold:   8 * gib,
+		FreeDisk:               func() (uint64, error) { return 1 * gib, nil }, // always under pressure
+		PruneMergedWorktrees:   func() (int, error) { return 0, stubErr("gh unreachable") },
+		StorePrune:             func() error { return nil },
+		ResolveNext:            func() (string, bool) { return "BEH-1", true },
+		RunPipeline:            func(string) TicketOutcome { ran++; return TicketOutcome{ReachedPushedPR: true} },
+		Sleep:                  func(time.Duration) {},
+		PollInterval:           time.Minute,
+		TickInterval:           2 * time.Second,
+		MaxConsecutiveFailures: 1, // a single counted failure would trip — reclaim failure must NOT count
+		Log:                    r,
+	})
+	if code != 0 {
+		t.Errorf("exit code = %d, want 0 (a failed prune must not end the loop)", code)
+	}
+	if ran != 2 {
+		t.Errorf("RunPipeline ran %d tickets, want 2 (a failed prune must not stop the loop consuming the queue)", ran)
+	}
+	if r.saw("circuit breaker") {
+		t.Errorf("a reclaim failure must NOT trip the breaker (threshold 1); events = %v", r.events)
+	}
+	if !r.saw("pruning merged worktrees failed") {
+		t.Errorf("a failed prune must be logged as a warning; events = %v", r.events)
+	}
+	if r.saw("reclaimed") {
+		t.Errorf("a prune that removed nothing must not narrate a reclaim; events = %v", r.events)
+	}
+}

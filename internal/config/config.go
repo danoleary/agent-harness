@@ -93,6 +93,11 @@ type Config struct {
 	// StopFile is the STOP sentinel path used by startup-clear and the stop check. A
 	// relative path is resolved against HerdPath by cmd/loop.
 	StopFile string
+	// LoopDiskReclaimThreshold is the soft free-disk floor (bytes) below which the
+	// daemon proactively reclaims host disk between tickets — pruning merged worktrees
+	// before the hard 5 GiB sandbox preflight floor would refuse a launch (ADR-0005).
+	// It defaults above that floor with headroom; 0 disables reclaim entirely.
+	LoopDiskReclaimThreshold uint64
 }
 
 const (
@@ -115,6 +120,9 @@ const (
 	defaultLoopMaxTickets             = 0 // unlimited
 	defaultLoopMaxRuntime             = time.Duration(0)
 	defaultStopFile                   = "agent-harness/STOP"
+	// 8 GiB: the 5 GiB MinFreeDiskBytes sandbox floor plus headroom, so reclaim fires
+	// before a launch would ever be refused (ADR-0005).
+	defaultLoopDiskReclaimThreshold uint64 = 8 << 30
 )
 
 // Getenv looks up an environment variable by name, returning "" when unset.
@@ -181,6 +189,10 @@ func Load(get Getenv) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	diskReclaim, err := parseNonNegativeBytes(get, "LOOP_DISK_RECLAIM_THRESHOLD_BYTES", defaultLoopDiskReclaimThreshold)
+	if err != nil {
+		return Config{}, err
+	}
 
 	cfg := Config{
 		LinearAPIKey:         linearKey,
@@ -207,6 +219,7 @@ func Load(get Getenv) (Config, error) {
 		LoopMaxTickets:             maxTickets,
 		LoopMaxRuntime:             maxRuntime,
 		StopFile:                   orDefault(get("STOP_FILE"), defaultStopFile),
+		LoopDiskReclaimThreshold:   diskReclaim,
 	}
 	if err := validateIdleBelowCaps(cfg); err != nil {
 		return Config{}, err
@@ -345,6 +358,22 @@ func parseCeilingInt(get Getenv, key string, fallback int) (int, error) {
 	n, err := strconv.Atoi(raw)
 	if err != nil || n < 0 {
 		return 0, fmt.Errorf("%s must be a non-negative integer (0 = unlimited), got %q", key, raw)
+	}
+	return n, nil
+}
+
+// parseNonNegativeBytes parses an optional byte-count env value: 0 means "disabled"
+// (a documented value, not nonsensical), any positive value is the threshold, and a
+// negative or unparseable value is an error naming the var. An unset key uses the
+// fallback. ParseUint rejects a leading '-', so negatives fail here too.
+func parseNonNegativeBytes(get Getenv, key string, fallback uint64) (uint64, error) {
+	raw := get(key)
+	if raw == "" {
+		return fallback, nil
+	}
+	n, err := strconv.ParseUint(raw, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("%s must be a non-negative integer (bytes; 0 = disable reclaim), got %q", key, raw)
 	}
 	return n, nil
 }

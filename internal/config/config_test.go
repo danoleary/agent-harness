@@ -288,6 +288,43 @@ func TestLoadLoopDefaults(t *testing.T) {
 	if cfg.StopFile != "agent-harness/STOP" {
 		t.Errorf("StopFile = %q, want agent-harness/STOP", cfg.StopFile)
 	}
+	if cfg.LoopDiskReclaimThreshold != 8<<30 {
+		t.Errorf("LoopDiskReclaimThreshold = %d, want %d (8 GiB — above the 5 GiB sandbox floor)", cfg.LoopDiskReclaimThreshold, 8<<30)
+	}
+}
+
+// The disk-reclaim threshold is env-overridable in bytes, and an explicit 0 disables
+// reclaim entirely (a documented value, not a nonsensical one).
+func TestLoadDiskReclaimThresholdOverrideAndDisable(t *testing.T) {
+	cfg, err := Load(fullEnv(map[string]string{"LOOP_DISK_RECLAIM_THRESHOLD_BYTES": "10737418240"})) // 10 GiB
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.LoopDiskReclaimThreshold != 10<<30 {
+		t.Errorf("LoopDiskReclaimThreshold = %d, want %d (10 GiB)", cfg.LoopDiskReclaimThreshold, 10<<30)
+	}
+
+	cfg, err = Load(fullEnv(map[string]string{"LOOP_DISK_RECLAIM_THRESHOLD_BYTES": "0"}))
+	if err != nil {
+		t.Fatalf("an explicit 0 (disable reclaim) must be accepted, got: %v", err)
+	}
+	if cfg.LoopDiskReclaimThreshold != 0 {
+		t.Errorf("LoopDiskReclaimThreshold = %d, want 0 (reclaim disabled)", cfg.LoopDiskReclaimThreshold)
+	}
+}
+
+// A negative or unparseable threshold fails loud at load, naming the var.
+func TestLoadRejectsInvalidDiskReclaimThreshold(t *testing.T) {
+	for _, bad := range []string{"-1", "abc"} {
+		_, err := Load(fullEnv(map[string]string{"LOOP_DISK_RECLAIM_THRESHOLD_BYTES": bad}))
+		if err == nil {
+			t.Errorf("LOOP_DISK_RECLAIM_THRESHOLD_BYTES=%q should be rejected", bad)
+			continue
+		}
+		if !strings.Contains(err.Error(), "LOOP_DISK_RECLAIM_THRESHOLD_BYTES") {
+			t.Errorf("error %q should name the offending var", err.Error())
+		}
+	}
 }
 
 // Every loop knob is env-overridable; the *_MS knobs are milliseconds.

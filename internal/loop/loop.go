@@ -14,7 +14,10 @@
 // retry-after-reset control signal, not a ship failure) — see breaker.go.
 package loop
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
 
 // TicketOutcome is what the loop learns from running one ticket through the
 // pipeline: the breaker keys on these typed signals, NOT on the raw exit code
@@ -84,6 +87,26 @@ type Deps struct {
 	// TickInterval chunks as the idle wait, so a stop landing mid-backoff is honoured
 	// within one tick rather than ~45 minutes later.
 	CapBackoff time.Duration
+	// DiskReclaimThreshold is the soft free-disk floor (bytes) below which the loop
+	// proactively reclaims host disk between tickets, BEFORE the hard 5 GiB sandbox
+	// preflight floor would refuse a launch (ADR-0005). Zero disables reclaim entirely
+	// — the loop then makes no statfs/prune calls at all.
+	DiskReclaimThreshold uint64
+	// FreeDisk reports the bytes available on the worktrees volume via a cheap statfs;
+	// it gates the reclaim step so a healthy disk triggers no shell-out / gh calls. A
+	// nil FreeDisk (or a statfs error) disables reclaim defensively — a disk check
+	// must never block the daemon.
+	FreeDisk func() (uint64, error)
+	// PruneMergedWorktrees shells out to scripts/prune-merged-worktrees.sh --yes — the
+	// existing, tested, squash-merge-aware reclaimer that removes only worktrees whose
+	// PR has merged and whose tree is clean — and returns how many it removed. The
+	// merged/clean classification lives entirely in the script (single source of
+	// truth); the loop never reimplements it. A failure is non-fatal (ADR-0005).
+	PruneMergedWorktrees func() (removed int, err error)
+	// StorePrune runs `pnpm store prune` — a cheap, non-destructive, network-free
+	// secondary reclaim — only when free disk is STILL below the threshold after the
+	// worktree prune. A nil StorePrune skips the secondary step; a failure is non-fatal.
+	StorePrune func() error
 	// MaxConsecutiveFailures is the circuit-breaker threshold: after this many
 	// consecutive tickets fail to reach a pushed PR, the daemon trips and winds down
 	// (DESIGN.md §Circuit breaker). A non-positive value disables the breaker.
@@ -151,6 +174,12 @@ func Run(d Deps) int {
 			d.Log.Event("loop — max tickets reached; winding down")
 			return 0
 		}
+
+		// Reclaim disk between tickets, before selecting the next one, when no sandbox
+		// is active (ADR-0005). Gated on a cheap statfs so a healthy disk costs nothing;
+		// a failed prune is narrated and swallowed — reclaim is never a ticket outcome
+		// and never touches the breaker.
+		d.reclaimDisk()
 
 		identifier, ok := d.ResolveNext()
 		if !ok {
@@ -237,6 +266,65 @@ func (d Deps) comment(identifier, body string) {
 	}
 	if err := d.CommentTicket(identifier, body); err != nil {
 		d.Log.Event("loop … warning: could not comment on " + identifier + " after release: " + err.Error())
+	}
+}
+
+// reclaimDisk proactively frees host disk between tickets when free space has
+// fallen below the soft DiskReclaimThreshold, BEFORE the hard MinFreeDiskBytes
+// sandbox floor would refuse a launch (ADR-0005). The named goal is dead worktrees,
+// so the squash-merge-aware prune script runs first; if free space is still below
+// the threshold afterwards, `pnpm store prune` is a cheap, non-destructive follow-up.
+//
+// Three invariants, all from ADR-0005:
+//   - Gated on a cheap statfs: a healthy disk (or a disabled threshold / missing
+//     statfs) makes no prune / gh / shell calls at all.
+//   - Never a ticket outcome: a failed statfs/prune is narrated and swallowed; the
+//     loop continues and the circuit breaker is never touched (the breaker keys only
+//     on "did the ticket reach a pushed PR?", ADR-0004).
+//   - Narrate only when it acts: a "reclaimed N worktree(s)" line is emitted only
+//     when the prune actually removed something; a healthy or no-op iteration is silent.
+func (d Deps) reclaimDisk() {
+	if d.DiskReclaimThreshold == 0 || d.FreeDisk == nil {
+		return // reclaim disabled
+	}
+	before, err := d.FreeDisk()
+	if err != nil {
+		// A statfs error must never block the loop — degrade to a warning and carry on,
+		// the same way the sandbox preflight treats an unreadable statfs as non-blocking.
+		d.Log.Event("loop … warning: could not statfs worktrees volume for disk reclaim (skipping): " + err.Error())
+		return
+	}
+	if before >= d.DiskReclaimThreshold {
+		return // disk healthy — silent, no shell-out
+	}
+
+	removed, perr := d.PruneMergedWorktrees()
+	if perr != nil {
+		d.Log.Event("loop … warning: pruning merged worktrees failed during disk reclaim (continuing): " + perr.Error())
+	}
+
+	// Re-statfs: only run the cheap secondary store prune if still below the threshold
+	// after the worktree prune. Track the latest reading so the narration can report
+	// the bytes freed.
+	after := before
+	if mid, merr := d.FreeDisk(); merr == nil {
+		after = mid
+		if mid < d.DiskReclaimThreshold && d.StorePrune != nil {
+			if serr := d.StorePrune(); serr != nil {
+				d.Log.Event("loop … warning: pnpm store prune failed during disk reclaim (continuing): " + serr.Error())
+			} else if final, ferr := d.FreeDisk(); ferr == nil {
+				after = final
+			}
+		}
+	}
+
+	// Narrate only when the prune actually removed something (ADR-0005).
+	if removed > 0 {
+		msg := fmt.Sprintf("loop — reclaimed %d merged worktree(s) under disk pressure", removed)
+		if after > before {
+			msg += fmt.Sprintf("; freed %d MiB", (after-before)>>20)
+		}
+		d.Log.Event(msg)
 	}
 }
 

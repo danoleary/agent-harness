@@ -28,6 +28,8 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -38,6 +40,7 @@ import (
 	"github.com/beherd/agent-harness/internal/loop"
 	"github.com/beherd/agent-harness/internal/pipeline"
 	"github.com/beherd/agent-harness/internal/proc"
+	"github.com/beherd/agent-harness/internal/sandbox"
 	"github.com/beherd/agent-harness/internal/stages"
 )
 
@@ -51,6 +54,14 @@ const tickInterval = 2 * time.Second
 // killDockerTimeout bounds the hard-abort docker calls so a wedged daemon can't
 // hang the exit path (BEH-388) — the second Ctrl-C must always terminate promptly.
 const killDockerTimeout = 10 * time.Second
+
+// pruneTimeout / storePruneTimeout bound the disk-reclaim shell-outs (ADR-0005) so a
+// stalled `gh`/network or a wedged pnpm can't hang the between-ticket reclaim. The
+// prune script makes one `gh pr view` per worktree, so it gets the more generous cap.
+const (
+	pruneTimeout      = 5 * time.Minute
+	storePruneTimeout = 2 * time.Minute
+)
 
 // consoleNarrator narrates loop-level events (startup, stop, between-ticket
 // transitions) before any ticket-keyed runlog exists — the loop runs across many
@@ -115,7 +126,15 @@ func main() {
 		MaxConsecutiveFailures: cfg.LoopMaxConsecutiveFailures,
 		MaxTickets:             cfg.LoopMaxTickets,
 		MaxRuntime:             cfg.LoopMaxRuntime,
-		Log:                    log,
+		// Disk reclaim (ADR-0005). The worktrees live under HERD_PATH/.claude/worktrees,
+		// so statfs HERD_PATH (always present, same volume) for the cheap gate; the prune
+		// shells out to the existing squash-merge-aware script, and `pnpm store prune` is
+		// the cheap secondary. All three run host-side, never inside the sandbox.
+		DiskReclaimThreshold: cfg.LoopDiskReclaimThreshold,
+		FreeDisk:             func() (uint64, error) { return sandbox.FreeDiskBytes(cfg.HerdPath) },
+		PruneMergedWorktrees: func() (int, error) { return pruneMergedWorktrees(cfg.HerdPath) },
+		StorePrune:           func() error { return storePrune(cfg.HerdPath) },
+		Log:                  log,
 	})
 	os.Exit(code)
 }
@@ -148,6 +167,54 @@ func runPipeline(cfg config.Config, identifier string) loop.TicketOutcome {
 		ReachedPushedPR:  out.ReachedPushedPR,
 		SpendingCapAbort: out.SpendingCapAbort,
 	}
+}
+
+// pruneMergedWorktrees shells out to the repo-root prune-merged-worktrees.sh --yes,
+// the existing, tested, squash-merge-aware reclaimer (ADR-0005). It is run with the
+// herd checkout as its cwd so the script's `git rev-parse --show-toplevel` resolves
+// to that checkout, and bounded by pruneTimeout so a stalled `gh`/network can't hang
+// the between-ticket reclaim. The merged/clean classification stays entirely in the
+// script (single source of truth); here we only parse how many it removed for the
+// loop's narration. A non-zero exit (e.g. gh unreachable) surfaces as an error the
+// loop logs and swallows — reclaim is never a ticket outcome.
+func pruneMergedWorktrees(herdPath string) (int, error) {
+	script := filepath.Join(herdPath, "scripts", "prune-merged-worktrees.sh")
+	out, err := proc.CombinedOutputInDir(pruneTimeout, herdPath, script, "--yes")
+	if err != nil {
+		return 0, fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return parsePrunedCount(string(out)), nil
+}
+
+// storePrune runs `pnpm store prune` — the cheap, non-destructive, network-free
+// secondary reclaim (ADR-0005) — bounded so a wedged pnpm can't hang the loop. The
+// global store is shared regardless of cwd; herdPath is used only to anchor the call.
+func storePrune(herdPath string) error {
+	out, err := proc.CombinedOutputInDir(storePruneTimeout, herdPath, "pnpm", "store", "prune")
+	if err != nil {
+		return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// parsePrunedCount reads the removed-worktree count from the prune script's
+// authoritative summary line ("Pruned N worktree(s)."), degrading to 0 when the
+// script removed nothing or printed no summary. Parsing the script's own count keeps
+// a single source of truth for "what got removed".
+func parsePrunedCount(output string) int {
+	const prefix = "Pruned "
+	for _, line := range splitLines(output) {
+		if !strings.HasPrefix(line, prefix) {
+			continue
+		}
+		fields := strings.Fields(strings.TrimPrefix(line, prefix))
+		if len(fields) > 0 {
+			if n, err := strconv.Atoi(fields[0]); err == nil {
+				return n
+			}
+		}
+	}
+	return 0
 }
 
 // installSignalHandler wires the two-stage SIGINT contract (DESIGN.md "Stop
