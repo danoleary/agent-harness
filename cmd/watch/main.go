@@ -1,12 +1,12 @@
 // Command watch is the read-only loop viewer (ADR-0005): it tails the global
 // structured event stream (agent-harness/logs/loop.jsonl) the daemon and the
 // single-shot pipeline write. On an interactive TTY it renders a live, redraw-on-a-
-// ticker dashboard — a stateful ASCII pig, a current-ticket panel, a stage
+// ticker dashboard — a stateful ASCII mascot, a current-ticket panel, a stage
 // indicator (n of 3), the current step plus a tool-call counter, daemon health, and
-// a scrollback tail. --no-animation keeps the dashboard but freezes the pig to a
+// a scrollback tail. --no-animation keeps the dashboard but freezes the mascot to a
 // single static frame (reduced motion); the rest of the view still updates live.
 // When stdout is not a TTY, or NO_COLOR is set, it falls back to plain scrollback
-// lines (one per event, no pig), so piping or redirecting stays clean and no ANSI
+// lines (one per event, no mascot), so piping or redirecting stays clean and no ANSI
 // escapes leak into a pipe.
 //
 // It NEVER controls the loop — `touch agent-harness/STOP` remains the only control
@@ -46,7 +46,7 @@ func main() {
 	path := resolvePath(argv)
 
 	if useDashboard(isTTY(os.Stdout), os.Getenv) {
-		runDashboard(path, resolvePidPath(path), animateFromFlag(noAnimation))
+		runDashboard(path, resolvePidPath(path), resolveStopPath(path), animateFromFlag(noAnimation))
 		return
 	}
 	runPlain(path)
@@ -55,15 +55,21 @@ func main() {
 // runDashboard redraws the live full-screen dashboard each tick. It owns no control
 // over the loop: it only reads the stream and probes the pidfile for liveness, so
 // Ctrl-C (which kills this process) never touches the daemon. animate is false
-// under --no-animation, which freezes the pig to its single static frame while the
-// rest of the dashboard keeps updating; tick advances the pig's animation frame.
-func runDashboard(path, pidPath string, animate bool) {
+// under --no-animation, which freezes the mascot to its single static frame while the
+// rest of the dashboard keeps updating; tick advances the mascot's animation frame.
+func runDashboard(path, pidPath, stopPath string, animate bool) {
 	dt := viewer.NewDashboardTailer(path)
 	for tick := 0; ; tick++ {
-		if _, err := dt.Poll(); err != nil {
+		running, err := dt.Poll()
+		if err != nil {
 			fmt.Fprintf(os.Stderr, "watch: %v\n", err)
 		}
-		frame := viewer.Frame(dt.Dashboard().Render(time.Now(), daemonAlive(pidPath), tick, animate))
+		status := viewer.DaemonStatus{
+			Alive:         daemonAlive(pidPath),
+			StopRequested: stopRequested(stopPath),
+			StreamPresent: running,
+		}
+		frame := viewer.Frame(dt.Dashboard().Render(time.Now(), status, tick, animate))
 		fmt.Fprint(os.Stdout, frame)
 		time.Sleep(pollInterval)
 	}
@@ -105,9 +111,9 @@ func parseArgs(argv []string) (positional []string, noAnimation bool) {
 // useDashboard decides between the full dashboard and the plain fallback. The
 // dashboard is used on an interactive TTY unless NO_COLOR is set; a non-TTY (a
 // pipe/redirect) or NO_COLOR forces the plain path so escapes never reach a file or
-// downstream process, and the plain path carries no pig (ADR-0005 / AC4). Note
+// downstream process, and the plain path carries no mascot (ADR-0005 / AC4). Note
 // --no-animation is NOT a fallback trigger: it keeps the dashboard but freezes the
-// pig to a static frame (animateFromFlag). getenv is injected for test.
+// mascot to a static frame (animateFromFlag). getenv is injected for test.
 func useDashboard(tty bool, getenv func(string) string) bool {
 	if !tty {
 		return false
@@ -116,7 +122,7 @@ func useDashboard(tty bool, getenv func(string) string) bool {
 }
 
 // animateFromFlag maps the --no-animation flag to the dashboard's animate decision:
-// the flag is reduced-motion, so it renders a single static pig frame rather than
+// the flag is reduced-motion, so it renders a single static mascot frame rather than
 // cycling, while the rest of the dashboard still updates live (AC2).
 func animateFromFlag(noAnimation bool) bool { return !noAnimation }
 
@@ -144,6 +150,24 @@ func resolvePath(argv []string) string {
 // file — so it tracks the resolved stream path without a second env lookup.
 func resolvePidPath(streamPath string) string {
 	return filepath.Join(filepath.Dir(filepath.Dir(streamPath)), "loop.pid")
+}
+
+// resolveStopPath locates the STOP sentinel (agent-harness/STOP, the loop's only
+// control path) for the stop-requested probe. Like the pidfile it lives at the
+// harness root — the grandparent of the stream file — so the viewer can surface
+// "winding down" without reading the harness config.
+func resolveStopPath(streamPath string) string {
+	return filepath.Join(filepath.Dir(filepath.Dir(streamPath)), "STOP")
+}
+
+// stopRequested reports whether the STOP sentinel is present — a pure existence
+// probe (os.Stat), never a write: the viewer reads the operator's stop request to
+// display it, but the sentinel remains the operator's to create and the daemon's to
+// clear. A present sentinel (even the empty file `touch` creates) is a stop request;
+// any stat error (absent, unreadable) reads as not-requested rather than a crash.
+func stopRequested(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }
 
 // daemonAlive reports whether the loop daemon named in pidPath is running, via a

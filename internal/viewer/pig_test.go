@@ -58,7 +58,7 @@ func TestEveryKindSelectsAPigState(t *testing.T) {
 // AC3: the render always carries the state name in text, so the view is legible
 // with motion disabled and to a screen reader / log scrape — never animation-only.
 func TestRenderPigLabelsStateInText(t *testing.T) {
-	for _, st := range []pigState{pigWorking, pigWaiting, pigSleeping, pigCelebrating, pigHurt} {
+	for _, st := range []pigState{pigWorking, pigWaiting, pigSleeping, pigCelebrating, pigHurt, pigStopping} {
 		out := renderPig(st, 0, true)
 		if !strings.Contains(out, string(st)) {
 			t.Fatalf("render of %q must contain the state name in text, got:\n%s", st, out)

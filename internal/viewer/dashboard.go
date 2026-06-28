@@ -19,8 +19,9 @@ const stageCount = 3
 
 // tailMax bounds the scrollback tail to the most recent events, so the dashboard
 // stays a fixed-height frame the ticker can redraw in place rather than an
-// ever-growing buffer.
-const tailMax = 8
+// ever-growing buffer. Kept short (the last few events) — the operator wants the
+// current activity, not a full log; loop.log is the full record.
+const tailMax = 3
 
 // stageIndex returns the 1-based position of stage in the pipeline, or 0 when the
 // stage is empty or unrecognised.
@@ -45,6 +46,19 @@ const clearHome = "\x1b[2J\x1b[H"
 // bodies without it.
 func Frame(body string) string { return clearHome + body }
 
+// DaemonStatus is the environmental state the viewer probes each tick, external to
+// the event stream and injected into Render so the render stays pure and testable.
+// The three facts are independent of the folded events: whether the daemon process
+// is alive (pidfile liveness), whether a STOP sentinel has been requested (the
+// operator asked the loop to wind down — ADR-0005), and whether the stream file
+// exists at all (so a daemon that is up but emitting no stream — e.g. an old build —
+// is distinguishable from one that is running but has produced no events yet).
+type DaemonStatus struct {
+	Alive         bool
+	StopRequested bool
+	StreamPresent bool
+}
+
 // Dashboard is the live full-screen model: it folds the structured loop stream
 // into the handful of fields the redraw-on-a-ticker view shows — the current
 // ticket, which stage is running, the current step, and a scrollback tail — and
@@ -67,7 +81,7 @@ type Dashboard struct {
 }
 
 // NewDashboard returns a fresh Dashboard with no current ticket or stage. Before
-// any event the pig sleeps — the queue-empty resting state.
+// any event the mascot sleeps — the queue-empty resting state.
 func NewDashboard() *Dashboard { return &Dashboard{view: New(), pig: pigSleeping} }
 
 // Observe folds one record into the model state. Non-empty Ticket/Stage update the
@@ -103,7 +117,7 @@ func (d *Dashboard) Observe(r loopstream.Record) {
 	if r.TS != "" {
 		d.lastTS = r.TS
 	}
-	// The pig reflects the most recent event, whatever its kind (AC1).
+	// The mascot reflects the most recent event, whatever its kind (AC1).
 	d.pig = pigStateFor(r)
 	if line, ok := d.view.Observe(r); ok {
 		d.tail = append(d.tail, line)
@@ -114,13 +128,19 @@ func (d *Dashboard) Observe(r loopstream.Record) {
 }
 
 // Render returns the dashboard frame body (no clear-screen escape — see Frame) for
-// the model's current state. now and alive are injected so the render is pure and
-// testable: alive is the daemon's liveness, now anchors the "age of last event".
-// frame is the redraw tick (advanced by the command) the pig animates on; animate
-// is false under --no-animation, freezing the pig to its single static frame.
-func (d *Dashboard) Render(now time.Time, alive bool, frame int, animate bool) string {
+// the model's current state. now and status are injected so the render is pure and
+// testable: status carries the daemon's liveness / STOP / stream-present facts, and
+// now anchors the "age of last event". frame is the redraw tick (advanced by the
+// command) the mascot animates on; animate is false under --no-animation, freezing
+// the mascot to its single static frame. A pending STOP overrides the event-derived
+// mood: winding down is the headline, so the mascot waves goodbye whatever it was up to.
+func (d *Dashboard) Render(now time.Time, status DaemonStatus, frame int, animate bool) string {
 	var b strings.Builder
-	b.WriteString(renderPig(d.pig, frame, animate))
+	mood := d.pig
+	if status.StopRequested {
+		mood = pigStopping
+	}
+	b.WriteString(renderPig(mood, frame, animate))
 	b.WriteString("\n")
 	b.WriteString("ticket:  ")
 	b.WriteString(d.ticket)
@@ -137,7 +157,7 @@ func (d *Dashboard) Render(now time.Time, alive bool, frame int, animate bool) s
 	b.WriteString(d.renderStep())
 	b.WriteString("\n")
 	b.WriteString("health:  ")
-	b.WriteString(d.renderHealth(now, alive))
+	b.WriteString(d.renderHealth(now, status))
 	b.WriteString("\n")
 	b.WriteString("recent:\n")
 	for _, line := range d.tail {
@@ -151,9 +171,22 @@ func (d *Dashboard) Render(now time.Time, alive bool, frame int, animate bool) s
 // renderHealth formats the daemon-health line from liveness and the age of the
 // last observed event (ADR-0005). A down daemon is a clear state, not a crash; a
 // live one shows how stale its last event is so a wedged-but-alive loop is visible.
-func (d *Dashboard) renderHealth(now time.Time, alive bool) string {
-	if !alive {
+func (d *Dashboard) renderHealth(now time.Time, status DaemonStatus) string {
+	if !status.Alive {
 		return "○ daemon down"
+	}
+	// A pending STOP is the headline: the operator asked the loop to wind down, so
+	// say so regardless of event age — a busy-but-stopping daemon reads as stopping.
+	if status.StopRequested {
+		return "● running — STOP requested, winding down"
+	}
+	// The stream file being absent is distinct from it being present-but-empty: an
+	// absent stream means the live daemon is not writing the structured stream at all
+	// (e.g. a build predating it), so point at that rather than the benign "no events
+	// yet" — which would otherwise mislead the operator into waiting for events that
+	// will never come.
+	if !status.StreamPresent {
+		return "● running — no event stream (daemon may predate it — rebuild & relaunch)"
 	}
 	if d.lastTS == "" {
 		return "● running — no events yet"

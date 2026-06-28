@@ -777,12 +777,16 @@ ships. The `ready-for-agent` label remains the human gate on *what* runs unatten
 The daemon runs detached, so its only window is `loop.log` — noisy and
 unstructured. The **viewer** is a separate, **read-only** binary that tails
 `logs/loop.jsonl` and renders a live dashboard: the current ticket, the stage
-(n of 3), the current step, daemon health, and a stateful ASCII pig whose state
-(working / waiting / sleeping / celebrating / hurt) follows the last event `kind`.
-It is **stdlib-only** (a redraw-on-a-ticker dashboard needs no TUI framework) and
-degrades to plain scrollback when stdout is not a TTY, `NO_COLOR` is set, or
-`--no-animation` is passed. It never controls the loop — `touch agent-harness/STOP`
-remains the only control path, and quitting the viewer does not touch the daemon.
+(n of 3), the current step, daemon health, and a stateful ASCII mascot (labelled
+`status:`) whose mood (working / waiting / sleeping / celebrating / hurt / stopping)
+follows the last event `kind`. Health also reflects two read-only probes beside the
+stream: a present `STOP` sentinel reads as "winding down" (and flips the mascot to
+`stopping`), and an absent stream file on a live daemon reads as "no event stream"
+(distinct from a present-but-empty "no events yet"). It is **stdlib-only** (a
+redraw-on-a-ticker dashboard needs no TUI framework) and degrades to plain scrollback
+when stdout is not a TTY, `NO_COLOR` is set, or `--no-animation` is passed. It never
+controls the loop — `touch agent-harness/STOP` remains the only control path (the
+viewer only *reads* the sentinel), and quitting the viewer does not touch the daemon.
 "Progress" is honest about being indeterminate: a stage indicator and a tool-call
 activity counter, never a percent-complete bar. See ADR-0005 for why a separate
 reader over a structured stream rather than a `--tui` flag on the daemon.

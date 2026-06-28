@@ -46,17 +46,26 @@ the daemon.
   sink, single-shot `pipeline`/stage runs produce the same stream and are viewable
   too.
 - **The viewer is stdlib-only.** It is a redraw-on-a-ticker dashboard — current
-  ticket panel, stage indicator (n of 3), a live current-step line, a scrollback
-  tail, and a stateful ASCII "pig" indicator whose state (working / waiting /
-  sleeping / celebrating / hurt) is driven by the last `kind`. This needs no
-  component model, mouse, or raw-mode input (Ctrl-C quits), so it is hand-rolled
-  ANSI with no new entry in the harness `go.sum`.
+  ticket panel, stage indicator (n of 3), a live current-step line, a short
+  scrollback tail (the last few events), and a stateful ASCII mascot (labelled
+  `status:`) whose mood (working / waiting / sleeping / celebrating / hurt /
+  stopping) is driven by the last `kind`. This needs no component model, mouse, or
+  raw-mode input (Ctrl-C quits), so it is hand-rolled ANSI with no new entry in the
+  harness `go.sum`.
+- **It surfaces the loop's control + liveness state, read-only.** Beyond the event
+  stream the viewer probes three environmental facts each tick — the daemon pidfile
+  (alive/down), the `STOP` sentinel (a present sentinel ⇒ "winding down", which
+  overrides the event-derived mood and is the health headline), and whether the
+  stream file exists at all (an absent stream on a live daemon ⇒ "no event stream",
+  distinct from a present-but-empty "no events yet"). All three are pure reads
+  (`os.Stat`/signal-0): the viewer displays the operator's stop request but never
+  writes the sentinel — `touch agent-harness/STOP` remains the only control path.
 - **It degrades to plain text.** When stdout is not a TTY, or `NO_COLOR` is set,
-  the viewer prints plain scrollback lines (and no pig) instead of the animated
+  the viewer prints plain scrollback lines (and no mascot) instead of the animated
   screen, so piping/redirecting it stays clean. `--no-animation` is a separate,
-  reduced-motion toggle: it keeps the full dashboard but freezes the pig to a single
-  static frame (the rest of the view still updates live), rather than dropping to
-  plain text.
+  reduced-motion toggle: it keeps the full dashboard but freezes the mascot to a
+  single static frame (the rest of the view still updates live), rather than dropping
+  to plain text.
 
 ## Alternatives considered
 

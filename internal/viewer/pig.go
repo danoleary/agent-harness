@@ -18,6 +18,7 @@ const (
 	pigSleeping    pigState = "sleeping"    // the queue is empty / nothing claimed
 	pigCelebrating pigState = "celebrating" // a PR just opened
 	pigHurt        pigState = "hurt"        // a session failed or the breaker tripped
+	pigStopping    pigState = "stopping"    // a STOP sentinel is present: winding down
 )
 
 // pigStateFor selects the pig's state from a record. The five states the ticket
@@ -50,29 +51,35 @@ func pigStateFor(r loopstream.Record) pigState {
 
 // pigFrames is the hand-rolled, stdlib-only animation: a short loop of pure-ASCII
 // frames per state, advanced on the dashboard's redraw ticker (ADR-0005 — no TUI
-// dependency). Each state has ≥2 frames so it visibly cycles; the difference
-// between frames is the motion (trotting feet, blinking/opening eyes, a bounce, a
-// snore). Two leading spaces keep the pig clear of the dashboard's panel labels.
+// dependency). Each state has ≥2 frames so it visibly cycles; the difference between
+// frames is the motion — trotting feet, blinking eyes, floating Zzz, a party bounce,
+// a wince, or waving goodbye while walking off. The art is four lines tall with a
+// snout and legs so the mood reads at a glance; the leading spaces keep it clear of
+// the dashboard's panel labels.
 var pigFrames = map[pigState][]string{
 	pigWorking: {
-		"   ,---.\n  (o o )\n  (  ~ )/",
-		"   ,---.\n  (o o )\n  (  ~ )\\",
+		"    ,----.\n   ( o  o )\n   ( =oo= )\n    /'  '\\",
+		"    ,----.\n   ( o  o )\n   ( =oo= )\n    \\,  ,/",
 	},
 	pigWaiting: {
-		"   ,---.\n  (- - )\n  (  ~ )",
-		"   ,---.\n  (o o )\n  (  ~ )",
+		"    ,----.\n   ( -  - )\n   ( =oo= )  ...\n    /    \\",
+		"    ,----.\n   ( o  o )\n   ( =oo= )  :::\n    /    \\",
 	},
 	pigSleeping: {
-		"   ,---.  z\n  (- - )\n  (  ~ )",
-		"   ,---.  Z\n  (- - )\n  (  ~ )",
+		"    ,----.   z\n   ( -  - )  Z\n   ( =oo= )  z\n    /    \\",
+		"    ,----.   Z\n   ( -  - )  z\n   ( =oo= )  Z\n    /    \\",
 	},
 	pigCelebrating: {
-		"  \\,---./\n  (^ ^ )\n  (  ~ )",
-		"  /,---.\\\n  (^ ^ )\n  (  ~ )",
+		"   \\,----./\n   ( ^  ^ )  *\n   ( =oo= )  !\n    /    \\",
+		"   /,----.\\\n   ( ^  ^ ) *\n   ( =oo= ) !\n    /    \\",
 	},
 	pigHurt: {
-		"   ,---.\n  (x x )\n  (  . )",
-		"   ,---.\n  (X X )\n  (  . )",
+		"    ,----.\n   ( x  x )\n   ( =--= )\n    /    \\",
+		"    ,----.\n   ( X  X )\n   ( =--= )\n    /    \\",
+	},
+	pigStopping: {
+		"    ,----.   bye~\n   ( o  o )  /\n   ( =oo= )\n    >    >",
+		"    ,----.   bye~\n   ( o  o )  \\\n   ( =oo= )\n    >>   >>",
 	},
 }
 
@@ -94,7 +101,7 @@ func renderPig(s pigState, frame int, animate bool) string {
 	if idx < len(frames) {
 		art = frames[idx]
 	}
-	return art + "\n  pig: " + string(s)
+	return art + "\n  status: " + string(s)
 }
 
 // sessionResultFailed reports whether a session-result narration is a failure. The

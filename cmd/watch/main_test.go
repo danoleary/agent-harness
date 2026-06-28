@@ -92,3 +92,33 @@ func TestResolvePidPathIsSiblingOfLogsDir(t *testing.T) {
 		t.Fatalf("resolvePidPath = %q, want %q", got, want)
 	}
 }
+
+// The STOP sentinel lives at the harness root (agent-harness/STOP) — beside loop.pid
+// and the logs/ dir the stream is under — so the viewer resolves it from the stream
+// path exactly as it resolves the pidfile.
+func TestResolveStopPathIsSiblingOfLogsDir(t *testing.T) {
+	got := resolveStopPath(filepath.Join("some", "harness", "logs", "loop.jsonl"))
+	want := filepath.Join("some", "harness", "STOP")
+	if got != want {
+		t.Fatalf("resolveStopPath = %q, want %q", got, want)
+	}
+}
+
+// stopRequested is a pure existence probe (a read, never control): a present
+// sentinel — even the empty file `touch` creates — means stop was requested; an
+// absent one means it was not.
+func TestStopRequestedReadsSentinelPresence(t *testing.T) {
+	dir := t.TempDir()
+
+	absent := filepath.Join(dir, "STOP")
+	if stopRequested(absent) {
+		t.Fatalf("an absent STOP sentinel must report not requested")
+	}
+
+	if err := os.WriteFile(absent, nil, 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if !stopRequested(absent) {
+		t.Fatalf("a present (empty) STOP sentinel must report requested")
+	}
+}
