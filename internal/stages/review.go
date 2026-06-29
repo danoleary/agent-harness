@@ -388,8 +388,9 @@ func Review(cfg config.Config, log *runlog.Logger, runID string, args Args) Resu
 	// Rebase onto origin/main before pushing so a sibling PR that merged during this long
 	// pipeline can't strand the branch on a stale base — the merge-conflict dead-end
 	// BEH-570 hit, where the conflict only surfaced post-PR in the CI watch and was left
-	// as a manual step. The worktree is clean here (verified just above), which git rebase
-	// requires. A clean replay moves the tip onto the current base. A genuine content
+	// as a manual step. The worktree is clean here (verified just above), so the replay's
+	// reset --hard can't discard uncommitted work (BEH-618). A clean replay moves the tip
+	// onto the current base. A genuine content
 	// conflict no longer dead-ends (BEH-581): rather than strand ~30 min of reviewed,
 	// gate-green work, the harness launches a bounded sandboxed conflict-resolution
 	// session over the worktree (mirroring the post-PR ciFixRunner), re-runs the host

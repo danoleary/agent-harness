@@ -23,19 +23,34 @@ func TestBuildRebaseFixNamesWorktreeAndTicket(t *testing.T) {
 	}
 }
 
-// The core job: rebase onto origin/main, resolve the conflicts, continue the
-// rebase, and commit — leaving a clean, rebased worktree.
-func TestBuildRebaseFixSteersTheRebaseAndResolve(t *testing.T) {
+// BEH-618: the core job is to replay onto origin/main, resolve the conflicts,
+// continue the replay, and commit — leaving a clean, rebased worktree. It must steer
+// the agent AWAY from bare `git rebase`, which false-fails ("local changes would be
+// overwritten" / "could not detach HEAD") in a linked worktree even on a clean tree.
+// The known-good recipe is `reset --hard origin/main` + `cherry-pick` (continued with
+// `cherry-pick --continue`), which the session runs in the same linked worktree.
+func TestBuildRebaseFixSteersTheCherryPickReplay(t *testing.T) {
 	p := BuildRebaseFix(sample, "beh-362", sampleWorktree)
 
-	if !strings.Contains(p, "git rebase origin/main") {
-		t.Error("prompt should instruct the agent to rebase onto origin/main")
+	if !strings.Contains(p, "git reset --hard origin/main") {
+		t.Error("prompt should instruct the agent to move onto the fresh base with `git reset --hard origin/main`")
+	}
+	if !strings.Contains(p, "git cherry-pick") {
+		t.Error("prompt should instruct the agent to replay the feature commits via `git cherry-pick`")
+	}
+	if !strings.Contains(p, "git cherry-pick --continue") {
+		t.Error("prompt should instruct the agent to continue the cherry-pick to completion")
 	}
 	if !regexp.MustCompile(`(?i)resolve`).MatchString(p) {
 		t.Error("prompt should instruct the agent to resolve the conflicts")
 	}
-	if !strings.Contains(p, "git rebase --continue") {
-		t.Error("prompt should instruct the agent to continue the rebase to completion")
+	// It must explain WHY not bare `git rebase` so the agent doesn't fall back to it
+	// and re-derive the linked-worktree false-fail from scratch (the BEH-618 cost).
+	if !regexp.MustCompile(`(?i)linked worktree`).MatchString(p) {
+		t.Error("prompt should explain that `git rebase` false-fails in a linked worktree")
+	}
+	if strings.Contains(p, "git rebase --continue") {
+		t.Error("prompt must not steer the agent into a bare `git rebase` (BEH-618: it false-fails in a linked worktree)")
 	}
 }
 

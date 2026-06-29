@@ -59,49 +59,114 @@ func blipRunner(clock *fakeClock, clearAfter time.Duration, errEach error) (comm
 	return run, &calls
 }
 
-// BEH-570: a long pipeline lets sibling PRs merge to main underneath the branch,
+// recordingRunner returns a commandRunner that records every argv it saw and
+// returns whatever fail(args) decides — letting a test branch the control flow on
+// the specific git subcommand (not just call order, which scriptedRunner keys on).
+func recordingRunner(fail func(args []string) error) (commandRunner, *[][]string) {
+	var calls [][]string
+	run := func(name string, args ...string) error {
+		calls = append(calls, append([]string{name}, args...))
+		return fail(args)
+	}
+	return run, &calls
+}
+
+// hasArg reports whether any element of an argv exactly equals s — a precise git
+// subcommand check that won't false-match a ref like refs/harness/rebase-onto-main.
+func hasArg(argv []string, s string) bool {
+	for _, a := range argv {
+		if a == s {
+			return true
+		}
+	}
+	return false
+}
+
+// BEH-618: a long pipeline lets sibling PRs merge to main underneath the branch,
 // stranding it on a stale base. RebaseOntoMain replays the feature branch onto the
-// freshly-fetched origin/main before the push so the PR opens on a current base. A
-// clean replay reports RebaseClean and runs exactly one git command (the rebase) —
-// no abort.
-func TestRebaseOntoMainCleanReportsClean(t *testing.T) {
-	run, calls := scriptedRunner(0, nil)
+// freshly-fetched origin/main before the push so the PR opens on a current base. It
+// must NOT use `git rebase`: in a linked worktree (every harness worktree is a `git
+// worktree add` checkout) rebase's detach-to-onto checkout false-fails with "local
+// changes would be overwritten by merge" / "could not detach HEAD" even on a
+// byte-clean tree. The replay instead goes via `reset --hard origin/main` (the same
+// full-tree move, without the false-positive) + `cherry-pick` (a three-way merge
+// that surfaces only genuine conflicts). A clean replay reports RebaseClean, never
+// invokes `git rebase`, and carries the harness identity on the replayed commits.
+func TestRebaseOntoMainReplaysViaResetAndCherryPickNotRebase(t *testing.T) {
+	run, calls := recordingRunner(func(args []string) error {
+		// The feature tip is NOT yet contained in origin/main, so the ancestor probe
+		// reports "not behind" and the cherry-pick replay path runs.
+		if strings.Contains(strings.Join(args, " "), "merge-base --is-ancestor") {
+			return errors.New("not an ancestor")
+		}
+		return nil
+	})
 	if res := rebaseOntoMain("/wt", run); res != RebaseClean {
 		t.Fatalf("res = %v, want RebaseClean", res)
 	}
-	if len(*calls) != 1 {
-		t.Fatalf("expected exactly one git call (no abort on a clean rebase), got %d: %v", len(*calls), *calls)
+
+	var sawReset, sawCherryPick bool
+	for _, c := range *calls {
+		if hasArg(c, "rebase") {
+			t.Fatalf("rebaseOntoMain must NOT invoke `git rebase` in a linked worktree (BEH-618); saw %q", strings.Join(c, " "))
+		}
+		joined := strings.Join(c, " ")
+		if strings.Contains(joined, "reset --hard origin/main") {
+			sawReset = true
+		}
+		if strings.Contains(joined, "cherry-pick origin/main..") {
+			sawCherryPick = true
+			// The replay carries the harness identity overrides (BEH-579) so replayed
+			// commits' committer never inherits the host's placeholder config.
+			if !strings.Contains(joined, "user.name="+HarnessAuthorName) || !strings.Contains(joined, "user.email="+HarnessAuthorEmail) {
+				t.Errorf("cherry-pick replay must carry the harness identity overrides, got %q", joined)
+			}
+		}
 	}
-	got := strings.Join((*calls)[0], " ")
-	// The rebase carries the harness identity overrides (BEH-579) so replayed
-	// commits' committer never inherits the host's placeholder config.
-	want := "git -C /wt -c user.name=" + HarnessAuthorName + " -c user.email=" + HarnessAuthorEmail + " rebase origin/main"
-	if got != want {
-		t.Fatalf("argv = %q, want %q", got, want)
+	if !sawReset {
+		t.Errorf("expected a `reset --hard origin/main` to move the branch onto the fresh base, calls: %v", *calls)
+	}
+	if !sawCherryPick {
+		t.Errorf("expected a `cherry-pick origin/main..<tip>` to replay the feature commits, calls: %v", *calls)
 	}
 }
 
-// A rebase that can't be applied cleanly (a genuine content conflict) must abort —
-// restoring the branch so it is never left mid-rebase — and report RebaseConflict
-// so the caller defers to a human rather than pushing.
-func TestRebaseOntoMainConflictAbortsAndReportsConflict(t *testing.T) {
-	// First call (the rebase) fails; the second (the abort) succeeds.
-	run, calls := scriptedRunner(1, errors.New("exit status 1: CONFLICT (content)"))
+// A replay that can't be applied cleanly (a genuine content conflict surfaces during
+// cherry-pick) must abort the cherry-pick AND restore the branch to its original tip
+// — never left mid-replay — then report RebaseConflict so the caller defers to a
+// human rather than pushing.
+func TestRebaseOntoMainCherryPickConflictAbortsAndRestores(t *testing.T) {
+	run, calls := recordingRunner(func(args []string) error {
+		joined := strings.Join(args, " ")
+		if strings.Contains(joined, "merge-base --is-ancestor") {
+			return errors.New("not an ancestor")
+		}
+		if strings.Contains(joined, "cherry-pick origin/main..") {
+			return errors.New("exit status 1: CONFLICT (content)")
+		}
+		return nil
+	})
 	if res := rebaseOntoMain("/wt", run); res != RebaseConflict {
 		t.Fatalf("res = %v, want RebaseConflict", res)
 	}
-	if len(*calls) != 2 {
-		t.Fatalf("expected the rebase then an abort, got %d calls: %v", len(*calls), *calls)
-	}
-	abort := (*calls)[1]
-	want := []string{"git", "-C", "/wt", "rebase", "--abort"}
-	if len(abort) != len(want) {
-		t.Fatalf("abort argv = %v, want %v", abort, want)
-	}
-	for i := range want {
-		if abort[i] != want[i] {
-			t.Fatalf("abort argv[%d] = %q, want %q (full: %v)", i, abort[i], want[i], abort)
+	var sawCherryAbort, sawRestore bool
+	for _, c := range *calls {
+		if hasArg(c, "rebase") {
+			t.Fatalf("the conflict path must NOT invoke `git rebase` (BEH-618); saw %q", strings.Join(c, " "))
 		}
+		joined := strings.Join(c, " ")
+		if strings.Contains(joined, "cherry-pick --abort") {
+			sawCherryAbort = true
+		}
+		if strings.Contains(joined, "reset --hard "+rebaseBackupRef) {
+			sawRestore = true
+		}
+	}
+	if !sawCherryAbort {
+		t.Errorf("a conflicting replay must `cherry-pick --abort`, calls: %v", *calls)
+	}
+	if !sawRestore {
+		t.Errorf("a conflicting replay must restore the branch to its original tip via the backup ref %q, calls: %v", rebaseBackupRef, *calls)
 	}
 }
 
@@ -269,6 +334,105 @@ func TestRebaseOntoMainStripsReadySentinelBeforeRebase(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(repo, "unrelated.txt")); err != nil {
 		t.Fatalf("rebased branch should contain main's commit (unrelated.txt), stat err = %v", err)
 	}
+}
+
+// BEH-618: every harness worktree is a `git worktree add`-LINKED checkout, and that
+// is exactly where `git rebase`'s detach-to-onto checkout false-fails ("local changes
+// would be overwritten by merge" / "could not detach HEAD") even on a byte-clean tree.
+// The scripted tests above pin the reset+cherry-pick mechanism; this one pins the
+// outcome in the real environment that triggered the bug — feat replays onto an
+// advanced base inside a linked worktree (clean and conflicting), where the old bare
+// `git rebase` was unreliable. setupLinked builds a main repo whose feat/<slug> lives
+// in a separate linked worktree, with origin/main advanced past it.
+func TestRebaseOntoMainReplaysInLinkedWorktree(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	const slug = "beh-618-linked"
+	// setupLinked returns the LINKED worktree path (where feat is checked out) — the
+	// path RebaseOntoMain operates on in production. mainFile/mainContents control
+	// whether main's advancing commit collides with feat.txt (conflict) or not (clean).
+	setupLinked := func(t *testing.T, mainFile, mainContents string) string {
+		t.Helper()
+		base := t.TempDir()
+		git := func(dir string, args ...string) {
+			t.Helper()
+			if err := execIn(dir, args...); err != nil {
+				t.Fatalf("git -C %s %v: %v", dir, args, err)
+			}
+		}
+		write := func(dir, name, contents string) {
+			t.Helper()
+			if err := os.WriteFile(filepath.Join(dir, name), []byte(contents), 0o644); err != nil {
+				t.Fatalf("write %s: %v", name, err)
+			}
+		}
+		git(base, "init", "-q", "-b", "main")
+		git(base, "config", "user.email", "t@example.com")
+		git(base, "config", "user.name", "Test")
+		write(base, "feat.txt", "base\n")
+		git(base, "add", "-A")
+		git(base, "commit", "-q", "-m", "base")
+		// feat branch edits feat.txt, then main advances; origin/main tracks main's tip.
+		git(base, "checkout", "-q", "-b", BranchName(slug))
+		write(base, "feat.txt", "feat change\n")
+		git(base, "add", "-A")
+		git(base, "commit", "-q", "-m", "feat work")
+		git(base, "checkout", "-q", "main")
+		write(base, mainFile, mainContents)
+		git(base, "add", "-A")
+		git(base, "commit", "-q", "-m", "main moved")
+		git(base, "update-ref", "refs/remotes/origin/main", "main")
+		// Move feat into a LINKED worktree (and off the base checkout, so `worktree add`
+		// can claim the branch). This is the harness's real shape (ADR-0002).
+		git(base, "checkout", "-q", "main")
+		linked := filepath.Join(t.TempDir(), "wt")
+		git(base, "worktree", "add", "-q", linked, BranchName(slug))
+		// new-worktree.sh drops the untracked readiness sentinel in every worktree.
+		write(linked, WorktreeReadySentinel, "")
+		return linked
+	}
+
+	t.Run("clean replay inside a linked worktree", func(t *testing.T) {
+		linked := setupLinked(t, "unrelated.txt", "main-only\n")
+		if res := RebaseOntoMain(linked); res != RebaseClean {
+			t.Fatalf("res = %v, want RebaseClean — a clean replay must not false-fail in a linked worktree (BEH-618)", res)
+		}
+		if _, err := os.Stat(filepath.Join(linked, "unrelated.txt")); err != nil {
+			t.Fatalf("replayed branch should carry main's new file (unrelated.txt), stat err = %v", err)
+		}
+		if !WorktreeClean(linked) {
+			t.Fatal("linked worktree should be clean after a successful replay")
+		}
+		out, err := exec.Command("git", "-C", linked, "log", "-1", "--format=%cn|%ce").Output()
+		if err != nil {
+			t.Fatalf("read committer: %v", err)
+		}
+		if got, want := strings.TrimSpace(string(out)), HarnessAuthorName+"|"+HarnessAuthorEmail; got != want {
+			t.Fatalf("replayed committer = %q, want %q (the placeholder Test identity must not leak)", got, want)
+		}
+	})
+
+	t.Run("genuine conflict aborts and restores inside a linked worktree", func(t *testing.T) {
+		linked := setupLinked(t, "feat.txt", "main change\n")
+		featTip, err := HeadSHA(linked)
+		if err != nil {
+			t.Fatalf("read feat tip: %v", err)
+		}
+		if res := RebaseOntoMain(linked); res != RebaseConflict {
+			t.Fatalf("res = %v, want RebaseConflict", res)
+		}
+		if !WorktreeClean(linked) {
+			t.Fatal("linked worktree should be clean after the conflicting replay was aborted")
+		}
+		after, err := HeadSHA(linked)
+		if err != nil {
+			t.Fatalf("read tip after abort: %v", err)
+		}
+		if after != featTip {
+			t.Fatalf("branch tip = %s after abort, want it restored to %s", after, featTip)
+		}
+	})
 }
 
 // BEH-612: new-worktree.sh drops a readiness sentinel (.worktree-ready, BEH-549)
@@ -699,18 +863,28 @@ func TestGatherTddGroundTruthFlagsDisjointHistory(t *testing.T) {
 	})
 }
 
-// AbortRebase restores a worktree a session left mid-rebase to a clean state
-// before the harness keeps it for a human. It is best-effort (no return) — a
-// no-op `rebase --abort` when none is in progress fails harmlessly.
-func TestAbortRebaseRunsAbort(t *testing.T) {
+// AbortRebase restores a worktree a session left mid-replay to a clean state before
+// the harness keeps it for a human. The conflict-resolution session now replays via
+// `cherry-pick` (BEH-618), so a give-up can leave a cherry-pick in progress that
+// `rebase --abort` does not clean — abortRebase must abort BOTH. Both are best-effort
+// (no return): a no-op abort when neither is in progress fails harmlessly.
+func TestAbortRebaseAbortsBothRebaseAndCherryPick(t *testing.T) {
 	run, calls := scriptedRunner(0, nil)
 	abortRebase("/wt", run)
-	if len(*calls) != 1 {
-		t.Fatalf("expected exactly one git call, got %d: %v", len(*calls), *calls)
+	var sawRebaseAbort, sawCherryAbort bool
+	for _, c := range *calls {
+		switch strings.Join(c, " ") {
+		case "git -C /wt rebase --abort":
+			sawRebaseAbort = true
+		case "git -C /wt cherry-pick --abort":
+			sawCherryAbort = true
+		}
 	}
-	got := strings.Join((*calls)[0], " ")
-	if want := "git -C /wt rebase --abort"; got != want {
-		t.Fatalf("argv = %q, want %q", got, want)
+	if !sawRebaseAbort {
+		t.Errorf("expected a `git rebase --abort`, calls: %v", *calls)
+	}
+	if !sawCherryAbort {
+		t.Errorf("expected a `git cherry-pick --abort` (BEH-618: the session now replays via cherry-pick), calls: %v", *calls)
 	}
 }
 

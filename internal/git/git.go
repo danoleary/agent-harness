@@ -313,42 +313,78 @@ const (
 	RebaseConflict
 )
 
+// rebaseBackupRef marks the feature tip across the reset → cherry-pick replay
+// (BEH-618). `reset --hard origin/main` discards the feature commits from the branch
+// ref (they'd survive only in the reflog), so we pin them on a throwaway ref the
+// cherry-pick range can name and the conflict path can restore from. It lives under
+// refs/harness/ so it never shows in `git branch` and a crashed prior run's stale ref
+// is harmlessly overwritten.
+const rebaseBackupRef = "refs/harness/rebase-onto-main"
+
 // RebaseOntoMain replays the worktree's feature branch onto origin/main so the PR
 // opens on a current base instead of the stale one a long pipeline accreted (a
 // sibling PR merging underneath it — BEH-570). origin/main must already be fresh
-// (call FetchMain first) and the worktree clean (git rebase refuses a dirty tree).
-// Run host-side against the worktree, whose absolute .git resolves via the real-
-// path mount (ADR-0002) — the same seam WorktreeClean/CheckpointCommit use.
+// (call FetchMain first) and the worktree clean. Run host-side against the worktree,
+// whose absolute .git resolves via the real-path mount (ADR-0002) — the same seam
+// WorktreeClean/CheckpointCommit use.
 //
-// A clean replay returns RebaseClean. Any failure (a content conflict, or git
-// refusing for any other reason) is aborted — leaving the branch untouched — and
+// The replay deliberately avoids `git rebase`: in a linked worktree (every harness
+// worktree is a `git worktree add` checkout) rebase's detach-to-onto full-tree
+// checkout false-fails with "local changes would be overwritten by merge" / "could
+// not detach HEAD" even on a byte-clean tree — a known worktree checkout-safety
+// artifact (BEH-618). It instead does `reset --hard origin/main` (the same full-tree
+// move, but without the false-positive) then `cherry-pick`s the feature commits back
+// on. cherry-pick's three-way merge surfaces only genuine content conflicts.
+//
+// A clean replay returns RebaseClean. A genuine conflict (or git refusing for any
+// other reason) aborts the cherry-pick, restores the branch to its original tip, and
 // returns RebaseConflict, so the caller hands resolution to a human rather than
-// pushing a branch it could not cleanly rebase. There is no network here, so unlike
+// pushing a branch it could not cleanly replay. There is no network here, so unlike
 // the remote ops it is not retried.
 func RebaseOntoMain(worktreePath string) RebaseResult {
 	return rebaseOntoMain(worktreePath, execRun)
 }
 
 func rebaseOntoMain(worktreePath string, run commandRunner) RebaseResult {
-	// Strip the readiness sentinel before rebasing. new-worktree.sh drops an untracked
-	// .worktree-ready into every worktree (BEH-549), and `git rebase`'s checkout phase
-	// refuses to overwrite an untracked file regardless of .gitignore ("untracked
-	// working tree files would be overwritten by checkout"). Left in place, a
-	// sentinel-only collision aborts the rebase and the abort below would misreport it
-	// as a content RebaseConflict — burning a sandboxed resolution session on a
-	// non-conflict (BEH-617). Mirrors how BEH-612 made WorktreeClean/checkpointCommit
-	// sentinel-aware. Best-effort: a no-op (os error) when the sentinel is absent.
+	// Strip the readiness sentinel before replaying. new-worktree.sh drops an untracked
+	// .worktree-ready into every worktree (BEH-549), and a checkout that wants to write a
+	// now-tracked .worktree-ready over the untracked copy can refuse ("untracked working
+	// tree files would be overwritten") — the BEH-617 trap. Best-effort: a no-op (os
+	// error) when the sentinel is absent.
 	_ = os.Remove(filepath.Join(worktreePath, WorktreeReadySentinel))
-	// A rebase rewrites the COMMITTER of every replayed commit to whoever runs it;
-	// stamp the harness identity so the pushed branch's commits never inherit the
-	// host checkout's placeholder identity (BEH-579).
+
+	// Pin the feature tip so `reset --hard` can't lose the commits and the cherry-pick
+	// range / conflict-restore can name them.
+	if run("git", "-C", worktreePath, "update-ref", rebaseBackupRef, "HEAD") != nil {
+		return RebaseConflict
+	}
+	defer func() { _ = run("git", "-C", worktreePath, "update-ref", "-d", rebaseBackupRef) }()
+
+	// Move the branch onto the fresh base. reset --hard escapes the rebase checkout
+	// false-fail and also fast-forwards a branch that is merely behind origin/main.
+	if run("git", "-C", worktreePath, "reset", "--hard", "origin/main") != nil {
+		return RebaseConflict
+	}
+
+	// Nothing to replay if the feature tip is already contained in origin/main (the
+	// branch was behind or equal): the reset alone completed the move. cherry-pick of
+	// an empty range errors, so short-circuit it.
+	if run("git", "-C", worktreePath, "merge-base", "--is-ancestor", rebaseBackupRef, "origin/main") == nil {
+		return RebaseClean
+	}
+
+	// Replay the feature's own commits (origin/main..tip) onto the new base. cherry-pick
+	// rewrites the COMMITTER of every replayed commit to whoever runs it, so stamp the
+	// harness identity — exactly as the old rebase did — so the pushed branch never
+	// inherits the host checkout's placeholder identity (BEH-579).
 	args := append([]string{"-C", worktreePath}, identityArgs()...)
-	args = append(args, "rebase", "origin/main")
-	if err := run("git", args...); err != nil {
-		// Conflict (or any mid-rebase failure): abort to restore the branch to its
-		// pre-rebase tip, then report a conflict for a human. The abort is best-effort
-		// — if the rebase never started, `rebase --abort` fails harmlessly.
-		_ = run("git", "-C", worktreePath, "rebase", "--abort")
+	args = append(args, "cherry-pick", "origin/main.."+rebaseBackupRef)
+	if run("git", args...) != nil {
+		// Genuine content conflict: abort the cherry-pick and restore the branch to its
+		// original tip, leaving it exactly as it was for a human (BEH-570). Both are
+		// best-effort — if the cherry-pick never started, --abort fails harmlessly.
+		_ = run("git", "-C", worktreePath, "cherry-pick", "--abort")
+		_ = run("git", "-C", worktreePath, "reset", "--hard", rebaseBackupRef)
 		return RebaseConflict
 	}
 	return RebaseClean
@@ -467,17 +503,19 @@ func branchDiffEmpty(worktreePath string, run commandRunner) bool {
 	return run("git", "-C", worktreePath, "diff", "--quiet", "origin/main") == nil
 }
 
-// AbortRebase restores a worktree a conflict-resolution session left mid-rebase
-// to a clean, on-branch state before the harness keeps it for a human (BEH-581).
-// Best-effort: if no rebase is in progress, `rebase --abort` fails harmlessly, so
-// there is nothing to surface — callers fire it unconditionally on a failed
-// resolution.
+// AbortRebase restores a worktree a conflict-resolution session left mid-replay to a
+// clean, on-branch state before the harness keeps it for a human (BEH-581). The
+// session replays via `cherry-pick` (BEH-618), so a give-up can strand a cherry-pick
+// in progress that `rebase --abort` won't clean — abort BOTH. Best-effort: if neither
+// is in progress the aborts fail harmlessly, so there is nothing to surface — callers
+// fire it unconditionally on a failed resolution.
 func AbortRebase(worktreePath string) {
 	abortRebase(worktreePath, execRun)
 }
 
 func abortRebase(worktreePath string, run commandRunner) {
 	_ = run("git", "-C", worktreePath, "rebase", "--abort")
+	_ = run("git", "-C", worktreePath, "cherry-pick", "--abort")
 }
 
 // Push pushes the feature branch to origin from the main checkout (ADR-0002: the
