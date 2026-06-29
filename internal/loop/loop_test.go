@@ -2,6 +2,7 @@ package loop
 
 import (
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -336,6 +337,72 @@ func TestNoPRRunCommentsOnRelease(t *testing.T) {
 	}
 	if len(c.bodies) != 1 || !strings.Contains(c.bodies[0], "no PR") {
 		t.Errorf("comment body = %q, want one mentioning 'no PR'", c.bodies)
+	}
+}
+
+// TestRecommendCloseRunKeepsTicketInProgress is the BEH-603 disposition: a run that
+// concluded the branch makes zero net change (recommend-close) must NOT release the
+// ticket back to Todo. Releasing would let the dispatch guard re-grab it and re-run
+// the whole pipeline to the same "nothing to ship" conclusion forever. Instead the
+// ticket is kept In Progress for a human to close as a duplicate/superseded.
+func TestRecommendCloseRunKeepsTicketInProgress(t *testing.T) {
+	r := &recorder{}
+	var released []string
+	code := Run(Deps{
+		ClearStopFile: func() error { return nil },
+		FetchMain:     func() error { return nil },
+		StopRequested: stopAfter(1),
+		ResolveNext:   func() (string, bool) { return "BEH-365", true },
+		RunPipeline: func(string) TicketOutcome {
+			return TicketOutcome{ReachedPushedPR: false, RecommendClose: true}
+		},
+		ReleaseTicket:          func(id string) error { released = append(released, id); return nil },
+		Sleep:                  func(time.Duration) {},
+		PollInterval:           time.Minute,
+		TickInterval:           2 * time.Second,
+		MaxConsecutiveFailures: 3,
+		Log:                    r,
+	})
+	if code != 0 {
+		t.Errorf("exit code = %d, want 0 (a recommend-close run then stop is a clean exit)", code)
+	}
+	if len(released) != 0 {
+		t.Errorf("released = %v, want none (a recommend-close ticket must stay In Progress for a human to close, not bounce back to Todo)", released)
+	}
+}
+
+// TestRecommendCloseRunCommentsRecommendingClose proves the recommend-close path
+// leaves a distinct breadcrumb advising the human to close the ticket, rather than
+// the generic "released back to Todo" no-PR comment (which would mislead — the ticket
+// is NOT released and should NOT be re-grabbed).
+func TestRecommendCloseRunCommentsRecommendingClose(t *testing.T) {
+	r := &recorder{}
+	c := &commentRec{}
+	code := Run(Deps{
+		ClearStopFile:          func() error { return nil },
+		FetchMain:              func() error { return nil },
+		StopRequested:          stopAfter(1),
+		ResolveNext:            func() (string, bool) { return "BEH-365", true },
+		RunPipeline:            func(string) TicketOutcome { return TicketOutcome{RecommendClose: true} },
+		ReleaseTicket:          func(string) error { return nil },
+		CommentTicket:          c.post,
+		Sleep:                  func(time.Duration) {},
+		PollInterval:           time.Minute,
+		TickInterval:           2 * time.Second,
+		MaxConsecutiveFailures: 3,
+		Log:                    r,
+	})
+	if code != 0 {
+		t.Errorf("exit code = %d, want 0", code)
+	}
+	if want := []string{"BEH-365"}; !reflect.DeepEqual(c.ids, want) {
+		t.Errorf("commented on %v, want %v (a recommend-close run must leave a breadcrumb)", c.ids, want)
+	}
+	if len(c.bodies) != 1 || !regexp.MustCompile(`(?i)close|duplicate|superseded`).MatchString(c.bodies[0]) {
+		t.Errorf("comment body = %q, want one recommending the ticket be closed", c.bodies)
+	}
+	if len(c.bodies) == 1 && strings.Contains(c.bodies[0], "released back to Todo") {
+		t.Errorf("recommend-close comment must NOT claim the ticket was released to Todo, got %q", c.bodies[0])
 	}
 }
 

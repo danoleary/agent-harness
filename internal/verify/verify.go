@@ -26,6 +26,13 @@ type GroundTruth struct {
 type Result struct {
 	OK     bool
 	Reason string
+	// RecommendClose marks the BEH-603 no-op disposition: a clean, gate-green,
+	// reviewed branch whose committed tip makes zero net change against origin/main
+	// (an empty `git diff origin/main`). It is NOT a push (OK stays false — there is
+	// nothing to ship) and NOT a plain failure — the agents correctly concluded the
+	// ticket should be closed as a duplicate/superseded. Only Review sets it; it is
+	// false everywhere else.
+	RecommendClose bool
 }
 
 // Tdd decides whether a tdd session really did its job. Success requires both a
@@ -144,6 +151,12 @@ type ReviewOutcome struct {
 	// could not autonomously resolve. A blocked review is *complete* (the lenses
 	// ran), so ReviewComplete is also true; the two are distinct signals.
 	ReviewBlocked bool
+	// EmptyDiff is true iff the branch's committed tip makes zero net change against
+	// origin/main (an empty `git diff origin/main` — BEH-603). It drives the
+	// recommend-close disposition: a clean, gate-green, reviewed branch with nothing
+	// to ship should have its ticket closed as a duplicate/superseded, not opened as
+	// an empty-commit PR.
+	EmptyDiff bool
 }
 
 // Review decides whether a reviewed branch may ship. A green gate over a clean
@@ -158,6 +171,16 @@ type ReviewOutcome struct {
 // ships only the committed branch tip. A dirty worktree therefore means the gate
 // validated a different tree than would ship (e.g. a review session that edited
 // but never committed), so its green/red verdict can't be trusted as the push gate.
+//
+// EmptyDiff is checked next — after the clean-tree gate, before the gate/review
+// checks (BEH-603). A clean worktree whose committed tip makes zero net change
+// against origin/main has nothing to ship: the gate is trivially green and any
+// review was over an empty diff. Rather than open the empty-commit PR the harness
+// previously did (PR #642), Review returns the recommend-close disposition
+// (OK false, RecommendClose true) so the caller surfaces a handoff for a human to
+// close the ticket as a duplicate/superseded. Checking it after WorktreeClean keeps
+// a dirty tree — where the real change may still be uncommitted — from ever
+// recommending the close of a live ticket.
 //
 // ReviewComplete is checked before ReviewBlocked and fails the gate closed
 // (BEH-569): a review session killed before its verdict (a spending-cap abort, an
@@ -176,6 +199,15 @@ type ReviewOutcome struct {
 func Review(outcome ReviewOutcome) Result {
 	if !outcome.WorktreeClean {
 		return Result{OK: false, Reason: "worktree has uncommitted changes — the gate validated a different tree than would ship; not pushing"}
+	}
+	// Empty-diff recommend-close (BEH-603) is checked right after the clean-tree gate
+	// and before the gate/review checks: on a clean worktree with zero net diff there
+	// is simply nothing to ship, so the gate is trivially green and any review was over
+	// an empty diff — recommend-close is the correct terminal outcome regardless. It is
+	// checked AFTER WorktreeClean so a dirty tree (the real change may be uncommitted)
+	// never recommends closing a live ticket.
+	if outcome.EmptyDiff {
+		return Result{OK: false, RecommendClose: true, Reason: "branch makes zero net change against origin/main (empty diff) — nothing to ship; recommend closing the ticket as a duplicate/superseded rather than opening an empty-commit PR"}
 	}
 	if !outcome.GatesGreen {
 		return Result{OK: false, Reason: "harness gate re-run is red — not pushing"}

@@ -156,6 +156,12 @@ type Result struct {
 	// before it could finish its work. The loop treats it as a retry-after-reset
 	// control signal, not a ticket failure, so the breaker stays blind to it.
 	SpendingCapAbort bool
+	// RecommendClose marks the BEH-603 no-op disposition: the review stage found the
+	// branch makes zero net change against origin/main and declined to open an
+	// empty-commit PR, recommending the ticket be closed as a duplicate/superseded.
+	// Only the review stage sets it. The loop keeps such a ticket In Progress for a
+	// human to close (never released to Todo) and the breaker treats it as neutral.
+	RecommendClose bool
 }
 
 // LoadConfig loads the harness config: .env first (best-effort), then the

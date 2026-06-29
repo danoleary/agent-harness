@@ -312,12 +312,40 @@ func Review(cfg config.Config, log *runlog.Logger, runID string, args Args) Resu
 	// the worktree is also clean, guaranteeing what shipped is exactly what the gate
 	// validated (never the agent's say-so, and never an unverified working tree).
 	clean := gitpkg.WorktreeClean(worktreePath)
+	// A clean worktree whose committed tip makes zero net change against origin/main is
+	// the BEH-603 recommend-close disposition: nothing to ship, so the ticket should be
+	// closed as a duplicate/superseded rather than opened as an empty-commit PR (the PR
+	// #642 mistake). Read host-side; checked inside verify.Review only when the tree is
+	// clean (a dirty tree's "empty" committed diff may hide uncommitted work).
+	emptyDiff := gitpkg.BranchDiffEmpty(worktreePath)
+
+	// comment posts a best-effort Linear breadcrumb so a gate-green, reviewed branch
+	// that can't ship autonomously surfaces on the ticket instead of sitting silent in
+	// a worktree (BEH-581 conflict path). A failure to comment is logged, never fatal.
+	comment := func(body string) {
+		if err := client.AddComment(args.Identifier, body); err != nil {
+			log.Event("review … warning: could not post Linear breadcrumb: " + err.Error())
+		}
+	}
+
 	// completeness gates the push closed (BEH-569): a green gate over a clean worktree
 	// is not enough — the review session must have emitted its verdict. A spending-cap
 	// abort / OOM that killed the review before it reviewed leaves the diff unreviewed,
 	// so the push fails closed and the worktree is kept for a resumed review rather than
 	// opening a PR on a gate re-run that nobody mistakes for a review.
-	result := verify.Review(verify.ReviewOutcome{GatesGreen: gateExit == 0, WorktreeClean: clean, ReviewComplete: completeness.Complete, ReviewBlocked: reviewOutcome.ReviewBlocked})
+	result := verify.Review(verify.ReviewOutcome{GatesGreen: gateExit == 0, WorktreeClean: clean, ReviewComplete: completeness.Complete, ReviewBlocked: reviewOutcome.ReviewBlocked, EmptyDiff: emptyDiff})
+	// Recommend-close (BEH-603): a zero-net-diff branch is NOT a push and NOT a failure
+	// to retry. Keep the worktree as the audit artifact and return the disposition so
+	// the loop keeps the ticket In Progress for a human (never released to Todo, never
+	// re-run to the same conclusion) and posts the recommending-close breadcrumb. The
+	// breadcrumb is left by the loop alone — the authoritative ticket-state owner, as
+	// for every other no-PR disposition (cap-abort, no-PR release) — so the stage stays
+	// silent here rather than double-posting. The worktree is clean (verify requires
+	// it), so there is nothing uncommitted to recover.
+	if result.RecommendClose {
+		log.Event("review ⊘ " + result.Reason + " — keeping worktree, nothing pushed; recommending close (BEH-603)")
+		return Result{OK: false, RecommendClose: true}
+	}
 	if !result.OK {
 		// A review killed mid-edit (spending cap / OOM) leaves its in-progress fixes
 		// uncommitted. Without capturing them they vanish on the next resume — the
@@ -355,14 +383,6 @@ func Review(cfg config.Config, log *runlog.Logger, runID string, args Args) Resu
 	// and the reactive path remains the backstop.
 	if err := gitpkg.FetchMain(cfg.HerdPath); err != nil {
 		log.Event("review … warning: could not re-fetch origin/main before rebase: " + err.Error())
-	}
-	// comment posts a best-effort Linear breadcrumb so a gate-green, reviewed branch
-	// that can't ship autonomously surfaces on the ticket instead of sitting silent
-	// in a worktree (BEH-581). A failure to comment is logged, never fatal.
-	comment := func(body string) {
-		if err := client.AddComment(args.Identifier, body); err != nil {
-			log.Event("review … warning: could not post Linear breadcrumb: " + err.Error())
-		}
 	}
 
 	// Rebase onto origin/main before pushing so a sibling PR that merged during this long

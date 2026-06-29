@@ -48,6 +48,10 @@ const (
 	KindPROpened Kind = "pr-opened"
 	// KindTicketReleased — a claimed ticket was released back to Todo (no PR).
 	KindTicketReleased Kind = "ticket-released"
+	// KindRecommendClose — a run concluded the branch makes zero net change and the
+	// ticket should be closed as a duplicate/superseded rather than shipped (BEH-603).
+	// The ticket is kept In Progress for a human to close, NOT released to Todo.
+	KindRecommendClose Kind = "recommend-close"
 	// KindCapAbort — an Anthropic spending-cap aborted a run before it could ship.
 	KindCapAbort Kind = "cap-abort"
 	// KindCapBackoff — the daemon is sleeping out the post-cap-abort backoff: the
@@ -73,6 +77,7 @@ func AllKinds() []Kind {
 		KindSessionResult,
 		KindPROpened,
 		KindTicketReleased,
+		KindRecommendClose,
 		KindCapAbort,
 		KindCapBackoff,
 		KindBreakerTrip,

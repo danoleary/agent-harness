@@ -240,7 +240,17 @@ loop:
   re-run gates in a throwaway container: `pnpm check && pnpm typecheck` on feat/beh-nnn
   review OK <=> gates are GREEN AND worktree is clean AND the review session emitted its verdict
                 AND that verdict's disposition is NOT `blocked` (BEH-580)
+                AND the branch makes a NON-empty net diff against origin/main (BEH-603)
                 // never the agent's self-report; a green gate is NOT a review (BEH-569)
+  if recommend-close (BEH-603): worktree clean AND `git diff origin/main` is EMPTY
+                // a zero-net-diff branch (the empty-commit BEH-365 produced) — checked before the
+                // gate/review checks, after the clean-tree gate (a dirty tree may hide uncommitted work)
+    -> NO push, NO PR: this is a correct terminal no-op, not a failure. The implementation +
+       review correctly declined to ship an empty commit and concluded the ticket is a
+       duplicate/superseded. Surface a Linear breadcrumb recommending the ticket be CLOSED,
+       KEEP the worktree for audit, and return the recommend-close disposition. The loop keeps
+       the ticket In Progress for a human to close (NOT released to Todo — it must never re-loop
+       to the same conclusion) and the breaker treats it as neutral. (Fixes the PR #642 mistake.)
   if OK     -> git -C <worktree> rebase origin/main   // BEH-570: replay onto the fresh base
                  - clean replay  -> continue (the long pipeline let main move; PR opens current)
                  - content conflict -> NO dead-end (BEH-581): launch a sandboxed conflict-resolution
@@ -306,15 +316,23 @@ loop:
   // claimed it on select, so undo the claim or the board reads "in flight" forever and
   // the dispatch guard never re-grabs it. A shipped PR is the success signal and is
   // never released, even on a non-zero exit (CI red after the auto-fix budget).
-  if NOT reached a pushed PR:
+  // RECOMMEND-CLOSE (BEH-603) is the one no-PR mode that is NOT released to Todo: the branch
+  // makes zero net change, so re-grabbing it would re-run the whole pipeline to the same
+  // "nothing to ship" conclusion forever. Keep it In Progress for a human to close.
+  if RecommendClose:
+    do NOT release            // keep In Progress; a human closes it as a duplicate/superseded
+    comment on ticket: empty diff, recommend closing as duplicate/superseded (breadcrumb, BEH-603)
+  else if NOT reached a pushed PR:
     release ticket -> Todo            // don't strand it In Progress; a later run re-grabs it
     comment on ticket: run produced no PR, released to Todo (breadcrumb, BEH-590)
 
   // breaker signal = "did this ticket reach a PUSHED PR?", NOT the pipeline exit code
   if ticket reached a pushed PR -> reset consecutive-failure counter to 0
+  else if SpendingCapAbort or RecommendClose -> neutral (neither increment nor reset)
   else                          -> increment consecutive-failure counter
   // a retrospective-only failure (PR shipped) and a CI-red-after-budget (a reviewable PR
   // exists) do NOT count as failures; only "never produced a PR" does.
+  // a recommend-close (BEH-603) is a correct terminal no-op — neutral, like a cap abort.
   // an idle/empty-queue tick is neutral — it neither increments nor resets.
   if 3 consecutive ticket failures -> exit + loud report (circuit breaker)
 ```
@@ -696,6 +714,7 @@ ships. The `ready-for-agent` label remains the human gate on *what* runs unatten
   | Clean success (ground-truth passes) | commit ahead → run review | gates green → push + PR → CI watch → CI green → run retrospective | `out.json` present → file findings → remove worktree, ticket done, next |
   | Crash / non-zero exit / timeout | log + breadcrumb, skip rest, next | log + breadcrumb, keep worktree (no push), next | log + breadcrumb, keep worktree, next |
   | Ran but ground-truth fails | no commit → skip + breadcrumb | gates **red** (or dirty worktree, or **no verdict** — spending-cap/OOM, BEH-569, or verdict **blocked** on an unresolved finding, BEH-580) → no push, breadcrumb, keep worktree, next; OR PR open but **CI red after auto-fix budget** → keep PR + worktree, print failing checks | `out.json` absent → breadcrumb, keep worktree, next |
+  | **Recommend-close (BEH-603)** — clean worktree, **empty** `git diff origin/main` | (n/a) | zero net change → **no push, no PR**; breadcrumb recommending the ticket be closed as a duplicate/superseded; keep worktree for audit; **kept In Progress** (NOT released to Todo); breaker-neutral | runs as usual |
 
 - **Circuit breaker:** 3 consecutive ticket failures → **exit and report
   loudly** (assume something environmental broke, e.g. expired auth or a broken
@@ -709,7 +728,10 @@ ships. The `ready-for-agent` label remains the human gate on *what* runs unatten
     increments it. A **retrospective-only failure** (the PR already shipped) and a
     **CI-red-after-auto-fix-budget** (a reviewable PR exists for a human to take
     over) do **not** count — otherwise three genuinely-hard-but-shipped tickets
-    could trip the breaker while the harness is working fine. An idle/empty-queue
+    could trip the breaker while the harness is working fine. A **recommend-close**
+    (BEH-603 — a zero-net-diff branch correctly concluded to be a duplicate) is a
+    correct terminal no-op, so it is **neutral** too (like a spending-cap abort):
+    a run of legitimate duplicates must never trip the breaker. An idle/empty-queue
     tick is neutral: it neither increments nor resets.
   - **A "poison" top-of-queue ticket trips the breaker by design (v1).** Because any
     run that did not reach a pushed PR *releases the ticket back to Todo* (BEH-590,

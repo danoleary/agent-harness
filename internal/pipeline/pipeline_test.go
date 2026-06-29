@@ -253,6 +253,27 @@ func TestRunPropagatesReachedPushedPRFromReviewEvenOnFailure(t *testing.T) {
 	}
 }
 
+// BEH-603: the review stage's RecommendClose disposition must propagate to the
+// Outcome so the loop keeps the ticket In Progress for a human to close rather than
+// releasing it to Todo. The run is not-OK (nothing shipped) but it is not a failure
+// to be re-attempted.
+func TestRunPropagatesRecommendCloseFromReview(t *testing.T) {
+	r := &recorder{}
+	out := Run(Deps{
+		FetchMain:      func() error { return nil },
+		Implementation: r.stage("impl", stages.Result{OK: true}),
+		Review:         r.stage("review", stages.Result{OK: false, RecommendClose: true}), // zero-net-diff branch
+		Retrospective:  r.stage("retro", stages.Result{OK: true}),
+		Log:            r,
+	})
+	if !out.RecommendClose {
+		t.Error("Outcome.RecommendClose must propagate from the review stage")
+	}
+	if out.ReachedPushedPR {
+		t.Error("a recommend-close pushed nothing — ReachedPushedPR must be false")
+	}
+}
+
 // A spending-cap abort in ANY stage propagates to the Outcome so the loop reads
 // retry-after-reset and keeps the breaker blind to it.
 func TestRunPropagatesSpendingCapAbortFromAnyStage(t *testing.T) {

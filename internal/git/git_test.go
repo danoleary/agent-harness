@@ -361,6 +361,84 @@ func TestIsDisjointFromAgainstRealGit(t *testing.T) {
 	}
 }
 
+// BEH-603: BranchDiffEmpty reports whether the worktree's committed tip makes ZERO
+// net change against origin/main (an empty `git diff origin/main`) — the
+// empty-commit branch the harness wrongly opened as PR #642. `git diff --quiet`
+// exits 0 when there is no diff and non-zero when there is, so exit 0 → empty.
+func TestBranchDiffEmptyTrueWhenNoDiff(t *testing.T) {
+	run, calls := scriptedRunner(0, nil)
+	if !branchDiffEmpty("/wt", run) {
+		t.Fatal("exit 0 from diff --quiet (no changes) should report the diff empty (true)")
+	}
+	got := strings.Join((*calls)[0], " ")
+	want := "git -C /wt diff --quiet origin/main"
+	if got != want {
+		t.Fatalf("argv = %q, want %q", got, want)
+	}
+}
+
+func TestBranchDiffEmptyFalseWhenDiffPresent(t *testing.T) {
+	// A non-zero exit means `diff --quiet` found changes → NOT empty.
+	run, _ := scriptedRunner(1, errors.New("exit status 1"))
+	if branchDiffEmpty("/wt", run) {
+		t.Fatal("a non-zero diff --quiet exit (changes present) should report not-empty (false)")
+	}
+}
+
+// Fail-safe: any error other than the clean exit-0 (e.g. an unresolvable ref) must
+// read as NOT empty, so the harness never recommends closing a ticket on doubt — it
+// would rather attempt the push than wrongly advise a close.
+func TestBranchDiffEmptyFalseOnError(t *testing.T) {
+	run, _ := scriptedRunner(1, errors.New("fatal: bad revision 'origin/main'"))
+	if branchDiffEmpty("/wt", run) {
+		t.Fatal("a git error must read as not-empty (fail-safe) so a close is never recommended on doubt")
+	}
+}
+
+// Pins the real-git contract: an empty-commit branch (a commit with no tree change
+// against origin/main, the BEH-365 artifact) reads as an empty diff; a branch with a
+// real file change does not.
+func TestBranchDiffEmptyAgainstRealGit(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	repo := t.TempDir()
+	git := func(args ...string) {
+		t.Helper()
+		if err := execIn(repo, args...); err != nil {
+			t.Fatalf("git %v: %v", args, err)
+		}
+	}
+	write := func(name, contents string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(repo, name), []byte(contents), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	git("init", "-q", "-b", "main")
+	git("config", "user.email", "t@example.com")
+	git("config", "user.name", "Test")
+	write("base.txt", "base\n")
+	git("add", "-A")
+	git("commit", "-q", "-m", "base")
+	git("update-ref", "refs/remotes/origin/main", "main")
+
+	// An empty-commit branch: a commit ahead of main that changes nothing.
+	git("checkout", "-q", "-b", BranchName("beh-603-empty"))
+	git("commit", "-q", "--allow-empty", "-m", "document finding (no functional change)")
+	if !BranchDiffEmpty(repo) {
+		t.Fatal("an empty-commit branch makes no net change against origin/main — must read as empty diff")
+	}
+
+	// A real change on the branch is NOT an empty diff.
+	write("feat.txt", "feat\n")
+	git("add", "-A")
+	git("commit", "-q", "-m", "real change")
+	if BranchDiffEmpty(repo) {
+		t.Fatal("a branch with a committed file change must NOT read as an empty diff")
+	}
+}
+
 // BEH-597: GatherTddGroundTruth must surface a disjoint history so verify.Tdd can
 // fail it. An orphan feature branch (no common ancestor with origin/main) is the
 // BEH-355 condition; a normal feature branch off main is not disjoint.

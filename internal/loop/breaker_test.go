@@ -60,6 +60,26 @@ func TestBreakerNeutralOnSpendingCapAbort(t *testing.T) {
 	}
 }
 
+// BEH-603: a recommend-close disposition (a zero-net-diff branch correctly concluded
+// to be a duplicate/superseded) is neutral — like a cap abort it neither increments
+// nor resets. It is a correct terminal outcome, not a ship failure, so a run of
+// legitimate duplicates must never trip the breaker; but it is no proof the pipeline
+// shipped anything, so it must not clear prior real failures either.
+func TestBreakerNeutralOnRecommendClose(t *testing.T) {
+	b := newBreaker(3)
+	b.record("BEH-1", TicketOutcome{})
+	b.record("BEH-2", TicketOutcome{RecommendClose: true}) // neutral
+	b.record("BEH-3", TicketOutcome{RecommendClose: true}) // neutral
+	if b.tripped() {
+		t.Error("recommend-close must not advance the counter; only 1 real failure recorded, must not trip")
+	}
+	b.record("BEH-4", TicketOutcome{})
+	b.record("BEH-5", TicketOutcome{})
+	if !b.tripped() {
+		t.Error("the two real failures around the neutral recommend-closes make 3 — must trip")
+	}
+}
+
 // A pushed PR that also carried a spending-cap abort (e.g. a CI auto-fix cap abort
 // after the PR shipped) still resets — the shipped PR wins over the cap signal.
 func TestBreakerPushedPRWinsOverCapAbort(t *testing.T) {

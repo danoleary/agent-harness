@@ -34,6 +34,13 @@ type TicketOutcome struct {
 	// it could ship. It is neutral to the breaker (the cap runaway is the backoff's
 	// job, not the breaker's) unless a PR already shipped, in which case the PR wins.
 	SpendingCapAbort bool
+	// RecommendClose marks the BEH-603 no-op disposition: the review stage found the
+	// branch makes zero net change against origin/main and correctly concluded the
+	// ticket should be closed as a duplicate/superseded rather than opened as an
+	// empty-commit PR. It is a correct terminal outcome — neutral to the breaker (not
+	// a ship failure) — and the loop keeps the ticket In Progress for a human to close
+	// rather than releasing it to Todo, so it never re-loops into the same conclusion.
+	RecommendClose bool
 }
 
 // Narrator is the one-line console + run.jsonl narration sink (satisfied by
@@ -234,17 +241,30 @@ func Run(d Deps) int {
 			d.Log.Event("loop … warning: could not fast-forward origin/main after ticket: " + err.Error())
 		}
 
-		// Release-on-no-PR (BEH-590): a run that finished WITHOUT opening a pushed PR —
-		// any non-cap failure mode: OOM, sandbox crash, a review stage that died before
-		// pushing, an empty-diff verification failure — left the ticket claimed In
-		// Progress with nothing to show for it. The dispatch claimed it on select, so
-		// unless we undo the claim the board reads as "in flight" forever and the
-		// dispatch guard never re-grabs it. The cap-abort branch above already released
-		// (and continued), so this only fires for the non-cap no-PR case. A shipped PR
-		// (ReachedPushedPR) is the success signal — never released, even on a non-zero
-		// exit (CI red after the auto-fix budget). Best-effort: a Linear hiccup here is
-		// warned, never fatal — the daemon must keep running.
-		if !outcome.ReachedPushedPR {
+		// Recommend-close (BEH-603): the run concluded the branch makes zero net change
+		// against origin/main — a duplicate/superseded ticket the review stage correctly
+		// declined to ship as an empty-commit PR. Unlike every other no-PR mode this one
+		// must NOT release back to Todo: releasing would let the dispatch guard re-grab it
+		// and re-run the whole pipeline to the same "nothing to ship" conclusion forever.
+		// Keep it In Progress for a human to close as a duplicate, and leave a breadcrumb
+		// recommending exactly that (distinct from the generic "released to Todo" note,
+		// which would mislead). It is breaker-neutral (handled in b.record), so it falls
+		// through to the normal after-ticket fold below.
+		switch {
+		case outcome.RecommendClose:
+			d.Log.Structured(loopstream.Record{Kind: loopstream.KindRecommendClose, Ticket: identifier, Message: "loop — " + identifier + " makes no net change against main; keeping it In Progress for a human to close as a duplicate/superseded (BEH-603)"})
+			d.comment(identifier, "Autonomous run found this branch makes zero net change against `main` (an empty diff) — there is nothing to ship. The implementation and review both concluded the substantively correct outcome is to close this ticket as a duplicate/superseded rather than open an empty-commit PR. Kept In Progress for a human to close; it was deliberately NOT released to Todo so it won't be re-picked and re-run to the same conclusion. See the run logs for the cause.")
+		case !outcome.ReachedPushedPR:
+			// Release-on-no-PR (BEH-590): a run that finished WITHOUT opening a pushed PR —
+			// any non-cap failure mode: OOM, sandbox crash, a review stage that died before
+			// pushing, an empty-diff verification failure — left the ticket claimed In
+			// Progress with nothing to show for it. The dispatch claimed it on select, so
+			// unless we undo the claim the board reads as "in flight" forever and the
+			// dispatch guard never re-grabs it. The cap-abort branch above already released
+			// (and continued), so this only fires for the non-cap no-PR case. A shipped PR
+			// (ReachedPushedPR) is the success signal — never released, even on a non-zero
+			// exit (CI red after the auto-fix budget). Best-effort: a Linear hiccup here is
+			// warned, never fatal — the daemon must keep running.
 			d.Log.Structured(loopstream.Record{Kind: loopstream.KindTicketReleased, Ticket: identifier, Message: "loop — " + identifier + " produced no PR; releasing back to Todo so it isn't stranded In Progress (BEH-590)"})
 			if err := d.ReleaseTicket(identifier); err != nil {
 				d.Log.Event("loop … warning: could not release " + identifier + " to Todo after a no-PR run: " + err.Error())

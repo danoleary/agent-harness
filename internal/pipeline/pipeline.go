@@ -52,6 +52,10 @@ type Outcome struct {
 	// SpendingCapAbort is true iff any stage was aborted by an external spending cap
 	// before finishing — the breaker stays blind to it (retry after the cap resets).
 	SpendingCapAbort bool
+	// RecommendClose is true iff the review stage concluded the branch makes zero net
+	// change and the ticket should be closed as a duplicate/superseded rather than
+	// shipped (BEH-603). The loop keeps it In Progress for a human; breaker-neutral.
+	RecommendClose bool
 }
 
 // Run executes the pipeline and returns the process exit code: 0 iff every stage
@@ -119,6 +123,7 @@ func Run(d Deps) Outcome {
 		ExitCode:         exit,
 		ReachedPushedPR:  review.ReachedPushedPR,
 		SpendingCapAbort: impl.SpendingCapAbort || review.SpendingCapAbort || retro.SpendingCapAbort,
+		RecommendClose:   review.RecommendClose,
 	}
 }
 

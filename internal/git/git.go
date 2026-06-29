@@ -356,6 +356,28 @@ func branchesDisjoint(dir, refA, refB string, run commandRunner) bool {
 	return run("git", "-C", dir, "merge-base", refA, refB) != nil
 }
 
+// BranchDiffEmpty reports whether the worktree's committed tip makes ZERO net
+// change against origin/main (an empty `git diff origin/main`) — the empty-commit
+// branch the harness wrongly opened as PR #642 (BEH-603). It is the detection half
+// of the recommend-close disposition: a clean, gate-green, reviewed branch with an
+// empty diff has nothing to ship, so the ticket should be closed as a
+// duplicate/superseded rather than opened as an empty-commit PR. Callers must check
+// WorktreeClean first — `git diff origin/main` includes uncommitted changes, so on a
+// dirty tree an "empty" committed diff could still hide real uncommitted work.
+//
+// `git diff --quiet` exits 0 when there is no diff and non-zero when there is, so
+// only a clean exit-0 reports empty. Any error (a non-zero diff exit, or an
+// unresolvable ref) reads as NOT empty — the fail-safe direction: the harness would
+// rather attempt the push than wrongly recommend closing a ticket on doubt. Read
+// host-side via the real-path mount, the same seam WorktreeClean/RebaseOntoMain use.
+func BranchDiffEmpty(worktreePath string) bool {
+	return branchDiffEmpty(worktreePath, execRun)
+}
+
+func branchDiffEmpty(worktreePath string, run commandRunner) bool {
+	return run("git", "-C", worktreePath, "diff", "--quiet", "origin/main") == nil
+}
+
 // AbortRebase restores a worktree a conflict-resolution session left mid-rebase
 // to a clean, on-branch state before the harness keeps it for a human (BEH-581).
 // Best-effort: if no rebase is in progress, `rebase --abort` fails harmlessly, so

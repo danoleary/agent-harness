@@ -248,6 +248,52 @@ func TestReviewBlocksPushWhenReviewVerdictBlocked(t *testing.T) {
 	}
 }
 
+// BEH-603: a branch whose committed tip makes ZERO net change against origin/main
+// (an empty `git diff origin/main` — the empty-commit branch BEH-365 produced) must
+// NOT be pushed as a PR. The agents correctly concluded the ticket should be closed
+// as a duplicate/superseded rather than ship an empty commit, but the harness had no
+// terminal state for that, so it pushed PR #642. A clean worktree + green gate + a
+// completed review over a zero-net-diff branch is the recommend-close disposition:
+// not a push, not a plain failure, but a handoff for a human to close the ticket.
+func TestReviewRecommendsCloseWhenDiffEmpty(t *testing.T) {
+	r := Review(ReviewOutcome{GatesGreen: true, WorktreeClean: true, ReviewComplete: true, EmptyDiff: true})
+	if r.OK {
+		t.Error("a zero-net-diff branch must NOT clear the push gate — there is nothing to ship")
+	}
+	if !r.RecommendClose {
+		t.Error("a clean, gate-green, reviewed branch with an empty diff must be the recommend-close disposition")
+	}
+	if !regexp.MustCompile(`(?i)close|duplicate|empty|no.*change|nothing to ship`).MatchString(r.Reason) {
+		t.Errorf("reason %q should explain the empty diff / recommend-close", r.Reason)
+	}
+}
+
+// A dirty worktree takes precedence over the empty-diff check: the committed tip may
+// be empty only because the real change is still UNCOMMITTED (the review-left-edits
+// recovery path). Recommend-close must never fire on a dirty tree — that would
+// strand uncommitted work and wrongly advise closing a live ticket.
+func TestReviewDoesNotRecommendCloseWhenWorktreeDirty(t *testing.T) {
+	r := Review(ReviewOutcome{GatesGreen: true, WorktreeClean: false, ReviewComplete: true, EmptyDiff: true})
+	if r.RecommendClose {
+		t.Error("an empty committed diff with a DIRTY worktree must not recommend close — the real change may be uncommitted")
+	}
+	if r.OK {
+		t.Error("a dirty worktree must still block the push")
+	}
+}
+
+// A non-empty diff is the normal ship path — recommend-close must stay off so the
+// branch pushes as usual.
+func TestReviewDoesNotRecommendCloseWhenDiffPresent(t *testing.T) {
+	r := Review(ReviewOutcome{GatesGreen: true, WorktreeClean: true, ReviewComplete: true, EmptyDiff: false})
+	if r.RecommendClose {
+		t.Error("a branch with a real diff must not be flagged recommend-close")
+	}
+	if !r.OK {
+		t.Errorf("a clean, gate-green, reviewed branch with a real diff must clear the push gate, got %+v", r)
+	}
+}
+
 // BEH-525: completeness of the qualitative review is independent of the push gate.
 // When the review session emitted its verdict (the "## Review:" report), the
 // seven-lens pass ran — complete, regardless of how the container exited.
