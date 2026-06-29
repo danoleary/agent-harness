@@ -1,6 +1,7 @@
 // Package session runs one sandboxed claude session: it launches the docker
 // container, tees the stream-json transcript to disk, narrates progress to the
-// console, and enforces a wall-clock cap. It is the shared container-launch +
+// console, and enforces a session cap on active time (monotonic, so host sleep is
+// excluded — BEH-608). It is the shared container-launch +
 // transcript-tee plumbing the three cmd/ tools (implementation, review,
 // retrospective) build on (DESIGN.md "Build order").
 package session
@@ -37,14 +38,17 @@ type Options struct {
 	// TranscriptFile is the filename (under the ticket's log dir) the stream-json
 	// transcript is teed to.
 	TranscriptFile string
-	// Timeout is the hard wall-clock cap; on expiry the container is killed. It is
-	// measured against the wall clock (not a monotonic timer), so time the host
-	// spent asleep counts toward it.
+	// Timeout is the hard cap on active (monotonic) session time; on expiry the
+	// container is killed. It is measured against the monotonic clock, which freezes
+	// during host sleep, so time the host spent asleep does NOT count toward it
+	// (BEH-608) — a session that merely slept past its cap is not killed for it.
 	Timeout time.Duration
 	// IdleTimeout is the heartbeat window: if no bytes arrive on the stream for this
-	// long, the stream is treated as dead (e.g. an API connection silently severed
-	// while the host slept) and the container is killed even though the hard cap may
-	// have time left. Non-positive disables the heartbeat.
+	// much active (monotonic) time, the stream is treated as dead (e.g. an API
+	// connection silently severed) and the container is killed even though the hard
+	// cap may have time left. Host sleep does not count toward the window, so a dead
+	// stream is reaped within this window of wake, not mid-sleep. Non-positive
+	// disables the heartbeat.
 	IdleTimeout time.Duration
 	// Verbose echoes the raw agent stream to the console instead of the concise narration.
 	Verbose bool
@@ -52,9 +56,12 @@ type Options struct {
 	Log Logger
 }
 
-// watchdogPollInterval is how often the watchdog re-evaluates the wall-clock cap
-// and idle window. After a host wake the ticker resumes and the next tick (within
-// this interval) observes the full elapsed wall time and reaps a dead container.
+// watchdogPollInterval is how often the watchdog re-evaluates the cap and idle
+// window. The ticker is monotonic and freezes during host sleep; after a host wake
+// it resumes, and the next tick (within this interval) re-evaluates the monotonic
+// elapsed — reaping a still-dead stream within the idle window of wake. This
+// polling is the no-indefinite-hang guarantee (a one-shot timer would not fire
+// again after sleep — BEH-386).
 const watchdogPollInterval = 15 * time.Second
 
 // stderrTailLines is how many trailing non-empty stderr lines to keep so a launch
@@ -123,13 +130,16 @@ type streamFlags struct {
 }
 
 // realNow returns the current wall-clock time with the monotonic reading stripped
-// (time.Now().Round(0)). The watchdog must compare wall-clock instants so a host
-// sleep — during which the monotonic clock freezes — still counts toward the cap
-// and the idle window.
+// (time.Now().Round(0)). The watchdog enforces its limits on the monotonic clock
+// (so host sleep is excluded — see watchReason), and uses realNow only to measure
+// total wall-elapsed for the sleep diagnostic: wall minus monotonic elapsed is the
+// time the host spent asleep.
 func realNow() time.Time { return time.Now().Round(0) }
 
-// heartbeat is a concurrency-safe holder for the wall-clock instant of the last
-// observed stream activity, written by the stdout reader and read by the watchdog.
+// heartbeat is a concurrency-safe holder for the monotonic-bearing instant of the
+// last observed stream activity (so the watchdog's idle window, measured via
+// time.Since, excludes host sleep), written by the stdout reader and read by the
+// watchdog.
 type heartbeat struct {
 	mu   sync.Mutex
 	last time.Time
@@ -164,35 +174,44 @@ func (h heartbeatReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
-// watchReason reports the wall-clock limit the session has crossed, with a human
-// reason for the kill log, or "" if neither limit is breached yet. Both limits are
-// measured against wall-clock times the caller passes in (never a monotonic
-// duration), so time the host spent asleep counts: Go's monotonic timers freeze
-// during macOS sleep, so a frozen time.AfterFunc let a container that lost its API
-// stream mid-sleep hang indefinitely (BEH-386-class).
+// watchReason reports the limit the session has crossed, with a human reason for
+// the kill log, or "" if neither limit is breached yet. Both limits are measured
+// against MONOTONIC elapsed durations the caller passes in, which freeze while the
+// host sleeps — so time the host spent asleep is excluded from both (BEH-608):
 //
-//   - hardCap bounds total elapsed since start (the hard wall-clock cap). hardCap <= 0 disables it.
-//   - idle    bounds time since the last stream activity (the heartbeat: a dead
-//     stream stops producing output). idle <= 0 disables it.
+//   - activeElapsed is monotonic time since start; bounded by hardCap. hardCap <= 0 disables it.
+//   - idleElapsed   is monotonic time since the last stream activity (the
+//     heartbeat: a dead stream stops producing output); bounded by idle. idle <= 0 disables it.
 //
-// When both are breached, the limit whose deadline came *first* is reported, not
-// the cap unconditionally. The watchdog only re-evaluates on its monotonic ticker,
-// which freezes while the host sleeps, so a session that went idle early and was
-// then slept past its cap is first observed well after both deadlines — blaming
-// the cap there hides that the stream was dead long before (the BEH-538 mislabel:
-// "wall-clock cap 30m hit" at 66 min for a session idle since minute 5). Reporting
-// the earlier deadline attributes the kill to the stall that actually ended it.
-func watchReason(now, start, lastActivity time.Time, hardCap, idle time.Duration) string {
-	capCrossed := hardCap > 0 && now.Sub(start) >= hardCap
-	idleCrossed := idle > 0 && now.Sub(lastActivity) >= idle
+// Excluding sleep means a session that was streaming right up until the host slept
+// is NOT killed for the sleep: on wake the watchdog's poll ticker resumes and the
+// monotonic clock picks up where it froze. The no-indefinite-hang guarantee
+// BEH-386 secured still holds — it comes from the *polling* ticker re-evaluating
+// after wake (the original bug was a one-shot time.AfterFunc that never fired
+// again), not from charging slept time. A genuinely dead stream is still reaped,
+// within `idle` of wake rather than mid-sleep. This reverses the earlier
+// wall-clock cap (BEH-386/538): charging sleep reaped active, near-complete
+// sessions whose host merely slept, burning the whole cap re-deriving the same
+// work across re-launches.
+//
+// When both are breached, the limit whose deadline came *first* (on the active-
+// time axis) is reported, not the cap unconditionally — naming the cap for a
+// session that went idle long before it hides that the stream was the true cause
+// (the BEH-538 truthfulness property). lastActivityAt is the active-axis instant
+// of the last beat (start = 0): activeElapsed - idleElapsed.
+func watchReason(activeElapsed, idleElapsed, hardCap, idle time.Duration) string {
+	capCrossed := hardCap > 0 && activeElapsed >= hardCap
+	idleCrossed := idle > 0 && idleElapsed >= idle
 
-	capReason := fmt.Sprintf("wall-clock cap %s hit", hardCap)
+	capReason := fmt.Sprintf("session cap %s hit", hardCap)
 	idleReason := fmt.Sprintf("no stream activity for %s (stream appears dead)", idle)
+
+	lastActivityAt := activeElapsed - idleElapsed
 
 	switch {
 	case capCrossed && idleCrossed:
 		// Both past — name the one whose deadline elapsed earlier (the true cause).
-		if lastActivity.Add(idle).Before(start.Add(hardCap)) {
+		if lastActivityAt+idle < hardCap {
 			return idleReason
 		}
 		return capReason
@@ -210,20 +229,20 @@ func watchReason(now, start, lastActivity time.Time, hardCap, idle time.Duration
 // under a second), so a gap this large can only be the host having slept.
 const sleepNoteThreshold = 1 * time.Minute
 
-// sleepNote explains a late-landing wall-clock kill as host sleep, for the kill
-// log. The watchdog measures the cap against the wall clock, but its poll ticker
-// runs on the monotonic clock, which freezes while the host sleeps — so the
-// container can only be reaped on the first tick after wake, long after the wall
-// deadline. The gap between wall-elapsed and monotonic-elapsed at kill time is
-// exactly the slept time, so surfacing it turns a 30 min cap observed at 66 min
-// from an apparent timer bug into "host slept ~36m" (BEH-538). Returns "" when the
+// sleepNote names any host sleep that occurred during a session that was then
+// killed, as context for the kill log. The cap and idle window are measured on the
+// monotonic clock, so slept time is excluded and never the cause of a kill
+// (BEH-608) — but the gap between wall-elapsed and monotonic (active) elapsed at
+// kill time is exactly the time slept, so surfacing it confirms the sleep was
+// discounted: a 30 min active cap reached after 66 min of wall time reads as
+// "host also slept ~36m — not counted", not a broken timer. Returns "" when the
 // gap is negligible (the host was awake the whole time).
 func sleepNote(wallElapsed, monoElapsed time.Duration) string {
 	slept := wallElapsed - monoElapsed
 	if slept < sleepNoteThreshold {
 		return ""
 	}
-	return fmt.Sprintf(" (host slept ~%s — watchdog paused, reaped on wake)", slept.Round(time.Minute))
+	return fmt.Sprintf(" (host also slept ~%s — not counted toward the cap)", slept.Round(time.Minute))
 }
 
 // Run launches the sandboxed session described by dockerArgs (everything after
@@ -257,15 +276,18 @@ func Run(dockerArgs []string, opts Options) Outcome {
 		return Outcome{ExitCode: 1}
 	}
 
-	// Wall-clock watchdog: enforce the hard cap and the idle heartbeat against the
-	// real clock (so host-sleep time counts) and kill the container out from under a
-	// session that overruns or whose stream has gone dead. The heartbeat is tapped
-	// off the stdout reader — every read that yields bytes is a sign of life.
-	start := realNow()
+	// Monotonic watchdog: enforce the hard cap and the idle heartbeat against the
+	// monotonic clock (which freezes during host sleep, so slept time is excluded —
+	// BEH-608) and kill the container out from under a session that overruns its
+	// active time or whose stream has gone dead while awake. The heartbeat is tapped
+	// off the stdout reader — every read that yields bytes is a sign of life — and
+	// carries a monotonic reading so the idle window also excludes sleep. The wall
+	// clock (start) is kept only to quantify any concurrent sleep for the kill log.
+	start := realNow()      // wall clock; sleep diagnostic only
 	monoStart := time.Now() // keeps its monotonic reading; freezes during host sleep
 	hb := &heartbeat{}
-	hb.beat(start)
-	tappedStdout := heartbeatReader{r: stdout, beat: func() { hb.beat(realNow()) }}
+	hb.beat(time.Now()) // monotonic-bearing, so time.Since(hb.at()) excludes sleep
+	tappedStdout := heartbeatReader{r: stdout, beat: func() { hb.beat(time.Now()) }}
 
 	watchdogDone := make(chan struct{})
 	go func() {
@@ -276,8 +298,10 @@ func Run(dockerArgs []string, opts Options) Outcome {
 			case <-watchdogDone:
 				return
 			case <-ticker.C:
-				if reason := watchReason(realNow(), start, hb.at(), opts.Timeout, opts.IdleTimeout); reason != "" {
-					note := sleepNote(realNow().Sub(start), time.Since(monoStart))
+				activeElapsed := time.Since(monoStart) // monotonic: excludes host sleep
+				idleElapsed := time.Since(hb.at())     // monotonic: excludes host sleep
+				if reason := watchReason(activeElapsed, idleElapsed, opts.Timeout, opts.IdleTimeout); reason != "" {
+					note := sleepNote(realNow().Sub(start), activeElapsed)
 					opts.Log.Event("session ✗ " + reason + note + " — killing " + opts.ContainerName)
 					_ = exec.Command("docker", "kill", opts.ContainerName).Run() // allow-unbounded-exec: docker kill from the watchdog itself
 					return

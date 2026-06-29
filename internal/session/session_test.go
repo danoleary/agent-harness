@@ -9,25 +9,24 @@ import (
 	"github.com/beherd/agent-harness/internal/loopstream"
 )
 
-// The wall-clock cap must count time the host spent asleep. We model a sleep as a
-// large forward jump in the wall clock between start and the watchdog tick (Go's
-// monotonic timers freeze during macOS sleep, so the old time.AfterFunc cap never
-// fired for a container that lost its API stream mid-sleep — the bug this fixes).
-// watchReason reads wall-clock times only, so the jump counts and the cap trips.
-func TestWatchReasonFiresCapAcrossSleepJump(t *testing.T) {
-	start := time.Date(2026, 6, 21, 15, 0, 0, 0, time.UTC)
+// Host-sleep time must NOT count against the cap or the idle window (BEH-608).
+// watchReason is fed MONOTONIC elapsed durations, which freeze while the host
+// sleeps — so a session that was active right up until the host slept, then slept
+// ~2h past its wall-clock cap, has only ~2 min of active time and is not killed.
+// The earlier wall-clock behaviour (sleep counted, so the cap tripped on wake)
+// burned the whole session cap re-deriving identical work across re-launches; the
+// no-indefinite-hang guarantee BEH-386 secured comes from the polling ticker
+// resuming after wake, not from charging slept time.
+func TestWatchReasonExcludesSleepFromLimits(t *testing.T) {
 	cap := 30 * time.Minute
-	// Only ~2 min of awake time elapsed, then the host slept ~2h: wall clock is now
-	// well past the cap even though a monotonic timer would have advanced ~2 min.
-	now := start.Add(2*time.Hour + 2*time.Minute)
-	lastActivity := now // stream still "live" — isolate the cap path
+	idle := 20 * time.Minute
+	// Host slept ~2h, but the monotonic (active) clock advanced only ~2 min, and the
+	// stream was alive right up to the sleep (idle elapsed ~2 min too).
+	activeElapsed := 2 * time.Minute
+	idleElapsed := 2 * time.Minute
 
-	reason := watchReason(now, start, lastActivity, cap, 0)
-	if reason == "" {
-		t.Fatal("expected the wall-clock cap to fire after a sleep jump past it")
-	}
-	if !strings.Contains(reason, "cap") {
-		t.Errorf("expected a cap reason, got: %q", reason)
+	if reason := watchReason(activeElapsed, idleElapsed, cap, idle); reason != "" {
+		t.Errorf("host-sleep time must not trip the cap or idle window, got: %q", reason)
 	}
 }
 
@@ -149,18 +148,18 @@ func TestPumpStdoutReportsSpendingCapAbort(t *testing.T) {
 	}
 }
 
-// The idle heartbeat must fire when the stream stops producing output for longer
-// than the idle limit, even though the hard cap is nowhere near. This is the path
-// that catches a dead API stream after the host wakes from sleep: the cap may
-// have hours left, but no bytes have arrived, so the container is killed.
+// The idle heartbeat must fire when the stream stops producing output (in active,
+// monotonic time) for longer than the idle limit, even though the hard cap is
+// nowhere near. This is the path that catches a genuinely dead API stream: the cap
+// may have hours left, but no bytes have arrived while the host was awake, so the
+// container is killed.
 func TestWatchReasonFiresIdleWhenStreamSilent(t *testing.T) {
-	start := time.Date(2026, 6, 21, 15, 0, 0, 0, time.UTC)
 	cap := 2 * time.Hour     // plenty of cap left
 	idle := 10 * time.Minute // heartbeat window
-	lastActivity := start.Add(1 * time.Minute)
-	now := lastActivity.Add(11 * time.Minute) // 11 min since last byte
+	activeElapsed := 15 * time.Minute
+	idleElapsed := 11 * time.Minute // 11 min of active silence since last byte
 
-	reason := watchReason(now, start, lastActivity, cap, idle)
+	reason := watchReason(activeElapsed, idleElapsed, cap, idle)
 	if reason == "" {
 		t.Fatal("expected the idle heartbeat to fire on a silent stream")
 	}
@@ -169,21 +168,36 @@ func TestWatchReasonFiresIdleWhenStreamSilent(t *testing.T) {
 	}
 }
 
-// A stalled session that the host then sleeps past the hard cap must be reported
-// as the stall it was, not as a "late" cap. This is the BEH-538 incident: the
-// session went idle ~5 min in, the host slept, and the watchdog tick only landed
-// at ~66 min wall-clock — past the 30 min cap. The cap is wall-clock-correct, but
-// blaming the cap hides that the session was actually dead 40 min earlier. The
-// idle window was crossed first (start+5+20 = 25 min < start+30 = cap), so the
-// reason must name the dead stream, not the cap.
-func TestWatchReasonReportsTheLimitCrossedFirst(t *testing.T) {
-	start := time.Date(2026, 6, 21, 15, 0, 0, 0, time.UTC)
+// A genuine awake overrun — the agent kept streaming past the cap, no sleep
+// involved — must still trip the cap. Active time exceeds hardCap while the stream
+// was live until moments ago, so the cap path fires.
+func TestWatchReasonFiresCapOnAwakeOverrun(t *testing.T) {
 	cap := 30 * time.Minute
 	idle := 20 * time.Minute
-	lastActivity := start.Add(5 * time.Minute) // last byte ~5 min in, then silence
-	now := start.Add(66 * time.Minute)         // watchdog tick after a host sleep
+	activeElapsed := 31 * time.Minute // 31 min of real, active work
+	idleElapsed := 1 * time.Minute    // stream alive a minute ago
 
-	reason := watchReason(now, start, lastActivity, cap, idle)
+	reason := watchReason(activeElapsed, idleElapsed, cap, idle)
+	if !strings.Contains(reason, "cap") {
+		t.Errorf("expected the cap to fire on a genuine awake overrun, got: %q", reason)
+	}
+}
+
+// When both limits are breached at the observation tick, the one whose deadline
+// came first must be reported (the truthful cause). A session that went idle ~5
+// min in and then ran past the cap was dead before the cap; the idle window was
+// crossed first (active 5 min + 20 min idle = 25 min < 30 min cap), so the reason
+// must name the dead stream, not the cap (the BEH-538 truthfulness property,
+// preserved on the active-time axis).
+func TestWatchReasonReportsTheLimitCrossedFirst(t *testing.T) {
+	cap := 30 * time.Minute
+	idle := 20 * time.Minute
+	// Last byte at active-minute 5, then silence; observed at active-minute 40 (both
+	// limits now past). lastActivityAt = 40 - 35 = 5 min.
+	activeElapsed := 40 * time.Minute
+	idleElapsed := 35 * time.Minute
+
+	reason := watchReason(activeElapsed, idleElapsed, cap, idle)
 	if !strings.Contains(reason, "activity") {
 		t.Errorf("a session that went idle before the cap must be reported as a dead stream, got: %q", reason)
 	}
@@ -197,45 +211,41 @@ func TestWatchReasonReportsTheLimitCrossedFirst(t *testing.T) {
 // both are breached the one whose deadline came first is reported (the truthful
 // cause — see TestWatchReasonReportsTheLimitCrossedFirst).
 func TestWatchReasonContract(t *testing.T) {
-	start := time.Date(2026, 6, 21, 15, 0, 0, 0, time.UTC)
-
 	// Both within limits → no kill.
-	now := start.Add(5 * time.Minute)
-	if r := watchReason(now, start, now, 30*time.Minute, 10*time.Minute); r != "" {
+	if r := watchReason(5*time.Minute, 5*time.Minute, 30*time.Minute, 10*time.Minute); r != "" {
 		t.Errorf("expected no kill with headroom, got: %q", r)
 	}
 
-	// cap disabled (<=0): a huge elapsed must not trip the cap; idle still governs.
-	farPast := start.Add(100 * time.Hour)
-	if r := watchReason(farPast, start, farPast, 0, 10*time.Minute); r != "" {
+	// cap disabled (<=0): a huge active elapsed must not trip the cap; idle still
+	// governs (and here the stream is live, so no kill).
+	if r := watchReason(100*time.Hour, 0, 0, 10*time.Minute); r != "" {
 		t.Errorf("cap<=0 must disable the cap, got: %q", r)
 	}
 
-	// idle disabled (<=0): a long silence must not trip idle; cap still governs.
-	silent := start.Add(20 * time.Minute)
-	if r := watchReason(silent, start, start, 30*time.Minute, 0); r != "" {
+	// idle disabled (<=0): a long active silence must not trip idle; cap still
+	// governs (and here the cap has headroom).
+	if r := watchReason(20*time.Minute, 20*time.Minute, 30*time.Minute, 0); r != "" {
 		t.Errorf("idle<=0 must disable the heartbeat, got: %q", r)
 	}
 
-	// Both breached, idle deadline first (idle from the start) → idle reported.
-	if r := watchReason(farPast, start, start, 30*time.Minute, 10*time.Minute); !strings.Contains(r, "activity") {
+	// Both breached, idle deadline first (idle from the start, lastActivityAt = 0) →
+	// idle reported.
+	if r := watchReason(100*time.Hour, 100*time.Hour, 30*time.Minute, 10*time.Minute); !strings.Contains(r, "activity") {
 		t.Errorf("expected the idle stall (crossed first) to be reported, got: %q", r)
 	}
 
-	// Both breached, cap deadline first (stream alive until just before the cap,
-	// then the host slept past it) → cap reported. lastActivity = start+25 makes the
-	// idle deadline start+35, later than the start+30 cap.
-	lateIdle := start.Add(25 * time.Minute)
-	if r := watchReason(farPast, start, lateIdle, 30*time.Minute, 10*time.Minute); !strings.Contains(r, "cap") {
+	// Both breached, cap deadline first (stream alive until active-minute 25, so the
+	// idle deadline is minute 35, later than the minute-30 cap) → cap reported.
+	if r := watchReason(100*time.Hour, 100*time.Hour-25*time.Minute, 30*time.Minute, 10*time.Minute); !strings.Contains(r, "cap") {
 		t.Errorf("expected the cap (crossed first) to be reported, got: %q", r)
 	}
 }
 
-// A wall-clock kill that lands long after its deadline is explained by host sleep:
-// the watchdog's poll ticker is monotonic and freezes while the host sleeps, so a
-// large gap between wall-elapsed and monotonic-elapsed at kill time is exactly the
-// time slept. The kill log must surface it so a 30 min cap observed at 66 min reads
-// as "host slept ~36m", not a broken timer (BEH-538).
+// When a kill does land and the host also slept during the session, the kill log
+// names the slept time as context — confirming it was excluded, not charged
+// (BEH-608). The gap between wall-elapsed and monotonic (active) elapsed at kill
+// time is exactly the time slept, so a 30 min active cap reached after 66 min of
+// wall time reads as "host also slept ~36m — not counted".
 func TestSleepNoteSurfacesHostSleep(t *testing.T) {
 	note := sleepNote(66*time.Minute, 30*time.Minute)
 	if !strings.Contains(note, "slept") {
