@@ -25,6 +25,21 @@ func TestBuildTddInvokesSkillOnTicketAndSlug(t *testing.T) {
 	}
 }
 
+// The whole pipeline (verify, push, PR, CI, review, rebase) keys off the
+// canonical `feat/<slug>` branch. If the prompt leaves the branch prefix to the
+// agent's judgement, a bug-fix ticket invites `fix/<slug>`, whose committed,
+// gate-passing handoff the harness then never sees on the empty `feat/<slug>` it
+// checks — the work is silently stranded (BEH-615). So the prompt must pin the
+// prefix: instruct the canonical `new-worktree.sh <slug> feat` verbatim, the same
+// way every other prompt hardcodes `feat/<slug>`.
+func TestBuildTddPinsFeatBranchPrefix(t *testing.T) {
+	p := BuildTdd(sample, "beh-362")
+
+	if !strings.Contains(p, "new-worktree.sh beh-362 feat") {
+		t.Errorf("prompt does not pin the canonical `new-worktree.sh <slug> feat` command:\n%s", p)
+	}
+}
+
 func TestBuildTddInjectsTitleAndDescription(t *testing.T) {
 	p := BuildTdd(sample, "beh-362")
 

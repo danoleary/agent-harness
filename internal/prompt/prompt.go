@@ -32,7 +32,7 @@ const bashQuirkSteer = "Sandbox bash quirk (BEH-401/BEH-598/BEH-601): the bundle
 // findings at the mounted dropbox instead of Linear.
 func BuildTdd(t ticket.Ticket, slug string) string {
 	lines := []string{
-		"/tdd Work on " + t.Identifier + ". Create the worktree with slug `" + slug + "`.",
+		"/tdd Work on " + t.Identifier + ". Create the worktree with slug `" + slug + "` by running `scripts/new-worktree.sh " + slug + " feat` — use the `feat` prefix verbatim regardless of the ticket type (bug-fix, chore, docs, …). The harness keys its handoff check, push, PR, and review off the canonical `feat/" + slug + "` branch, so committing to any other branch (e.g. `fix/" + slug + "`) silently strands your work where the harness never sees it.",
 		"",
 		"Ticket context (already fetched for you — do not look it up):",
 		"",
