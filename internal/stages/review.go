@@ -459,9 +459,20 @@ func Review(cfg config.Config, log *runlog.Logger, runID string, args Args) Resu
 		ciFixRunner(cfg, args, slug, worktreePath, runID, t, log),
 		func() error { return gitpkg.Push(cfg.HerdPath, slug) },
 		func() (ci.RebaseVerdict, error) { return rebaseOntoBase(cfg.HerdPath, worktreePath, slug) },
+		func() bool { return gitpkg.BranchDiffEmpty(worktreePath) },
 	)
 	log.Event("watching CI for " + gitpkg.BranchName(slug) + " …")
 	ciResult := ci.WatchAndFix(driver, ciCfg, time.Now)
+	// Zero-net-diff short-circuit (BEH-602): the branch became a no-op against the
+	// latest origin/main only AFTER the pre-push rebase (a sibling PR landed the same
+	// fix during the multi-minute gate, which the pre-rebase BEH-603 push-gate check
+	// couldn't see), so the PR is open but there is nothing for CI to validate. Honour
+	// the recommend-close disposition rather than burn the poll budget — keep the PR +
+	// worktree and let the loop flag the ticket for a human to close as superseded.
+	if ciResult.RecommendClose {
+		log.Event("review ⊘ " + ciResult.Reason + " — keeping PR + worktree; recommending close (BEH-602)")
+		return Result{OK: false, ReachedPushedPR: true, RecommendClose: true}
+	}
 	if ciResult.SpendingCapAbort {
 		// The auto-fix session hit an active spending cap — not a code defect or
 		// unfixable CI, just a billing window that resets. Name the retry-after-reset

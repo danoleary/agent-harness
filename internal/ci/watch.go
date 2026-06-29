@@ -35,6 +35,14 @@ type Driver interface {
 	// not block a green PR — it returns MergeUnknown / an error and the watch
 	// degrades to passing rather than failing on something indeterminate.
 	MergeState() (MergeVerdict, error)
+	// DiffEmpty reports whether the pushed PR branch makes ZERO net change against
+	// origin/main (an empty `git diff origin/main`). Such a branch has nothing for CI
+	// to validate that main hasn't already validated, so watching it just burns the
+	// poll budget on a PR that can never meaningfully go green (BEH-602/BEH-604, the
+	// PR #642 waste). It is fail-safe: any doubt (an unreadable ref, a git error)
+	// reports false so the normal watch still runs — the harness would rather watch
+	// than wrongly skip a real branch.
+	DiffEmpty() bool
 	// RebaseOntoBase auto-resolves a stale-base conflict: it rebases the PR branch
 	// onto the latest origin/main and, if the replay is clean, re-pushes (force-with-
 	// lease) and returns RebaseClean; a genuine content conflict aborts the rebase
@@ -87,6 +95,13 @@ type Outcome struct {
 	// It lets the caller log a retry-after-reset breadcrumb instead of a spurious
 	// "CI did not go green" failure (BEH-571).
 	SpendingCapAbort bool
+	// RecommendClose marks the zero-net-diff short-circuit (BEH-602): the pushed
+	// branch makes no change against origin/main, so there is nothing for CI to
+	// validate and the PR is a no-op. The caller surfaces this as the same
+	// recommend-close disposition the review push-gate uses (BEH-603) — keep the
+	// PR + worktree, flag the ticket for a human to close as superseded — rather
+	// than burning the poll budget on a PR that can never meaningfully go green.
+	RecommendClose bool
 }
 
 // WatchAndFix polls CI for the just-pushed PR and, on failure, drives a bounded
@@ -97,6 +112,19 @@ type Outcome struct {
 // timeout, a driver error, or attempt/budget exhaustion. now is injected so the
 // budget is deterministic in tests.
 func WatchAndFix(d Driver, cfg Config, now func() time.Time) Outcome {
+	// A pushed branch that makes zero net change against origin/main has nothing for
+	// CI to validate that main hasn't already validated — watching it just burns the
+	// whole poll budget on a PR that can never meaningfully go green (BEH-602/BEH-604,
+	// the PR #642 waste). The normal flow rarely reaches here: the review push-gate
+	// recommend-closes a zero-diff branch before the push (BEH-603). But a branch that
+	// became a no-op only AFTER the pre-push rebase (a sibling PR merged the same fix
+	// during the gate) is already pushed, so this is the backstop. Short-circuit to the
+	// recommend-close disposition before the first poll. DiffEmpty is fail-safe (false
+	// on any git doubt), so a flaky read falls through to the normal watch.
+	if d.DiffEmpty() {
+		return Outcome{OK: false, RecommendClose: true, Reason: zeroDiffReason}
+	}
+
 	deadline := now().Add(cfg.Budget)
 
 	v, checks, err := d.Poll()
@@ -174,6 +202,12 @@ func WatchAndFix(d Driver, cfg Config, now func() time.Time) Outcome {
 		Failing: failed,
 	}
 }
+
+// zeroDiffReason is the operator-facing summary when the watch short-circuits a
+// pushed branch that makes zero net change against origin/main (BEH-602): nothing
+// for CI to validate, so recommend closing the ticket/PR as superseded rather than
+// polling a PR that can never meaningfully go green.
+const zeroDiffReason = "pushed branch makes zero net change against origin/main (empty diff) — nothing for CI to validate; recommend closing the PR/ticket as a duplicate/superseded rather than watching a no-op PR"
 
 // mergeConflictReason is the operator-facing summary when CI is green but the PR
 // conflicts with base. It is deliberately distinct from a check-failure reason:

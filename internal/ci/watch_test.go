@@ -17,8 +17,14 @@ type pollResult struct {
 // script is exhausted) and records every effect, so WatchAndFix's control flow
 // is exercised without touching gh or the sandbox.
 type fakeDriver struct {
-	polls   []pollResult
-	pollIdx int
+	polls     []pollResult
+	pollIdx   int
+	pollCalls int
+
+	// diffEmpty is what DiffEmpty() reports — the zero-net-diff short-circuit signal
+	// WatchAndFix consults before its first poll (BEH-602). Defaults false so every
+	// existing test exercises the normal watch.
+	diffEmpty bool
 
 	reruns, fixes, pushes, awaits int
 	rerunErr, fixErr, awaitErr    error
@@ -38,12 +44,14 @@ type fakeDriver struct {
 }
 
 func (d *fakeDriver) Poll() (Verdict, []Check, error) {
+	d.pollCalls++
 	r := d.polls[d.pollIdx]
 	if d.pollIdx < len(d.polls)-1 {
 		d.pollIdx++
 	}
 	return r.v, r.checks, r.err
 }
+func (d *fakeDriver) DiffEmpty() bool     { return d.diffEmpty }
 func (d *fakeDriver) Rerun([]Check) error { d.reruns++; return d.rerunErr }
 func (d *fakeDriver) Fix([]Check) error {
 	d.fixes++
@@ -75,6 +83,38 @@ func (d *fakeDriver) RebaseOntoBase() (RebaseVerdict, error) {
 func failChecks() []Check { return []Check{{Name: "lint", Bucket: BucketFail}} }
 
 func testWatchCfg() Config { return Config{MaxFixAttempts: 2, Budget: time.Hour} }
+
+// BEH-602/BEH-604: a pushed branch byte-identical to origin/main has nothing for CI
+// to validate that main hasn't already validated — polling it burns the whole poll
+// budget on a PR that can never meaningfully go green (the PR #642 waste). WatchAndFix
+// must short-circuit to the recommend-close disposition BEFORE the first poll. Scripted
+// with NO polls so any poll attempt panics — proving the watch never started.
+func TestWatchShortCircuitsZeroDiffBranch(t *testing.T) {
+	d := &fakeDriver{diffEmpty: true}
+	out := WatchAndFix(d, testWatchCfg(), newFakeClock().now)
+	if out.OK {
+		t.Fatalf("a zero-diff branch is not a green ship; want !OK, got %+v", out)
+	}
+	if !out.RecommendClose {
+		t.Fatalf("a zero-diff branch must recommend close; got %+v", out)
+	}
+	if d.pollCalls != 0 {
+		t.Fatalf("expected no poll on a zero-diff branch (short-circuit before the watch); got %d", d.pollCalls)
+	}
+}
+
+// The short-circuit must not fire on a real diff: a branch that changes something
+// proceeds into the normal watch (and polls) exactly as before.
+func TestWatchDoesNotShortCircuitOnRealDiff(t *testing.T) {
+	d := &fakeDriver{diffEmpty: false, polls: []pollResult{{v: Passed}}}
+	out := WatchAndFix(d, testWatchCfg(), newFakeClock().now)
+	if !out.OK || out.RecommendClose {
+		t.Fatalf("a real-diff green branch should pass normally; got %+v", out)
+	}
+	if d.pollCalls == 0 {
+		t.Fatalf("expected the normal watch to poll on a real-diff branch")
+	}
+}
 
 func TestWatchGreenOnFirstPoll(t *testing.T) {
 	d := &fakeDriver{polls: []pollResult{{v: Passed}}}

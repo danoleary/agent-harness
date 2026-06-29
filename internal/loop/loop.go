@@ -253,7 +253,7 @@ func Run(d Deps) int {
 		switch {
 		case outcome.RecommendClose:
 			d.Log.Structured(loopstream.Record{Kind: loopstream.KindRecommendClose, Ticket: identifier, Message: "loop — " + identifier + " makes no net change against main; keeping it In Progress for a human to close as a duplicate/superseded (BEH-603)"})
-			d.comment(identifier, "Autonomous run found this branch makes zero net change against `main` (an empty diff) — there is nothing to ship. The implementation and review both concluded the substantively correct outcome is to close this ticket as a duplicate/superseded rather than open an empty-commit PR. Kept In Progress for a human to close; it was deliberately NOT released to Todo so it won't be re-picked and re-run to the same conclusion. See the run logs for the cause.")
+			d.comment(identifier, "Autonomous run found this branch makes zero net change against `main` (an empty diff) — there is nothing to ship. The substantively correct outcome is to close this ticket as a duplicate/superseded rather than ship an empty-commit change; if a PR was already opened (the branch only became a no-op after the pre-push rebase) it is a no-op and should be closed too. Kept In Progress for a human to close; it was deliberately NOT released to Todo so it won't be re-picked and re-run to the same conclusion. See the run logs for the cause.")
 		case !outcome.ReachedPushedPR:
 			// Release-on-no-PR (BEH-590): a run that finished WITHOUT opening a pushed PR —
 			// any non-cap failure mode: OOM, sandbox crash, a review stage that died before

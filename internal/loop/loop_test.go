@@ -371,6 +371,39 @@ func TestRecommendCloseRunKeepsTicketInProgress(t *testing.T) {
 	}
 }
 
+// TestRecommendCloseAfterPushedPRKeepsTicketInProgress is the BEH-602 post-PR
+// disposition: the CI watch can recommend-close a branch that became a no-op only
+// AFTER the pre-push rebase, so the PR is already open — the outcome carries BOTH
+// RecommendClose AND ReachedPushedPR. The loop switch orders RecommendClose first
+// precisely so this combo still keeps the ticket In Progress (recommend a human
+// close it) rather than folding it into the normal shipped-PR path. Guards against a
+// reorder that would let a no-op PR look like a clean ship and bounce the ticket on.
+func TestRecommendCloseAfterPushedPRKeepsTicketInProgress(t *testing.T) {
+	r := &recorder{}
+	var released []string
+	code := Run(Deps{
+		ClearStopFile: func() error { return nil },
+		FetchMain:     func() error { return nil },
+		StopRequested: stopAfter(1),
+		ResolveNext:   func() (string, bool) { return "BEH-365", true },
+		RunPipeline: func(string) TicketOutcome {
+			return TicketOutcome{ReachedPushedPR: true, RecommendClose: true}
+		},
+		ReleaseTicket:          func(id string) error { released = append(released, id); return nil },
+		Sleep:                  func(time.Duration) {},
+		PollInterval:           time.Minute,
+		TickInterval:           2 * time.Second,
+		MaxConsecutiveFailures: 3,
+		Log:                    r,
+	})
+	if code != 0 {
+		t.Errorf("exit code = %d, want 0 (a recommend-close run then stop is a clean exit)", code)
+	}
+	if len(released) != 0 {
+		t.Errorf("released = %v, want none (a recommend-close ticket must stay In Progress even when a no-op PR was opened, not bounce back to Todo)", released)
+	}
+}
+
 // TestRecommendCloseRunCommentsRecommendingClose proves the recommend-close path
 // leaves a distinct breadcrumb advising the human to close the ticket, rather than
 // the generic "released back to Todo" no-PR comment (which would mislead — the ticket

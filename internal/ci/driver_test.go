@@ -111,6 +111,22 @@ func TestFixForwardsLogAvailabilityToRunFix(t *testing.T) {
 	}
 }
 
+// DiffEmpty must delegate to the injected callback (gitpkg.BranchDiffEmpty over the
+// worktree), so the zero-net-diff watch short-circuit reads real git ground truth
+// rather than a hardcoded value (BEH-602).
+func TestDiffEmptyDelegatesToCallback(t *testing.T) {
+	for _, want := range []bool{true, false} {
+		called := false
+		d := &GhDriver{diffEmpty: func() bool { called = true; return want }}
+		if got := d.DiffEmpty(); got != want {
+			t.Errorf("DiffEmpty() = %v, want %v", got, want)
+		}
+		if !called {
+			t.Error("DiffEmpty did not invoke the injected callback")
+		}
+	}
+}
+
 func TestInterpretChecksOutputParsesDespiteNonZeroExit(t *testing.T) {
 	// gh pr checks exits non-zero when checks fail, but the JSON is on stdout.
 	stdout := []byte(`[{"name":"lint","bucket":"fail"}]`)

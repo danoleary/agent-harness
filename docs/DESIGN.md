@@ -268,6 +268,14 @@ loop:
                #   finding it couldn't self-resolve → fail closed, keep worktree for a human decision
 
   --- review CI watch + auto-fix (harness, host-side, BEH-414) ---
+  zero-net-diff short-circuit (BEH-602): BEFORE the first poll, if `git diff origin/main` for the
+    pushed branch is EMPTY -> there is nothing for CI to validate that main hasn't already validated,
+    so do NOT watch (a no-op PR can never meaningfully go green — the PR #642 ~20-min poll-budget
+    waste). Return the recommend-close disposition: keep the PR + worktree, flag the ticket for a human
+    to close as superseded. The review push-gate already recommend-closes a zero-diff branch BEFORE the
+    push (BEH-603), so this is the BACKSTOP for a branch that became a no-op only AFTER the pre-push
+    rebase (a sibling PR merged the same fix during the multi-minute gate), plus any standalone/resumed
+    review. Fail-safe: any git doubt reads NON-empty, so a flaky read falls through to the normal watch.
   poll `gh pr checks feat/beh-nnn` until terminal (success/failure/cancelled), bounded by a poll budget
   if green        -> confirm mergeability against base (gh pr view --json mergeable):
                        clean              -> done
@@ -715,6 +723,7 @@ ships. The `ready-for-agent` label remains the human gate on *what* runs unatten
   | Crash / non-zero exit / timeout | log + breadcrumb, skip rest, next | log + breadcrumb, keep worktree (no push), next | log + breadcrumb, keep worktree, next |
   | Ran but ground-truth fails | no commit → skip + breadcrumb | gates **red** (or dirty worktree, or **no verdict** — spending-cap/OOM, BEH-569, or verdict **blocked** on an unresolved finding, BEH-580) → no push, breadcrumb, keep worktree, next; OR PR open but **CI red after auto-fix budget** → keep PR + worktree, print failing checks | `out.json` absent → breadcrumb, keep worktree, next |
   | **Recommend-close (BEH-603)** — clean worktree, **empty** `git diff origin/main` | (n/a) | zero net change → **no push, no PR**; breadcrumb recommending the ticket be closed as a duplicate/superseded; keep worktree for audit; **kept In Progress** (NOT released to Todo); breaker-neutral | runs as usual |
+  | **Recommend-close at the CI watch (BEH-602)** — branch became **empty** only AFTER the pre-push rebase (sibling merged the same fix during the gate), so the PR is already open | (n/a) | CI watch short-circuits BEFORE the first poll (no ~20-min poll-budget waste) → keep PR + worktree; same recommend-close breadcrumb + **kept In Progress**; breaker-neutral | runs as usual |
 
 - **Circuit breaker:** 3 consecutive ticket failures → **exit and report
   loudly** (assume something environmental broke, e.g. expired auth or a broken
