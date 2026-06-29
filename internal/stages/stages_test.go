@@ -134,6 +134,27 @@ func TestRetryableEnvCrash(t *testing.T) {
 	}
 }
 
+// disjointWorkTrapped recognises the BEH-609 recovery case: a failed tdd verdict
+// where the session DID produce a worktree and commit real work, but the branch
+// roots at a disjoint history, so the gate fails it even though the diff is
+// genuine. That work is recoverable by re-grafting onto a fresh base rather than
+// discarding the run and re-launching the same doomed pipeline. It must NOT fire on
+// the ordinary failure shapes (no worktree, empty diff, healthy-but-failing).
+func TestDisjointWorkTrapped(t *testing.T) {
+	if !disjointWorkTrapped(verify.GroundTruth{WorktreeExists: true, CommitsAhead: 3, DisjointHistory: true}) {
+		t.Error("worktree + committed work + disjoint history is trapped verified work — should be recoverable")
+	}
+	if disjointWorkTrapped(verify.GroundTruth{WorktreeExists: true, CommitsAhead: 3, DisjointHistory: false}) {
+		t.Error("a healthy (non-disjoint) branch is not the trapped-work case")
+	}
+	if disjointWorkTrapped(verify.GroundTruth{WorktreeExists: true, CommitsAhead: 0, DisjointHistory: true}) {
+		t.Error("a disjoint branch with no commit has no verified work to regraft")
+	}
+	if disjointWorkTrapped(verify.GroundTruth{WorktreeExists: false, DisjointHistory: true}) {
+		t.Error("no worktree means nothing was produced to recover")
+	}
+}
+
 // isDiskFull recognises the ENOSPC a findings-dir mkdir returns when the host disk
 // is full (BEH-540), so the stage can degrade to a clear warning instead of an
 // opaque hard error. It must see through os.PathError's wrapping and ignore other

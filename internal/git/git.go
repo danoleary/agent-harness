@@ -3,6 +3,8 @@
 package git
 
 import (
+	"bytes"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -354,6 +356,55 @@ func isDisjointFrom(worktreePath, ref string, run commandRunner) bool {
 // ground-truth gather (feat/<slug> vs origin/main, read from the main checkout).
 func branchesDisjoint(dir, refA, refB string, run commandRunner) bool {
 	return run("git", "-C", dir, "merge-base", refA, refB) != nil
+}
+
+// RegraftOntoBase rescues verified work trapped on a DISJOINT branch (BEH-609).
+// When a tdd session's handoff lands on a branch that roots at an unrelated history
+// (an empty `git merge-base` with origin/main — the BEH-355/BEH-500 condition), the
+// gate fails it and re-launching can never escape it: no in-sandbox work changes
+// the branch's root commit. So the harness re-roots the work host-side — it captures
+// the branch's CONTENT diff against ref (two-dot, a direct tree comparison, so it
+// works ACROSS the disjoint root where `git diff ref...HEAD` would die with "no merge
+// base"), resets the branch onto ref, and re-applies the diff as one fresh commit.
+// The result shares ref's history (rebaseable, handoff-able) while preserving the
+// exact verified tree. The original handoff message is carried over with a regraft
+// note; the disjoint tip stays in the reflog for forensics. Errors (leaving the
+// branch reset onto ref) if there is no content diff — nothing to recover, never an
+// empty commit. Run host-side against the worktree via the real-path mount (ADR-0002).
+func RegraftOntoBase(worktreePath, ref string) error {
+	// Capture the content diff and handoff message BEFORE moving the branch.
+	// --binary so binary blobs / mode / deletion changes regraft faithfully.
+	patch, err := exec.Command("git", "-C", worktreePath, "diff", "--binary", ref, "HEAD").Output()
+	if err != nil {
+		return fmt.Errorf("capturing content diff against %s: %w", ref, err)
+	}
+	if len(bytes.TrimSpace(patch)) == 0 {
+		return fmt.Errorf("no content diff against %s — nothing to regraft", ref)
+	}
+	msg, err := exec.Command("git", "-C", worktreePath, "log", "-1", "--format=%B").Output()
+	if err != nil {
+		return fmt.Errorf("reading handoff message: %w", err)
+	}
+	// Re-root: reset --hard moves the branch ref onto ref's tip (escaping the
+	// disjoint root; the old tip survives in the reflog) and matches the worktree.
+	if err := execRun("git", "-C", worktreePath, "reset", "--hard", ref); err != nil {
+		return fmt.Errorf("resetting onto %s: %w", ref, err)
+	}
+	// Re-apply the captured diff onto the fresh base (index + worktree).
+	apply := exec.Command("git", "-C", worktreePath, "apply", "--index")
+	apply.Stdin = bytes.NewReader(patch)
+	if out, aerr := apply.CombinedOutput(); aerr != nil {
+		return fmt.Errorf("re-applying diff onto %s: %w (%s)", ref, aerr, strings.TrimSpace(string(out)))
+	}
+	// Commit the regrafted tree, preserving the handoff message with a regraft note.
+	commitMsg := strings.TrimRight(string(msg), "\n") +
+		"\n\nRe-grafted onto " + ref + " to escape a disjoint history (BEH-609)."
+	args := append([]string{"-C", worktreePath}, identityArgs()...)
+	args = append(args, "commit", "--no-verify", "-m", commitMsg)
+	if err := execRun("git", args...); err != nil {
+		return fmt.Errorf("committing regrafted diff: %w", err)
+	}
+	return nil
 }
 
 // BranchDiffEmpty reports whether the worktree's committed tip makes ZERO net

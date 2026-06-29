@@ -82,6 +82,20 @@ func retryableEnvCrash(truth verify.GroundTruth, capAborted bool) bool {
 	return !truth.WorktreeExists && !capAborted
 }
 
+// disjointWorkTrapped reports whether a failed tdd verdict is the BEH-609
+// "verified work trapped on a disjoint branch" case: the session produced a
+// worktree AND committed real work, but the branch roots at a disjoint history
+// (an empty merge-base with origin/main — the BEH-355/BEH-500 condition), so the
+// gate fails it even though the diff is genuine. Re-launching can never escape
+// this — no in-sandbox work changes the branch's root commit — so the harness
+// instead re-grafts the branch's content diff onto a fresh base off origin/main
+// (RegraftOntoBase) and re-verifies, rather than discarding the run and re-running
+// the same doomed pipeline. It must NOT fire on the ordinary failure shapes (no
+// worktree, empty diff, or a healthy branch that failed for another reason).
+func disjointWorkTrapped(truth verify.GroundTruth) bool {
+	return truth.WorktreeExists && truth.CommitsAhead > 0 && truth.DisjointHistory
+}
+
 // Implementation runs the first stage: fetch + claim one ticket, run only the
 // /tdd session in a Docker sandbox, verify the worktree + handoff commit by
 // ground truth, and file any dropped findings. No push, no PR (review owns
@@ -285,6 +299,24 @@ func Implementation(cfg config.Config, log *runlog.Logger, runID string, args Ar
 		// else is the final verdict.
 		if result.OK || !outcome.UsagePolicyRefusal || !truth.WorktreeExists {
 			break
+		}
+	}
+
+	// Rescue verified work trapped on a disjoint branch (BEH-609). The gate fails a
+	// branch with no common ancestor with origin/main even when its committed diff is
+	// genuine, and re-launching can never escape it — no in-sandbox work changes the
+	// branch's root commit, so the same doomed pipeline would repeat forever. When the
+	// ONLY thing wrong is the disjoint root, re-graft the branch's content diff onto a
+	// fresh base off origin/main and re-verify; a clean regraft turns the trapped work
+	// into a healthy, handoff-able branch. A regraft failure falls through to the
+	// existing failed-verdict handling, which keeps the worktree for manual recovery.
+	if !result.OK && !capAborted && disjointWorkTrapped(truth) {
+		if rErr := gitpkg.RegraftOntoBase(worktreePath, "origin/main"); rErr != nil {
+			log.Event("⚠ disjoint branch detected but the regraft failed (" + rErr.Error() + ") — keeping the worktree for manual recovery (BEH-609)")
+		} else {
+			log.Event("↻ verified work was trapped on a disjoint branch — re-grafted its content diff onto a fresh base off origin/main (BEH-609)")
+			truth = gitpkg.GatherTddGroundTruth(cfg.HerdPath, slug)
+			result = verify.Tdd(truth)
 		}
 	}
 

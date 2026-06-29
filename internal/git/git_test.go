@@ -361,6 +361,112 @@ func TestIsDisjointFromAgainstRealGit(t *testing.T) {
 	}
 }
 
+// BEH-609: RegraftOntoBase rescues verified work trapped on a disjoint branch by
+// re-applying its CONTENT diff against ref onto a fresh commit rooted at ref —
+// escaping the disjoint history so the branch can finally rebase and hand off. The
+// regrafted branch must share history with ref (no longer disjoint), carry the
+// original fix, and the poisoned root must be gone from the branch tip.
+func TestRegraftOntoBaseEscapesDisjointHistory(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	repo := t.TempDir()
+	git := func(args ...string) {
+		t.Helper()
+		if err := execIn(repo, args...); err != nil {
+			t.Fatalf("git %v: %v", args, err)
+		}
+	}
+	write := func(name, contents string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(repo, name), []byte(contents), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	git("init", "-q", "-b", "main")
+	git("config", "user.email", "t@example.com")
+	git("config", "user.name", "Test")
+	git("config", "commit.gpgsign", "false")
+	write("base.txt", "base\n")
+	git("add", "-A")
+	git("commit", "-q", "-m", "base")
+	git("update-ref", "refs/remotes/origin/main", "main")
+
+	// Build a DISJOINT branch (orphan root, no shared history) that carries the
+	// same base file plus a verified fix — the BEH-500 shape, where the content
+	// diff against origin/main is just the real fix despite the disjoint root.
+	git("checkout", "-q", "--orphan", BranchName("beh-500"))
+	git("rm", "-rfq", "--cached", ".")
+	write("base.txt", "base\n")
+	write("fix.txt", "the verified fix\n")
+	git("add", "-A")
+	git("commit", "-q", "-m", "handoff: the verified fix")
+	if !IsDisjointFrom(repo, "origin/main") {
+		t.Fatal("fixture precondition: the orphan branch must be disjoint from origin/main")
+	}
+
+	if err := RegraftOntoBase(repo, "origin/main"); err != nil {
+		t.Fatalf("RegraftOntoBase: %v", err)
+	}
+
+	// After the regraft the branch shares origin/main's history (no longer disjoint).
+	if IsDisjointFrom(repo, "origin/main") {
+		t.Fatal("branch is still disjoint after regraft — the re-root did not take")
+	}
+	// origin/main is now an ancestor of the branch tip (a clean rebase target).
+	if !IsRebasedOnto(repo, "origin/main") {
+		t.Fatal("origin/main must be an ancestor of the regrafted tip")
+	}
+	// The verified fix survived the regraft.
+	fix, err := exec.Command("git", "-C", repo, "show", "HEAD:fix.txt").Output()
+	if err != nil || strings.TrimSpace(string(fix)) != "the verified fix" {
+		t.Fatalf("regrafted tip must carry the verified fix; got %q err=%v", string(fix), err)
+	}
+	// And the base file from origin/main is present (faithful tree, not just the patch).
+	if _, err := exec.Command("git", "-C", repo, "show", "HEAD:base.txt").Output(); err != nil {
+		t.Fatalf("regrafted tip must carry origin/main's base.txt: %v", err)
+	}
+}
+
+// BEH-609: regrafting a branch whose content already matches the base is a no-op
+// with nothing to recover — RegraftOntoBase must error rather than create an empty
+// commit, so the caller never mistakes "nothing to regraft" for a recovered diff.
+func TestRegraftOntoBaseEmptyDiffErrors(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	repo := t.TempDir()
+	git := func(args ...string) {
+		t.Helper()
+		if err := execIn(repo, args...); err != nil {
+			t.Fatalf("git %v: %v", args, err)
+		}
+	}
+	write := func(name, contents string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(repo, name), []byte(contents), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	git("init", "-q", "-b", "main")
+	git("config", "user.email", "t@example.com")
+	git("config", "user.name", "Test")
+	git("config", "commit.gpgsign", "false")
+	write("base.txt", "base\n")
+	git("add", "-A")
+	git("commit", "-q", "-m", "base")
+	git("update-ref", "refs/remotes/origin/main", "main")
+
+	// An orphan branch with the SAME tree as main: disjoint history, but zero content
+	// diff against origin/main.
+	git("checkout", "-q", "--orphan", BranchName("beh-500-empty"))
+	git("add", "-A")
+	git("commit", "-q", "-m", "identical tree, unrelated root")
+	if err := RegraftOntoBase(repo, "origin/main"); err == nil {
+		t.Fatal("RegraftOntoBase must error when there is no content diff to regraft")
+	}
+}
+
 // BEH-603: BranchDiffEmpty reports whether the worktree's committed tip makes ZERO
 // net change against origin/main (an empty `git diff origin/main`) — the
 // empty-commit branch the harness wrongly opened as PR #642. `git diff --quiet`
