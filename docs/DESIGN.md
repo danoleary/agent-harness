@@ -276,6 +276,21 @@ loop:
     push (BEH-603), so this is the BACKSTOP for a branch that became a no-op only AFTER the pre-push
     rebase (a sibling PR merged the same fix during the multi-minute gate), plus any standalone/resumed
     review. Fail-safe: any git doubt reads NON-empty, so a flaky read falls through to the normal watch.
+  structurally-wedged required-context short-circuit (BEH-614): a repo whose branch protection requires a
+    context that only runs on `merge_group`/`refs/heads/main` (a merge-queue or main-only check) lists that
+    context on the PR as `state=EXPECTED` in `gh pr checks` and NEVER schedules a run for it on the PR head,
+    so it sits in the pending bucket forever. That is distinct from the zero-diff case above: here the diff
+    is real and the gates are green — the PR is legitimately mergeable, it just has a required check that
+    cannot run until it reaches the merge queue. The watch detects the wedge structurally (`wedgedReady`):
+    the instant EVERY real gate is green and the ONLY thing left pending is one or more `EXPECTED` contexts,
+    it short-circuits the poll with `ErrWedgedReadyForMergeQueue` and PASSES as "ready for the merge queue"
+    (still gated on mergeability, like any green) — rather than burning the poll budget / stall window on a
+    check that will never move on the PR (the PR #661 / BEH-336 ~4.5-min waste that dead-ended in a generic
+    "check the PR manually" stall). Safety against a PR-open false positive: it requires at least one REAL
+    gate to have gone green AND no genuinely-running (QUEUED/IN_PROGRESS, i.e. non-EXPECTED-pending) check —
+    so before the real workflows settle (when contexts can momentarily be EXPECTED with nothing yet green)
+    the watch keeps polling. This is structural and immediate, where the older `PollStall` no-progress window
+    (BEH-602) was only a slower, generic timeout-class backstop for the same wedge.
   poll `gh pr checks feat/beh-nnn` until terminal (success/failure/cancelled), bounded by a poll budget
   if green        -> confirm mergeability against base (gh pr view --json mergeable):
                        clean              -> done
@@ -720,6 +735,7 @@ ships. The `ready-for-agent` label remains the human gate on *what* runs unatten
   | Outcome | implementation | review (+ harness gate/push/PR) | retrospective |
   |---|---|---|---|
   | Clean success (ground-truth passes) | commit ahead → run review | gates green → push + PR → CI watch → CI green → run retrospective | `out.json` present → file findings → remove worktree, ticket done, next |
+  | **Ready for merge queue (BEH-614)** — CI watch finds all real gates green and the only pending check is a structurally-wedged required context (`state=EXPECTED`, merge-queue/main-only) | commit ahead → run review | gates green → push + PR → CI watch **short-circuits the moment the gates are green** (no stall-window/poll-budget waste) → PASS as ready-for-merge-queue (still mergeability-gated) → run retrospective; treated as clean success (breaker resets) | runs as usual |
   | Crash / non-zero exit / timeout | log + breadcrumb, skip rest, next | log + breadcrumb, keep worktree (no push), next | log + breadcrumb, keep worktree, next |
   | Ran but ground-truth fails | no commit → skip + breadcrumb | gates **red** (or dirty worktree, or **no verdict** — spending-cap/OOM, BEH-569, or verdict **blocked** on an unresolved finding, BEH-580) → no push, breadcrumb, keep worktree, next; OR PR open but **CI red after auto-fix budget** → keep PR + worktree, print failing checks | `out.json` absent → breadcrumb, keep worktree, next |
   | **Recommend-close (BEH-603)** — clean worktree, **empty** `git diff origin/main` | (n/a) | zero net change → **no push, no PR**; breadcrumb recommending the ticket be closed as a duplicate/superseded; keep worktree for audit; **kept In Progress** (NOT released to Todo); breaker-neutral | runs as usual |

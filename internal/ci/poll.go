@@ -22,6 +22,16 @@ var ErrPollTimeout = errors.New("ci checks did not reach a terminal state within
 // full budget on a check that will never move on a PR.
 var ErrPollStalled = errors.New("ci checks stalled while still pending (no progress within the stall window)")
 
+// ErrWedgedReadyForMergeQueue is returned the instant a poll snapshot is wedged-ready
+// (wedgedReady): every real gate is green and the only thing still pending is a
+// structurally-wedged required context — a merge-queue/main-only check GitHub lists as
+// EXPECTED but never schedules a run for on the PR head. Unlike ErrPollStalled (a
+// non-success a human must triage), this is a SUCCESS the caller maps to a green-
+// equivalent "ready for the merge queue" pass: the PR has validated everything that
+// will ever run on it. It short-circuits on the first such poll rather than burning the
+// stall window or budget on a check that will never move on the PR (BEH-614).
+var ErrWedgedReadyForMergeQueue = errors.New("ci ready for merge queue (real gates green; only a structurally-wedged required context remains pending)")
+
 // pollConfig frames one poll: how often to re-check, the overall wall-clock cap,
 // and the no-progress (stall) window after which an unchanging-but-still-pending
 // check set is treated as wedged. A zero stall disables stall detection (budget
@@ -57,7 +67,15 @@ func poll(fetch func() ([]Check, error), cfg pollConfig, sleep func(time.Duratio
 			if v := Classify(checks); v != Pending {
 				return v, checks, nil
 			}
-			// pending → stall/budget checks below
+			// Pending. Before waiting, check for the structural wedge: if every real
+			// gate is green and the only thing left pending is a merge-queue/main-only
+			// EXPECTED context, the PR is ready for the merge queue — short-circuit now
+			// rather than burn the stall window/budget on a check that will never move
+			// on the PR head (BEH-614).
+			if wedgedReady(checks) {
+				return Pending, checks, ErrWedgedReadyForMergeQueue
+			}
+			// otherwise → stall/budget checks below
 		case errors.Is(err, errNoChecksYet):
 			// Checks not registered yet (just after the PR opened) — treat like
 			// pending and keep waiting; drop the empty checks so a timeout reports

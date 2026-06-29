@@ -194,6 +194,36 @@ func TestPollZeroStallDisablesStallDetection(t *testing.T) {
 	}
 }
 
+func TestPollShortCircuitsImmediatelyOnWedgedReady(t *testing.T) {
+	clock := newFakeClock()
+	slept := 0
+	sleep := func(d time.Duration) { slept++; clock.sleep(d) }
+	// Real gates green, only a merge-queue/main-only EXPECTED context left pending.
+	fetch, calls := scriptedChecks([]Check{
+		{Name: "lint", Bucket: BucketPass},
+		{Name: "test", Bucket: BucketPass},
+		{Name: "merge-queue-gate", Bucket: BucketPending, State: StateExpected},
+	})
+	// A generous stall window: the point is it bails on the FIRST poll, well before stall.
+	cfg := pollConfig{interval: 30 * time.Second, budget: 20 * time.Minute, stall: 5 * time.Minute}
+	v, checks, err := poll(fetch, cfg, sleep, clock.now)
+	if !errors.Is(err, ErrWedgedReadyForMergeQueue) {
+		t.Fatalf("err = %v, want ErrWedgedReadyForMergeQueue", err)
+	}
+	if v != Pending {
+		t.Fatalf("verdict = %v, want Pending (the wedge is still pending)", v)
+	}
+	if *calls != 1 {
+		t.Fatalf("fetched %d times, want 1 (short-circuit on the first poll, not the stall window)", *calls)
+	}
+	if slept != 0 {
+		t.Fatalf("slept %d times, want 0 (no waiting on a wedged-ready run)", slept)
+	}
+	if len(checks) == 0 {
+		t.Fatal("expected the checks to be returned for the operator report")
+	}
+}
+
 func TestPollPropagatesFetchError(t *testing.T) {
 	clock := newFakeClock()
 	boom := errors.New("gh: auth required")

@@ -129,7 +129,7 @@ func WatchAndFix(d Driver, cfg Config, now func() time.Time) Outcome {
 
 	v, checks, err := d.Poll()
 	if err != nil {
-		return pollErrOutcome(err, checks)
+		return handlePollErr(d, err, checks)
 	}
 	if v == Passed {
 		return greenOutcome(d, "CI is green")
@@ -144,7 +144,7 @@ func WatchAndFix(d Driver, cfg Config, now func() time.Time) Outcome {
 	}
 	v, checks, err = d.Poll()
 	if err != nil {
-		return pollErrOutcome(err, checks)
+		return handlePollErr(d, err, checks)
 	}
 	if v == Passed {
 		return greenOutcome(d, "CI green after re-running the failed checks (flake)")
@@ -188,7 +188,7 @@ func WatchAndFix(d Driver, cfg Config, now func() time.Time) Outcome {
 		}
 		v, checks, err = d.Poll()
 		if err != nil {
-			return pollErrOutcome(err, checks)
+			return handlePollErr(d, err, checks)
 		}
 		if v == Passed {
 			return greenOutcome(d, fmt.Sprintf("CI green after %d auto-fix attempt(s)", attempt))
@@ -208,6 +208,25 @@ func WatchAndFix(d Driver, cfg Config, now func() time.Time) Outcome {
 // for CI to validate, so recommend closing the ticket/PR as superseded rather than
 // polling a PR that can never meaningfully go green.
 const zeroDiffReason = "pushed branch makes zero net change against origin/main (empty diff) — nothing for CI to validate; recommend closing the PR/ticket as a duplicate/superseded rather than watching a no-op PR"
+
+// wedgedReadyReason is the operator-facing summary for a wedged-ready pass (BEH-614):
+// every real gate is green and the only thing left pending is a structurally-wedged
+// required context — a merge-queue/main-only check GitHub never schedules on the PR
+// head. The PR is done and ready for the merge queue, so the watch passes (after the
+// usual mergeability gate) instead of burning the poll budget on a check that will
+// never move on the PR.
+const wedgedReadyReason = "CI green on all gates that run on the PR; the only pending check is a structurally-wedged required context (merge-queue/main-only) — ready for the merge queue"
+
+// handlePollErr routes a poll error to an outcome. The wedged-ready sentinel is a
+// SUCCESS — route it through greenOutcome so the mergeability gate still runs before
+// declaring the PR ready (BEH-614); every other error is the failure-shaped
+// pollErrOutcome (timeout, stall, unobservable, real gh failure).
+func handlePollErr(d Driver, err error, checks []Check) Outcome {
+	if errors.Is(err, ErrWedgedReadyForMergeQueue) {
+		return greenOutcome(d, wedgedReadyReason)
+	}
+	return pollErrOutcome(err, checks)
+}
 
 // mergeConflictReason is the operator-facing summary when CI is green but the PR
 // conflicts with base. It is deliberately distinct from a check-failure reason:
@@ -283,10 +302,13 @@ func greenOutcome(d Driver, reason string) Outcome {
 			return ciRerunErrOutcome(err, nil)
 		}
 		v, checks, err := d.Poll()
-		if err != nil {
+		switch {
+		case errors.Is(err, ErrWedgedReadyForMergeQueue):
+			// The rebased commit's real gates are green; only the merge-queue/main-only
+			// wedge remains. Treat it as passed and re-check mergeability (BEH-614).
+		case err != nil:
 			return pollErrOutcome(err, checks)
-		}
-		if v != Passed {
+		case v != Passed:
 			return Outcome{OK: false, Reason: rebaseBrokeCIReason, Failing: FailedChecks(checks)}
 		}
 		// Loop: re-check mergeability on the rebased branch.

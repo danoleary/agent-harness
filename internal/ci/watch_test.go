@@ -359,6 +359,81 @@ func TestWatchReportsPollStalled(t *testing.T) {
 	}
 }
 
+// A wedged-ready poll (real gates green, only a merge-queue/main-only EXPECTED context
+// pending) is a SUCCESS, not a stall: the PR has validated everything that will run on
+// it and is ready for the merge queue. WatchAndFix must report OK with a distinct
+// ready-for-merge-queue reason, never code-fix it, and still confirm mergeability
+// (the merge-state gate runs) (BEH-614).
+func TestWatchPassesWedgedReadyAsReadyForMergeQueue(t *testing.T) {
+	checks := []Check{
+		{Name: "lint", Bucket: BucketPass},
+		{Name: "merge-queue-gate", Bucket: BucketPending, State: StateExpected},
+	}
+	d := &fakeDriver{
+		polls:      []pollResult{{v: Pending, checks: checks, err: ErrWedgedReadyForMergeQueue}},
+		mergeState: MergeClean,
+	}
+	out := WatchAndFix(d, testWatchCfg(), newFakeClock().now)
+	if !out.OK {
+		t.Fatalf("a wedged-ready PR is a green ship; want OK, got %+v", out)
+	}
+	if d.fixes != 0 || d.reruns != 0 {
+		t.Fatalf("must not fix/rerun a wedged-ready PR; got fix=%d rerun=%d", d.fixes, d.reruns)
+	}
+	low := strings.ToLower(out.Reason)
+	if !strings.Contains(low, "merge queue") {
+		t.Fatalf("reason %q should name the ready-for-merge-queue disposition", out.Reason)
+	}
+}
+
+// The wedged-ready pass is still gated on mergeability: if main moved underneath the
+// branch into a genuine content conflict, it must NOT be reported as a clean ship.
+func TestWatchWedgedReadyStillGatesOnMergeConflict(t *testing.T) {
+	checks := []Check{
+		{Name: "lint", Bucket: BucketPass},
+		{Name: "merge-queue-gate", Bucket: BucketPending, State: StateExpected},
+	}
+	d := &fakeDriver{
+		polls:         []pollResult{{v: Pending, checks: checks, err: ErrWedgedReadyForMergeQueue}},
+		mergeState:    MergeConflicting,
+		rebaseVerdict: RebaseConflict,
+	}
+	out := WatchAndFix(d, testWatchCfg(), newFakeClock().now)
+	if out.OK {
+		t.Fatalf("a wedged-ready PR with a genuine merge conflict is not shippable; got %+v", out)
+	}
+}
+
+// The wedged-ready sentinel is honoured INSIDE the auto-rebase loop too: a stale-base
+// wedged-ready PR rebases cleanly, comes back wedged-ready on the rebased HEAD, and
+// once the merge re-reads clean it still ships — the sentinel must not be mistaken for
+// "CI red after rebase" (BEH-614 × BEH-570).
+func TestWatchWedgedReadyHonouredAfterAutoRebase(t *testing.T) {
+	checks := []Check{
+		{Name: "lint", Bucket: BucketPass},
+		{Name: "merge-queue-gate", Bucket: BucketPending, State: StateExpected},
+	}
+	wedged := pollResult{v: Pending, checks: checks, err: ErrWedgedReadyForMergeQueue}
+	d := &fakeDriver{
+		polls:         []pollResult{wedged, wedged},
+		merges:        []MergeVerdict{MergeConflicting, MergeClean},
+		rebaseVerdict: RebaseClean,
+	}
+	out := WatchAndFix(d, testWatchCfg(), newFakeClock().now)
+	if !out.OK {
+		t.Fatalf("wedged-ready after a clean auto-rebase is a ship; got %+v", out)
+	}
+	if d.rebases != 1 {
+		t.Fatalf("rebases = %d, want exactly 1", d.rebases)
+	}
+	if d.awaits != 1 {
+		t.Fatalf("awaits = %d, want 1 (must confirm CI re-ran on the rebased HEAD)", d.awaits)
+	}
+	if d.fixes != 0 {
+		t.Fatalf("fixes = %d, want 0 (a wedged-ready PR is never code-fixed)", d.fixes)
+	}
+}
+
 func TestWatchSurfacesRerunError(t *testing.T) {
 	boom := errors.New("gh run rerun: not found")
 	d := &fakeDriver{
