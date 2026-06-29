@@ -88,3 +88,21 @@ func TestTruncateAbsentFileIsNotAnError(t *testing.T) {
 		t.Fatalf("truncate of absent file should be a no-op success, got %v", err)
 	}
 }
+
+// BEH-613: the daemon must emit a definitive terminal record when it stops, so the
+// logs and the viewer animation can mark the stop unambiguously. KindLoopStopped is
+// that terminal kind — it must be a valid, listed member of the closed enum.
+func TestLoopStoppedKindIsValidAndListed(t *testing.T) {
+	if !KindLoopStopped.Valid() {
+		t.Fatal("KindLoopStopped must be a valid member of the closed enum")
+	}
+	found := false
+	for _, k := range AllKinds() {
+		if k == KindLoopStopped {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("KindLoopStopped must be listed in AllKinds()")
+	}
+}

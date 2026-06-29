@@ -173,16 +173,14 @@ func Run(d Deps) int {
 		// Stop only ever lands BETWEEN tickets — a graceful, per-ticket checkpoint
 		// (DESIGN.md "Stop control"): stopping mid-ticket would strand a worktree.
 		if d.StopRequested() {
-			d.Log.Event("loop — stop requested; winding down")
-			return 0
+			return d.stopped("stop requested")
 		}
 
 		// Optional AFK wall-clock ceiling: once the daemon has run for MaxRuntime, wind
 		// down on the same clean stop path between tickets — a deliberate stop, not a
 		// failure (DESIGN.md §cmd/loop config knobs). Zero/negative = unlimited.
 		if d.MaxRuntime > 0 && now().Sub(start) >= d.MaxRuntime {
-			d.Log.Event("loop — max runtime reached; winding down")
-			return 0
+			return d.stopped("max runtime reached")
 		}
 
 		// Optional AFK ceiling: once MaxTickets tickets have been attempted, wind down
@@ -190,8 +188,7 @@ func Run(d Deps) int {
 		// (DESIGN.md §cmd/loop config knobs). Checked here, between tickets, so the
 		// (N+1)th ticket is never even selected. Zero/negative = unlimited.
 		if d.MaxTickets > 0 && attempted >= d.MaxTickets {
-			d.Log.Event("loop — max tickets reached; winding down")
-			return 0
+			return d.stopped("max tickets reached")
 		}
 
 		// Reclaim disk between tickets, before selecting the next one, when no sandbox
@@ -283,9 +280,19 @@ func Run(d Deps) int {
 			// identical failures are almost always environmental (expired auth, broken
 			// base build) that would sink the next ticket too.
 			d.Log.Structured(loopstream.Record{Kind: loopstream.KindBreakerTrip, Ticket: identifier, Message: "loop ✗ " + b.report() + " — winding down; fix the environment and relaunch"})
-			return 0
+			return d.stopped("circuit breaker tripped")
 		}
 	}
+}
+
+// stopped emits the daemon's terminal record and returns the clean exit code (0).
+// Unlike a plain Event (console only), a Structured KindLoopStopped record reaches
+// the global loop.jsonl stream the viewer tails — so the wind-down is the definitive
+// "loop stopped" marker in BOTH the logs and the animation, never confused with a
+// crash or a wedged-but-alive daemon (BEH-613). reason names why it wound down.
+func (d Deps) stopped(reason string) int {
+	d.Log.Structured(loopstream.Record{Kind: loopstream.KindLoopStopped, Message: "loop — stopped: " + reason})
+	return 0
 }
 
 // comment posts a best-effort breadcrumb on a released ticket (BEH-590). It is a

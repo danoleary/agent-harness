@@ -53,6 +53,8 @@ func describe(k loopstream.Kind) (label string, ok bool) {
 		return "breaker", true
 	case loopstream.KindIdle:
 		return "idle", true
+	case loopstream.KindLoopStopped:
+		return "stopped", true
 	default:
 		return "", false
 	}

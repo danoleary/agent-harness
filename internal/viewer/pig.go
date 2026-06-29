@@ -19,6 +19,7 @@ const (
 	pigCelebrating pigState = "celebrating" // a PR just opened
 	pigHurt        pigState = "hurt"        // a session failed or the breaker tripped
 	pigStopping    pigState = "stopping"    // a STOP sentinel is present: winding down
+	pigStopped     pigState = "stopped"     // the loop has wound down and exited (BEH-613)
 )
 
 // pigStateFor selects the pig's state from a record. The five states the ticket
@@ -33,6 +34,11 @@ func pigStateFor(r loopstream.Record) pigState {
 		return pigWaiting
 	case loopstream.KindPROpened:
 		return pigCelebrating
+	case loopstream.KindLoopStopped:
+		// The terminal record: the daemon has wound down and exited. A distinct,
+		// calm "stopped" mascot reads as done — not the breaker's "hurt" nor the
+		// still-alive "stopping" wave — so a clean stop is unmistakable (BEH-613).
+		return pigStopped
 	case loopstream.KindBreakerTrip, loopstream.KindCapAbort:
 		return pigHurt
 	case loopstream.KindIdle, loopstream.KindTicketReleased, loopstream.KindCapBackoff:
@@ -82,6 +88,10 @@ var pigFrames = map[pigState][]string{
 	pigStopping: {
 		"    ,----.   bye~\n   ( o  o )  /\n   ( =oo= )\n    >    >",
 		"    ,----.   bye~\n   ( o  o )  \\\n   ( =oo= )\n    >>   >>",
+	},
+	pigStopped: {
+		"    ,----.   .\n   ( -  - )  [x]\n   ( =--= )\n    |    |",
+		"    ,----.\n   ( -  - )  [x]\n   ( =--= )\n    |    |",
 	},
 }
 

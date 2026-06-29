@@ -133,11 +133,18 @@ func (d *Dashboard) Observe(r loopstream.Record) {
 // now anchors the "age of last event". frame is the redraw tick (advanced by the
 // command) the mascot animates on; animate is false under --no-animation, freezing
 // the mascot to its single static frame. A pending STOP overrides the event-derived
-// mood: winding down is the headline, so the mascot waves goodbye whatever it was up to.
+// mood — winding down is the headline, so the mascot waves goodbye whatever it was up
+// to — except once the loop has emitted its terminal loop-stopped record, when the
+// definitive "stopped" mascot wins over the still-alive "stopping" wave (see below).
 func (d *Dashboard) Render(now time.Time, status DaemonStatus, frame int, animate bool) string {
 	var b strings.Builder
 	mood := d.pig
-	if status.StopRequested {
+	// A pending STOP makes "winding down" the headline — but once the loop has emitted
+	// its terminal loop-stopped record (mood == pigStopped) it has actually exited, so
+	// the definitive "stopped" mascot wins over the still-alive "stopping" wave. The
+	// STOP sentinel persists past the exit (cleared only at the next startup), so
+	// without this a STOP-stopped daemon would freeze on "stopping" forever (BEH-613).
+	if status.StopRequested && mood != pigStopped {
 		mood = pigStopping
 	}
 	b.WriteString(renderPig(mood, frame, animate))

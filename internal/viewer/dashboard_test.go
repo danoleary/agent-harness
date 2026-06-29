@@ -281,6 +281,23 @@ func TestDashboardMascotShowsStoppingWhenStopRequested(t *testing.T) {
 	}
 }
 
+// BEH-613: once the loop has emitted its terminal KindLoopStopped record, the
+// "stopped" mascot is the definitive headline and must win even while the STOP
+// sentinel is still present (it is only cleared at the NEXT startup). Otherwise a
+// STOP-stopped daemon would freeze on the still-alive "stopping" wave forever,
+// defeating the whole point of a definitive stopped signal in the animation.
+func TestDashboardTerminalStoppedWinsOverStopRequested(t *testing.T) {
+	d := NewDashboard()
+	d.Observe(loopstream.Record{Kind: loopstream.KindLoopStopped, Message: "loop — stopped: stop requested"})
+	frame := d.Render(time.Unix(0, 0), DaemonStatus{Alive: false, StopRequested: true, StreamPresent: true}, 0, false)
+	if !strings.Contains(frame, "status: stopped") {
+		t.Fatalf("a terminal loop-stopped record must show the stopped mascot even with STOP still pending, got:\n%s", frame)
+	}
+	if strings.Contains(frame, "status: stopping") {
+		t.Fatalf("the terminal stopped state must win over the stopping override, got:\n%s", frame)
+	}
+}
+
 // AC2 at the dashboard layer: with animation on, the pig frame advances with the
 // tick; with animation off, the rendered pig is identical across ticks.
 func TestDashboardPigAnimatesOnlyWhenEnabled(t *testing.T) {

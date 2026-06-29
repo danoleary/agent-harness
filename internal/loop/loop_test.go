@@ -1180,3 +1180,117 @@ func TestDiskReclaimPruneFailureIsSwallowedAndBreakerUntouched(t *testing.T) {
 		t.Errorf("a prune that removed nothing must not narrate a reclaim; events = %v", r.events)
 	}
 }
+
+// assertTerminalLoopStopped checks the loop's LAST structured record is the
+// definitive KindLoopStopped terminal marker and that its message carries the
+// reason. A plain console Event would never reach the global loop.jsonl stream the
+// viewer tails, so only a structured terminal record makes the stop visible in both
+// the logs and the animation (BEH-613).
+func assertTerminalLoopStopped(t *testing.T, r *recorder, reasonSubstr string) {
+	t.Helper()
+	if len(r.records) == 0 {
+		t.Fatal("expected at least one structured record")
+	}
+	last := r.records[len(r.records)-1]
+	if last.Kind != loopstream.KindLoopStopped {
+		t.Fatalf("last structured record kind = %q, want KindLoopStopped; records = %v", last.Kind, r.records)
+	}
+	if !strings.Contains(last.Message, reasonSubstr) {
+		t.Fatalf("terminal record message = %q, want it to mention %q", last.Message, reasonSubstr)
+	}
+}
+
+// BEH-613: a STOP-requested wind-down must end with a definitive terminal record.
+func TestStopRequestedEmitsTerminalLoopStoppedRecord(t *testing.T) {
+	r := &recorder{}
+	code := Run(Deps{
+		ClearStopFile: func() error { return nil },
+		FetchMain:     func() error { return nil },
+		StopRequested: func() bool { return true },
+		ResolveNext:   func() (string, bool) { return "", false },
+		RunPipeline:   func(string) TicketOutcome { return TicketOutcome{} },
+		Sleep:         func(time.Duration) {},
+		PollInterval:  time.Minute,
+		TickInterval:  2 * time.Second,
+		Log:           r,
+	})
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	assertTerminalLoopStopped(t, r, "stop requested")
+}
+
+// BEH-613: the max-tickets ceiling must end with a terminal record too.
+func TestMaxTicketsEmitsTerminalLoopStoppedRecord(t *testing.T) {
+	r := &recorder{}
+	code := Run(Deps{
+		ClearStopFile:          func() error { return nil },
+		FetchMain:              func() error { return nil },
+		StopRequested:          func() bool { return false },
+		ResolveNext:            func() (string, bool) { return "BEH-1", true },
+		RunPipeline:            func(string) TicketOutcome { return TicketOutcome{ReachedPushedPR: true} },
+		Sleep:                  func(time.Duration) {},
+		PollInterval:           time.Minute,
+		TickInterval:           2 * time.Second,
+		MaxConsecutiveFailures: 3,
+		MaxTickets:             2,
+		Log:                    r,
+	})
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	assertTerminalLoopStopped(t, r, "max tickets")
+}
+
+// BEH-613: the max-runtime ceiling must end with a terminal record too.
+func TestMaxRuntimeEmitsTerminalLoopStoppedRecord(t *testing.T) {
+	r := &recorder{}
+	origin := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	code := Run(Deps{
+		ClearStopFile:          func() error { return nil },
+		FetchMain:              func() error { return nil },
+		StopRequested:          func() bool { return false },
+		ResolveNext:            func() (string, bool) { return "BEH-1", true },
+		RunPipeline:            func(string) TicketOutcome { return TicketOutcome{ReachedPushedPR: true} },
+		Sleep:                  func(time.Duration) {},
+		Now:                    clockFrom(origin, time.Minute),
+		PollInterval:           time.Minute,
+		TickInterval:           2 * time.Second,
+		MaxConsecutiveFailures: 10,
+		MaxRuntime:             90 * time.Second,
+		Log:                    r,
+	})
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	assertTerminalLoopStopped(t, r, "max runtime")
+}
+
+// BEH-613: a breaker trip already narrates its cause (KindBreakerTrip), but it must
+// ALSO emit the terminal KindLoopStopped as its final record so the animation lands
+// on "stopped" rather than freezing on the hurt-mascot breaker narration.
+func TestBreakerTripEmitsTerminalLoopStoppedRecord(t *testing.T) {
+	r := &recorder{}
+	code := Run(Deps{
+		ClearStopFile:          func() error { return nil },
+		FetchMain:              func() error { return nil },
+		StopRequested:          func() bool { return false },
+		ResolveNext:            func() (string, bool) { return "BEH-99", true },
+		RunPipeline:            func(string) TicketOutcome { return TicketOutcome{ReachedPushedPR: false} },
+		ReleaseTicket:          func(string) error { return nil },
+		Sleep:                  func(time.Duration) {},
+		PollInterval:           time.Minute,
+		TickInterval:           2 * time.Second,
+		MaxConsecutiveFailures: 3,
+		Log:                    r,
+	})
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	// The breaker cause is still narrated for the viewer…
+	if k, ok := r.kindFor("circuit breaker"); !ok || k != loopstream.KindBreakerTrip {
+		t.Fatalf("breaker cause kind = %q (found=%v), want KindBreakerTrip", k, ok)
+	}
+	// …and the terminal stopped record is the LAST thing emitted.
+	assertTerminalLoopStopped(t, r, "circuit breaker")
+}

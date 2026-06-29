@@ -63,6 +63,12 @@ const (
 	KindBreakerTrip Kind = "breaker-trip"
 	// KindIdle — the queue was empty and the daemon is idling before re-polling.
 	KindIdle Kind = "idle"
+	// KindLoopStopped — the daemon's terminal record: it has wound down and Run is
+	// returning (STOP requested, max-runtime, max-tickets, or a breaker trip). The
+	// Message carries the reason. It is the definitive "loop stopped" signal both the
+	// logs and the viewer animation key off, so a clean stop is never confused with a
+	// crash or a wedged-but-alive daemon (BEH-613).
+	KindLoopStopped Kind = "loop-stopped"
 )
 
 // AllKinds is the closed set, in a stable order. It exists so the viewer's
@@ -82,6 +88,7 @@ func AllKinds() []Kind {
 		KindCapBackoff,
 		KindBreakerTrip,
 		KindIdle,
+		KindLoopStopped,
 	}
 }
 

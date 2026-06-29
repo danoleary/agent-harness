@@ -39,13 +39,23 @@ func TestPigStateForMapsEachKind(t *testing.T) {
 	}
 }
 
+// BEH-613: the terminal loop-stopped record must select a distinct, terminal
+// mascot state — not "stopping" (winding down, still alive) and not the cause's mood
+// (e.g. hurt after a breaker trip) — so the animation lands on an unambiguous
+// "stopped" pig that an operator can read as "the daemon is done", not "it crashed".
+func TestLoopStoppedSelectsStoppedPig(t *testing.T) {
+	if got := pigStateFor(loopstream.Record{Kind: loopstream.KindLoopStopped}); got != pigStopped {
+		t.Fatalf("KindLoopStopped → %q, want pigStopped", got)
+	}
+}
+
 // Exhaustiveness guard, mirroring TestEveryKindIsHandled: every loopstream.Kind
 // must select one of the defined pig states, so a Kind added to the closed enum
 // can never leave the pig in an undefined mood.
 func TestEveryKindSelectsAPigState(t *testing.T) {
 	defined := map[pigState]bool{
 		pigWorking: true, pigWaiting: true, pigSleeping: true,
-		pigCelebrating: true, pigHurt: true,
+		pigCelebrating: true, pigHurt: true, pigStopped: true,
 	}
 	for _, k := range loopstream.AllKinds() {
 		got := pigStateFor(loopstream.Record{Kind: k})
@@ -58,7 +68,7 @@ func TestEveryKindSelectsAPigState(t *testing.T) {
 // AC3: the render always carries the state name in text, so the view is legible
 // with motion disabled and to a screen reader / log scrape — never animation-only.
 func TestRenderPigLabelsStateInText(t *testing.T) {
-	for _, st := range []pigState{pigWorking, pigWaiting, pigSleeping, pigCelebrating, pigHurt, pigStopping} {
+	for _, st := range []pigState{pigWorking, pigWaiting, pigSleeping, pigCelebrating, pigHurt, pigStopping, pigStopped} {
 		out := renderPig(st, 0, true)
 		if !strings.Contains(out, string(st)) {
 			t.Fatalf("render of %q must contain the state name in text, got:\n%s", st, out)
