@@ -19,6 +19,7 @@ import (
 	"github.com/beherd/agent-harness/internal/config"
 	"github.com/beherd/agent-harness/internal/filing"
 	"github.com/beherd/agent-harness/internal/runlog"
+	"github.com/beherd/agent-harness/internal/sandbox"
 	"github.com/beherd/agent-harness/internal/semdedup"
 )
 
@@ -47,6 +48,15 @@ func newSemanticMatcher(cfg config.Config) filing.SemanticMatcher {
 // wrapping; other errno values (e.g. EACCES) are not disk-full.
 func isDiskFull(err error) bool {
 	return errors.Is(err, syscall.ENOSPC)
+}
+
+// diskFullWarning builds the actionable warning a stage logs when its findings-dir
+// mkdir fails with ENOSPC (BEH-540). It names the stage, surfaces the underlying
+// error, and appends sandbox.DiskReclaimHint — the SAME remediation the Preflight
+// floor error uses — so the Docker-cache reclaims (the harness's usual disk hog,
+// BEH-566) can never drift out of sync between the three disk-full sites.
+func diskFullWarning(stage string, err error) string {
+	return fmt.Sprintf("%s ⚠ disk full — cannot create findings dir (%s); %s and re-run", stage, err, sandbox.DiskReclaimHint)
 }
 
 // hasUpstreamTranscripts reports whether at least one implementation or review

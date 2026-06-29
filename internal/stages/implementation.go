@@ -151,7 +151,7 @@ func Implementation(cfg config.Config, log *runlog.Logger, runID string, args Ar
 		// Degrade a full-disk ENOSPC to a clear warning instead of an opaque hard
 		// error (BEH-540); this runs before the claim, so nothing is left stranded.
 		if isDiskFull(err) {
-			log.Event("implementation ⚠ disk full — cannot create findings dir (" + err.Error() + "); free space (`pnpm store prune`, prune merged worktrees) and re-run")
+			log.Event(diskFullWarning(implementationSession, err))
 			return Result{OK: false}
 		}
 		return Result{Err: err}

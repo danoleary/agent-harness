@@ -85,7 +85,7 @@ func Retrospective(cfg config.Config, log *runlog.Logger, runID string, args Arg
 		// clear, actionable warning rather than a hard pipeline error that masquerades
 		// as a stage crash and forces a manual re-run (BEH-540).
 		if isDiskFull(err) {
-			log.Event("retrospective ⚠ disk full — cannot create findings dir (" + err.Error() + "); free space (`pnpm store prune`, prune merged worktrees) and re-run")
+			log.Event(diskFullWarning(retrospectiveSession, err))
 			return Result{OK: false}
 		}
 		return Result{Err: err}

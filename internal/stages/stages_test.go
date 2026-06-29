@@ -13,6 +13,7 @@ import (
 	"github.com/beherd/agent-harness/internal/ci"
 	"github.com/beherd/agent-harness/internal/config"
 	"github.com/beherd/agent-harness/internal/runlog"
+	"github.com/beherd/agent-harness/internal/sandbox"
 	"github.com/beherd/agent-harness/internal/session"
 	"github.com/beherd/agent-harness/internal/verify"
 )
@@ -174,6 +175,28 @@ func TestIsDiskFull(t *testing.T) {
 	}
 	if isDiskFull(nil) {
 		t.Error("nil is not disk-full")
+	}
+}
+
+// diskFullWarning is the actionable warning both stages log when the findings-dir
+// mkdir hits ENOSPC (BEH-540). It must name the stage, carry the underlying error,
+// and — crucially — append the SHARED reclaim hint so the Docker-cache reclaims
+// (the harness's usual disk hog, BEH-566) stay in sync with the Preflight floor
+// error. Asserting against sandbox.DiskReclaimHint (not a copied literal) is what
+// guarantees the three sites can never drift.
+func TestDiskFullWarning(t *testing.T) {
+	msg := diskFullWarning("retrospective", &os.PathError{Op: "mkdir", Path: "/x/findings", Err: syscall.ENOSPC})
+
+	for _, want := range []string{
+		"retrospective",           // names the stage
+		"disk full",               // the condition
+		"no space left on device", // the underlying error, surfaced
+		sandbox.DiskReclaimHint,   // the shared remediation, verbatim
+		"docker builder prune",    // …which now includes the Docker reclaim
+	} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("diskFullWarning should contain %q, got: %q", want, msg)
+		}
 	}
 }
 

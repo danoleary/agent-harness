@@ -675,7 +675,11 @@ func TestPreflightDiskErrorIsActionable(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected a disk-floor error")
 	}
-	for _, want := range []string{testContext, "MiB", "pnpm store prune", "prune-merged-worktrees"} {
+	// The two pnpm/worktree reclaims are often NOT the real culprit for the
+	// harness — its `docker run` sandboxes accrete stale build cache /
+	// unreferenced images, which is frequently the largest consumer — so the hint
+	// must also point at the Docker reclaims (BEH-566).
+	for _, want := range []string{testContext, "MiB", "pnpm store prune", "prune-merged-worktrees", "docker builder prune", "docker system prune"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("disk error should mention %q, got: %v", want, err)
 		}

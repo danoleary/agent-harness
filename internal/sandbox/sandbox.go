@@ -89,6 +89,25 @@ func IsRetryableStartFailure(reason string) bool {
 // not just a warning's-worth.
 const MinFreeDiskBytes = 5 << 30 // 5 GiB
 
+// DiskReclaimHint is the single source of truth for the "how to free disk"
+// remediation appended to every disk-full message (the Preflight floor error
+// here, plus the stages' findings-dir-mkdir ENOSPC warnings). One constant so
+// the three sites can never drift (BEH-566).
+//
+// It names the Docker reclaims FIRST because they are usually the biggest win
+// for the harness: it launches `docker run` sandboxes, so stale build cache and
+// unreferenced images accrete on the Docker volume and are frequently the
+// largest consumer — yet a real incident (BEH-433, 3.6 GiB free) showed the
+// pnpm/worktree reclaims recovered almost nothing while `docker builder prune
+// -af` recovered 6.6 GB. The pnpm store + merged-worktree prunes follow as the
+// cheaper, non-destructive fallbacks. (Worktree node_modules are hardlinks into
+// the pnpm store, so pruning worktrees only orphans store content — a follow-up
+// `pnpm store prune` is what actually reclaims it.)
+const DiskReclaimHint = "reclaim Docker space with `docker builder prune -af` / `docker system prune -af` " +
+	"(build cache and unreferenced images are often the largest consumer for the harness), " +
+	"or free space with `pnpm store prune` and by pruning merged worktrees " +
+	"(`scripts/prune-merged-worktrees.sh --yes`)"
+
 // FreeDiskBytes reports the bytes available to an unprivileged writer on the
 // filesystem holding path, via statfs (Bavail × Bsize). It is the production
 // diskFree passed to Preflight; tests inject their own.
@@ -351,8 +370,8 @@ func Preflight(image, buildContext string, run func(name string, args ...string)
 	// couldn't be read — let the docker probes below run.
 	if free, err := diskFree(buildContext); err == nil && free < MinFreeDiskBytes {
 		return fmt.Errorf(
-			"insufficient free disk to launch a sandbox: %d MiB free at %s, need ≥ %d MiB — reclaim space (`pnpm store prune`; prune merged worktrees with `scripts/prune-merged-worktrees.sh --yes`) and re-run",
-			free>>20, buildContext, MinFreeDiskBytes>>20,
+			"insufficient free disk to launch a sandbox: %d MiB free at %s, need ≥ %d MiB — %s and re-run",
+			free>>20, buildContext, MinFreeDiskBytes>>20, DiskReclaimHint,
 		)
 	}
 
