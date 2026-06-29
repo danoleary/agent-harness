@@ -330,6 +330,15 @@ func RebaseOntoMain(worktreePath string) RebaseResult {
 }
 
 func rebaseOntoMain(worktreePath string, run commandRunner) RebaseResult {
+	// Strip the readiness sentinel before rebasing. new-worktree.sh drops an untracked
+	// .worktree-ready into every worktree (BEH-549), and `git rebase`'s checkout phase
+	// refuses to overwrite an untracked file regardless of .gitignore ("untracked
+	// working tree files would be overwritten by checkout"). Left in place, a
+	// sentinel-only collision aborts the rebase and the abort below would misreport it
+	// as a content RebaseConflict — burning a sandboxed resolution session on a
+	// non-conflict (BEH-617). Mirrors how BEH-612 made WorktreeClean/checkpointCommit
+	// sentinel-aware. Best-effort: a no-op (os error) when the sentinel is absent.
+	_ = os.Remove(filepath.Join(worktreePath, WorktreeReadySentinel))
 	// A rebase rewrites the COMMITTER of every replayed commit to whoever runs it;
 	// stamp the harness identity so the pushed branch's commits never inherit the
 	// host checkout's placeholder identity (BEH-579).

@@ -269,6 +269,8 @@ func BuildRebaseFix(t ticket.Ticket, slug, worktreePath string) string {
 		"",
 		"Your job: in the worktree, run `git rebase origin/main`, resolve every conflict by hand, `git add` the resolved files, and `git rebase --continue` until the rebase completes cleanly and `git status` is clean. origin/main is already fetched locally (this sandbox has NO network), so the rebase works offline.",
 		"",
+		"If that first `git rebase origin/main` aborts with `untracked working tree files would be overwritten by checkout` pointing at `.worktree-ready`, that is NOT a content conflict — it is the gitignored readiness sentinel new-worktree.sh drops in every worktree. Remove it with `rm -f .worktree-ready` and re-run `git rebase origin/main`.",
+		"",
 		"Resolve conflicts to preserve the intent of BOTH sides: keep this ticket's change AND the incoming change from main. Do NOT blindly take one side (`--ours`/`--theirs`) — read both hunks and merge them so neither feature is lost. When in doubt, the ticket's intent is below.",
 		"",
 		"Do NOT run `git rebase --abort` or otherwise give up — aborting would strand the branch on its stale base, which is exactly the dead-end this session exists to fix. If a hunk is genuinely impossible to reconcile, make your best-effort merge and leave a clear note in the commit; the harness re-runs the full gate host-side and watches CI, so a mistake surfaces there rather than silently shipping.",

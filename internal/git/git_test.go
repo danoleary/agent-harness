@@ -212,6 +212,65 @@ func TestRebaseOntoMainAgainstRealGit(t *testing.T) {
 	})
 }
 
+// BEH-617: new-worktree.sh drops an untracked .worktree-ready sentinel (BEH-549)
+// into every worktree, and `git rebase`'s checkout phase refuses to overwrite an
+// untracked file regardless of .gitignore — aborting with "untracked working tree
+// files would be overwritten by checkout". Left in place that makes a sentinel-only
+// collision abort the rebase, which RebaseOntoMain would misreport as a content
+// RebaseConflict and burn a sandboxed resolution session on. rebaseOntoMain must
+// strip the sentinel first so the replay is never blocked by it. The setup makes the
+// onto commit (origin/main) track .worktree-ready while the worktree holds an
+// untracked copy — the exact shape that triggers the checkout refusal.
+func TestRebaseOntoMainStripsReadySentinelBeforeRebase(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	repo := t.TempDir()
+	git := func(args ...string) {
+		t.Helper()
+		if err := execIn(repo, args...); err != nil {
+			t.Fatalf("git %v: %v", args, err)
+		}
+	}
+	write := func(name, contents string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(repo, name), []byte(contents), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	const slug = "beh-617-real"
+	git("init", "-q", "-b", "main")
+	git("config", "user.email", "t@example.com")
+	git("config", "user.name", "Test")
+	write("feat.txt", "base\n")
+	git("add", "-A")
+	git("commit", "-q", "-m", "base")
+	git("checkout", "-q", "-b", BranchName(slug))
+	write("feat.txt", "feat change\n")
+	git("add", "-A")
+	git("commit", "-q", "-m", "feat work")
+	// main advances on an unrelated file AND commits the sentinel as a tracked path,
+	// so checking it out wants to write .worktree-ready over the worktree's untracked
+	// copy — the "untracked would be overwritten by checkout" abort.
+	git("checkout", "-q", "main")
+	write("unrelated.txt", "main-only\n")
+	write(WorktreeReadySentinel, "")
+	git("add", "-A")
+	git("commit", "-q", "-m", "main moved")
+	git("update-ref", "refs/remotes/origin/main", "main")
+	git("checkout", "-q", BranchName(slug))
+	// The live worktree carries the untracked readiness sentinel new-worktree.sh drops.
+	write(WorktreeReadySentinel, "")
+
+	if res := RebaseOntoMain(repo); res != RebaseClean {
+		t.Fatalf("res = %v, want RebaseClean — the untracked sentinel must not block (or be misreported as a conflict for) the rebase", res)
+	}
+	// The replayed branch sits on top of main: it carries main's new file.
+	if _, err := os.Stat(filepath.Join(repo, "unrelated.txt")); err != nil {
+		t.Fatalf("rebased branch should contain main's commit (unrelated.txt), stat err = %v", err)
+	}
+}
+
 // BEH-612: new-worktree.sh drops a readiness sentinel (.worktree-ready, BEH-549)
 // into every worktree. It is gitignored on current main, but a feature branch based
 // on a main that predates that .gitignore entry checks out a tree where the sentinel

@@ -74,6 +74,22 @@ func TestBuildRebaseFixForbidsRemoteLinearAndAbortEscape(t *testing.T) {
 	}
 }
 
+// BEH-617: the untracked .worktree-ready sentinel (BEH-549) blocks `git rebase`'s
+// checkout phase ("untracked working tree files would be overwritten by checkout").
+// The host-side rebase now strips it first, but if a resolution session does still
+// run, the prompt must tell the agent to `rm -f .worktree-ready` rather than
+// rediscover the abort by hand.
+func TestBuildRebaseFixWarnsAboutReadySentinel(t *testing.T) {
+	p := BuildRebaseFix(sample, "beh-362", sampleWorktree)
+
+	if !strings.Contains(p, ".worktree-ready") {
+		t.Error("prompt should name the .worktree-ready sentinel that can block the rebase checkout")
+	}
+	if !strings.Contains(p, "rm -f .worktree-ready") {
+		t.Error("prompt should tell the agent to remove the sentinel with `rm -f .worktree-ready`")
+	}
+}
+
 func TestBuildRebaseFixCarriesBashQuirkSteer(t *testing.T) {
 	p := BuildRebaseFix(sample, "beh-362", sampleWorktree)
 	if !strings.Contains(p, bashQuirkSteer) {
