@@ -38,6 +38,14 @@ const (
 	HarnessAuthorEmail = "agent-harness@beherd.co"
 )
 
+// WorktreeReadySentinel is the readiness marker scripts/new-worktree.sh touches at
+// a worktree's root on completion (BEH-549). It is gitignored on current main, but a
+// feature branch based on a main that predates that .gitignore entry checks out a
+// tree where it is NOT ignored — so it surfaces as an untracked `?? .worktree-ready`
+// in `git status --porcelain`. The harness must treat it as a non-change regardless
+// of .gitignore so it never blocks a push or rides into a recovery commit (BEH-612).
+const WorktreeReadySentinel = ".worktree-ready"
+
 // identityArgs are the `-c user.name=… -c user.email=…` overrides that stamp the
 // harness bot identity on a host-side commit/rebase regardless of the ambient
 // (possibly placeholder) repo config. A `-c` override beats both the local and
@@ -266,7 +274,28 @@ func WorktreeClean(worktreePath string) bool {
 	if err != nil {
 		return false
 	}
-	return strings.TrimSpace(string(out)) == ""
+	return !porcelainHasRealChanges(string(out))
+}
+
+// porcelainHasRealChanges reports whether `git status --porcelain` output names any
+// change other than the readiness sentinel (BEH-612). Porcelain v1 lines are two
+// status columns + a space + the path; the sentinel never has a special-char path,
+// so it is never quoted or rename-formatted.
+func porcelainHasRealChanges(porcelain string) bool {
+	for _, line := range strings.Split(porcelain, "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		path := line
+		if len(line) > 3 {
+			path = line[3:]
+		}
+		if strings.TrimSpace(path) == WorktreeReadySentinel {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 // RebaseResult classifies a rebase-of-the-feature-branch-onto-origin/main attempt.
@@ -577,6 +606,17 @@ func CheckpointCommit(worktreePath, identifier, session string) error {
 func checkpointCommit(worktreePath, message string, run commandRunner) error {
 	if err := run("git", "-C", worktreePath, "add", "-A"); err != nil {
 		return err
+	}
+	// Never let the readiness sentinel (BEH-549) ride into a recovery commit: on a
+	// stale-base branch where it is not yet gitignored, `add -A` stages it. Unstaging
+	// it keeps the checkpoint to real session work and stops the gitignored artifact
+	// reattaching as a tracked file (BEH-612). Best-effort — a no-op when absent.
+	_ = run("git", "-C", worktreePath, "reset", "-q", "--", WorktreeReadySentinel)
+	// Belt-and-braces: refuse to commit when nothing real is staged. `git diff
+	// --cached --quiet` exits 0 (nil) iff the index matches HEAD — so a checkpoint
+	// can never capture zero work (e.g. a sentinel-only tree the guard let through).
+	if run("git", "-C", worktreePath, "diff", "--cached", "--quiet") == nil {
+		return nil
 	}
 	args := append([]string{"-C", worktreePath}, identityArgs()...)
 	args = append(args, "commit", "--no-verify", "-m", message)

@@ -212,6 +212,40 @@ func TestRebaseOntoMainAgainstRealGit(t *testing.T) {
 	})
 }
 
+// BEH-612: new-worktree.sh drops a readiness sentinel (.worktree-ready, BEH-549)
+// into every worktree. It is gitignored on current main, but a feature branch based
+// on a main that predates that .gitignore entry checks out a tree where the sentinel
+// is NOT ignored — so `git status --porcelain` lists it as an untracked `??`, and the
+// harness used to count it as uncommitted review work (blocking the push and
+// committing the sentinel into the branch). WorktreeClean must treat the sentinel as
+// a non-change regardless of .gitignore. The test repo has no .gitignore, so the
+// sentinel shows as untracked — exactly the stale-base condition.
+func TestWorktreeCleanIgnoresReadySentinel(t *testing.T) {
+	_, wt := newRepoWithWorktree(t, "beh-612")
+	if err := os.WriteFile(filepath.Join(wt, WorktreeReadySentinel), nil, 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	if !WorktreeClean(wt) {
+		t.Fatal("a worktree whose only change is the readiness sentinel must be clean")
+	}
+}
+
+// The sentinel filter must be surgical: real uncommitted work alongside the sentinel
+// must still read as dirty, so the gate never waves through a tree that differs from
+// what would ship.
+func TestWorktreeCleanStillDetectsRealChangesAlongsideSentinel(t *testing.T) {
+	_, wt := newRepoWithWorktree(t, "beh-612b")
+	if err := os.WriteFile(filepath.Join(wt, WorktreeReadySentinel), nil, 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(wt, "real.ts"), []byte("x\n"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	if WorktreeClean(wt) {
+		t.Fatal("a worktree with real uncommitted work must NOT be clean, even alongside the sentinel")
+	}
+}
+
 // BEH-581: after a sandboxed conflict-resolution session, the harness must
 // confirm the branch was ACTUALLY rebased onto origin/main before re-gating +
 // pushing — a session that gave up and ran `git rebase --abort` leaves a clean

@@ -236,28 +236,107 @@ func TestCheckpointCommitPreservesReviewEditsForResumedDiff(t *testing.T) {
 	}
 }
 
-// The checkpoint stages everything (`-A`) and commits `--no-verify` against the
-// worktree — `--no-verify` because the salvaged work may not pass hooks (that is
-// why it is a checkpoint, not a handoff), mirroring Push's reasoning.
-func TestCheckpointCommitStagesAllAndSkipsHooks(t *testing.T) {
-	run, calls := scriptedRunner(0, nil)
+// The checkpoint stages everything (`-A`), excludes the readiness sentinel
+// (BEH-612), and commits `--no-verify` against the worktree — `--no-verify` because
+// the salvaged work may not pass hooks (that is why it is a checkpoint, not a
+// handoff), mirroring Push's reasoning. The all-success scripted runner can't model
+// the staged-diff probe (its exit code is the boolean), so this runner returns a
+// non-zero exit for `git diff --cached --quiet` = "real work is staged".
+func TestCheckpointCommitStagesExcludesSentinelAndSkipsHooks(t *testing.T) {
+	var calls [][]string
+	run := func(name string, args ...string) error {
+		calls = append(calls, append([]string{name}, args...))
+		if containsArg(args, "diff") {
+			return errors.New("exit status 1") // staged changes exist
+		}
+		return nil
+	}
 	if err := checkpointCommit("/wt", "msg", run); err != nil {
 		t.Fatalf("expected success, got %v", err)
 	}
 
-	if len(*calls) != 2 {
-		t.Fatalf("expected stage then commit, got %d calls: %v", len(*calls), *calls)
+	if len(calls) != 4 {
+		t.Fatalf("expected stage, unstage-sentinel, probe, commit — got %d calls: %v", len(calls), calls)
 	}
-	add := strings.Join((*calls)[0], " ")
-	if add != "git -C /wt add -A" {
+	if add := strings.Join(calls[0], " "); add != "git -C /wt add -A" {
 		t.Fatalf("first call should stage everything, got %q", add)
 	}
-	commit := strings.Join((*calls)[1], " ")
+	if reset := strings.Join(calls[1], " "); !strings.Contains(reset, "reset") || !strings.Contains(reset, WorktreeReadySentinel) {
+		t.Fatalf("second call should unstage the readiness sentinel, got %q", reset)
+	}
+	if probe := strings.Join(calls[2], " "); !strings.Contains(probe, "diff") || !strings.Contains(probe, "--cached") {
+		t.Fatalf("third call should probe the staged diff, got %q", probe)
+	}
+	commit := strings.Join(calls[3], " ")
 	if !strings.Contains(commit, "-C /wt") || !strings.Contains(commit, "commit") {
-		t.Fatalf("second call should commit in the worktree, got %q", commit)
+		t.Fatalf("fourth call should commit in the worktree, got %q", commit)
 	}
 	if !strings.Contains(commit, "--no-verify") {
 		t.Fatalf("commit must skip hooks, got %q", commit)
+	}
+}
+
+// containsArg reports whether argv contains the exact token — used to spot the
+// `diff` / `commit` calls in a scripted checkpoint runner.
+func containsArg(argv []string, token string) bool {
+	for _, a := range argv {
+		if a == token {
+			return true
+		}
+	}
+	return false
+}
+
+// Belt-and-braces (BEH-612): even if the dirty-tree guard let it through, the
+// checkpoint must refuse to commit when nothing real is staged — once the sentinel
+// is excluded the index can be empty, and a checkpoint must never capture zero work
+// (it would pollute the branch and, pre-fix, reattach the gitignored sentinel). An
+// all-success runner makes `git diff --cached --quiet` report "no staged changes".
+func TestCheckpointCommitRefusesEmptyStagedCommit(t *testing.T) {
+	run, calls := scriptedRunner(0, nil)
+	if err := checkpointCommit("/wt", "msg", run); err != nil {
+		t.Fatalf("expected a no-op success, got %v", err)
+	}
+	for _, c := range *calls {
+		if containsArg(c, "commit") {
+			t.Fatalf("must not commit when nothing real is staged, calls: %v", *calls)
+		}
+	}
+}
+
+// BEH-612: a recovery checkpoint must never capture the readiness sentinel. When
+// the sentinel is the ONLY uncommitted change the checkpoint is a no-op (no real
+// work to recover); when real work sits alongside it, the checkpoint commits the
+// work but leaves the sentinel out of the tree — so a PR can never ship it.
+func TestCheckpointCommitExcludesReadySentinel(t *testing.T) {
+	_, wt := newRepoWithWorktree(t, "beh-612")
+
+	if err := os.WriteFile(filepath.Join(wt, WorktreeReadySentinel), nil, 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	before := commitCount(t, wt)
+	if err := CheckpointCommit(wt, "BEH-612", "review"); err != nil {
+		t.Fatalf("CheckpointCommit: %v", err)
+	}
+	if got := commitCount(t, wt); got != before {
+		t.Fatalf("a sentinel-only worktree must not gain a checkpoint commit: before=%d after=%d", before, got)
+	}
+
+	// Real work alongside the sentinel → the work is captured, the sentinel is not.
+	if err := os.WriteFile(filepath.Join(wt, "real.ts"), []byte("x\n"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	if err := CheckpointCommit(wt, "BEH-612", "review"); err != nil {
+		t.Fatalf("CheckpointCommit: %v", err)
+	}
+	if got := commitCount(t, wt); got != before+1 {
+		t.Fatalf("real work must produce exactly one checkpoint commit: before=%d after=%d", before, got)
+	}
+	if err := exec.Command("git", "-C", wt, "cat-file", "-e", "HEAD:real.ts").Run(); err != nil {
+		t.Fatalf("the real work should be in the checkpoint commit: %v", err)
+	}
+	if err := exec.Command("git", "-C", wt, "cat-file", "-e", "HEAD:"+WorktreeReadySentinel).Run(); err == nil {
+		t.Fatalf("the readiness sentinel must NOT be committed into the checkpoint")
 	}
 }
 
