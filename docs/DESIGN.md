@@ -737,7 +737,12 @@ ships. The `ready-for-agent` label remains the human gate on *what* runs unatten
   a **long interruptible backoff** (default ~30–60 min) before re-polling, auto-resuming
   once the cap window resets. Parsing the exact reset time from the abort message is
   deliberately *not* done — fragile string-parsing for minutes of saved latency; the
-  fixed backoff + re-poll is robust.
+  fixed backoff + re-poll is robust. The backoff is **narrated** (BEH-605): it emits a
+  `cap-backoff` entry record naming the duration and expected wake time, a periodic
+  "still capped, re-poll ~HH:MMZ" heartbeat (every `capBackoffHeartbeat`, 1 min) while
+  it waits, and a wake record on re-poll — so a multi-hour backoff is never mistaken
+  for a dead daemon, and `cmd/watch` can render "capped, resuming at HH:MM" instead of
+  going blank.
 
 ## Logging
 

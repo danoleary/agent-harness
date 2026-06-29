@@ -45,6 +45,8 @@ func describe(k loopstream.Kind) (label string, ok bool) {
 		return "released", true
 	case loopstream.KindCapAbort:
 		return "cap-abort", true
+	case loopstream.KindCapBackoff:
+		return "cap-backoff", true
 	case loopstream.KindBreakerTrip:
 		return "breaker", true
 	case loopstream.KindIdle:

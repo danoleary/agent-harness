@@ -50,6 +50,11 @@ const (
 	KindTicketReleased Kind = "ticket-released"
 	// KindCapAbort — an Anthropic spending-cap aborted a run before it could ship.
 	KindCapAbort Kind = "cap-abort"
+	// KindCapBackoff — the daemon is sleeping out the post-cap-abort backoff: the
+	// entry (with duration + wake time), each periodic heartbeat, and the wake/re-poll
+	// are all this kind, so a long backoff stays observable instead of a black hole
+	// (BEH-605). Distinct from KindCapAbort, which marks the abort itself.
+	KindCapBackoff Kind = "cap-backoff"
 	// KindBreakerTrip — the circuit breaker tripped and the daemon is winding down.
 	KindBreakerTrip Kind = "breaker-trip"
 	// KindIdle — the queue was empty and the daemon is idling before re-polling.
@@ -69,6 +74,7 @@ func AllKinds() []Kind {
 		KindPROpened,
 		KindTicketReleased,
 		KindCapAbort,
+		KindCapBackoff,
 		KindBreakerTrip,
 		KindIdle,
 	}

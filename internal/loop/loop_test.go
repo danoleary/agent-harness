@@ -433,6 +433,113 @@ func TestSpendingCapAbortReleasesTicketBacksOffAndLeavesBreakerNeutral(t *testin
 	}
 }
 
+// TestCapBackoffNarratesEntryAndWake proves the cap-abort backoff is observable
+// (BEH-605): instead of one silent ~45-minute sleep, the loop narrates a structured
+// KindCapBackoff record on entry (naming the backoff duration so a watcher sees how
+// long the wait is) and another when the backoff elapses and it re-polls, so a long
+// backoff is never indistinguishable from a dead daemon. No stop lands mid-backoff:
+// the backoff elapses naturally (5 ticks for 10s/2s), then a stop at the next top
+// checkpoint ends the loop.
+func TestCapBackoffNarratesEntryAndWake(t *testing.T) {
+	r := &recorder{}
+	code := Run(Deps{
+		ClearStopFile: func() error { return nil },
+		FetchMain:     func() error { return nil },
+		StopRequested: stopAfter(6), // 1 top checkpoint + 5 backoff ticks elapse, then stop
+		ResolveNext:   func() (string, bool) { return "BEH-7", true },
+		RunPipeline:   func(string) TicketOutcome { return TicketOutcome{SpendingCapAbort: true} },
+		ReleaseTicket: func(string) error { return nil },
+		Sleep:         func(time.Duration) {},
+		PollInterval:  time.Minute,
+		TickInterval:  2 * time.Second,
+		CapBackoff:    10 * time.Second,
+		Log:           r,
+	})
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	// Entry: a KindCapBackoff record announcing the wait and naming the duration.
+	entryKind, ok := r.kindFor("backing off 10s")
+	if !ok {
+		t.Fatalf("no cap-backoff entry narration naming the duration; events = %v", r.events)
+	}
+	if entryKind != loopstream.KindCapBackoff {
+		t.Errorf("entry kind = %q, want %q", entryKind, loopstream.KindCapBackoff)
+	}
+	// Wake: a KindCapBackoff record when the backoff elapses and the loop re-polls,
+	// so each backoff cycle bookends cleanly in the log.
+	wakeKind, ok := r.kindFor("backoff elapsed")
+	if !ok {
+		t.Fatalf("no cap-backoff wake narration on re-poll; events = %v", r.events)
+	}
+	if wakeKind != loopstream.KindCapBackoff {
+		t.Errorf("wake kind = %q, want %q", wakeKind, loopstream.KindCapBackoff)
+	}
+}
+
+// TestCapBackoffEmitsPeriodicHeartbeat proves the backoff narrates a periodic
+// "still capped" heartbeat while it waits (BEH-605) so a watcher can see the daemon
+// is alive and counting down — the whole point at the 45m default. With a 10s
+// backoff ticking every 2s and a 4s heartbeat cadence, a heartbeat falls due twice
+// (at ~4s and ~8s elapsed) before the wait ends; the final tick is suppressed so it
+// doesn't double up with the wake record.
+func TestCapBackoffEmitsPeriodicHeartbeat(t *testing.T) {
+	r := &recorder{}
+	code := Run(Deps{
+		ClearStopFile:       func() error { return nil },
+		FetchMain:           func() error { return nil },
+		StopRequested:       stopAfter(6), // 1 top checkpoint + 5 backoff ticks elapse, then stop
+		ResolveNext:         func() (string, bool) { return "BEH-7", true },
+		RunPipeline:         func(string) TicketOutcome { return TicketOutcome{SpendingCapAbort: true} },
+		ReleaseTicket:       func(string) error { return nil },
+		Sleep:               func(time.Duration) {},
+		PollInterval:        time.Minute,
+		TickInterval:        2 * time.Second,
+		CapBackoff:          10 * time.Second,
+		CapBackoffHeartbeat: 4 * time.Second,
+		Log:                 r,
+	})
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	var beats int
+	for _, rec := range r.records {
+		if rec.Kind == loopstream.KindCapBackoff && strings.Contains(rec.Message, "still capped") {
+			beats++
+		}
+	}
+	if beats < 2 {
+		t.Fatalf("want >=2 cap-backoff heartbeat records during the wait, got %d; events = %v", beats, r.events)
+	}
+}
+
+// TestCapBackoffEmitsNoHeartbeatWhenCadenceUnset proves the heartbeat is opt-in: with
+// CapBackoffHeartbeat left zero, the wait still bookends (entry + wake) but emits no
+// intermediate "still capped" spam — the contract the existing callers rely on.
+func TestCapBackoffEmitsNoHeartbeatWhenCadenceUnset(t *testing.T) {
+	r := &recorder{}
+	code := Run(Deps{
+		ClearStopFile: func() error { return nil },
+		FetchMain:     func() error { return nil },
+		StopRequested: stopAfter(6),
+		ResolveNext:   func() (string, bool) { return "BEH-7", true },
+		RunPipeline:   func(string) TicketOutcome { return TicketOutcome{SpendingCapAbort: true} },
+		ReleaseTicket: func(string) error { return nil },
+		Sleep:         func(time.Duration) {},
+		PollInterval:  time.Minute,
+		TickInterval:  2 * time.Second,
+		CapBackoff:    10 * time.Second,
+		// CapBackoffHeartbeat unset (zero) → no intermediate heartbeats.
+		Log: r,
+	})
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	if r.saw("still capped") {
+		t.Fatalf("a zero heartbeat cadence must emit no intermediate heartbeat; events = %v", r.events)
+	}
+}
+
 // TestCapBackoffIsInterruptibleByStop proves the cap-abort backoff is responsive to
 // STOP/SIGINT (same short-tick mechanism as the idle wait): instead of one opaque
 // ~45-minute sleep, the backoff sleeps in TickInterval chunks and re-checks stop
@@ -474,6 +581,11 @@ func TestCapBackoffIsInterruptibleByStop(t *testing.T) {
 	}
 	if ticks >= 10 {
 		t.Errorf("backoff slept %d ticks, want fewer than a full %d-tick backoff (a mid-backoff stop must wake early)", ticks, 10)
+	}
+	// A stop landing mid-backoff suppresses the wake record (the top-of-loop
+	// wind-down narrates the exit instead) — so the backoff must NOT bookend.
+	if r.saw("backoff elapsed") {
+		t.Errorf("a stop mid-backoff must suppress the wake record, but a 'backoff elapsed' record was emitted; events = %v", r.events)
 	}
 }
 

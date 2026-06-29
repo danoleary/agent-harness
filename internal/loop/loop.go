@@ -85,6 +85,14 @@ type Deps struct {
 	// TickInterval is the granularity the idle wait is broken into so stop stays
 	// responsive during the idle window.
 	TickInterval time.Duration
+	// CapBackoffHeartbeat is how often the cap-abort backoff emits a "still capped,
+	// re-poll ~HH:MMZ" heartbeat so a long (default 45m) backoff stays observable
+	// rather than a black hole (BEH-605). It is coarser than TickInterval to avoid
+	// flooding the log: the wait still ticks at TickInterval for stop-responsiveness,
+	// but only narrates a heartbeat once this much wall-clock has accrued since the
+	// last one. A non-positive value emits no intermediate heartbeats — only the entry
+	// and wake records bookend the wait.
+	CapBackoffHeartbeat time.Duration
 	// CapBackoff is how long the daemon sleeps after a spending-cap abort before
 	// re-polling — long enough to let the external cap window reset, auto-resuming
 	// once it does (DESIGN.md §Spending-cap abort backoff). Broken into the same
@@ -211,12 +219,12 @@ func Run(d Deps) int {
 		// the cap window resets. A shipped PR wins: if the run still reached a pushed
 		// PR, it's a success, so fall through to the normal after-ticket fold.
 		if outcome.SpendingCapAbort && !outcome.ReachedPushedPR {
-			d.Log.Structured(loopstream.Record{Kind: loopstream.KindCapAbort, Ticket: identifier, Message: "loop — spending-cap abort on " + identifier + "; releasing to Todo and backing off before re-poll"})
+			d.Log.Structured(loopstream.Record{Kind: loopstream.KindCapAbort, Ticket: identifier, Message: "loop — spending-cap abort on " + identifier + "; releasing to Todo"})
 			if err := d.ReleaseTicket(identifier); err != nil {
 				d.Log.Event("loop … warning: could not release " + identifier + " to Todo after cap abort: " + err.Error())
 			}
 			d.comment(identifier, "Autonomous run aborted by the Anthropic spending cap before it could ship — released back to Todo. The daemon backs off and auto-resumes once the cap window resets, so this should retry on its own.")
-			d.interruptibleSleep(d.CapBackoff)
+			d.capBackoffWait(identifier)
 			continue
 		}
 
@@ -333,10 +341,68 @@ func (d Deps) reclaimDisk() {
 }
 
 // idleWait waits out one PollInterval before the loop re-polls an empty queue,
-// interruptibly — see interruptibleSleep. The cap-abort backoff uses the same
-// mechanism with CapBackoff, so a stop is honoured within one tick during either
-// wait (DESIGN.md §The loop, §Spending-cap abort backoff).
+// interruptibly — see interruptibleSleep. The cap-abort backoff (capBackoffWait)
+// uses the same tick-and-re-check-stop mechanism with CapBackoff, additionally
+// narrating its progress, so a stop is honoured within one tick during either wait
+// (DESIGN.md §The loop, §Spending-cap abort backoff).
 func (d Deps) idleWait() { d.interruptibleSleep(d.PollInterval) }
+
+// clock returns the injected Now (for the cap-backoff wake-time narration), falling
+// back to time.Now when none was wired — mirroring Run's own nil-Now default so the
+// daemon and its helpers agree on the clock.
+func (d Deps) clock() func() time.Time {
+	if d.Now == nil {
+		return time.Now
+	}
+	return d.Now
+}
+
+// capBackoffWait sleeps out the post-cap-abort backoff like interruptibleSleep, but
+// narrates it so a long (default 45m) backoff is observable instead of a black hole
+// (BEH-605). It bookends the wait with structured KindCapBackoff records — an entry
+// naming the duration and expected wake time, and a wake record on natural elapse —
+// and emits a periodic "still capped" heartbeat (every CapBackoffHeartbeat) in
+// between, so a watcher can see the daemon is alive and counting down. The wait still
+// ticks at TickInterval and re-checks StopRequested between ticks, so a stop landing
+// mid-backoff is honoured within one tick (the wake record is suppressed on stop —
+// the top-of-loop wind-down narration takes over). A non-positive TickInterval
+// degrades to a single silent total sleep, like interruptibleSleep.
+func (d Deps) capBackoffWait(identifier string) {
+	wake := d.clock()().Add(d.CapBackoff)
+	wakeStr := wake.UTC().Format("15:04Z")
+	d.Log.Structured(loopstream.Record{
+		Kind:    loopstream.KindCapBackoff,
+		Ticket:  identifier,
+		Message: fmt.Sprintf("loop — capped; backing off %s, next re-poll ~%s", d.CapBackoff, wakeStr),
+	})
+
+	if d.TickInterval <= 0 {
+		d.Sleep(d.CapBackoff)
+		d.Log.Structured(loopstream.Record{Kind: loopstream.KindCapBackoff, Ticket: identifier, Message: "loop — cap backoff elapsed; re-polling for " + identifier})
+		return
+	}
+
+	var sinceBeat time.Duration
+	for waited := time.Duration(0); waited < d.CapBackoff; waited += d.TickInterval {
+		if d.StopRequested() {
+			return // stop wins; the top-of-loop wind-down narrates the exit, not a wake record
+		}
+		d.Sleep(d.TickInterval)
+		sinceBeat += d.TickInterval
+		// Heartbeat only between ticks, never on the final one (it coincides with the
+		// wake record below), so the bookends never double up.
+		if d.CapBackoffHeartbeat > 0 && sinceBeat >= d.CapBackoffHeartbeat && waited+d.TickInterval < d.CapBackoff {
+			remaining := d.CapBackoff - (waited + d.TickInterval)
+			d.Log.Structured(loopstream.Record{
+				Kind:    loopstream.KindCapBackoff,
+				Ticket:  identifier,
+				Message: fmt.Sprintf("loop — still capped; ~%s remaining, re-poll ~%s", remaining, wakeStr),
+			})
+			sinceBeat = 0
+		}
+	}
+	d.Log.Structured(loopstream.Record{Kind: loopstream.KindCapBackoff, Ticket: identifier, Message: "loop — cap backoff elapsed; re-polling for " + identifier})
+}
 
 // interruptibleSleep waits out total, but breaks the wait into TickInterval chunks
 // and re-checks StopRequested between each chunk. A stop (SIGINT/sentinel) landing

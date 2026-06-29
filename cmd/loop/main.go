@@ -53,6 +53,13 @@ import (
 // env-overridable durations (DESIGN.md §cmd/loop config knobs).
 const tickInterval = 2 * time.Second
 
+// capBackoffHeartbeat is how often the post-cap-abort backoff narrates a "still
+// capped, re-poll ~HH:MMZ" heartbeat (BEH-605). One per minute keeps even the 45m
+// default backoff visibly alive without flooding the log — coarse enough to be
+// quiet, fine enough that a watcher never mistakes a long backoff for a dead daemon.
+// Like tickInterval, it is a fixed responsiveness floor, not an operator knob.
+const capBackoffHeartbeat = time.Minute
+
 // killDockerTimeout bounds the hard-abort docker calls so a wedged daemon can't
 // hang the exit path (BEH-388) — the second Ctrl-C must always terminate promptly.
 const killDockerTimeout = 10 * time.Second
@@ -124,6 +131,7 @@ func main() {
 		PollInterval:           cfg.LoopPollInterval,
 		TickInterval:           tickInterval,
 		CapBackoff:             cfg.LoopCapBackoff,
+		CapBackoffHeartbeat:    capBackoffHeartbeat,
 		MaxConsecutiveFailures: cfg.LoopMaxConsecutiveFailures,
 		MaxTickets:             cfg.LoopMaxTickets,
 		MaxRuntime:             cfg.LoopMaxRuntime,
