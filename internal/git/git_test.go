@@ -114,7 +114,7 @@ func TestRebaseOntoMainReplaysViaResetAndCherryPickNotRebase(t *testing.T) {
 		if strings.Contains(joined, "reset --hard origin/main") {
 			sawReset = true
 		}
-		if strings.Contains(joined, "cherry-pick origin/main..") {
+		if strings.Contains(joined, "cherry-pick --empty=drop origin/main..") {
 			sawCherryPick = true
 			// The replay carries the harness identity overrides (BEH-579) so replayed
 			// commits' committer never inherits the host's placeholder config.
@@ -127,7 +127,7 @@ func TestRebaseOntoMainReplaysViaResetAndCherryPickNotRebase(t *testing.T) {
 		t.Errorf("expected a `reset --hard origin/main` to move the branch onto the fresh base, calls: %v", *calls)
 	}
 	if !sawCherryPick {
-		t.Errorf("expected a `cherry-pick origin/main..<tip>` to replay the feature commits, calls: %v", *calls)
+		t.Errorf("expected a `cherry-pick --empty=drop origin/main..<tip>` to replay the feature commits (the flag auto-drops a now-redundant commit, BEH-622), calls: %v", *calls)
 	}
 }
 
@@ -141,7 +141,7 @@ func TestRebaseOntoMainCherryPickConflictAbortsAndRestores(t *testing.T) {
 		if strings.Contains(joined, "merge-base --is-ancestor") {
 			return errors.New("not an ancestor")
 		}
-		if strings.Contains(joined, "cherry-pick origin/main..") {
+		if strings.Contains(joined, "cherry-pick --empty=drop origin/main..") {
 			return errors.New("exit status 1: CONFLICT (content)")
 		}
 		return nil
@@ -275,6 +275,86 @@ func TestRebaseOntoMainAgainstRealGit(t *testing.T) {
 			t.Fatalf("branch tip = %s after abort, want it restored to %s", after, featTip)
 		}
 	})
+}
+
+// BEH-622: when a feature commit's diff is already present identically in
+// origin/main (a sibling PR merged the same change, or a hotfix was cherry-picked
+// to main), replaying it makes the cherry-pick "now empty" and a bare `git
+// cherry-pick` HALTS with exit 1 ("use 'git cherry-pick --skip'"). rebaseOntoMain
+// would misread that as a genuine content conflict and burn a sandboxed
+// resolution session on a replay an ideal `git rebase` would auto-drop clean.
+// `cherry-pick --empty=drop` drops the redundant commit and continues, keeping the
+// non-redundant ones — so the replay reports RebaseClean. The setup gives feat TWO
+// commits (one redundant with main, one not) so the test proves the redundant one
+// is dropped AND the other is preserved.
+func TestRebaseOntoMainDropsRedundantCommit(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	repo := t.TempDir()
+	git := func(args ...string) {
+		t.Helper()
+		if err := execIn(repo, args...); err != nil {
+			t.Fatalf("git %v: %v", args, err)
+		}
+	}
+	write := func(name, contents string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(repo, name), []byte(contents), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	const slug = "beh-622-real"
+	git("init", "-q", "-b", "main")
+	git("config", "user.email", "t@example.com")
+	git("config", "user.name", "Test")
+	write("feat.txt", "base\n")
+	write("shared.txt", "orig\n")
+	git("add", "-A")
+	git("commit", "-q", "-m", "base")
+	// feat branch makes two commits: the first sets shared.txt to a value main will
+	// also adopt (becomes redundant on replay); the second is feat-only (must survive).
+	git("checkout", "-q", "-b", BranchName(slug))
+	write("shared.txt", "shared change\n")
+	git("add", "-A")
+	git("commit", "-q", "-m", "feat redundant")
+	write("feat.txt", "feat change\n")
+	git("add", "-A")
+	git("commit", "-q", "-m", "feat keep")
+	// main advances: it adopts the SAME shared.txt change (making feat's first commit
+	// redundant) plus an unrelated file. origin/main tracks that tip.
+	git("checkout", "-q", "main")
+	write("shared.txt", "shared change\n")
+	write("unrelated.txt", "main-only\n")
+	git("add", "-A")
+	git("commit", "-q", "-m", "main moved")
+	git("update-ref", "refs/remotes/origin/main", "main")
+	git("checkout", "-q", BranchName(slug))
+
+	if res := RebaseOntoMain(repo); res != RebaseClean {
+		t.Fatalf("res = %v, want RebaseClean — a commit already present in origin/main must be auto-dropped, not misread as a conflict (BEH-622)", res)
+	}
+	if !WorktreeClean(repo) {
+		t.Fatal("worktree should be clean after the redundant commit was dropped")
+	}
+	// The non-redundant commit survived: feat.txt carries feat's change.
+	feat, err := os.ReadFile(filepath.Join(repo, "feat.txt"))
+	if err != nil || string(feat) != "feat change\n" {
+		t.Fatalf("feat.txt = %q (err %v), want %q — the non-redundant commit must be preserved", string(feat), err, "feat change\n")
+	}
+	// The branch sits on top of main: it carries main's unrelated file.
+	if _, err := os.Stat(filepath.Join(repo, "unrelated.txt")); err != nil {
+		t.Fatalf("rebased branch should contain main's commit (unrelated.txt), stat err = %v", err)
+	}
+	// Exactly ONE commit replayed on top of origin/main — the redundant one was
+	// dropped (not kept as an empty commit), matching an ideal rebase's auto-drop.
+	out, err := exec.Command("git", "-C", repo, "rev-list", "--count", "origin/main..HEAD").Output()
+	if err != nil {
+		t.Fatalf("count replayed commits: %v", err)
+	}
+	if got := strings.TrimSpace(string(out)); got != "1" {
+		t.Fatalf("replayed commit count = %s, want 1 (the redundant commit must be dropped, the other kept)", got)
+	}
 }
 
 // BEH-617: new-worktree.sh drops an untracked .worktree-ready sentinel (BEH-549)

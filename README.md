@@ -13,6 +13,7 @@ A Go program (stdlib only, no module dependencies). The host does all remote I/O
 ## Prerequisites
 
 - Go **1.26+**
+- `git` **2.45+** (host-side) — the pre-push rebase replays with `git cherry-pick --empty=drop`, which auto-drops a now-redundant feature commit (the flag landed in git 2.45, May 2024; BEH-622)
 - A working local `docker` daemon
 - A checkout of herd (this repo) — bind-mounted into every sandbox
 

@@ -111,3 +111,20 @@ func TestBuildRebaseFixCarriesBashQuirkSteer(t *testing.T) {
 		t.Error("prompt missing the shared bash-quirk steer")
 	}
 }
+
+// BEH-622: a feature commit whose diff is already present identically in
+// origin/main makes the replay "now empty", and `git cherry-pick --continue`
+// reports "the previous cherry-pick is now empty" — NOT a content conflict. The
+// prompt must steer the agent to `git cherry-pick --skip` in that case (dropping
+// the redundant commit and continuing), so it doesn't misread the empty state as
+// an unresolvable conflict and give up. Distinct from the genuine-conflict steer.
+func TestBuildRebaseFixSteersEmptyCommitSkip(t *testing.T) {
+	p := BuildRebaseFix(sample, "beh-362", sampleWorktree)
+
+	if !regexp.MustCompile(`(?i)now empty`).MatchString(p) {
+		t.Error("prompt should name the \"the previous cherry-pick is now empty\" state that a redundant commit produces")
+	}
+	if !strings.Contains(p, "git cherry-pick --skip") {
+		t.Error("prompt should tell the agent to `git cherry-pick --skip` when a commit is already present in origin/main (not treat it as a conflict)")
+	}
+}

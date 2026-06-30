@@ -314,6 +314,8 @@ func BuildRebaseFix(t ticket.Ticket, slug, worktreePath string) string {
 		"  4. For each conflict: resolve it by hand, `git add` the resolved files, then `git cherry-pick --continue`. Repeat until the cherry-pick finishes and `git status` is clean.",
 		"  5. `git branch -D _premerge` to drop the marker.",
 		"",
+		"If `git cherry-pick` (or `--continue`) reports `The previous cherry-pick is now empty` / `the previous cherry-pick is now empty`, that is NOT a conflict to resolve — that feature commit's change is already present identically in origin/main (a sibling PR merged the same change, or it was cherry-picked to main). Run `git cherry-pick --skip` to drop the now-redundant commit and continue the replay. Do NOT `git add` an empty tree or try to force an empty commit; just `--skip` it (BEH-622).",
+		"",
 		"If any step aborts with `untracked working tree files would be overwritten` pointing at `.worktree-ready`, that is NOT a content conflict — it is the gitignored readiness sentinel new-worktree.sh drops in every worktree. Remove it with `rm -f .worktree-ready` and re-run the step.",
 		"",
 		"Resolve conflicts to preserve the intent of BOTH sides: keep this ticket's change AND the incoming change from main. Do NOT blindly take one side (`--ours`/`--theirs`) — read both hunks and merge them so neither feature is lost. When in doubt, the ticket's intent is below.",

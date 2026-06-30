@@ -377,8 +377,16 @@ func rebaseOntoMain(worktreePath string, run commandRunner) RebaseResult {
 	// rewrites the COMMITTER of every replayed commit to whoever runs it, so stamp the
 	// harness identity — exactly as the old rebase did — so the pushed branch never
 	// inherits the host checkout's placeholder identity (BEH-579).
+	//
+	// --empty=drop makes a commit whose diff is already present identically in
+	// origin/main (a sibling PR merged the same change, or a hotfix was cherry-picked
+	// to main) auto-drop and the replay continue, instead of halting with "the previous
+	// cherry-pick is now empty" (exit 1) — which a bare cherry-pick does and which we'd
+	// misread as a genuine conflict, needlessly burning a sandboxed resolution session.
+	// This matches an ideal `git rebase`'s auto-drop (BEH-622). Requires git ≥ 2.45
+	// (May 2024); the harness runs host-side (see README prerequisites).
 	args := append([]string{"-C", worktreePath}, identityArgs()...)
-	args = append(args, "cherry-pick", "origin/main.."+rebaseBackupRef)
+	args = append(args, "cherry-pick", "--empty=drop", "origin/main.."+rebaseBackupRef)
 	if run("git", args...) != nil {
 		// Genuine content conflict: abort the cherry-pick and restore the branch to its
 		// original tip, leaving it exactly as it was for a human (BEH-570). Both are
