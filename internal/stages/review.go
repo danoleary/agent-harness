@@ -47,6 +47,14 @@ const (
 	oomRetryBackoff = 10 * time.Second
 )
 
+// reviewVerdictMaxAttempts bounds the total review-session launches when a session
+// exits cleanly (code 0) one turn short of its verdict over an already-verified,
+// clean, gate-green worktree (BEH-624). The initial session plus one in-stage
+// re-launch — the diff is byte-identical and the gate is already green, so the
+// re-launch just re-reads the same diff and reaches its verdict; a persistent
+// no-verdict still falls through to fail-closed (the worktree is kept either way).
+const reviewVerdictMaxAttempts = 2
+
 // gateOOM* bound the OOM-kill retry of the heavier host-side gate (install + check
 // + build) separately (BEH-530). A full build's footprint is far larger than an
 // install's, so the install's short fixed beat doesn't transfer: on BEH-501 three
@@ -88,15 +96,21 @@ func Review(cfg config.Config, log *runlog.Logger, runID string, args Args) Resu
 	p := prompt.BuildReview(t, slug, worktreePath)
 	// Review emits no findings (retrospective owns them) → no findings mount.
 	containerName := fmt.Sprintf("herd-harness-%s-%d-%s", runID, os.Getpid(), reviewSession)
-	dockerArgs := sandbox.BuildDockerRunArgs(sandbox.Config{
-		Image:           cfg.Image,
-		HerdPath:        cfg.HerdPath,
-		FindingsDir:     "",
-		PnpmStoreVolume: cfg.PnpmStoreVolume,
-		Prompt:          p,
-		Model:           cfg.Model,
-		ContainerName:   containerName,
-	})
+	// Closure so the BEH-624 in-stage re-launch can run the same review prompt under a
+	// distinct --name (the timeout `docker kill` targets Options.ContainerName, and a
+	// retry must not collide with the first attempt's container).
+	buildReviewArgs := func(name string) []string {
+		return sandbox.BuildDockerRunArgs(sandbox.Config{
+			Image:           cfg.Image,
+			HerdPath:        cfg.HerdPath,
+			FindingsDir:     "",
+			PnpmStoreVolume: cfg.PnpmStoreVolume,
+			Prompt:          p,
+			Model:           cfg.Model,
+			ContainerName:   name,
+		})
+	}
+	dockerArgs := buildReviewArgs(containerName)
 
 	// Closures so an OOM-retry (BEH-524) can re-launch under a distinct --name: the
 	// name must match Options.ContainerName for the timeout `docker kill` to target
@@ -210,52 +224,39 @@ func Review(cfg config.Config, log *runlog.Logger, runID string, args Args) Resu
 
 	// --- review session (cold /review-worktree; fixes committed locally) ---
 	transcriptFile := runlog.TranscriptName(reviewSession, runID)
-	log.Structured(loopstream.Record{Kind: loopstream.KindSandboxLaunch, Ticket: args.Identifier, Stage: "review", Message: fmt.Sprintf("launching review session (cap %d min)", int(cfg.ReviewTimeout.Minutes()))})
-	reviewOutcome := session.Run(dockerArgs, session.Options{
-		ContainerName:  containerName,
-		TranscriptFile: transcriptFile,
-		Timeout:        cfg.ReviewTimeout,
-		IdleTimeout:    cfg.SessionIdleTimeout,
-		Verbose:        args.Verbose,
-		Log:            log,
-	})
-	log.Event(fmt.Sprintf(
-		"review session exited (code %d) — transcript at logs/%s/%s", reviewOutcome.ExitCode, args.Identifier, transcriptFile,
-	))
-	// A spending-cap abort (BEH-494) killed the review session before it could
-	// review anything — name that distinct retry-after-reset class so a log reader
-	// isn't misled by the host-side gate result below (which still runs against the
-	// committed TDD handoff regardless of whether the review agent did any work).
-	if reviewOutcome.SpendingCapAbort {
-		log.Event("review ↻ session aborted before running — spending cap reached, retry after reset (BEH-494)")
-	}
 
-	// Did the qualitative seven-lens review actually run? The host-side gate re-run
-	// below authorises the push, but a green gate only proves the diff compiles — it
-	// is NOT a review. A session OOM-killed mid-gate (exit 137) emits no "## Review:"
-	// verdict, and silently shipping it on green gates loses exactly the review that
-	// matters most on a risky diff (BEH-525, from the BEH-499 OOM). Flag that here so
-	// the run log carries the signal rather than masquerading as a full review pass.
-	completeness := verify.ReviewQualitative(reviewOutcome.ExitCode, reviewOutcome.ReviewVerdictEmitted)
-	if !completeness.Complete {
-		log.Event("review ⚠ " + completeness.Reason)
-		fmt.Fprintln(os.Stderr, "warning: "+completeness.Reason)
-	} else {
-		log.Event("review ✓ " + completeness.Reason)
-	}
-
-	// A review that ran but declared a blocked disposition found a Blocker/Important
-	// finding it could not autonomously resolve (BEH-580). The autonomous pipeline has
-	// no human to answer the skill's approval prompt, so this fails the push closed
-	// below rather than shipping the finding to a PR unaddressed (the BEH-439 leak).
-	if reviewOutcome.ReviewBlocked {
-		log.Event("review ⚠ verdict declared a blocked disposition — an unresolved blocker/important finding needs a human decision; will not push (BEH-580)")
-	}
-
-	// --- ground truth + push gate (harness, host-side) ---
-	// Refresh origin/main so the commit range + PR base are current.
-	if err := gitpkg.FetchMain(cfg.HerdPath); err != nil {
-		log.Event("review … warning: could not fetch origin/main: " + err.Error())
+	// runReviewSession launches one cold /review-worktree session over the worktree
+	// under a distinct --name + transcript per attempt, so the BEH-624 in-stage
+	// re-launch below doesn't collide with the first attempt's container (the timeout
+	// `docker kill` targets Options.ContainerName).
+	runReviewSession := func(attempt int) session.Outcome {
+		name, transcript := containerName, transcriptFile
+		args1 := dockerArgs
+		if attempt > 1 {
+			name = fmt.Sprintf("%s-retry%d", containerName, attempt)
+			transcript = runlog.TranscriptName(fmt.Sprintf("%s-retry%d", reviewSession, attempt), runID)
+			args1 = buildReviewArgs(name)
+		}
+		log.Structured(loopstream.Record{Kind: loopstream.KindSandboxLaunch, Ticket: args.Identifier, Stage: "review", Message: fmt.Sprintf("launching review session (attempt %d/%d, cap %d min)", attempt, reviewVerdictMaxAttempts, int(cfg.ReviewTimeout.Minutes()))})
+		out := session.Run(args1, session.Options{
+			ContainerName:  name,
+			TranscriptFile: transcript,
+			Timeout:        cfg.ReviewTimeout,
+			IdleTimeout:    cfg.SessionIdleTimeout,
+			Verbose:        args.Verbose,
+			Log:            log,
+		})
+		log.Event(fmt.Sprintf(
+			"review session exited (code %d) — transcript at logs/%s/%s", out.ExitCode, args.Identifier, transcript,
+		))
+		// A spending-cap abort (BEH-494) killed the review session before it could
+		// review anything — name that distinct retry-after-reset class so a log reader
+		// isn't misled by the host-side gate result below (which still runs against the
+		// committed TDD handoff regardless of whether the review agent did any work).
+		if out.SpendingCapAbort {
+			log.Event("review ↻ session aborted before running — spending cap reached, retry after reset (BEH-494)")
+		}
+		return out
 	}
 
 	// Re-run `pnpm check && pnpm typecheck` in a throwaway container. The gate's
@@ -272,8 +273,8 @@ func Review(cfg config.Config, log *runlog.Logger, runID string, args Args) Resu
 	// runHostGate runs `pnpm check && typecheck` in a throwaway container under the
 	// OOM-retry, keyed by a base container name + a transcript tag so it can run more
 	// than once per stage (the pre-push conflict path re-gates the resolved tree —
-	// BEH-581). baseName/transcriptTag are the (runID-derived) first-attempt names;
-	// retries suffix them.
+	// BEH-581; the BEH-624 review re-launch re-gates the possibly-rewritten tree).
+	// baseName/transcriptTag are the (runID-derived) first-attempt names; retries suffix them.
 	runHostGate := func(baseName, transcriptTag string) session.Outcome {
 		gateBackoff := session.ExponentialBackoff(gateOOMBackoffBase, gateOOMBackoffCap)
 		outcome, _ := session.RetryTransient(gateOOMMaxAttempts, gateBackoff, time.Sleep, func(attempt int) session.Outcome {
@@ -303,6 +304,14 @@ func Review(cfg config.Config, log *runlog.Logger, runID string, args Args) Resu
 		return outcome
 	}
 
+	reviewOutcome := runReviewSession(1)
+
+	// --- ground truth + push gate (harness, host-side) ---
+	// Refresh origin/main so the commit range + PR base are current.
+	if err := gitpkg.FetchMain(cfg.HerdPath); err != nil {
+		log.Event("review … warning: could not fetch origin/main: " + err.Error())
+	}
+
 	log.Event(fmt.Sprintf("re-running gates host-side (cap %d min)", int(cfg.ReviewTimeout.Minutes())))
 	gateOutcome := runHostGate(gateName, runID)
 	gateExit := gateOutcome.ExitCode
@@ -312,6 +321,57 @@ func Review(cfg config.Config, log *runlog.Logger, runID string, args Args) Resu
 	// the worktree is also clean, guaranteeing what shipped is exactly what the gate
 	// validated (never the agent's say-so, and never an unverified working tree).
 	clean := gitpkg.WorktreeClean(worktreePath)
+
+	// Did the qualitative seven-lens review actually run? The host-side gate re-run
+	// above authorises the push, but a green gate only proves the diff compiles — it
+	// is NOT a review. A session that ends before the "## Review:" verdict (an OOM
+	// mid-gate, or just stopping a turn short) leaves the diff unreviewed.
+	completeness := verify.ReviewQualitative(reviewOutcome.ExitCode, reviewOutcome.ReviewVerdictEmitted)
+
+	// BEH-624: the cheapest incompleteness class to recover. A review that exits
+	// cleanly (code 0) one turn short of its verdict — over a clean worktree whose
+	// committed tip the host gate already proved green — has a byte-identical, fully
+	// verified diff; it just needs its last few turns to print the verdict. Re-launch
+	// it in-stage (bounded) rather than discard the verified diff for a whole-pipeline
+	// re-review, mirroring the OOM / conflict-resolution re-launch pattern. Ground
+	// truth stays the harness gate + the emitted verdict, so nothing ships on
+	// self-report; verify.ReviewVerdictRetry gates eligibility (no retry on an OOM, a
+	// cap abort, a dirty tree, or a red gate). Re-gate after each re-launch: the review
+	// may have committed fixes, so the prior gate would be stale.
+	for attempt := 2; attempt <= reviewVerdictMaxAttempts && verify.ReviewVerdictRetry(verify.ReviewRetryInputs{
+		VerdictEmitted:   reviewOutcome.ReviewVerdictEmitted,
+		ExitCode:         reviewOutcome.ExitCode,
+		SpendingCapAbort: reviewOutcome.SpendingCapAbort,
+		WorktreeClean:    clean,
+		GatesGreen:       gateExit == 0,
+	}).Retry; attempt++ {
+		log.Event(fmt.Sprintf(
+			"review ↻ session exited cleanly (code 0) one turn short of its verdict over a clean, gate-green worktree — re-launching review %d/%d (BEH-624)",
+			attempt-1, reviewVerdictMaxAttempts-1,
+		))
+		reviewOutcome = runReviewSession(attempt)
+		gateOutcome = runHostGate(fmt.Sprintf("%s-retry%d", gateName, attempt), fmt.Sprintf("%s-retry%d", runID, attempt))
+		gateExit = gateOutcome.ExitCode
+		clean = gitpkg.WorktreeClean(worktreePath)
+		completeness = verify.ReviewQualitative(reviewOutcome.ExitCode, reviewOutcome.ReviewVerdictEmitted)
+	}
+
+	// Flag the final review completeness so the run log carries the signal rather than
+	// a green gate masquerading as a full review pass (BEH-525, from the BEH-499 OOM).
+	if !completeness.Complete {
+		log.Event("review ⚠ " + completeness.Reason)
+		fmt.Fprintln(os.Stderr, "warning: "+completeness.Reason)
+	} else {
+		log.Event("review ✓ " + completeness.Reason)
+	}
+
+	// A review that ran but declared a blocked disposition found a Blocker/Important
+	// finding it could not autonomously resolve (BEH-580). The autonomous pipeline has
+	// no human to answer the skill's approval prompt, so this fails the push closed
+	// below rather than shipping the finding to a PR unaddressed (the BEH-439 leak).
+	if reviewOutcome.ReviewBlocked {
+		log.Event("review ⚠ verdict declared a blocked disposition — an unresolved blocker/important finding needs a human decision; will not push (BEH-580)")
+	}
 	// A clean worktree whose committed tip makes zero net change against origin/main is
 	// the BEH-603 recommend-close disposition: nothing to ship, so the ticket should be
 	// closed as a duplicate/superseded rather than opened as an empty-commit PR (the PR

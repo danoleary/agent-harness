@@ -242,6 +242,13 @@ loop:
                 AND that verdict's disposition is NOT `blocked` (BEH-580)
                 AND the branch makes a NON-empty net diff against origin/main (BEH-603)
                 // never the agent's self-report; a green gate is NOT a review (BEH-569)
+  if review has NO verdict but exited CLEANLY (code 0, not an OOM/cap-abort) over a clean,
+     gate-green worktree (BEH-624): the diff is byte-identical and already verified — the review
+     just stopped a turn short of printing its verdict. Re-launch the review session in-stage,
+     BOUNDED (initial + 1 re-launch), re-gating the possibly-rewritten tree each time, before
+     falling through to fail-closed. The cheapest incompleteness class to recover — mirrors the
+     OOM / conflict-resolution re-launch pattern; a persistent no-verdict still fails closed and
+     keeps the worktree. (An OOM 137, a cap abort, a dirty tree, or a red gate are NOT eligible.)
   if recommend-close (BEH-603): worktree clean AND `git diff origin/main` is EMPTY
                 // a zero-net-diff branch (the empty-commit BEH-365 produced) — checked before the
                 // gate/review checks, after the clean-tree gate (a dirty tree may hide uncommitted work)

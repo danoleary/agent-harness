@@ -250,6 +250,63 @@ func ReviewQualitative(exitCode int, verdictEmitted bool) ReviewCompleteness {
 	return ReviewCompleteness{Complete: false, Reason: fmt.Sprintf("review session exited %d before emitting a verdict — qualitative review incomplete", exitCode)}
 }
 
+// ReviewRetryInputs is the ground truth that decides whether a review session which
+// ended without a verdict should be re-launched in-stage over the same unchanged
+// worktree (BEH-624). It mirrors what review.go knows right after the session and
+// its host-side gate re-run.
+type ReviewRetryInputs struct {
+	// VerdictEmitted is true iff the session already produced its "## Review:"
+	// verdict — there is nothing to re-launch for.
+	VerdictEmitted bool
+	// ExitCode is the review session's container exit code.
+	ExitCode int
+	// SpendingCapAbort is true iff a billing/usage cap killed the session before it
+	// did any work — its own retry-after-reset class, handled separately.
+	SpendingCapAbort bool
+	// WorktreeClean is true iff the worktree had no uncommitted changes after the
+	// session — the gate validated exactly the committed tip that would ship.
+	WorktreeClean bool
+	// GatesGreen is true iff the harness's own host-side gate re-run passed.
+	GatesGreen bool
+}
+
+// ReviewRetryDecision is ReviewVerdictRetry's verdict: whether to re-launch the
+// review session, and why (for the run log).
+type ReviewRetryDecision struct {
+	Retry  bool
+	Reason string
+}
+
+// ReviewVerdictRetry decides whether a review session that ended WITHOUT its verdict
+// is eligible for a bounded in-stage re-launch over the same unchanged worktree
+// (BEH-624) — the one incompleteness class that previously had no in-stage recovery
+// and instead discarded a fully verified, gate-green diff to be re-reviewed from
+// scratch on a later whole-pipeline dispatch.
+//
+// It is the cheapest case to retry, so the bar is deliberately narrow: re-launch
+// ONLY when the diff is already proven good and the review merely stopped a turn
+// short of printing the verdict. Every other condition routes elsewhere:
+//
+//   - VerdictEmitted → there is nothing to retry (handled by ReviewQualitative).
+//   - A non-zero ExitCode (an OOM 137, a crash) is NOT this class — it is the
+//     killed-before-verdict case ReviewQualitative already names; re-launching over a
+//     possibly-corrupt run is not the cheap byte-identical retry this targets.
+//   - SpendingCapAbort is its own retry-after-reset class (the caller defers until
+//     the cap resets), never an in-stage re-launch that would burn the same cap.
+//   - A dirty worktree means the gate validated a different tree than would ship, so
+//     the diff is not the proven-good artifact this retry assumes.
+//   - Red gates mean the diff itself is broken — re-running the review can't make it
+//     shippable, so it falls through to fail-closed with the worktree kept.
+func ReviewVerdictRetry(in ReviewRetryInputs) ReviewRetryDecision {
+	if in.VerdictEmitted {
+		return ReviewRetryDecision{Retry: false, Reason: "review already emitted its verdict — nothing to re-launch"}
+	}
+	if in.ExitCode == 0 && !in.SpendingCapAbort && in.WorktreeClean && in.GatesGreen {
+		return ReviewRetryDecision{Retry: true, Reason: "review exited cleanly (code 0) one turn short of its verdict over a clean, gate-green worktree — re-launching to reach the verdict (BEH-624)"}
+	}
+	return ReviewRetryDecision{Retry: false, Reason: "review without a verdict is not the cheap clean-exit case (non-zero exit, spending-cap abort, dirty worktree, or red gate) — falling through to fail-closed"}
+}
+
 // RebaseResolutionOutcome is the git ground truth a sandboxed pre-push
 // conflict-resolution session left behind (BEH-581), the inputs that decide
 // whether the rebased branch may proceed to a re-gate + push. SessionExit is the

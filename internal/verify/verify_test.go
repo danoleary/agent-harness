@@ -407,3 +407,90 @@ func TestRebaseResolutionFailsWhenNotRebased(t *testing.T) {
 		t.Errorf("reason %q should explain the branch was not rebased onto base", r.Reason)
 	}
 }
+
+// BEH-624: the cheapest incompleteness class to recover. The review session exited
+// cleanly (code 0) one turn short of its verdict, the worktree is clean, and the
+// harness's own host-side gate is green — the diff is byte-identical and already
+// verified, the review just needs its last few turns to print the verdict. That is
+// eligible for a bounded in-stage re-launch over the same worktree, not a fall-
+// through to fail-closed.
+func TestReviewVerdictRetryEligibleOnCleanExitGreenGate(t *testing.T) {
+	d := ReviewVerdictRetry(ReviewRetryInputs{
+		VerdictEmitted:   false,
+		ExitCode:         0,
+		SpendingCapAbort: false,
+		WorktreeClean:    true,
+		GatesGreen:       true,
+	})
+	if !d.Retry {
+		t.Errorf("a clean-exit, gate-green, clean-tree review without a verdict should be retried, got %+v", d)
+	}
+}
+
+// A review that already emitted its verdict is complete — there is nothing to
+// re-launch, regardless of the other inputs.
+func TestReviewVerdictRetryNotEligibleWhenVerdictEmitted(t *testing.T) {
+	d := ReviewVerdictRetry(ReviewRetryInputs{
+		VerdictEmitted: true,
+		ExitCode:       0,
+		WorktreeClean:  true,
+		GatesGreen:     true,
+	})
+	if d.Retry {
+		t.Errorf("a review that already produced a verdict must not be re-launched, got %+v", d)
+	}
+}
+
+// An OOM (exit 137) before the verdict is the killed-before-verdict class
+// ReviewQualitative already names — NOT the cheap clean-exit retry this targets. A
+// re-launch over a memory-pressured host is not the byte-identical recovery here.
+func TestReviewVerdictRetryNotEligibleOnOomExit(t *testing.T) {
+	d := ReviewVerdictRetry(ReviewRetryInputs{
+		ExitCode:      137,
+		WorktreeClean: true,
+		GatesGreen:    true,
+	})
+	if d.Retry {
+		t.Errorf("an OOM (137) before the verdict is not the clean-exit retry class, got %+v", d)
+	}
+}
+
+// A spending-cap abort is its own retry-after-reset class — the session is killed
+// before doing any work, so an in-stage re-launch would just burn the same cap.
+func TestReviewVerdictRetryNotEligibleOnSpendingCapAbort(t *testing.T) {
+	d := ReviewVerdictRetry(ReviewRetryInputs{
+		ExitCode:         0,
+		SpendingCapAbort: true,
+		WorktreeClean:    true,
+		GatesGreen:       true,
+	})
+	if d.Retry {
+		t.Errorf("a spending-cap abort defers until the cap resets, never an in-stage re-launch, got %+v", d)
+	}
+}
+
+// A dirty worktree means the gate validated a different tree than would ship, so the
+// diff is not the proven-good artifact the cheap retry assumes. Fall through.
+func TestReviewVerdictRetryNotEligibleWhenWorktreeDirty(t *testing.T) {
+	d := ReviewVerdictRetry(ReviewRetryInputs{
+		ExitCode:      0,
+		WorktreeClean: false,
+		GatesGreen:    true,
+	})
+	if d.Retry {
+		t.Errorf("a dirty worktree is not the proven-good diff this retry assumes, got %+v", d)
+	}
+}
+
+// Red gates mean the diff itself is broken — re-running the review cannot make it
+// shippable, so it must fall through to fail-closed rather than re-launch.
+func TestReviewVerdictRetryNotEligibleWhenGatesRed(t *testing.T) {
+	d := ReviewVerdictRetry(ReviewRetryInputs{
+		ExitCode:      0,
+		WorktreeClean: true,
+		GatesGreen:    false,
+	})
+	if d.Retry {
+		t.Errorf("a red gate means the diff is broken — re-running the review can't fix it, got %+v", d)
+	}
+}
