@@ -62,10 +62,12 @@ type Config struct {
 	CIPollInterval time.Duration
 	// CIPollBudget caps a single wait for CI checks to reach a terminal state.
 	CIPollBudget time.Duration
-	// CIPollStall is the no-progress window: once the pending check set stops
-	// changing for this long, the poll gives up early (ErrPollStalled) rather than
-	// burning the full CIPollBudget on a check wedged pending — the merge-queue /
-	// main-only context that GitHub reports as expected-but-never-run on a PR.
+	// CIPollStall is the no-progress window: once a pending check set that carries stall
+	// evidence (a settled real gate or an EXPECTED context) stops changing for this long,
+	// the poll gives up early (ErrPollStalled) rather than burning the full CIPollBudget on
+	// a check wedged pending — the merge-queue / main-only context that GitHub reports as
+	// expected-but-never-run on a PR. A slow all-pending cold start carries no such evidence
+	// and is never stalled; it rides to CIPollBudget (BEH-620).
 	CIPollStall time.Duration
 	// AnthropicAPIKey is the host-only API key used for the cheap host-side semantic
 	// dedup model call when filing findings (BEH-573). Unlike the sandbox credential
@@ -118,11 +120,15 @@ const (
 	defaultCIFixBudget      = 30 * time.Minute
 	defaultCIPollInterval   = 15 * time.Second
 	defaultCIPollBudget     = 12 * time.Minute
-	// defaultCIPollStall bails a wedged-pending watch ~4 min after the live run
-	// settles (the real PR checks finish in ~5 min, so this only ever fires once a
-	// merge-queue/main-only context is the lone thing left pending). It must comfortably
-	// exceed CIPollInterval so a still-progressing run is never cut short by it.
-	defaultCIPollStall = 4 * time.Minute
+	// defaultCIPollStall is the no-progress window after which a frozen-but-still-pending
+	// snapshot is treated as wedged (ErrPollStalled). The poll only starts this timer once
+	// the snapshot carries stall evidence — a real gate has settled or an EXPECTED context
+	// is present (stallEvidence, BEH-620) — so it never trips on a slow cold start. It must
+	// comfortably exceed the gap between consecutive heavy-gate completions: the real gates
+	// here (full build + prerender, browser-backed storybook, e2e) each run well over 4 min,
+	// so a 4 min window false-positived between flips on a healthy run. 8 min gives generous
+	// headroom while staying below CIPollBudget (12 min) so a genuine wedge still bails early.
+	defaultCIPollStall = 8 * time.Minute
 
 	defaultLoopPollInterval           = 60 * time.Second
 	defaultLoopCapBackoff             = 45 * time.Minute

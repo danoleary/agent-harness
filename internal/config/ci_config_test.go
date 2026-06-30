@@ -22,8 +22,8 @@ func TestLoadCIDefaults(t *testing.T) {
 	if cfg.CIPollBudget != 12*time.Minute {
 		t.Errorf("CIPollBudget = %v, want 12m", cfg.CIPollBudget)
 	}
-	if cfg.CIPollStall != 4*time.Minute {
-		t.Errorf("CIPollStall = %v, want 4m", cfg.CIPollStall)
+	if cfg.CIPollStall != 8*time.Minute {
+		t.Errorf("CIPollStall = %v, want 8m", cfg.CIPollStall)
 	}
 }
 

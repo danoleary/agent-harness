@@ -68,10 +68,13 @@ type Config struct {
 	PollInterval time.Duration
 	// PollBudget caps a single wait for checks to reach a terminal state.
 	PollBudget time.Duration
-	// PollStall is the no-progress window: once the pending check set stops
+	// PollStall is the no-progress window: once a pending check set that carries stall
+	// evidence (a settled real gate, or an EXPECTED context — see stallEvidence) stops
 	// changing for this long, the run is treated as wedged (a merge-queue/main-only
 	// context reported as expected-but-never-run on the PR) and the poll bails with
-	// ErrPollStalled instead of burning the full PollBudget. Zero disables it.
+	// ErrPollStalled instead of burning the full PollBudget. An all-pending cold start
+	// with no such evidence is never stalled — it rides to PollBudget (BEH-620). Zero
+	// disables it.
 	PollStall time.Duration
 }
 
@@ -332,7 +335,7 @@ func pollErrOutcome(err error, checks []Check) Outcome {
 	if errors.Is(err, ErrPollStalled) {
 		return Outcome{
 			OK:      false,
-			Reason:  "CI stalled while still pending (a required check is wedged — likely a merge-queue/main-only context that won't run on the PR); check the PR manually",
+			Reason:  "CI stalled while still pending (no further progress within the stall window — a required check may be wedged, e.g. a merge-queue/main-only context that won't run on the PR, or a gate that hung); check the PR manually",
 			Failing: notGreen(checks),
 		}
 	}

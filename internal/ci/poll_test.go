@@ -190,6 +190,32 @@ func TestPollDoesNotStallWhileARealGateIsStillRunning(t *testing.T) {
 	}
 }
 
+func TestPollDoesNotStallOnColdStartAllPending(t *testing.T) {
+	clock := newFakeClock()
+	sleep := func(d time.Duration) { clock.sleep(d) }
+	// A slow cold start: every required gate is still QUEUED (pending, no EXPECTED
+	// state, nothing green) because the CI runners have not picked the jobs up yet.
+	// The signature is frozen, but byte-for-byte it is indistinguishable from a real
+	// wedge ONLY if we ignore that nothing has progressed. A slow start is not a wedge,
+	// so the poll must keep waiting to the budget, not bail with ErrPollStalled (BEH-620).
+	fetch, _ := scriptedChecks([]Check{
+		{Name: "build", Bucket: BucketPending},
+		{Name: "storybook", Bucket: BucketPending},
+		{Name: "e2e", Bucket: BucketPending},
+	})
+	cfg := pollConfig{interval: 30 * time.Second, budget: 10 * time.Minute, stall: 2 * time.Minute}
+	v, _, err := poll(fetch, cfg, sleep, clock.now)
+	if errors.Is(err, ErrPollStalled) {
+		t.Fatal("a frozen all-pending cold start must not be treated as a stall (BEH-620)")
+	}
+	if !errors.Is(err, ErrPollTimeout) {
+		t.Fatalf("err = %v, want ErrPollTimeout (rode to budget, no stall)", err)
+	}
+	if v != Pending {
+		t.Fatalf("verdict = %v, want Pending", v)
+	}
+}
+
 func TestPollDoesNotStallWhileProgressing(t *testing.T) {
 	clock := newFakeClock()
 	sleep := func(d time.Duration) { clock.sleep(d) }

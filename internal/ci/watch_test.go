@@ -354,6 +354,11 @@ func TestWatchReportsPollStalled(t *testing.T) {
 	if !strings.Contains(strings.ToLower(out.Reason), "stall") {
 		t.Fatalf("reason %q should explain CI stalled while pending", out.Reason)
 	}
+	// The detector cannot actually distinguish a wedge from a slow run, so the message
+	// must hedge ("may") rather than assert a wedge as fact (BEH-620).
+	if !strings.Contains(strings.ToLower(out.Reason), "may") {
+		t.Fatalf("reason %q should hedge (a wedge is possible, not confirmed)", out.Reason)
+	}
 	if len(out.Failing) == 0 {
 		t.Fatal("expected the wedged checks carried for the operator report")
 	}

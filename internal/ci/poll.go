@@ -88,8 +88,14 @@ func poll(fetch func() ([]Check, error), cfg pollConfig, sleep func(time.Duratio
 		// Still pending. Detect a stalled run: if the check set has not changed for
 		// the stall window, a context is wedged pending and will not move on this PR
 		// (a merge-queue/main-only job reported as expected-but-unrun). Bail now
-		// instead of waiting out the full budget on it.
-		if cfg.stall > 0 {
+		// instead of waiting out the full budget on it. But only once the snapshot
+		// carries stall evidence (stallEvidence): an all-pending snapshot with nothing
+		// settled and no EXPECTED mark is a slow CI cold start — the runners simply have
+		// not picked the jobs up yet — and is byte-for-byte identical in signature to a
+		// real wedge, so firing on it abandons a PR that would go green on its own
+		// (BEH-620). Until real progress or an EXPECTED context appears, keep polling to
+		// the budget.
+		if cfg.stall > 0 && stallEvidence(checks) {
 			sig := checksSignature(checks)
 			if !haveSig || sig != lastSig {
 				lastSig, stalledSince, haveSig = sig, now(), true
@@ -110,6 +116,25 @@ func poll(fetch func() ([]Check, error), cfg pollConfig, sleep func(time.Duratio
 		}
 		sleep(cfg.interval)
 	}
+}
+
+// stallEvidence reports whether a frozen pending snapshot carries enough signal to
+// be treated as a genuine stall rather than a slow CI cold start. A real wedge always
+// leaves one of two marks: at least one real (non-EXPECTED) gate has already settled
+// into a terminal bucket — typically a green pass/skip, since a fail would have
+// classified the whole run already — or a structurally-wedged EXPECTED context is
+// present (a merge-queue/main-only required check that will never run on the PR head).
+// An all-pending snapshot with neither mark is a queue that simply has not picked the
+// jobs up yet; freezing on it is a slow start, not a wedge, so the poller keeps waiting
+// to the budget instead of abandoning a PR that would go green on its own (BEH-620).
+// This mirrors the evidence wedgedReady requires before short-circuiting a clean wedge.
+func stallEvidence(checks []Check) bool {
+	for _, c := range checks {
+		if isWedged(c) || c.Bucket != BucketPending {
+			return true
+		}
+	}
+	return false
 }
 
 // checksSignature is an order-independent fingerprint of a pending snapshot —
