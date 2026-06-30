@@ -120,6 +120,12 @@ func NewClient(t Transport) *Client {
 	return &Client{transport: t}
 }
 
+// fetchTicketQuery pulls the ticket plus its child sub-issues (BEH-619). An
+// umbrella/batch ticket defers its real work to children; the sandbox can't reach
+// Linear (ADR-0002), so the host fetches each child's title + body here and the
+// prompt inlines them. The children list is bounded (first: 50) — far beyond any
+// real umbrella's fan-out, but a hard cap so a pathological parent can't balloon
+// the prompt.
 const fetchTicketQuery = `
 	query Ticket($id: String!) {
 		issue(id: $id) {
@@ -130,6 +136,13 @@ const fetchTicketQuery = `
 			priorityLabel
 			team {
 				id
+			}
+			children(first: 50) {
+				nodes {
+					identifier
+					title
+					description
+				}
 			}
 		}
 	}
@@ -257,6 +270,13 @@ func (c *Client) FetchTicket(identifier string) (ticket.Ticket, error) {
 			Team          *struct {
 				ID string `json:"id"`
 			} `json:"team"`
+			Children *struct {
+				Nodes []struct {
+					Identifier  string `json:"identifier"`
+					Title       string `json:"title"`
+					Description string `json:"description"`
+				} `json:"nodes"`
+			} `json:"children"`
 		} `json:"issue"`
 	}
 	if err := json.Unmarshal(data, &resp); err != nil {
@@ -278,6 +298,15 @@ func (c *Client) FetchTicket(identifier string) (ticket.Ticket, error) {
 	}
 	if resp.Issue.Team != nil {
 		t.TeamID = resp.Issue.Team.ID
+	}
+	if resp.Issue.Children != nil {
+		for _, c := range resp.Issue.Children.Nodes {
+			t.SubIssues = append(t.SubIssues, ticket.SubIssue{
+				Identifier:  c.Identifier,
+				Title:       c.Title,
+				Description: c.Description,
+			})
+		}
 	}
 	return t, nil
 }

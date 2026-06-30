@@ -2,6 +2,7 @@ package linear
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -54,8 +55,65 @@ func TestFetchTicketParsesIssue(t *testing.T) {
 		Priority:    "Urgent",
 		TeamID:      "team-uuid",
 	}
-	if got != want {
+	if !reflect.DeepEqual(got, want) {
 		t.Errorf("ticket = %+v, want %+v", got, want)
+	}
+}
+
+// BEH-619: an umbrella/batch ticket's real work lives in its child sub-issues.
+// The sandbox is isolated from Linear (ADR-0002), so FetchTicket must pull each
+// child's title + body host-side (the query requests `children`) and carry them
+// on the ticket — the prompt inlines them so the session never reaches Linear.
+func TestFetchTicketParsesSubIssues(t *testing.T) {
+	tr, calls := transportReturning(t, map[string]any{
+		"issue": map[string]any{
+			"identifier":  "BEH-520",
+			"title":       "Lint/boundary guard sweep",
+			"description": "Batch the small static-rule tickets.",
+			"children": map[string]any{
+				"nodes": []any{
+					map[string]any{"identifier": "BEH-293", "title": "no-forced-open-modal rule", "description": "Forbid open={true}."},
+					map[string]any{"identifier": "BEH-381", "title": "story-module boundary", "description": "Import via the seam."},
+				},
+			},
+		},
+	})
+
+	got, err := NewClient(tr).FetchTicket("BEH-520")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []ticket.SubIssue{
+		{Identifier: "BEH-293", Title: "no-forced-open-modal rule", Description: "Forbid open={true}."},
+		{Identifier: "BEH-381", Title: "story-module boundary", Description: "Import via the seam."},
+	}
+	if !reflect.DeepEqual(got.SubIssues, want) {
+		t.Errorf("SubIssues = %+v, want %+v", got.SubIssues, want)
+	}
+	// The fetch must actually request the children connection — otherwise the
+	// host has nothing to inline and the sandbox dead-ends on Linear again.
+	if !strings.Contains((*calls)[0].query, "children") {
+		t.Errorf("fetch query does not request children: %s", (*calls)[0].query)
+	}
+}
+
+// A ticket with no children carries an empty SubIssues slice (not a panic) — the
+// common, non-umbrella case.
+func TestFetchTicketNoSubIssues(t *testing.T) {
+	tr, _ := transportReturning(t, map[string]any{
+		"issue": map[string]any{
+			"identifier": "BEH-362",
+			"title":      "Ordinary ticket",
+			"children":   map[string]any{"nodes": []any{}},
+		},
+	})
+
+	got, err := NewClient(tr).FetchTicket("BEH-362")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got.SubIssues) != 0 {
+		t.Errorf("SubIssues = %+v, want empty", got.SubIssues)
 	}
 }
 

@@ -50,6 +50,52 @@ func TestBuildTddInjectsTitleAndDescription(t *testing.T) {
 	}
 }
 
+// BEH-619: an umbrella/batch ticket defers its real work to sub-issues, but the
+// sandbox is isolated from Linear (ADR-0002) — so mid-session the agent can't
+// fetch a child's spec and under-delivers (it reached for an unavailable
+// mcp__linear-server__get_issue and shipped 1 of ~9 children). The host fetches
+// each child host-side; BuildTdd must inline every child's id + title + body,
+// clearly delimited, and tell the agent to implement them all.
+func TestBuildTddInlinesSubIssueSpecs(t *testing.T) {
+	umbrella := ticket.Ticket{
+		Identifier:  "BEH-520",
+		Title:       "Lint/boundary guard sweep",
+		Description: "Batch the small static-rule tickets.",
+		SubIssues: []ticket.SubIssue{
+			{Identifier: "BEH-293", Title: "no-forced-open-modal rule", Description: "Forbid `open={true}` on a controlled modal."},
+			{Identifier: "BEH-381", Title: "story-module boundary", Description: "Stories must import via the module seam."},
+		},
+	}
+	p := BuildTdd(umbrella, "beh-520")
+
+	for _, want := range []string{
+		"BEH-293", "no-forced-open-modal rule", "Forbid `open={true}` on a controlled modal.",
+		"BEH-381", "story-module boundary", "Stories must import via the module seam.",
+	} {
+		if !strings.Contains(p, want) {
+			t.Errorf("prompt missing inlined sub-issue content %q", want)
+		}
+	}
+	// Must steer the agent to implement every child, not just the umbrella body.
+	if !regexp.MustCompile(`(?i)(every|all|each).{0,40}sub-?issue`).MatchString(p) {
+		t.Error("prompt does not tell the agent to implement every sub-issue")
+	}
+	// Must say the children are already fetched / not to look them up (the sandbox
+	// can't reach Linear).
+	if !regexp.MustCompile(`(?i)(already.*fetch|do not.*look.*up|cannot reach Linear)`).MatchString(p) {
+		t.Error("prompt does not say the sub-issues are pre-fetched / unreachable from the sandbox")
+	}
+}
+
+// An ordinary ticket with no sub-issues must read exactly as before — no empty
+// umbrella header, no dangling "sub-issue" steer.
+func TestBuildTddOmitsSubIssueSectionWhenNone(t *testing.T) {
+	p := BuildTdd(sample, "beh-362")
+	if regexp.MustCompile(`(?i)sub-?issue`).MatchString(p) {
+		t.Error("prompt with no sub-issues should not carry a sub-issue section")
+	}
+}
+
 func TestBuildTddSteersOffLinear(t *testing.T) {
 	p := BuildTdd(sample, "beh-362")
 
@@ -175,6 +221,38 @@ func TestBuildTddResumedBranchKeepsStandardSteers(t *testing.T) {
 		t.Error("resumed-branch prompt missing the findings dropbox path")
 	}
 	assertCarriesBashQuirkSteer(t, p, "tdd resumed-branch prompt")
+}
+
+// BEH-619: the resumed-branch and resume prompts are direct swap-ins for the
+// implementation BuildTdd prompt, so an umbrella ticket reaching either path must
+// still get its child sub-issue specs inlined — otherwise the children silently
+// vanish on a resume/retry and the umbrella under-delivers exactly as before.
+func TestBuildTddResumedBranchInlinesSubIssues(t *testing.T) {
+	umbrella := ticket.Ticket{
+		Identifier: "BEH-520",
+		Title:      "Lint/boundary guard sweep",
+		SubIssues:  []ticket.SubIssue{{Identifier: "BEH-381", Title: "story-module boundary", Description: "Import via the seam."}},
+	}
+	p := BuildTddResumedBranch(umbrella, "beh-520")
+	for _, want := range []string{"BEH-381", "story-module boundary", "Import via the seam."} {
+		if !strings.Contains(p, want) {
+			t.Errorf("resumed-branch prompt missing inlined sub-issue content %q", want)
+		}
+	}
+}
+
+func TestBuildTddResumeInlinesSubIssues(t *testing.T) {
+	umbrella := ticket.Ticket{
+		Identifier: "BEH-520",
+		Title:      "Lint/boundary guard sweep",
+		SubIssues:  []ticket.SubIssue{{Identifier: "BEH-381", Title: "story-module boundary", Description: "Import via the seam."}},
+	}
+	p := BuildTddResume(umbrella, "beh-520", sampleWorktree)
+	for _, want := range []string{"BEH-381", "story-module boundary", "Import via the seam."} {
+		if !strings.Contains(p, want) {
+			t.Errorf("resume prompt missing inlined sub-issue content %q", want)
+		}
+	}
 }
 
 func TestBuildTddRedirectsFindingsToDropbox(t *testing.T) {

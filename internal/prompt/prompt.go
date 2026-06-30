@@ -39,18 +39,46 @@ func BuildTdd(t ticket.Ticket, slug string) string {
 		"# " + t.Identifier + ": " + t.Title,
 		"",
 		t.Description,
+	}
+	if section := subIssuesSection(t.SubIssues); section != "" {
+		lines = append(lines, "", section)
+	}
+	lines = append(lines,
 		"",
 		"---",
 		"",
 		premiseCheckSteer,
 		"",
-		t.Identifier + " is already claimed and moved to In Progress for you. Do NOT touch Linear — do not call any `mcp__linear-server__*` tool, do not move the ticket, do not open or comment on issues. The harness owns all Linear I/O.",
+		t.Identifier+" is already claimed and moved to In Progress for you. Do NOT touch Linear — do not call any `mcp__linear-server__*` tool, do not move the ticket, do not open or comment on issues. The harness owns all Linear I/O.",
 		"",
 		"If you hit problems with the harness or environment itself (setup friction, systemic gaps, missing patterns) during your session retrospective, do NOT file Linear issues. Instead append them to `/findings/out.json` as a JSON array of `{title, body, kind, key}` objects (kind is a free-form category; key is a stable, lowercase failure-class slug like `sandbox-playwright-missing-deps` used to dedup re-runs — pick the same key any session would for this class of problem). The harness reads this file after the session and files the issues for you, skipping any whose key already has an open issue. If you have no findings, leave the file untouched.",
 		"",
 		bashQuirkSteer,
-	}
+	)
 	return strings.Join(lines, "\n")
+}
+
+// subIssuesSection renders the inlined child sub-issue specs for an umbrella/batch
+// ticket (BEH-619). An umbrella defers its real work to sub-issues, but the sandbox
+// is isolated from Linear (ADR-0002): mid-session the agent can't fetch a child's
+// spec, so it reaches for an unavailable `mcp__linear-server__get_issue`, then
+// guesses or defers and under-delivers (the BEH-520 run shipped 1 of ~9 children).
+// The harness fetches each child host-side and inlines its full title + body here,
+// clearly delimited with its BEH id, so the session never needs Linear. Empty when
+// the ticket has no sub-issues — an ordinary ticket reads exactly as before.
+func subIssuesSection(subs []ticket.SubIssue) string {
+	if len(subs) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("This is an umbrella/batch ticket: its real work lives in the sub-issues below, whose full specs are inlined here (already fetched for you — the sandbox CANNOT reach Linear, so do NOT try to look them up with `mcp__linear-server__*`). Implement EVERY sub-issue, not just the umbrella body above; if you defer one, say which and why in your handoff:")
+	for _, s := range subs {
+		b.WriteString("\n\n### " + s.Identifier + ": " + s.Title)
+		if strings.TrimSpace(s.Description) != "" {
+			b.WriteString("\n\n" + s.Description)
+		}
+	}
+	return b.String()
 }
 
 // BuildTddResumedBranch builds the `-p` prompt the host swaps in for BuildTdd
@@ -73,15 +101,20 @@ func BuildTddResumedBranch(t ticket.Ticket, slug string) string {
 		"# " + t.Identifier + ": " + t.Title,
 		"",
 		t.Description,
+	}
+	if section := subIssuesSection(t.SubIssues); section != "" {
+		lines = append(lines, "", section)
+	}
+	lines = append(lines,
 		"",
 		"---",
 		"",
-		t.Identifier + " is already claimed and moved to In Progress for you. Do NOT touch Linear — do not call any `mcp__linear-server__*` tool, do not move the ticket, do not open or comment on issues. The harness owns all Linear I/O.",
+		t.Identifier+" is already claimed and moved to In Progress for you. Do NOT touch Linear — do not call any `mcp__linear-server__*` tool, do not move the ticket, do not open or comment on issues. The harness owns all Linear I/O.",
 		"",
 		"If you hit problems with the harness or environment itself (setup friction, systemic gaps, missing patterns) during your session retrospective, do NOT file Linear issues. Instead append them to `/findings/out.json` as a JSON array of `{title, body, kind, key}` objects (kind is a free-form category; key is a stable, lowercase failure-class slug like `sandbox-playwright-missing-deps` used to dedup re-runs — pick the same key any session would for this class of problem). The harness reads this file after the session and files the issues for you, skipping any whose key already has an open issue. If you have no findings, leave the file untouched.",
 		"",
 		bashQuirkSteer,
-	}
+	)
 	return strings.Join(lines, "\n")
 }
 
@@ -111,15 +144,20 @@ func BuildTddResume(t ticket.Ticket, slug, worktreePath string) string {
 		"# " + t.Identifier + ": " + t.Title,
 		"",
 		t.Description,
+	}
+	if section := subIssuesSection(t.SubIssues); section != "" {
+		lines = append(lines, "", section)
+	}
+	lines = append(lines,
 		"",
 		"---",
 		"",
-		t.Identifier + " is already claimed and moved to In Progress for you. Do NOT touch Linear — do not call any `mcp__linear-server__*` tool, do not move the ticket, do not open or comment on issues. The harness owns all Linear I/O.",
+		t.Identifier+" is already claimed and moved to In Progress for you. Do NOT touch Linear — do not call any `mcp__linear-server__*` tool, do not move the ticket, do not open or comment on issues. The harness owns all Linear I/O.",
 		"",
 		"If you hit problems with the harness or environment itself (setup friction, systemic gaps, missing patterns) during your session retrospective, do NOT file Linear issues. Instead append them to `/findings/out.json` as a JSON array of `{title, body, kind, key}` objects (kind is a free-form category; key is a stable, lowercase failure-class slug like `sandbox-playwright-missing-deps` used to dedup re-runs — pick the same key any session would for this class of problem). The harness reads this file after the session and files the issues for you, skipping any whose key already has an open issue. If you have no findings, leave the file untouched.",
 		"",
 		bashQuirkSteer,
-	}
+	)
 	return strings.Join(lines, "\n")
 }
 
