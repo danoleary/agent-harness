@@ -23,6 +23,41 @@ const stageCount = 3
 // current activity, not a full log; loop.log is the full record.
 const tailMax = 3
 
+// defaultStallAfter is how long a live daemon may go without emitting any event
+// before the dashboard escalates to a "stalled" suspicion (ADR-0006). Generous on
+// purpose — comfortably above a slow sandbox spin-up or a single long-running tool
+// call, both of which legitimately go quiet for minutes — so it flags a genuine
+// wedge, not normal sparse activity. Overridable per-process (SetStallThreshold).
+const defaultStallAfter = 10 * time.Minute
+
+// bannerRule is the fixed-width horizontal rule that brackets a state banner. The
+// viewer is stdlib-only (ADR-0005) with no terminal-size syscall, so the bar is a
+// fixed width rather than a true full-width fill — wide enough to read as a headline
+// above the mascot.
+const bannerRule = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+// ANSI SGR colours for the state banner. Confined to the banner (and only ever on
+// the dashboard path, which a non-TTY / NO_COLOR run never reaches — that falls back
+// to the plain View). Colour is reinforcement, never the sole signal: the banner's
+// words carry the state on their own (ADR-0006, "never by colour alone").
+const (
+	ansiReset = "\x1b[0m"
+	ansiRed   = "\x1b[91m" // bright red — stopped (process gone)
+	ansiAmber = "\x1b[93m" // bright yellow — stalled (alive but wedged)
+)
+
+// alertState is the dashboard's headline classification, derived once per render
+// from liveness + last-event age and used to drive the mascot mood, the banner, the
+// animation freeze, and the transition bell (ADR-0006). It is independent of the
+// event-derived pig mood: a dead daemon is "stopped" however it died.
+type alertState int
+
+const (
+	alertNone    alertState = iota // alive and recently active — normal operation
+	alertStalled                   // alive but no event past the stall threshold
+	alertStopped                   // process not alive (clean exit or unclean death)
+)
+
 // stageIndex returns the 1-based position of stage in the pipeline, or 0 when the
 // stage is empty or unrecognised.
 func stageIndex(stage string) int {
@@ -74,6 +109,18 @@ type Dashboard struct {
 	lastTS     string   // RFC3339 timestamp of the most recent observed event
 	pig        pigState // mascot mood, selected from the most recent event's kind
 
+	// sawTerminal records whether a KindLoopStopped record was ever observed, and
+	// stopReason carries its reason. Under ADR-0006 liveness (not this record) drives
+	// the stopped mascot, so these only distinguish a clean exit (terminal record seen
+	// → show its reason) from an unclean death (process gone, no record → "exited
+	// without clean shutdown").
+	sawTerminal bool
+	stopReason  string
+
+	// stallAfter is the live-but-no-events age past which the dashboard escalates to a
+	// "stalled" suspicion. Zero disables stall detection.
+	stallAfter time.Duration
+
 	// view renders each observed record into a plain scrollback line, reused for the
 	// tail so the dashboard's scrollback matches the non-TTY fallback exactly.
 	view *View
@@ -82,7 +129,14 @@ type Dashboard struct {
 
 // NewDashboard returns a fresh Dashboard with no current ticket or stage. Before
 // any event the mascot sleeps — the queue-empty resting state.
-func NewDashboard() *Dashboard { return &Dashboard{view: New(), pig: pigSleeping} }
+func NewDashboard() *Dashboard {
+	return &Dashboard{view: New(), pig: pigSleeping, stallAfter: defaultStallAfter}
+}
+
+// SetStallThreshold overrides the live-but-no-events age past which the dashboard
+// flags "stalled" (ADR-0006). A non-positive value disables stall detection. Set
+// once at startup by cmd/watch from its flag/env; the default is defaultStallAfter.
+func (d *Dashboard) SetStallThreshold(after time.Duration) { d.stallAfter = after }
 
 // Observe folds one record into the model state. Non-empty Ticket/Stage update the
 // tracked values; a ticket-selected record additionally captures its message for
@@ -107,6 +161,11 @@ func (d *Dashboard) Observe(r loopstream.Record) {
 	case loopstream.KindToolUse:
 		d.toolCount++
 		d.step = r.Message
+	case loopstream.KindLoopStopped:
+		// The loop wound down cleanly and narrated why. Liveness still drives the
+		// mascot (ADR-0006); this only marks the stop as clean and captures its reason.
+		d.sawTerminal = true
+		d.stopReason = stopReasonFromMessage(r.Message)
 	}
 	if r.Ticket != "" {
 		d.ticket = r.Ticket
@@ -138,14 +197,27 @@ func (d *Dashboard) Observe(r loopstream.Record) {
 // definitive "stopped" mascot wins over the still-alive "stopping" wave (see below).
 func (d *Dashboard) Render(now time.Time, status DaemonStatus, frame int, animate bool) string {
 	var b strings.Builder
+	alert := d.alertStateFor(now, status)
 	mood := d.pig
-	// A pending STOP makes "winding down" the headline — but once the loop has emitted
-	// its terminal loop-stopped record (mood == pigStopped) it has actually exited, so
-	// the definitive "stopped" mascot wins over the still-alive "stopping" wave. The
-	// STOP sentinel persists past the exit (cleared only at the next startup), so
-	// without this a STOP-stopped daemon would freeze on "stopping" forever (BEH-613).
-	if status.StopRequested && mood != pigStopped {
+	switch {
+	case alert == alertStopped:
+		// Liveness is the authority for "stopped" (ADR-0006): the process is gone —
+		// clean exit or unclean death — so the definitive stopped mascot wins over both
+		// the event-derived mood and the still-alive "stopping" wave below.
+		mood = pigStopped
+	case status.StopRequested && mood != pigStopped:
+		// A pending STOP makes "winding down" the headline while the daemon is still
+		// alive. (Once it actually exits, the alertStopped branch above takes over.)
 		mood = pigStopping
+	}
+	// Motion means "alive and working": freeze the mascot to a single static frame
+	// whenever it is stopped or stalled, so a still screen is itself a signal (ADR-0006).
+	if alert != alertNone {
+		animate = false
+	}
+	if banner := d.banner(alert, now); banner != "" {
+		b.WriteString(banner)
+		b.WriteString("\n")
 	}
 	b.WriteString(renderPig(mood, frame, animate))
 	b.WriteString("\n")
@@ -173,6 +245,82 @@ func (d *Dashboard) Render(now time.Time, status DaemonStatus, frame int, animat
 		b.WriteString("\n")
 	}
 	return b.String()
+}
+
+// alertStateFor classifies the loop's headline state from liveness and last-event
+// age (ADR-0006). A dead process is alertStopped however it died — liveness, not the
+// event stream, is the authority. A live daemon that has gone quiet past the stall
+// threshold is alertStalled — but a pending STOP is "winding down", not a wedge, so
+// it stays alertNone (the health line carries the stopping headline).
+func (d *Dashboard) alertStateFor(now time.Time, status DaemonStatus) alertState {
+	if !status.Alive {
+		return alertStopped
+	}
+	if status.StopRequested {
+		return alertNone
+	}
+	if d.stallAfter > 0 && d.lastTS != "" {
+		if ts, err := time.Parse(time.RFC3339, d.lastTS); err == nil && now.Sub(ts) >= d.stallAfter {
+			return alertStalled
+		}
+	}
+	return alertNone
+}
+
+// Alerting reports whether the loop is in a bell-worthy state — stopped (the process
+// is gone) or stalled (alive but wedged) — for cmd/watch's transition bell. A pending
+// STOP is expected winding-down, not an alarm, so it does not alert (ADR-0006).
+func (d *Dashboard) Alerting(now time.Time, status DaemonStatus) bool {
+	return d.alertStateFor(now, status) != alertNone
+}
+
+// banner renders the loud headline above the mascot for a non-normal state, or ""
+// for alertNone. Stopped is red and distinguishes a clean exit (terminal record seen
+// → its reason) from an unclean death (no record → "exited without clean shutdown",
+// the investigate case). Stalled is amber and worded as a suspicion — the process is
+// alive and may resume — never the word "stopped" (ADR-0006).
+func (d *Dashboard) banner(alert alertState, now time.Time) string {
+	switch alert {
+	case alertStopped:
+		if d.sawTerminal {
+			return colourBanner(ansiRed, "⏹  AGENT STOPPED — "+d.stopReason)
+		}
+		return colourBanner(ansiRed, "⚠  AGENT STOPPED — exited without clean shutdown")
+	case alertStalled:
+		return colourBanner(ansiAmber, "⚠  STALLED — no activity for "+d.lastEventAge(now))
+	default:
+		return ""
+	}
+}
+
+// lastEventAge is the coarse human age of the most recent event, for the stalled
+// banner. Empty last timestamp (no events) reads as "0s" — stall detection needs a
+// timestamp to fire, so this is only reached with one present.
+func (d *Dashboard) lastEventAge(now time.Time) string {
+	ts, err := time.Parse(time.RFC3339, d.lastTS)
+	if err != nil {
+		return formatAge(0)
+	}
+	return formatAge(now.Sub(ts))
+}
+
+// colourBanner wraps a one-line headline in the bracketing rule and the given SGR
+// colour. The words carry the state on their own; colour only reinforces it, and the
+// reset closes the colour so it never bleeds into the mascot below.
+func colourBanner(colour, line string) string {
+	body := bannerRule + "\n  " + line + "\n" + bannerRule
+	return colour + body + ansiReset
+}
+
+// stopReasonFromMessage extracts the human reason from a KindLoopStopped message
+// (e.g. "loop — stopped: max-tickets reached" → "max-tickets reached"). With no
+// "stopped:" marker it falls back to the whole trimmed message rather than empty.
+func stopReasonFromMessage(message string) string {
+	const marker = "stopped: "
+	if i := strings.Index(message, marker); i >= 0 {
+		return strings.TrimSpace(message[i+len(marker):])
+	}
+	return strings.TrimSpace(message)
 }
 
 // renderHealth formats the daemon-health line from liveness and the age of the

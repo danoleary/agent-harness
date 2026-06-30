@@ -830,13 +830,21 @@ The daemon runs detached, so its only window is `loop.log` — noisy and
 unstructured. The **viewer** is a separate, **read-only** binary that tails
 `logs/loop.jsonl` and renders a live dashboard: the current ticket, the stage
 (n of 3), the current step, daemon health, and a stateful ASCII mascot (labelled
-`status:`) whose mood (working / waiting / sleeping / celebrating / hurt / stopping)
-follows the last event `kind`. Health also reflects two read-only probes beside the
-stream: a present `STOP` sentinel reads as "winding down" (and flips the mascot to
-`stopping`), and an absent stream file on a live daemon reads as "no event stream"
-(distinct from a present-but-empty "no events yet"). It is **stdlib-only** (a
-redraw-on-a-ticker dashboard needs no TUI framework) and degrades to plain scrollback
-when stdout is not a TTY, `NO_COLOR` is set, or `--no-animation` is passed. It never
+`status:`) whose mood (working / waiting / sleeping / celebrating / hurt / stopping /
+stopped) follows the last event `kind` — except that **process liveness, not the
+event stream, is authoritative for "stopped"**: a dead daemon (clean exit or unclean
+death) flips the mascot to `stopped`, freezes the animation, and raises a loud banner
+above it — red for a stop (its reason if the loop wrote a terminal record, else
+"exited without clean shutdown") and amber for a `STALLED` suspicion when a live
+daemon has gone quiet past a threshold (`WATCH_STALL_AFTER`, default 10m); a terminal
+bell rings once on the transition into either state. See ADR-0006. Health also
+reflects two read-only probes beside the stream: a present `STOP` sentinel reads as
+"winding down" (and flips the mascot to `stopping`), and an absent stream file on a
+live daemon reads as "no event stream" (distinct from a present-but-empty "no events
+yet"). It is **stdlib-only** (a redraw-on-a-ticker dashboard needs no TUI framework)
+and degrades to plain scrollback when stdout is not a TTY, `NO_COLOR` is set, or
+`--no-animation` is passed; `--no-bell` suppresses the transition bell (as does
+`NO_COLOR`). It never
 controls the loop — `touch agent-harness/STOP` remains the only control path (the
 viewer only *reads* the sentinel), and quitting the viewer does not touch the daemon.
 "Progress" is honest about being indeterminate: a stage indicator and a tool-call

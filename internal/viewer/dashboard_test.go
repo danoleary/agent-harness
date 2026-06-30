@@ -298,6 +298,161 @@ func TestDashboardTerminalStoppedWinsOverStopRequested(t *testing.T) {
 	}
 }
 
+// The core gap this ADR closes: when the daemon dies WITHOUT emitting a terminal
+// KindLoopStopped record (a crash / OOM / kill -9), the mascot must still flip to
+// "stopped" purely from process liveness (status.Alive == false) — the event stream
+// can't report a death it never narrated — and a banner must call it out as an
+// unclean exit, so the dominant visual no longer claims the agent is working.
+func TestDashboardUncleanDeathShowsStoppedFromLiveness(t *testing.T) {
+	d := NewDashboard()
+	// Last thing the stream saw was active work — no terminal record.
+	d.Observe(loopstream.Record{Kind: loopstream.KindToolUse, Message: "⚒ Bash"})
+	frame := d.Render(time.Unix(0, 0), DaemonStatus{Alive: false, StreamPresent: true}, 0, false)
+	if !strings.Contains(frame, "status: stopped") {
+		t.Fatalf("a dead daemon must show the stopped mascot even with no terminal record, got:\n%s", frame)
+	}
+	if strings.Contains(frame, "status: working") {
+		t.Fatalf("a dead daemon must not keep the working mascot, got:\n%s", frame)
+	}
+	if !strings.Contains(frame, "exited without clean shutdown") {
+		t.Fatalf("an unclean death must be banner-flagged as such, got:\n%s", frame)
+	}
+}
+
+// A clean exit (the loop emitted a terminal KindLoopStopped record naming why) shows
+// the reason in the banner and is NOT flagged as an unclean death — the operator's
+// next action differs (it finished vs investigate).
+func TestDashboardCleanStopBannerShowsReason(t *testing.T) {
+	d := NewDashboard()
+	d.Observe(loopstream.Record{Kind: loopstream.KindLoopStopped, Message: "loop — stopped: max-tickets reached"})
+	frame := d.Render(time.Unix(0, 0), DaemonStatus{Alive: false, StreamPresent: true}, 0, false)
+	if !strings.Contains(frame, "AGENT STOPPED") {
+		t.Fatalf("a clean stop must show the stopped banner, got:\n%s", frame)
+	}
+	if !strings.Contains(frame, "max-tickets reached") {
+		t.Fatalf("a clean stop must surface its reason in the banner, got:\n%s", frame)
+	}
+	if strings.Contains(frame, "exited without clean shutdown") {
+		t.Fatalf("a clean stop must NOT read as an unclean death, got:\n%s", frame)
+	}
+}
+
+// Liveness wins over the STOP "stopping" wave even with NO terminal record: a daemon
+// that was asked to stop and then died (crash mid-shutdown) is stopped, not forever
+// "stopping". This is the unclean-death companion to the terminal-record case above.
+func TestDashboardDeadBeatsStopRequestedWithoutTerminalRecord(t *testing.T) {
+	d := NewDashboard()
+	d.Observe(loopstream.Record{Kind: loopstream.KindToolUse, Message: "⚒ Bash"})
+	frame := d.Render(time.Unix(0, 0), DaemonStatus{Alive: false, StopRequested: true, StreamPresent: true}, 0, false)
+	if !strings.Contains(frame, "status: stopped") {
+		t.Fatalf("a dead daemon must show stopped even with STOP pending and no terminal record, got:\n%s", frame)
+	}
+	if strings.Contains(frame, "status: stopping") {
+		t.Fatalf("liveness must win over the stopping wave, got:\n%s", frame)
+	}
+}
+
+// A live daemon that has emitted no event past the stall threshold is flagged as a
+// suspicion ("STALLED — no activity for Nm"), never as "stopped" (it is alive and may
+// resume). A daemon inside the threshold is not flagged at all.
+func TestDashboardStalledWhenAliveButQuietPastThreshold(t *testing.T) {
+	d := NewDashboard()
+	d.SetStallThreshold(10 * time.Minute)
+	d.Observe(loopstream.Record{TS: "2026-06-28T12:00:00Z", Kind: loopstream.KindToolUse, Message: "⚒ Bash"})
+
+	// 12 minutes later, no further event → stalled.
+	late, _ := time.Parse(time.RFC3339, "2026-06-28T12:12:00Z")
+	stalled := d.Render(late, DaemonStatus{Alive: true, StreamPresent: true}, 0, false)
+	if !strings.Contains(stalled, "STALLED") || !strings.Contains(stalled, "no activity for") {
+		t.Fatalf("a live daemon quiet past the threshold must show a STALLED suspicion, got:\n%s", stalled)
+	}
+	if !strings.Contains(stalled, "12m") {
+		t.Fatalf("the stalled banner must carry the quiet duration, got:\n%s", stalled)
+	}
+	if strings.Contains(stalled, "STOPPED") {
+		t.Fatalf("a stalled (alive) daemon must never read as STOPPED, got:\n%s", stalled)
+	}
+
+	// 2 minutes later, well inside the threshold → no stall banner.
+	soon, _ := time.Parse(time.RFC3339, "2026-06-28T12:02:00Z")
+	fresh := d.Render(soon, DaemonStatus{Alive: true, StreamPresent: true}, 0, false)
+	if strings.Contains(fresh, "STALLED") {
+		t.Fatalf("a daemon inside the stall threshold must not be flagged, got:\n%s", fresh)
+	}
+}
+
+// Motion means "alive and working": a stopped or stalled mascot is frozen to a
+// single static frame even when animation is on, so a still screen is itself a
+// signal (ADR-0006). A working daemon still animates (covered elsewhere).
+func TestDashboardFreezesAnimationWhenStoppedOrStalled(t *testing.T) {
+	d := NewDashboard()
+	d.SetStallThreshold(10 * time.Minute)
+	d.Observe(loopstream.Record{TS: "2026-06-28T12:00:00Z", Kind: loopstream.KindToolUse, Message: "⚒ Bash"})
+
+	// Stopped (dead): identical across ticks despite animate=true.
+	dead := DaemonStatus{Alive: false, StreamPresent: true}
+	if a, b := d.Render(time.Unix(0, 0), dead, 0, true), d.Render(time.Unix(0, 0), dead, 1, true); a != b {
+		t.Fatalf("a stopped mascot must be frozen across ticks, got differing frames")
+	}
+
+	// Stalled (alive, quiet past threshold): also frozen.
+	late, _ := time.Parse(time.RFC3339, "2026-06-28T12:12:00Z")
+	live := DaemonStatus{Alive: true, StreamPresent: true}
+	if a, b := d.Render(late, live, 0, true), d.Render(late, live, 1, true); a != b {
+		t.Fatalf("a stalled mascot must be frozen across ticks, got differing frames")
+	}
+}
+
+// Colour reinforces the banner — red for stopped, amber for stalled — but the words
+// always carry the state too (never colour alone), and the colour is reset so it
+// never bleeds into the mascot below (ADR-0006).
+func TestDashboardBannerColoursReinforceState(t *testing.T) {
+	d := NewDashboard()
+	d.SetStallThreshold(10 * time.Minute)
+	d.Observe(loopstream.Record{TS: "2026-06-28T12:00:00Z", Kind: loopstream.KindToolUse, Message: "⚒ Bash"})
+
+	stopped := d.Render(time.Unix(0, 0), DaemonStatus{Alive: false, StreamPresent: true}, 0, false)
+	if !strings.Contains(stopped, ansiRed) || !strings.Contains(stopped, ansiReset) {
+		t.Fatalf("a stopped banner must be red and reset, got:\n%q", stopped)
+	}
+
+	late, _ := time.Parse(time.RFC3339, "2026-06-28T12:12:00Z")
+	stalled := d.Render(late, DaemonStatus{Alive: true, StreamPresent: true}, 0, false)
+	if !strings.Contains(stalled, ansiAmber) || !strings.Contains(stalled, ansiReset) {
+		t.Fatalf("a stalled banner must be amber and reset, got:\n%q", stalled)
+	}
+
+	// Normal operation carries no banner colour.
+	ok := d.Render(time.Unix(0, 0), DaemonStatus{Alive: true, StreamPresent: true}, 0, false)
+	if strings.Contains(ok, ansiRed) || strings.Contains(ok, ansiAmber) {
+		t.Fatalf("a healthy daemon must render no banner colour, got:\n%q", ok)
+	}
+}
+
+// Alerting is the bell-worthy classification cmd/watch keys its transition bell off:
+// true when stopped (dead) or stalled, false during normal operation and a pending
+// STOP (winding down is expected, not an alarm).
+func TestDashboardAlertingFlagsStoppedAndStalled(t *testing.T) {
+	d := NewDashboard()
+	d.SetStallThreshold(10 * time.Minute)
+	d.Observe(loopstream.Record{TS: "2026-06-28T12:00:00Z", Kind: loopstream.KindToolUse, Message: "⚒ Bash"})
+	fresh, _ := time.Parse(time.RFC3339, "2026-06-28T12:00:05Z")
+	late, _ := time.Parse(time.RFC3339, "2026-06-28T12:12:00Z")
+
+	if d.Alerting(fresh, DaemonStatus{Alive: true, StreamPresent: true}) {
+		t.Fatalf("a healthy daemon must not be alerting")
+	}
+	if d.Alerting(fresh, DaemonStatus{Alive: true, StopRequested: true, StreamPresent: true}) {
+		t.Fatalf("a winding-down (STOP) daemon must not be alerting")
+	}
+	if !d.Alerting(fresh, DaemonStatus{Alive: false, StreamPresent: true}) {
+		t.Fatalf("a dead daemon must be alerting")
+	}
+	if !d.Alerting(late, DaemonStatus{Alive: true, StreamPresent: true}) {
+		t.Fatalf("a stalled daemon must be alerting")
+	}
+}
+
 // AC2 at the dashboard layer: with animation on, the pig frame advances with the
 // tick; with animation off, the rendered pig is identical across ticks.
 func TestDashboardPigAnimatesOnlyWhenEnabled(t *testing.T) {
