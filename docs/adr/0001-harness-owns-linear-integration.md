@@ -1,7 +1,11 @@
 # ADR-0001: The harness owns all Linear I/O; nothing Linear enters the sandbox
 
-- Status: Accepted
+- Status: Superseded by ADR-0010
 - Date: 2026-06-11
+
+> Superseded by [ADR-0010](0010-tracker-is-a-port-with-linear-jira-github-adapters.md):
+> the host-owns-all-tracker-I/O invariant below is retained, but generalized from
+> Linear specifically to a `Tracker` port with Linear/Jira/GitHub adapters.
 
 ## Context
 
