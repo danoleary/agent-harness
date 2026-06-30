@@ -49,3 +49,29 @@ func wedgedReady(checks []Check) bool {
 	}
 	return wedged && realGreen
 }
+
+// pendingAllWedged reports whether every still-pending check is a structural wedge
+// (isWedged) — i.e. nothing genuinely running remains. It is the guard the stall
+// detector uses before bailing a frozen-pending run as ErrPollStalled: the no-
+// progress signal alone cannot tell a wedged merge-queue/main-only context apart
+// from a real gate that is simply slow (e.g. "Linting and tests" running ~5min),
+// because both sit in the `pending` bucket with an unchanging (name,bucket)
+// signature for the whole run. Only when the frozen pending set is entirely
+// EXPECTED wedges is the freeze genuinely terminal; if even one real run
+// (QUEUED/IN_PROGRESS, not EXPECTED) is still in flight, the freeze is a slow-but-
+// progressing gate and abandoning it would route an about-to-go-green PR to manual
+// triage (BEH-623, the BEH-508 waste). Returns false for an empty/all-terminal set
+// (no pending check to be wedged on).
+func pendingAllWedged(checks []Check) bool {
+	sawPending := false
+	for _, c := range checks {
+		if c.Bucket != BucketPending {
+			continue
+		}
+		sawPending = true
+		if !isWedged(c) {
+			return false
+		}
+	}
+	return sawPending
+}

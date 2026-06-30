@@ -93,7 +93,12 @@ func poll(fetch func() ([]Check, error), cfg pollConfig, sleep func(time.Duratio
 			sig := checksSignature(checks)
 			if !haveSig || sig != lastSig {
 				lastSig, stalledSince, haveSig = sig, now(), true
-			} else if !now().Before(stalledSince.Add(cfg.stall)) {
+			} else if !now().Before(stalledSince.Add(cfg.stall)) && pendingAllWedged(checks) {
+				// Only bail as wedged once the frozen pending set is *entirely* EXPECTED
+				// wedges. A still-running real gate (pending, not EXPECTED) holds the same
+				// signature for its whole run, so a freeze alone is not proof of a wedge —
+				// keep polling to the budget rather than abandoning an about-to-go-green PR
+				// (BEH-623).
 				return Pending, checks, ErrPollStalled
 			}
 		}

@@ -136,10 +136,13 @@ func TestPollTimesOutIfChecksNeverRegister(t *testing.T) {
 func TestPollStallsOnFrozenPendingBeforeBudget(t *testing.T) {
 	clock := newFakeClock()
 	sleep := func(d time.Duration) { clock.sleep(d) }
-	// A merge-queue/main-only context wedged pending: the snapshot never changes.
+	// A genuinely-stuck PR: its only check is a merge-queue/main-only required context
+	// GitHub reports as EXPECTED but never schedules on the PR head, and no real gate
+	// has gone green (so it is not wedged-ready). The frozen pending set is entirely
+	// EXPECTED, so the stall window correctly bails rather than burning the full budget
+	// on a check that will never move (BEH-623: only an all-wedged freeze stalls).
 	fetch, calls := scriptedChecks([]Check{
-		{Name: "lint", Bucket: BucketPass},
-		{Name: "deploy", Bucket: BucketPending}, // never moves on a PR
+		{Name: "merge-queue-gate", Bucket: BucketPending, State: StateExpected}, // never moves on a PR
 	})
 	cfg := pollConfig{interval: 30 * time.Second, budget: 20 * time.Minute, stall: 2 * time.Minute}
 	v, checks, err := poll(fetch, cfg, sleep, clock.now)
@@ -155,6 +158,35 @@ func TestPollStallsOnFrozenPendingBeforeBudget(t *testing.T) {
 	// Fired at the 2m stall window (polls at t=0,30,60,90,120s), not the 20m budget.
 	if *calls != 5 {
 		t.Fatalf("fetched %d times, want 5 (bailed at the stall window, not the budget)", *calls)
+	}
+}
+
+func TestPollDoesNotStallWhileARealGateIsStillRunning(t *testing.T) {
+	clock := newFakeClock()
+	sleep := func(d time.Duration) { clock.sleep(d) }
+	// BEH-508: a real gate ("Linting and tests") legitimately runs for ~5min. Its
+	// bucket stays `pending` the whole time, so the (name,bucket) signature is frozen
+	// even though CI is progressing — it just hasn't finished. The stall window must
+	// NOT misclassify a still-running real gate (pending, not EXPECTED) as a merge-
+	// queue wedge and abandon a PR that is about to go green; only an all-wedged frozen
+	// set bails as ErrPollStalled. The running gate rides the budget until it settles.
+	running := []Check{
+		{Name: "Validate migrations", Bucket: BucketPass},
+		{Name: "Linting and tests", Bucket: BucketPending, State: "IN_PROGRESS"},
+	}
+	green := []Check{
+		{Name: "Validate migrations", Bucket: BucketPass},
+		{Name: "Linting and tests", Bucket: BucketPass},
+	}
+	// Frozen on the running snapshot well past the 2m stall window, then it goes green.
+	fetch, _ := scriptedChecks(running, running, running, running, running, running, green)
+	cfg := pollConfig{interval: 30 * time.Second, budget: 20 * time.Minute, stall: 2 * time.Minute}
+	v, _, err := poll(fetch, cfg, sleep, clock.now)
+	if err != nil {
+		t.Fatalf("poll: %v (a still-running real gate must not be cut short as a wedge stall)", err)
+	}
+	if v != Passed {
+		t.Fatalf("verdict = %v, want Passed", v)
 	}
 }
 

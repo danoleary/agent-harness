@@ -65,3 +65,42 @@ func TestNotWedgedReadyWithoutAnExpectedContext(t *testing.T) {
 		t.Fatalf("an all-green set with no EXPECTED context is not wedged-ready; got true")
 	}
 }
+
+// A frozen pending set is only safe to bail on as a wedge when every pending check is
+// an EXPECTED context. With a single EXPECTED context (other checks terminal),
+// pendingAllWedged is true — the stall detector may treat the freeze as terminal.
+func TestPendingAllWedgedWithOnlyExpectedPending(t *testing.T) {
+	checks := []Check{
+		{Name: "lint", Bucket: BucketPass},
+		{Name: "merge-queue-gate", Bucket: BucketPending, State: StateExpected},
+	}
+	if !pendingAllWedged(checks) {
+		t.Fatalf("only-EXPECTED pending should be all-wedged; got false")
+	}
+}
+
+// A still-running real gate (pending, not EXPECTED) means the freeze is a slow-but-
+// progressing run, not a wedge — pendingAllWedged must be false so the poller keeps
+// waiting instead of abandoning an about-to-go-green PR (BEH-623).
+func TestNotPendingAllWedgedWhileARealGateIsRunning(t *testing.T) {
+	checks := []Check{
+		{Name: "Validate migrations", Bucket: BucketPass},
+		{Name: "Linting and tests", Bucket: BucketPending, State: "IN_PROGRESS"},
+		{Name: "merge-queue-gate", Bucket: BucketPending, State: StateExpected},
+	}
+	if pendingAllWedged(checks) {
+		t.Fatalf("a real gate still running means the freeze is not a wedge; got true")
+	}
+}
+
+// An all-terminal set has no pending check to be wedged on — pendingAllWedged is
+// false, so the stall path never fires on a run that has already settled.
+func TestNotPendingAllWedgedWhenNothingPending(t *testing.T) {
+	checks := []Check{
+		{Name: "lint", Bucket: BucketPass},
+		{Name: "deploy", Bucket: BucketSkipping},
+	}
+	if pendingAllWedged(checks) {
+		t.Fatalf("an all-terminal set has nothing pending to wedge on; got true")
+	}
+}
