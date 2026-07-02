@@ -42,25 +42,135 @@ func isMixedCaseIdentifier(s string) bool {
 	return hasLower && hasUpper
 }
 
+// gitTrailerKeyword is the set of Git close-verb keywords a ticket quotes in a
+// `Fixes HERD-2T` / `Closes …` / `Resolves …` line. They are mixed-case English
+// (leading capital + lowercase tail), so isMixedCaseIdentifier admits them, yet
+// they are never repo symbols — `Fixes` was one of the three false positives that
+// made BEH-626 read as "already resolved — recommend close". Matched
+// case-insensitively so `fixes`/`FIXES` are dropped too. Suppressing them only
+// ever removes an advisory (the safe direction).
+var gitTrailerKeyword = map[string]bool{
+	"fix": true, "fixes": true, "fixed": true,
+	"close": true, "closes": true, "closed": true,
+	"resolve": true, "resolves": true, "resolved": true,
+}
+
+// isProseWord reports whether a mixed-case token is prose the extractor must not
+// chase — currently the Git close-verb keywords above.
+func isProseWord(sym string) bool {
+	return gitTrailerKeyword[strings.ToLower(sym)]
+}
+
 // extractCitedSymbols returns the distinct mixed-case code identifiers a ticket
 // description names inside backtick spans — lower-camelCase and PascalCase alike —
-// the symbols whose continued existence the advisory guard checks.
-// Order-preserving and de-duplicated.
+// the symbols whose continued existence the advisory guard checks (both the
+// expected-present and to-be-created buckets, combined and order-preserving).
 func extractCitedSymbols(description string) []string {
-	var out []string
+	c := classifyCitedSymbols(description)
+	return append(append([]string{}, c.expected...), c.proposed...)
+}
+
+// citedSymbols partitions the code identifiers a ticket names into two classes
+// whose absence from source means opposite things:
+//   - expected: symbols the ticket implies already exist. Their absence is the
+//     BEH-544 "likely already resolved" signal → strong "recommend close" verdict.
+//   - proposed: symbols named in an add/introduce context — the ones the ticket
+//     exists to CREATE. Their absence is expected for new work, never a resolved
+//     signal, so they get a soft "verify premise" verdict (BEH-629).
+type citedSymbols struct {
+	expected []string
+	proposed []string
+}
+
+// classifyCitedSymbols walks each backtick span, drops prose keywords and known
+// third-party package symbols (BEH-629), and sorts each surviving mixed-case
+// identifier into expected vs proposed by whether an add/introduce verb sits
+// immediately before its span. Order-preserving and de-duplicated across buckets.
+func classifyCitedSymbols(description string) citedSymbols {
+	var c citedSymbols
 	seen := map[string]bool{}
-	for _, span := range backtickSpan.FindAllStringSubmatch(description, -1) {
-		for _, sym := range wordIdentifier.FindAllString(span[1], -1) {
-			if !isMixedCaseIdentifier(sym) {
+	for _, loc := range backtickSpan.FindAllStringSubmatchIndex(description, -1) {
+		spanStart, inner := loc[0], description[loc[2]:loc[3]]
+		proposed := inAddContext(description[:spanStart])
+		for _, sym := range wordIdentifier.FindAllString(inner, -1) {
+			if !isMixedCaseIdentifier(sym) || isProseWord(sym) || hasVendorPrefix(sym) {
 				continue
 			}
-			if !seen[sym] {
-				seen[sym] = true
-				out = append(out, sym)
+			if seen[sym] {
+				continue
+			}
+			seen[sym] = true
+			if proposed {
+				c.proposed = append(c.proposed, sym)
+			} else {
+				c.expected = append(c.expected, sym)
 			}
 		}
 	}
-	return out
+	return c
+}
+
+// vendorPrefix is the set of third-party package roots whose internal symbols a
+// ticket cites only for context — never expected in repo source (BEH-629). Kept
+// deliberately narrow to SDK roots that don't double as repo-local identifier
+// stems (Supabase is intentionally absent: `supabaseAdmin` & friends are our own
+// code). Dropping a match only ever suppresses an advisory (the safe direction).
+var vendorPrefix = []string{"sentry", "livekit", "posthog", "mapbox"}
+
+// hasVendorPrefix reports whether a symbol's leading camelCase word is a known
+// third-party package root (BEH-629). The vendor word must be a whole leading
+// segment — followed by an uppercase letter, a digit, or the end of the string —
+// so `sentryFunctionMiddlewareHandler` (→ `sentry` + `Function…`) is dropped while
+// `sentryishHelper` (the vendor letters bleed into a lowercase tail) is kept.
+func hasVendorPrefix(sym string) bool {
+	lower := strings.ToLower(sym)
+	for _, v := range vendorPrefix {
+		if !strings.HasPrefix(lower, v) {
+			continue
+		}
+		rest := sym[len(v):]
+		if rest == "" {
+			return true
+		}
+		r := rest[0]
+		if r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' {
+			return true
+		}
+	}
+	return false
+}
+
+// addVerb is the set of verbs that, sitting just before a backtick span, frame
+// the symbol inside as one the ticket exists to CREATE (BEH-629) — `Add a
+// `beforeSend“, `introduce `foo“, `a new `bar“.
+var addVerb = map[string]bool{
+	"add": true, "adds": true, "added": true,
+	"introduce": true, "introduces": true, "introducing": true,
+	"create": true, "creates": true, "creating": true,
+	"new": true,
+}
+
+// addContextWindow bounds how far back inAddContext looks: an add verb only
+// frames the symbol as to-be-created if it sits within this many words of the
+// span. A wider window would misfire — one bullet ("Add a `beforeSend` … drops a
+// TanStack `notFound`") holds an already-present symbol many words after the same
+// "Add", which must stay in the expected bucket.
+const addContextWindow = 6
+
+// inAddContext reports whether an add/introduce verb appears within the last few
+// words of the text immediately preceding a backtick span. Word-based (not raw
+// character offsets) so a truncated window boundary can't split a verb mid-token.
+func inAddContext(preceding string) bool {
+	words := strings.Fields(preceding)
+	if lo := len(words) - addContextWindow; lo > 0 {
+		words = words[lo:]
+	}
+	for _, w := range words {
+		if addVerb[strings.ToLower(strings.Trim(w, ".,;:*/-()`\"'"))] {
+			return true
+		}
+	}
+	return false
 }
 
 // symbolPresent reports whether srcRoot contains a whole-word occurrence of the
@@ -96,20 +206,40 @@ func symbolPresent(srcRoot, symbol string) bool {
 // extractor mis-read prose. Per the maintainer's stance a false skip that drops
 // real work is far worse than a wasted session, so the host only logs this and
 // lets the in-session agent (steered by the prompt) make the final call.
+//
+// The verdict is graded (BEH-629). A missing *expected* symbol — one the ticket
+// implies already exists — keeps the strong "recommend close" wording: that's the
+// genuine "already resolved" signal. When the only missing symbols are *proposed*
+// ones (named in an add/introduce context, the ones the ticket exists to create),
+// their absence is expected for new work, so it downgrades to a soft "verify
+// premise" note that never says "recommend close" — that dangerous verdict on a
+// to-be-added symbol (`beforeSend` in BEH-626) is exactly backwards and could get
+// a valid, unstarted ticket wrongly closed.
 func ResolvedAdvisory(srcRoot, identifier, description string) string {
-	var missing []string
-	for _, sym := range extractCitedSymbols(description) {
-		if !symbolPresent(srcRoot, sym) {
-			missing = append(missing, sym)
+	cited := classifyCitedSymbols(description)
+	missing := func(syms []string) []string {
+		var out []string
+		for _, sym := range syms {
+			if !symbolPresent(srcRoot, sym) {
+				out = append(out, sym)
+			}
 		}
+		return out
 	}
-	if len(missing) == 0 {
-		return ""
+	missingExpected := missing(cited.expected)
+	if len(missingExpected) > 0 {
+		return fmt.Sprintf(
+			"⚠ %s cites symbol(s) absent from source: %s — likely already resolved (possibly by a sibling ticket's merge). Verify the premise still holds before implementing; recommend close if the work has already landed.",
+			identifier, strings.Join(missingExpected, ", "),
+		)
 	}
-	return fmt.Sprintf(
-		"⚠ %s cites symbol(s) absent from source: %s — likely already resolved (possibly by a sibling ticket's merge). Verify the premise still holds before implementing; recommend close if the work has already landed.",
-		identifier, strings.Join(missing, ", "),
-	)
+	if missingProposed := missing(cited.proposed); len(missingProposed) > 0 {
+		return fmt.Sprintf(
+			"ℹ %s names symbol(s) it proposes to add that aren't in source yet: %s — this is expected for new work, not a sign the ticket is resolved. Verify the premise, then implement.",
+			identifier, strings.Join(missingProposed, ", "),
+		)
+	}
+	return ""
 }
 
 // ResumedBranchAdvisory returns a one-line warning when the ticket's OWN feature
