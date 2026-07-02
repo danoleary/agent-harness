@@ -150,6 +150,23 @@ func assertCarriesBashQuirkSteer(t *testing.T, p, label string) {
 	if !strings.Contains(p, "&&") {
 		t.Errorf("%s does not give the &&-chain workaround for the assignment case", label)
 	}
+	// BEH-645: a FOURTH face — and the worst, because it makes a GREEN gate look
+	// RED. Chaining trailing statements onto a GATE command in one Bash call (e.g.
+	// `pnpm run check > log 2>&1; echo exit=$?; grep … | head`) can concatenate
+	// those statements as ARGUMENTS onto the gate's own command (the `oxfmt
+	// --check` inside `pnpm run check` receives them as file args), so the gate
+	// fails with `Expected at least one target file` and pnpm emits `[ELIFECYCLE]`
+	// — a spurious failure on a gate that actually PASSED. The steer must name that
+	// symptom and give the run-each-gate-as-its-own-call workaround.
+	if !regexp.MustCompile(`(?i)ELIFECYCLE|Expected at least one target file`).MatchString(p) {
+		t.Errorf("%s does not name the spurious gate false-red symptom (ELIFECYCLE / Expected at least one target file)", label)
+	}
+	if !regexp.MustCompile(`(?i)gate`).MatchString(p) {
+		t.Errorf("%s does not name the gate-command false-red case", label)
+	}
+	if !regexp.MustCompile(`(?i)(its )?own .{0,20}call`).MatchString(p) {
+		t.Errorf("%s does not give the run-each-gate-as-its-own-call workaround", label)
+	}
 }
 
 // BEH-544: a ticket can be dispatched as live work after its fix already merged

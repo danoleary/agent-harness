@@ -148,10 +148,10 @@ internal/          config, linear, prompt, sandbox, session, verify, filing, git
 Dockerfile         the node-based sandbox image (runs claude + herd's pnpm build)
 ```
 
-## Known gotcha: opaque bash errors in the sandbox (BEH-401, BEH-598, BEH-601)
+## Known gotcha: opaque bash errors in the sandbox (BEH-401, BEH-598, BEH-601, BEH-645)
 
 The pinned `claude` CLI's Bash tool surfaces opaque errors that look like the
-agent's own bug but are an environment artifact, in three ways:
+agent's own bug but are an environment artifact, in four ways:
 
 1. **Mangled multi-arg bash (BEH-401).** It intermittently mis-parses a single
    Bash call that both pipes into `head`/`tail` and uses a command substitution
@@ -170,12 +170,26 @@ agent's own bug but are an environment artifact, in three ways:
    expands fine; `;`-separating it is what drops the variable. This bites the
    common `DP=...; rg ... "$DP"` pattern for spelunking a transitive dep's
    `.pnpm` types path.
+4. **Spurious gate false-red (BEH-645).** _The worst, because it makes a GREEN
+   gate look RED._ Chaining trailing statements onto a **gate** command in one
+   Bash call — e.g. `pnpm run check > /tmp/check.log 2>&1; echo exit=$?; grep -i
+   error /tmp/check.log | head` — can concatenate those statements as _arguments_
+   onto the gate's own command (the `oxfmt --check` inside `pnpm run check`
+   receives `echo exit=$? grep …` as file args), so the gate fails with
+   `Expected at least one target file. All matched files may have been excluded by
+   ignore rules.` and pnpm emits `[ELIFECYCLE] Command failed with exit code 2`.
+   That is a spurious failure on a gate that actually _passed_ — do not chase it
+   as a real lint/format error or use it to block the diff. Run each verification
+   gate (`pnpm run check`/`lint`/`build`/`test…`) as its **own** Bash call with
+   nothing appended, and if one reds with `ELIFECYCLE`/`Expected at least one
+   target file`, re-run it **alone** before believing it.
 
 Retrying verbatim doesn't help in any case. The bug is in the bundled CLI's
 bash wrapper, so the harness can't patch it; instead every prompt carries a steer
 (`internal/prompt`) telling the agent to run one command per Bash call, avoid
 `cd "$(...)"`, re-run a bare-`Error` command capturing the exit code explicitly
-(`; echo exit=$?`) to tell an expected non-zero exit from a failure, and avoid
+(`; echo exit=$?`) to tell an expected non-zero exit from a failure, avoid
 intra-call shell variables (inline the absolute path, `&&`-chain instead of `;`,
-or use the Grep/Glob tools with literal absolute paths). Bump the pinned
+or use the Grep/Glob tools with literal absolute paths), and run each verification
+gate as its own Bash call with nothing appended. Bump the pinned
 `CLAUDE_VERSION` (Dockerfile) if a newer release fixes it upstream.
