@@ -323,6 +323,13 @@ func greenOutcome(d Driver, reason string) Outcome {
 // just has to eyeball CI manually because the harness can't (BEH-476).
 const unobservableReason = "CI status unobservable with this token — skipping watch/auto-fix; PR is open, check CI manually"
 
+// unauthenticatedReason is the operator-facing summary when `gh pr checks` is
+// rejected with a 401 / bad credentials even though push + PR create just succeeded
+// with the harness auth (BEH-627). The diff is pushed and gate-green; only the poll
+// path's token failed, so this fails soft to a green pass rather than a spurious
+// "CI did not go green" — a human just eyeballs CI (and fixes the poll credentials).
+const unauthenticatedReason = "CI watch unavailable: gh not authenticated for the checks poll (HTTP 401 / bad credentials) — PR was pushed OK, check CI manually and fix the harness gh auth"
+
 // pollErrOutcome turns a poll error into an outcome. An unobservable-checks error
 // is a *success* that degrades — the PR shipped, the token just can't read CI, so
 // leave it for a human rather than abort or auto-fix. A timeout means CI never
@@ -331,6 +338,9 @@ const unobservableReason = "CI status unobservable with this token — skipping 
 func pollErrOutcome(err error, checks []Check) Outcome {
 	if errors.Is(err, errChecksUnobservable) {
 		return Outcome{OK: true, Reason: unobservableReason}
+	}
+	if errors.Is(err, errChecksUnauthenticated) {
+		return Outcome{OK: true, Reason: unauthenticatedReason}
 	}
 	if errors.Is(err, ErrPollStalled) {
 		return Outcome{

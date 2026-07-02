@@ -299,6 +299,16 @@ loop:
     the watch keeps polling. This is structural and immediate, where the older `PollStall` no-progress window
     (BEH-602) was only a slower, generic timeout-class backstop for the same wedge.
   poll `gh pr checks feat/beh-nnn` until terminal (success/failure/cancelled), bounded by a poll budget
+  gh-auth/permission degrade classes (NOT a red build — the diff is pushed + gate-green, the harness just
+    can't READ CI): these fail SOFT to a green pass that leaves the open PR for a human, distinct from
+    "CI did not go green". Two signatures, keyed off `gh pr checks` stderr:
+      - 403 "Resource not accessible by …" (fine-grained PAT lacks the Checks permission) -> errChecksUnobservable
+        -> pass with "CI status unobservable with this token" (needs a classic repo-scoped PAT; BEH-476)
+      - 401 / "Bad credentials" / "gh auth login" hint (the poll path's token is missing/stale/wrong even
+        though `git push` + `gh pr create` just succeeded with the harness auth) -> errChecksUnauthenticated
+        -> pass with "CI watch unavailable: gh not authenticated … PR was pushed OK, check CI manually and
+        fix the harness gh auth" (BEH-627, the BEH-625 false-negative). A future operator seeing a 401 from
+        `gh pr checks` should read it as a harness gh-auth problem, NOT a CI failure.
   if green        -> confirm mergeability against base (gh pr view --json mergeable):
                        clean              -> done
                        stale-base conflict (main moved after the push) -> auto-rebase + force-with-lease

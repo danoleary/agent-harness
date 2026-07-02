@@ -174,6 +174,20 @@ func TestInterpretChecksOutputFlagsUnreadableChecksAsUnobservable(t *testing.T) 
 	}
 }
 
+func TestInterpretChecksOutputFlagsBadCredentialsAsUnauthenticated(t *testing.T) {
+	// The exact 401 the watch died on in BEH-625/BEH-627: git push + gh pr create
+	// succeeded with the harness auth, but moments later `gh pr checks`'s GraphQL
+	// poll was rejected with HTTP 401 Bad credentials. That is a credential/
+	// environment problem (a stale/wrong token on the poll path), NOT a red build —
+	// it must surface as errChecksUnauthenticated so the watch fails soft rather
+	// than reporting the pushed, gate-green PR as "CI did not go green".
+	stderr := []byte("Try authenticating with: gh auth login -h github.com: HTTP 401: Bad credentials (https://api.github.com/graphql)")
+	_, err := interpretChecksOutput([]byte(""), stderr, errors.New("exit status 1"))
+	if !errors.Is(err, errChecksUnauthenticated) {
+		t.Fatalf("err = %v, want errChecksUnauthenticated", err)
+	}
+}
+
 func TestTruncateLogsKeepsTailWhenOverLimit(t *testing.T) {
 	// CI failures show at the end of the log, so truncation keeps the tail.
 	body := strings.Repeat("x", 100) + "THE ACTUAL ERROR"

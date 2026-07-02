@@ -23,12 +23,33 @@ var errNoChecksYet = errors.New("no CI checks reported yet")
 // Only a classic `repo`-scoped PAT can read check runs (BEH-476).
 var errChecksUnobservable = errors.New("CI checks not observable with this token (needs a classic repo-scoped PAT)")
 
+// errChecksUnauthenticated marks the case where `gh pr checks` is rejected with an
+// HTTP 401 / "Bad credentials" — the poll path's token is missing, stale, or wrong
+// even though `git push` + `gh pr create` succeeded moments earlier with the harness
+// auth (BEH-627, the BEH-625 false-negative). Like errChecksUnobservable this is an
+// environment/credentials problem, NOT a red build: the diff is pushed and gate-green,
+// the harness simply can't authenticate to *read* CI status. The watch must fail soft
+// (leave the open PR for a human) rather than report "CI did not go green".
+var errChecksUnauthenticated = errors.New("CI checks not readable: gh not authenticated (HTTP 401 / bad credentials) — PR was pushed, check CI manually")
+
 // isUnobservableErr reports whether gh's stderr carries GitHub's permission-denied
 // signature for the Checks API. GitHub returns "Resource not accessible by …" for
 // a token lacking the permission — distinct from "authentication required" / "Bad
 // credentials" (a missing/invalid token) or "no checks reported" (transient).
 func isUnobservableErr(stderr string) bool {
 	return strings.Contains(strings.ToLower(stderr), "resource not accessible")
+}
+
+// isUnauthenticatedErr reports whether gh's stderr carries GitHub's bad-credentials
+// signature: an HTTP 401, the literal "Bad credentials", or gh's "gh auth login"
+// re-auth hint. Distinct from isUnobservableErr (a token that authenticates but lacks
+// the Checks permission — a 403 "resource not accessible") and from a transient "no
+// checks reported": this is a token that GitHub rejected outright (BEH-627).
+func isUnauthenticatedErr(stderr string) bool {
+	s := strings.ToLower(stderr)
+	return strings.Contains(s, "bad credentials") ||
+		strings.Contains(s, "http 401") ||
+		strings.Contains(s, "gh auth login")
 }
 
 // checksJSONFields is the `gh pr checks --json` field set the driver reads: the
@@ -266,6 +287,13 @@ func interpretChecksOutput(stdout, stderr []byte, runErr error) ([]Check, error)
 		// at all (fine-grained PAT) — degrade, don't surface as a real failure.
 		if isUnobservableErr(s) {
 			return nil, errChecksUnobservable
+		}
+		// An HTTP 401 / "Bad credentials" means the poll path's token was rejected
+		// outright (missing/stale/wrong) even though push + PR create just succeeded —
+		// a credentials/environment problem, not a red build (BEH-627). Degrade rather
+		// than report the pushed, gate-green PR as a CI failure.
+		if isUnauthenticatedErr(s) {
+			return nil, errChecksUnauthenticated
 		}
 		if s != "" {
 			return nil, fmt.Errorf("gh pr checks failed: %w: %s", runErr, s)

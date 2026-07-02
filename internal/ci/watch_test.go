@@ -474,6 +474,25 @@ func TestWatchDegradesWhenChecksUnobservable(t *testing.T) {
 	}
 }
 
+func TestWatchDegradesWhenChecksUnauthenticated(t *testing.T) {
+	// push + PR create succeeded, but the poll's `gh pr checks` was rejected with a
+	// 401 / bad credentials (BEH-627). That is a credentials/environment problem, not
+	// a red build, so — like the unobservable degrade — this is a success that leaves
+	// the open PR for a human: no rerun, no fix, OK, and a reason that says the PR was
+	// pushed and CI just couldn't be authenticated.
+	d := &fakeDriver{polls: []pollResult{{v: Pending, err: errChecksUnauthenticated}}}
+	out := WatchAndFix(d, testWatchCfg(), newFakeClock().now)
+	if !out.OK {
+		t.Fatalf("expected OK (PR pushed, CI poll just unauthenticated), got %+v", out)
+	}
+	if d.reruns != 0 || d.fixes != 0 {
+		t.Fatalf("unauthenticated CI must not trigger rerun/fix; got rerun=%d fix=%d", d.reruns, d.fixes)
+	}
+	if !strings.Contains(strings.ToLower(out.Reason), "authenticat") {
+		t.Fatalf("reason %q should explain gh could not be authenticated to read CI", out.Reason)
+	}
+}
+
 func TestWatchSurfacesFixError(t *testing.T) {
 	boom := errors.New("sandbox fix session crashed")
 	d := &fakeDriver{
