@@ -100,6 +100,27 @@ func TestRetryTransient_AppliesGrowingSchedule(t *testing.T) {
 	}
 }
 
+// A watchdog cap-kill exits 137 like an OOM but must NOT be retried: it ran the
+// full session, so re-running the from-scratch prompt would clobber a worktree that
+// already holds a session of real work (BEH-668). It fails fast after one attempt,
+// so the loop never relaunches — the caller's checkpoint-commit rescue then captures
+// the diff instead.
+func TestRetryTransient_CapKillNotRetried(t *testing.T) {
+	calls := 0
+	out, attempts := RetryTransient(3, ConstantBackoff(time.Second), func(time.Duration) { t.Fatal("must not sleep on a cap-kill") },
+		func(attempt int) Outcome {
+			calls++
+			return Outcome{ExitCode: sandbox.ExitOOMKill, CapKilled: true}
+		})
+
+	if attempts != 1 || calls != 1 {
+		t.Fatalf("attempts=%d calls=%d, want 1/1 (a cap-kill is terminal, never relaunched from scratch)", attempts, calls)
+	}
+	if !out.CapKilled {
+		t.Fatal("surfaced Outcome lost CapKilled — the caller can no longer tell a cap-kill from an OOM")
+	}
+}
+
 // A real failure (a non-137 code the process itself returned) is final — never
 // retried, so a genuine typecheck/test error fails fast.
 func TestRetryTransient_RealFailureNotRetried(t *testing.T) {

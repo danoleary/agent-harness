@@ -241,6 +241,40 @@ func TestWatchReasonContract(t *testing.T) {
 	}
 }
 
+// watchLimit classifies which limit fired so the watchdog can flag a cap-kill (a
+// 137 that must NOT be treated as a bare OOM — BEH-668). capHit is true only when
+// the CAP is the fired limit; an idle-window kill, or no kill at all, leaves it
+// false. The tie-break mirrors watchReason: when both are crossed, the limit whose
+// deadline elapsed first wins.
+func TestWatchLimitClassifiesCapVsIdle(t *testing.T) {
+	cases := []struct {
+		name                                    string
+		activeElapsed, idleElapsed, cap, idleTO time.Duration
+		wantReason                              string // substring, "" means no kill
+		wantCap                                 bool
+	}{
+		{"cap alone", 30 * time.Minute, 1 * time.Minute, 30 * time.Minute, 10 * time.Minute, "cap", true},
+		{"idle alone", 20 * time.Minute, 10 * time.Minute, 30 * time.Minute, 10 * time.Minute, "activity", false},
+		{"both, cap deadline first", 100 * time.Hour, 100*time.Hour - 25*time.Minute, 30 * time.Minute, 10 * time.Minute, "cap", true},
+		{"both, idle deadline first", 100 * time.Hour, 100 * time.Hour, 30 * time.Minute, 10 * time.Minute, "activity", false},
+		{"neither", 5 * time.Minute, 5 * time.Minute, 30 * time.Minute, 10 * time.Minute, "", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			v := watchLimit(c.activeElapsed, c.idleElapsed, c.cap, c.idleTO)
+			if c.wantReason == "" && v.reason != "" {
+				t.Fatalf("expected no kill, got reason %q", v.reason)
+			}
+			if c.wantReason != "" && !strings.Contains(v.reason, c.wantReason) {
+				t.Fatalf("reason %q does not contain %q", v.reason, c.wantReason)
+			}
+			if v.capHit != c.wantCap {
+				t.Errorf("capHit = %v, want %v (reason %q)", v.capHit, c.wantCap, v.reason)
+			}
+		})
+	}
+}
+
 // When a kill does land and the host also slept during the session, the kill log
 // names the slept time as context — confirming it was excluded, not charged
 // (BEH-608). The gap between wall-elapsed and monotonic (active) elapsed at kill

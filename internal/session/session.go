@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -97,6 +98,13 @@ type Outcome struct {
 	// reviewer could not resolve. The caller fails the push closed on it so the
 	// finding isn't shipped to a PR unaddressed. Only meaningful for review sessions.
 	ReviewBlocked bool
+	// CapKilled is true iff the watchdog killed the container for crossing the hard
+	// session cap (BEH-668). A cap-kill is delivered via `docker kill` (SIGKILL), so
+	// it exits 137 — identical to a genuine OOM-kill (ExitOOMKill) — but its meaning
+	// is the opposite: the session ran the FULL cap doing real work, so it is never a
+	// bare pre-work transient. Retryable() reads this flag to avoid re-running the
+	// from-scratch prompt over a worktree that already holds ~a full session of work.
+	CapKilled bool
 	// DockerReason is docker's own error line on a launch failure (exit 125 —
 	// sandbox.ExitCannotStart), extracted from the stderr tail. It lets the caller
 	// tell a transient launch failure (overlay2/read-only-fs, BEH-542) from a
@@ -113,6 +121,14 @@ type Outcome struct {
 // succeeds once it recovers. A genuine 125 (daemon down, image missing, bad flag)
 // and any real non-zero code the process itself returned stay terminal.
 func (o Outcome) Retryable() bool {
+	// A watchdog cap-kill exits 137 (docker kill → SIGKILL) — indistinguishable from
+	// a genuine OOM by exit code alone — but it ran the full session doing real work,
+	// not a host wedging at launch. Retrying it re-runs the from-scratch prompt and
+	// clobbers the in-flight worktree (BEH-668); it must stay terminal so the
+	// checkpoint-commit rescue captures the diff instead.
+	if o.CapKilled {
+		return false
+	}
 	if o.ExitCode == sandbox.ExitOOMKill {
 		return true
 	}
@@ -200,6 +216,25 @@ func (h heartbeatReader) Read(p []byte) (int, error) {
 // (the BEH-538 truthfulness property). lastActivityAt is the active-axis instant
 // of the last beat (start = 0): activeElapsed - idleElapsed.
 func watchReason(activeElapsed, idleElapsed, hardCap, idle time.Duration) string {
+	return watchLimit(activeElapsed, idleElapsed, hardCap, idle).reason
+}
+
+// watchVerdict is watchLimit's decision: the human reason for the kill log (empty
+// when neither limit is breached) plus whether the CAP — not the idle window — is
+// the limit that fired. The watchdog surfaces capHit as Outcome.CapKilled so a
+// cap-kill's 137 is not mistaken for a bare-retryable OOM and re-run from scratch
+// (BEH-668). An idle-window kill leaves capHit false (it stays retryable — a dead
+// stream is the host/API wedging, the ExitOOMKill class).
+type watchVerdict struct {
+	reason string
+	capHit bool
+}
+
+// watchLimit is watchReason's classifying core: it reports the limit crossed AND
+// which one it was. The tie-break is unchanged — when both are crossed, the limit
+// whose deadline elapsed first (on the active-time axis) is reported, and capHit
+// tracks that same choice so the flag never disagrees with the reason string.
+func watchLimit(activeElapsed, idleElapsed, hardCap, idle time.Duration) watchVerdict {
 	capCrossed := hardCap > 0 && activeElapsed >= hardCap
 	idleCrossed := idle > 0 && idleElapsed >= idle
 
@@ -212,15 +247,15 @@ func watchReason(activeElapsed, idleElapsed, hardCap, idle time.Duration) string
 	case capCrossed && idleCrossed:
 		// Both past — name the one whose deadline elapsed earlier (the true cause).
 		if lastActivityAt+idle < hardCap {
-			return idleReason
+			return watchVerdict{reason: idleReason}
 		}
-		return capReason
+		return watchVerdict{reason: capReason, capHit: true}
 	case capCrossed:
-		return capReason
+		return watchVerdict{reason: capReason, capHit: true}
 	case idleCrossed:
-		return idleReason
+		return watchVerdict{reason: idleReason}
 	default:
-		return ""
+		return watchVerdict{}
 	}
 }
 
@@ -289,6 +324,11 @@ func Run(dockerArgs []string, opts Options) Outcome {
 	hb.beat(time.Now()) // monotonic-bearing, so time.Since(hb.at()) excludes sleep
 	tappedStdout := heartbeatReader{r: stdout, beat: func() { hb.beat(time.Now()) }}
 
+	// capKilled records a watchdog cap-kill so the Outcome can flag it. It exits 137
+	// like an OOM, so without this flag the retry loop would re-run the from-scratch
+	// prompt and clobber a full session's worktree (BEH-668). Atomic: the watchdog
+	// goroutine stores it, Run loads it after the streams close.
+	var capKilled atomic.Bool
 	watchdogDone := make(chan struct{})
 	go func() {
 		ticker := time.NewTicker(watchdogPollInterval)
@@ -300,9 +340,15 @@ func Run(dockerArgs []string, opts Options) Outcome {
 			case <-ticker.C:
 				activeElapsed := time.Since(monoStart) // monotonic: excludes host sleep
 				idleElapsed := time.Since(hb.at())     // monotonic: excludes host sleep
-				if reason := watchReason(activeElapsed, idleElapsed, opts.Timeout, opts.IdleTimeout); reason != "" {
+				if v := watchLimit(activeElapsed, idleElapsed, opts.Timeout, opts.IdleTimeout); v.reason != "" {
+					// Flag a cap-kill before the SIGKILL, so the 137 it produces is read as
+					// terminal, not a bare-retryable OOM (BEH-668). An idle-window kill is
+					// left unflagged — a dead stream stays the retryable host/API-wedge class.
+					if v.capHit {
+						capKilled.Store(true)
+					}
 					note := sleepNote(realNow().Sub(start), activeElapsed)
-					opts.Log.Event("session ✗ " + reason + note + " — killing " + opts.ContainerName)
+					opts.Log.Event("session ✗ " + v.reason + note + " — killing " + opts.ContainerName)
 					_ = exec.Command("docker", "kill", opts.ContainerName).Run() // allow-unbounded-exec: docker kill from the watchdog itself
 					return
 				}
@@ -349,7 +395,7 @@ func Run(dockerArgs []string, opts Options) Outcome {
 		opts.Log.Event("session ✗ docker could not start the container (exit 125): " + hint)
 	}
 
-	return Outcome{ExitCode: exitCode, UsagePolicyRefusal: flags.usagePolicyRefusal, SpendingCapAbort: flags.spendingCapAbort, ReviewVerdictEmitted: flags.reviewVerdictEmitted, ReviewBlocked: flags.reviewBlocked, DockerReason: dockerReason}
+	return Outcome{ExitCode: exitCode, CapKilled: capKilled.Load(), UsagePolicyRefusal: flags.usagePolicyRefusal, SpendingCapAbort: flags.spendingCapAbort, ReviewVerdictEmitted: flags.reviewVerdictEmitted, ReviewBlocked: flags.reviewBlocked, DockerReason: dockerReason}
 }
 
 // pumpStdout scans claude's stream-json stdout: it tees every line raw to the

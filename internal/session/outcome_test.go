@@ -17,6 +17,10 @@ func TestOutcomeRetryable(t *testing.T) {
 		want bool
 	}{
 		{"oom 137", Outcome{ExitCode: sandbox.ExitOOMKill}, true},
+		// A watchdog cap-kill also exits 137 (docker kill → SIGKILL), but it ran the
+		// full session doing real work — it is NOT a bare pre-work transient, so it
+		// must not be retried from scratch (BEH-668).
+		{"cap-kill 137", Outcome{ExitCode: sandbox.ExitOOMKill, CapKilled: true}, false},
 		{"transient 125 read-only", Outcome{ExitCode: sandbox.ExitCannotStart, DockerReason: `failed to remove root filesystem: unlinkat /var/lib/docker/overlay2/x: read-only file system`}, true},
 		{"transient 125 unexpected EOF", Outcome{ExitCode: sandbox.ExitCannotStart, DockerReason: `level=error msg="error waiting for container: unexpected EOF"`}, true},
 		{"genuine 125 daemon down", Outcome{ExitCode: sandbox.ExitCannotStart, DockerReason: "Cannot connect to the Docker daemon"}, false},
