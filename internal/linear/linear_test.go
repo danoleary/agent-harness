@@ -8,6 +8,7 @@ import (
 
 	"github.com/beherd/agent-harness/internal/findings"
 	"github.com/beherd/agent-harness/internal/ticket"
+	"github.com/beherd/agent-harness/internal/tracker"
 )
 
 // fakeTransport returns the given data payload (marshalled) for every call,
@@ -264,7 +265,7 @@ func TestSearchFindingsParsesIssuesAndKeys(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("findings len = %d, want 2", len(got))
 	}
-	if got[0] != (ExistingFinding{Identifier: "BEH-405", Title: "Storybook unrunnable", Key: "sandbox-playwright-missing-deps", Closed: false}) {
+	if got[0] != (tracker.ExistingFinding{Identifier: "BEH-405", Title: "Storybook unrunnable", Key: "sandbox-playwright-missing-deps", Closed: false}) {
 		t.Errorf("findings[0] = %+v", got[0])
 	}
 	if !got[1].Closed {
@@ -326,7 +327,7 @@ func TestFileFinding(t *testing.T) {
 	var captured map[string]any
 	created, err := NewClient(fileFindingTransport(t, &captured)).FileFinding(
 		findings.Finding{Title: "tokens:build missing", Body: "Storybook died", Kind: "setup"},
-		FileFindingOptions{TeamID: "team-uuid", RelatedIdentifier: "BEH-362"},
+		tracker.FileFindingOptions{TeamID: "team-uuid", RelatedKey: "BEH-362"},
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -366,7 +367,7 @@ func TestFileFindingEmbedsKeyMarker(t *testing.T) {
 	var captured map[string]any
 	_, err := NewClient(fileFindingTransport(t, &captured)).FileFinding(
 		findings.Finding{Title: "Playwright missing", Body: "no deps", Key: "sandbox-playwright-missing-deps"},
-		FileFindingOptions{TeamID: "team-uuid", RelatedIdentifier: "BEH-394"},
+		tracker.FileFindingOptions{TeamID: "team-uuid", RelatedKey: "BEH-394"},
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -393,7 +394,7 @@ func TestFileFindingLabelsWithAgentHarness(t *testing.T) {
 
 	_, err := NewClient(tr).FileFinding(
 		findings.Finding{Title: "x", Body: "y"},
-		FileFindingOptions{TeamID: "team-uuid", RelatedIdentifier: "BEH-362"},
+		tracker.FileFindingOptions{TeamID: "team-uuid", RelatedKey: "BEH-362"},
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -421,7 +422,7 @@ func TestFileFindingAddsAgentHarnessAlongsideFindingLabels(t *testing.T) {
 
 	_, err := NewClient(tr).FileFinding(
 		findings.Finding{Title: "x", Body: "y", LabelIDs: []string{"own-label-uuid"}},
-		FileFindingOptions{TeamID: "team-uuid", RelatedIdentifier: "BEH-362"},
+		tracker.FileFindingOptions{TeamID: "team-uuid", RelatedKey: "BEH-362"},
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

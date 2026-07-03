@@ -20,11 +20,11 @@ import (
 	"os"
 
 	gitpkg "github.com/beherd/agent-harness/internal/git"
-	"github.com/beherd/agent-harness/internal/linear"
 	"github.com/beherd/agent-harness/internal/loopstream"
 	"github.com/beherd/agent-harness/internal/pipeline"
 	"github.com/beherd/agent-harness/internal/runlog"
 	"github.com/beherd/agent-harness/internal/stages"
+	"github.com/beherd/agent-harness/internal/trackers"
 )
 
 func main() {
@@ -44,7 +44,11 @@ func main() {
 			fmt.Fprintf(os.Stderr, "%v\n", err)
 			os.Exit(1)
 		}
-		client := linear.NewClient(linear.NewTransport(cfg.LinearAPIKey))
+		client, err := trackers.New(cfg.Tracker.Kind, cfg.LinearAPIKey)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "%v\n", err)
+			os.Exit(1)
+		}
 		// Selection narrates the ticket-selected event into the same global loop.jsonl
 		// the per-ticket logger feeds, so a single-shot `pipeline --next` is viewable by
 		// cmd/watch too (ADR-0005). A single-shot run does not truncate — only the daemon does.

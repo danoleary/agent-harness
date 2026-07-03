@@ -11,7 +11,11 @@ import (
 
 	"github.com/beherd/agent-harness/internal/findings"
 	"github.com/beherd/agent-harness/internal/ticket"
+	"github.com/beherd/agent-harness/internal/tracker"
 )
+
+// Client is the Linear adapter behind the host-side tracker port (ADR-0010).
+var _ tracker.Tracker = (*Client)(nil)
 
 // findingKeyRe matches the machine-readable dedup marker embedded in a filed
 // finding's body: `<!-- finding-key: <key> -->`. The harness writes it on filing
@@ -74,15 +78,6 @@ func withOccurrences(body string, n int) string {
 // (the transport handles auth + transport-level errors).
 type Transport func(query string, variables map[string]any) (json.RawMessage, error)
 
-// FileFindingOptions parameterises filing one finding.
-type FileFindingOptions struct {
-	// TeamID is the UUID of the team to create the finding in (BeHerd).
-	TeamID string
-	// RelatedIdentifier is the human identifier of the ticket whose session
-	// surfaced this (e.g. "BEH-362").
-	RelatedIdentifier string
-}
-
 // agentHarnessLabelID is the BeHerd "agent-harness" label (team BeHerd). Every
 // finding the harness files is, by construction, about the harness/environment
 // itself (ADR-0001), so it always belongs under this label. The create API
@@ -90,25 +85,6 @@ type FileFindingOptions struct {
 // file-time would add a GraphQL round-trip per finding plus a failure mode that
 // could silently drop the label — so we reference the id directly (BEH-409).
 const agentHarnessLabelID = "788a5654-a4b3-4ac2-8483-a4d50408ebc0"
-
-// CreatedIssue is the result of filing a finding.
-type CreatedIssue struct {
-	Identifier string `json:"identifier"`
-	URL        string `json:"url"`
-}
-
-// ExistingFinding is an already-filed harness finding, returned by SearchFindings
-// so filing can skip duplicates. Key is the dedup fingerprint recovered from the
-// issue body's `<!-- finding-key: … -->` marker (empty when the issue carries
-// none). Closed is true when the issue is in a completed/canceled state — a
-// closed match must NOT suppress a re-file, so a wontfix can't permanently mask a
-// real regression.
-type ExistingFinding struct {
-	Identifier string
-	Title      string
-	Key        string
-	Closed     bool
-}
 
 // Client wraps a Transport with the harness's Linear operations.
 type Client struct {
@@ -395,14 +371,14 @@ func (c *Client) ReleaseToTodo(identifier string) error {
 // `<!-- finding-key: … -->` marker so a later run dedups on an exact-key lookup.
 // Label resolution is best-effort: if it fails, the issue is still filed (only
 // future dedup of this issue is weakened — never a crash).
-func (c *Client) FileFinding(f findings.Finding, opts FileFindingOptions) (CreatedIssue, error) {
+func (c *Client) FileFinding(f findings.Finding, opts tracker.FileFindingOptions) (tracker.CreatedIssue, error) {
 	kindLine := ""
 	if f.Kind != "" {
 		kindLine = "**Kind:** " + f.Kind + "\n\n"
 	}
 	description := fmt.Sprintf(
 		"%s%s\n\n_Surfaced during %s by the agent harness._",
-		kindLine, f.Body, opts.RelatedIdentifier,
+		kindLine, f.Body, opts.RelatedKey,
 	)
 	if key := strings.TrimSpace(f.Key); key != "" {
 		description += "\n\n" + findingKeyMarker(key)
@@ -423,20 +399,20 @@ func (c *Client) FileFinding(f findings.Finding, opts FileFindingOptions) (Creat
 		},
 	})
 	if err != nil {
-		return CreatedIssue{}, err
+		return tracker.CreatedIssue{}, err
 	}
 
 	var resp struct {
 		IssueCreate struct {
-			Success bool          `json:"success"`
-			Issue   *CreatedIssue `json:"issue"`
+			Success bool                  `json:"success"`
+			Issue   *tracker.CreatedIssue `json:"issue"`
 		} `json:"issueCreate"`
 	}
 	if err := json.Unmarshal(data, &resp); err != nil {
-		return CreatedIssue{}, err
+		return tracker.CreatedIssue{}, err
 	}
 	if !resp.IssueCreate.Success || resp.IssueCreate.Issue == nil {
-		return CreatedIssue{}, fmt.Errorf("failed to file finding: %s", f.Title)
+		return tracker.CreatedIssue{}, fmt.Errorf("failed to file finding: %s", f.Title)
 	}
 	return *resp.IssueCreate.Issue, nil
 }
@@ -473,7 +449,7 @@ func (c *Client) AddComment(identifier, body string) error {
 // SearchFindings lists the team's already-filed harness findings (scoped by the
 // agent-harness label), recovering each one's dedup key from its body marker and
 // whether it is closed. The caller decides the open/closed dedup policy.
-func (c *Client) SearchFindings(teamID string) ([]ExistingFinding, error) {
+func (c *Client) SearchFindings(teamID string) ([]tracker.ExistingFinding, error) {
 	filter := map[string]any{
 		"team":   map[string]any{"id": map[string]any{"eq": teamID}},
 		"labels": map[string]any{"name": map[string]any{"eq": findingsLabel}},
@@ -502,9 +478,9 @@ func (c *Client) SearchFindings(teamID string) ([]ExistingFinding, error) {
 		return nil, err
 	}
 
-	out := make([]ExistingFinding, 0, len(resp.Issues.Nodes))
+	out := make([]tracker.ExistingFinding, 0, len(resp.Issues.Nodes))
 	for _, n := range resp.Issues.Nodes {
-		out = append(out, ExistingFinding{
+		out = append(out, tracker.ExistingFinding{
 			Identifier: n.Identifier,
 			Title:      n.Title,
 			Key:        ExtractFindingKey(n.Description),

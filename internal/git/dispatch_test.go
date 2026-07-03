@@ -40,6 +40,20 @@ func TestMainHistoryReferencesRespectsWordBoundaries(t *testing.T) {
 	}
 }
 
+// BEH-633: the Key is tracker-agnostic (ADR-0010) — the history scan must make no
+// `BEH-` assumption. A Jira-style `PROJ-123` matches when merged and still
+// respects word boundaries (PROJ-12 must not match the longer PROJ-123), exactly
+// as a Linear key does, so a future Jira adapter dispatches correctly.
+func TestMainHistoryReferencesMatchesNonBEHKey(t *testing.T) {
+	log := "feat(auth): add SSO callback (PROJ-123) (#88)\n"
+	if !mainHistoryReferences(log, "PROJ-123") {
+		t.Fatalf("expected the non-BEH Key PROJ-123 to match:\n%s", log)
+	}
+	if mainHistoryReferences(log, "PROJ-12") {
+		t.Fatalf("PROJ-12 must not match the longer PROJ-123 — word boundaries are Key-agnostic")
+	}
+}
+
 // Subjects occasionally lower-case the key (and the identifier always arrives
 // upper-cased from arg parsing); the match must be case-insensitive so a real
 // merge isn't missed on casing alone.

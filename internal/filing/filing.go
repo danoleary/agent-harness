@@ -1,7 +1,9 @@
 // Package filing files the harness-improvement findings a session dropped into
-// its `/findings/out.json` dropbox to Linear. It is the host-side step that runs
-// after a session returns (ADR-0001: the harness owns all Linear I/O); the
-// agent only writes the dropbox, never reaches Linear itself.
+// its `/findings/out.json` dropbox to the tracker, through the FindingsSink port
+// (a Filer + Searcher; any tracker adapter satisfies it). It is the host-side step
+// that runs after a session returns (ADR-0010, retaining ADR-0001's invariant: the
+// harness owns all tracker I/O); the agent only writes the dropbox, never reaches
+// the tracker itself.
 package filing
 
 import (
@@ -12,22 +14,22 @@ import (
 	"strings"
 
 	"github.com/beherd/agent-harness/internal/findings"
-	"github.com/beherd/agent-harness/internal/linear"
+	"github.com/beherd/agent-harness/internal/tracker"
 )
 
 // dropboxFile is the fixed filename the agent drops findings into, under the
 // session's findings dir (mounted at /findings in the sandbox).
 const dropboxFile = "out.json"
 
-// Filer files one finding to Linear. *linear.Client satisfies it; tests pass a fake.
+// Filer files one finding to the tracker. Any tracker adapter satisfies it; tests pass a fake.
 type Filer interface {
-	FileFinding(f findings.Finding, opts linear.FileFindingOptions) (linear.CreatedIssue, error)
+	FileFinding(f findings.Finding, opts tracker.FileFindingOptions) (tracker.CreatedIssue, error)
 }
 
 // Searcher lists already-filed harness findings for a team so File can skip
-// duplicates. *linear.Client satisfies it; tests pass a fake.
+// duplicates. Any tracker adapter satisfies it; tests pass a fake.
 type Searcher interface {
-	SearchFindings(teamID string) ([]linear.ExistingFinding, error)
+	SearchFindings(teamID string) ([]tracker.ExistingFinding, error)
 }
 
 // ClearDropbox removes any stale dropbox left in findingsDir. The findings dir is
@@ -92,11 +94,11 @@ type EventSink interface {
 // It exists because matchKey only catches exact key/title equality, while most
 // real duplicates are the same class described in different prose (BEH-573): two
 // sessions word the same failure differently and pick different free-form keys,
-// so neither the key nor the title collides. *linear.Client-backed matchers pass
-// a fake in tests. Best-effort (ADR-0001): the caller treats any error as "no
+// so neither the key nor the title collides. The semantic matcher is a separate
+// collaborator (internal/semdedup); tests pass a fake. Best-effort (ADR-0001): the caller treats any error as "no
 // match" and degrades to filing the finding, the pre-semantic behaviour.
 type SemanticMatcher interface {
-	MatchFinding(f findings.Finding, open []linear.ExistingFinding) (identifier string, err error)
+	MatchFinding(f findings.Finding, open []tracker.ExistingFinding) (identifier string, err error)
 }
 
 // OccurrenceRecorder records that an already-tracked finding recurred: it appends
@@ -109,10 +111,10 @@ type OccurrenceRecorder interface {
 	RecordOccurrence(identifier, relatedIdentifier string) (count int, err error)
 }
 
-// File reads the findings dropbox in findingsDir and files each finding to
-// Linear, referencing relatedIdentifier (the worked ticket). It never returns an
+// File reads the findings dropbox in findingsDir and files each finding to the
+// tracker, referencing relatedIdentifier (the worked ticket). It never returns an
 // error: every failure is degraded to a narration line, so one bad dropbox or a
-// transient Linear failure can't crash the run (ADR-0001: degraded, not broken).
+// transient tracker failure can't crash the run (ADR-0001: degraded, not broken).
 //   - No dropbox file → nothing to file (the common, friction-free case).
 //   - Dropbox present but unreadable/malformed → one narration line, nothing filed.
 //   - Findings present but no team id resolved → one narration line, nothing filed.
@@ -168,8 +170,8 @@ func File(findingsDir, teamID, relatedIdentifier string, filer Filer, searcher S
 			continue
 		}
 		// 3. No match — file a new issue.
-		created, err := filer.FileFinding(f, linear.FileFindingOptions{
-			TeamID: teamID, RelatedIdentifier: relatedIdentifier,
+		created, err := filer.FileFinding(f, tracker.FileFindingOptions{
+			TeamID: teamID, RelatedKey: relatedIdentifier,
 		})
 		if err != nil {
 			log.Event(fmt.Sprintf("finding ✗ failed to file %q: %s", f.Title, err.Error()))
@@ -178,7 +180,7 @@ func File(findingsDir, teamID, relatedIdentifier string, filer Filer, searcher S
 		// Register what we just filed so a later finding in the same dropbox that
 		// shares its key/title — or reads as the same class — dedups against it too,
 		// not just across runs.
-		filed := linear.ExistingFinding{Identifier: created.Identifier, Title: f.Title, Key: f.Key}
+		filed := tracker.ExistingFinding{Identifier: created.Identifier, Title: f.Title, Key: f.Key}
 		tracked[matchKey(f.Key, f.Title)] = filed
 		open = append(open, filed)
 		log.Event(fmt.Sprintf("finding filed: %s — %s", created.Identifier, f.Title))
@@ -188,8 +190,8 @@ func File(findingsDir, teamID, relatedIdentifier string, filer Filer, searcher S
 // recordRecurrence handles a finding that matched an already-tracked issue:
 // comment-and-bump when a recorder is wired (BEH-573), else the pre-BEH-573
 // silent-skip narration. Best-effort: a recorder failure degrades to a skip
-// narration so a transient Linear error never files a duplicate or crashes.
-func recordRecurrence(existing linear.ExistingFinding, relatedIdentifier string, recorder OccurrenceRecorder, log EventSink) {
+// narration so a transient tracker error never files a duplicate or crashes.
+func recordRecurrence(existing tracker.ExistingFinding, relatedIdentifier string, recorder OccurrenceRecorder, log EventSink) {
 	if recorder == nil {
 		log.Event(fmt.Sprintf("finding ↩ already tracked: %s — %s", existing.Identifier, existing.Title))
 		return
@@ -207,18 +209,18 @@ func recordRecurrence(existing linear.ExistingFinding, relatedIdentifier string,
 // nil matcher, an empty open set, a model error, or an identifier not in the open
 // set all yield ok=false so the finding is filed as new (the pre-semantic
 // behaviour) rather than mis-deduped against an issue we can't verify.
-func semanticMatch(f findings.Finding, open []linear.ExistingFinding, matcher SemanticMatcher, log EventSink) (linear.ExistingFinding, bool) {
+func semanticMatch(f findings.Finding, open []tracker.ExistingFinding, matcher SemanticMatcher, log EventSink) (tracker.ExistingFinding, bool) {
 	if matcher == nil || len(open) == 0 {
-		return linear.ExistingFinding{}, false
+		return tracker.ExistingFinding{}, false
 	}
 	id, err := matcher.MatchFinding(f, open)
 	if err != nil {
 		log.Event("finding ⚠ semantic dedup failed, filing without it: " + err.Error())
-		return linear.ExistingFinding{}, false
+		return tracker.ExistingFinding{}, false
 	}
 	id = strings.TrimSpace(id)
 	if id == "" {
-		return linear.ExistingFinding{}, false
+		return tracker.ExistingFinding{}, false
 	}
 	for _, e := range open {
 		if e.Identifier == id {
@@ -228,7 +230,7 @@ func semanticMatch(f findings.Finding, open []linear.ExistingFinding, matcher Se
 	// The model named an id that isn't in the open set we gave it — don't trust a
 	// match we can't resolve; file as new.
 	log.Event("finding ⚠ semantic dedup returned unknown id " + id + ", filing as new")
-	return linear.ExistingFinding{}, false
+	return tracker.ExistingFinding{}, false
 }
 
 // openTracked returns the already-filed harness findings both keyed by match key
@@ -236,14 +238,14 @@ func semanticMatch(f findings.Finding, open []linear.ExistingFinding, matcher Se
 // the semantic pass), limited to OPEN issues — a closed/canceled match must not
 // suppress a re-file. A search failure is narrated once and degrades to an empty
 // map and nil slice (file all, no semantic pass).
-func openTracked(teamID string, searcher Searcher, log EventSink) (map[string]linear.ExistingFinding, []linear.ExistingFinding) {
-	tracked := map[string]linear.ExistingFinding{}
+func openTracked(teamID string, searcher Searcher, log EventSink) (map[string]tracker.ExistingFinding, []tracker.ExistingFinding) {
+	tracked := map[string]tracker.ExistingFinding{}
 	existing, err := searcher.SearchFindings(teamID)
 	if err != nil {
 		log.Event("findings ⚠ dedup search failed, filing without dedup: " + err.Error())
 		return tracked, nil
 	}
-	open := make([]linear.ExistingFinding, 0, len(existing))
+	open := make([]tracker.ExistingFinding, 0, len(existing))
 	for _, e := range existing {
 		if e.Closed {
 			continue
@@ -266,7 +268,7 @@ type PriorFinding struct {
 // AlreadyFiled returns the deduped set of finding classes a retrospective re-run
 // should treat as settled (BEH-539): the team's OPEN filed findings, merged with
 // any classes left in this ticket's prior dropbox. It MUST be called before
-// ClearDropbox wipes that dropbox. Best-effort (ADR-0001): a Linear search
+// ClearDropbox wipes that dropbox. Best-effort (ADR-0001): a tracker search
 // failure degrades to the dropbox classes alone and narrates, never crashes. The
 // result is sorted (key, then title) so the injected prompt is deterministic.
 func AlreadyFiled(findingsDir, teamID string, searcher Searcher, log EventSink) []PriorFinding {
@@ -293,7 +295,7 @@ func AlreadyFiled(findingsDir, teamID string, searcher Searcher, log EventSink) 
 		}
 	}
 
-	// Any classes the prior run dropped but that may never have reached Linear
+	// Any classes the prior run dropped but that may never have reached the tracker
 	// (e.g. a transient filing failure). Read here, before ClearDropbox wipes it.
 	if text, err := os.ReadFile(filepath.Join(findingsDir, dropboxFile)); err == nil {
 		for _, f := range findings.Parse(string(text)).Findings {

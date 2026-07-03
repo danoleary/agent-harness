@@ -36,7 +36,6 @@ import (
 
 	"github.com/beherd/agent-harness/internal/config"
 	gitpkg "github.com/beherd/agent-harness/internal/git"
-	"github.com/beherd/agent-harness/internal/linear"
 	"github.com/beherd/agent-harness/internal/loop"
 	"github.com/beherd/agent-harness/internal/loopstream"
 	"github.com/beherd/agent-harness/internal/pipeline"
@@ -44,6 +43,7 @@ import (
 	"github.com/beherd/agent-harness/internal/runlog"
 	"github.com/beherd/agent-harness/internal/sandbox"
 	"github.com/beherd/agent-harness/internal/stages"
+	"github.com/beherd/agent-harness/internal/trackers"
 )
 
 // tickInterval is the granularity the idle/backoff waits are broken into so a stop
@@ -100,7 +100,11 @@ func main() {
 	if !filepath.IsAbs(stopFile) {
 		stopFile = filepath.Join(cfg.HerdPath, stopFile)
 	}
-	client := linear.NewClient(linear.NewTransport(cfg.LinearAPIKey))
+	client, err := trackers.New(cfg.Tracker.Kind, cfg.LinearAPIKey)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		os.Exit(1)
+	}
 
 	// sigStop is flipped by the first SIGINT; the loop folds it together with the
 	// STOP sentinel into one StopRequested predicate. An atomic.Bool is the seam

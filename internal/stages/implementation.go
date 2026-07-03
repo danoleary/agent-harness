@@ -10,12 +10,12 @@ import (
 	"github.com/beherd/agent-harness/internal/config"
 	"github.com/beherd/agent-harness/internal/filing"
 	gitpkg "github.com/beherd/agent-harness/internal/git"
-	"github.com/beherd/agent-harness/internal/linear"
 	"github.com/beherd/agent-harness/internal/loopstream"
 	"github.com/beherd/agent-harness/internal/prompt"
 	"github.com/beherd/agent-harness/internal/runlog"
 	"github.com/beherd/agent-harness/internal/sandbox"
 	"github.com/beherd/agent-harness/internal/session"
+	"github.com/beherd/agent-harness/internal/trackers"
 	"github.com/beherd/agent-harness/internal/verify"
 )
 
@@ -110,7 +110,10 @@ func Implementation(cfg config.Config, log *runlog.Logger, runID string, args Ar
 	}
 	log.Structured(loopstream.Record{Kind: loopstream.KindStageStart, Ticket: args.Identifier, Stage: "implementation", Message: fmt.Sprintf("run %s — implementation %s%s", runID, args.Identifier, dry)})
 
-	client := linear.NewClient(linear.NewTransport(cfg.LinearAPIKey))
+	client, err := trackers.New(cfg.Tracker.Kind, cfg.LinearAPIKey)
+	if err != nil {
+		return Result{Err: err}
+	}
 
 	t, err := client.FetchTicket(args.Identifier)
 	if err != nil {

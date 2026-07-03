@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"github.com/beherd/agent-harness/internal/findings"
-	"github.com/beherd/agent-harness/internal/linear"
+	"github.com/beherd/agent-harness/internal/tracker"
 )
 
 // fakeFiler records the findings it was asked to file and replays scripted results.
@@ -18,27 +18,27 @@ type fakeFiler struct {
 }
 
 type fakeResult struct {
-	issue linear.CreatedIssue
+	issue tracker.CreatedIssue
 	err   error
 }
 
-func (f *fakeFiler) FileFinding(fn findings.Finding, _ linear.FileFindingOptions) (linear.CreatedIssue, error) {
+func (f *fakeFiler) FileFinding(fn findings.Finding, _ tracker.FileFindingOptions) (tracker.CreatedIssue, error) {
 	i := len(f.calls)
 	f.calls = append(f.calls, fn)
 	if i < len(f.results) {
 		return f.results[i].issue, f.results[i].err
 	}
-	return linear.CreatedIssue{}, nil
+	return tracker.CreatedIssue{}, nil
 }
 
 // fakeSearcher replays a scripted set of already-filed findings (or an error).
 type fakeSearcher struct {
-	existing []linear.ExistingFinding
+	existing []tracker.ExistingFinding
 	err      error
 	calls    int
 }
 
-func (s *fakeSearcher) SearchFindings(_ string) ([]linear.ExistingFinding, error) {
+func (s *fakeSearcher) SearchFindings(_ string) ([]tracker.ExistingFinding, error) {
 	s.calls++
 	return s.existing, s.err
 }
@@ -53,10 +53,10 @@ type fakeMatcher struct {
 	matchTo  string
 	err      error
 	calls    int
-	lastOpen []linear.ExistingFinding
+	lastOpen []tracker.ExistingFinding
 }
 
-func (m *fakeMatcher) MatchFinding(_ findings.Finding, open []linear.ExistingFinding) (string, error) {
+func (m *fakeMatcher) MatchFinding(_ findings.Finding, open []tracker.ExistingFinding) (string, error) {
 	m.calls++
 	m.lastOpen = open
 	return m.matchTo, m.err
@@ -98,8 +98,8 @@ func TestFileFilesEachFindingAndNarrates(t *testing.T) {
 	]`)
 
 	filer := &fakeFiler{results: []fakeResult{
-		{issue: linear.CreatedIssue{Identifier: "BEH-401"}},
-		{issue: linear.CreatedIssue{Identifier: "BEH-402"}},
+		{issue: tracker.CreatedIssue{Identifier: "BEH-401"}},
+		{issue: tracker.CreatedIssue{Identifier: "BEH-402"}},
 	}}
 	rec := &recorder{}
 
@@ -124,7 +124,7 @@ func TestFileSkipsFindingAlreadyTrackedByOpenIssue(t *testing.T) {
 	writeDropbox(t, dir, `[{"title":"Playwright can't run in sandbox","body":"missing deps","key":"sandbox-playwright-missing-deps"}]`)
 
 	filer := &fakeFiler{}
-	searcher := &fakeSearcher{existing: []linear.ExistingFinding{
+	searcher := &fakeSearcher{existing: []tracker.ExistingFinding{
 		{Identifier: "BEH-405", Title: "Storybook unrunnable", Key: "sandbox-playwright-missing-deps"},
 	}}
 	rec := &recorder{}
@@ -146,8 +146,8 @@ func TestFileRefilesWhenOnlyMatchIsClosed(t *testing.T) {
 	dir := t.TempDir()
 	writeDropbox(t, dir, `[{"title":"Playwright regressed again","body":"deps missing","key":"sandbox-playwright-missing-deps"}]`)
 
-	filer := &fakeFiler{results: []fakeResult{{issue: linear.CreatedIssue{Identifier: "BEH-500"}}}}
-	searcher := &fakeSearcher{existing: []linear.ExistingFinding{
+	filer := &fakeFiler{results: []fakeResult{{issue: tracker.CreatedIssue{Identifier: "BEH-500"}}}}
+	searcher := &fakeSearcher{existing: []tracker.ExistingFinding{
 		{Identifier: "BEH-405", Title: "old one", Key: "sandbox-playwright-missing-deps", Closed: true},
 	}}
 	rec := &recorder{}
@@ -170,7 +170,7 @@ func TestFileDedupsOnTitleWhenNoKey(t *testing.T) {
 	writeDropbox(t, dir, `[{"title":"Build OOM-killed at prerender","body":"exit 137"}]`)
 
 	filer := &fakeFiler{}
-	searcher := &fakeSearcher{existing: []linear.ExistingFinding{
+	searcher := &fakeSearcher{existing: []tracker.ExistingFinding{
 		{Identifier: "BEH-407", Title: "build oom-killed at prerender  "},
 	}}
 	rec := &recorder{}
@@ -214,7 +214,7 @@ func TestFileDedupsWithinASingleRun(t *testing.T) {
 		{"title":"second wording","body":"b","key":"same-class"}
 	]`)
 
-	filer := &fakeFiler{results: []fakeResult{{issue: linear.CreatedIssue{Identifier: "BEH-600"}}}}
+	filer := &fakeFiler{results: []fakeResult{{issue: tracker.CreatedIssue{Identifier: "BEH-600"}}}}
 	rec := &recorder{}
 
 	File(dir, "team-uuid", "BEH-370", filer, noExisting(), nil, nil, rec)
@@ -283,7 +283,7 @@ func TestFileContinuesPastAFilingError(t *testing.T) {
 	writeDropbox(t, dir, `[{"title":"first","body":"a"},{"title":"second","body":"b"}]`)
 	filer := &fakeFiler{results: []fakeResult{
 		{err: errBoom},
-		{issue: linear.CreatedIssue{Identifier: "BEH-402"}},
+		{issue: tracker.CreatedIssue{Identifier: "BEH-402"}},
 	}}
 	rec := &recorder{}
 
@@ -403,7 +403,7 @@ func TestDropboxExistsReportsPresence(t *testing.T) {
 // (BEH-539). It returns the team's OPEN filed findings as {key, title}, skipping
 // closed ones (a closed finding is no longer a settled class to avoid).
 func TestAlreadyFiledReturnsOpenFindingsSkippingClosed(t *testing.T) {
-	searcher := &fakeSearcher{existing: []linear.ExistingFinding{
+	searcher := &fakeSearcher{existing: []tracker.ExistingFinding{
 		{Identifier: "BEH-529", Title: "Build OOMs", Key: "sandbox-build-oom"},
 		{Identifier: "BEH-100", Title: "old closed one", Key: "ancient-class", Closed: true},
 	}}
@@ -428,7 +428,7 @@ func TestAlreadyFiledMergesPriorDropboxAndDedupsByKey(t *testing.T) {
 		{"title":"Build OOMs","body":"x","key":"sandbox-build-oom"},
 		{"title":"Storybook OOMs","body":"y","key":"sandbox-storybook-oom"}
 	]`)
-	searcher := &fakeSearcher{existing: []linear.ExistingFinding{
+	searcher := &fakeSearcher{existing: []tracker.ExistingFinding{
 		{Identifier: "BEH-529", Title: "Build OOMs", Key: "sandbox-build-oom"},
 	}}
 
@@ -470,7 +470,7 @@ func TestAlreadyFiledDegradesToDropboxWhenSearchFails(t *testing.T) {
 // The result is sorted (key, then title) so the injected prompt is
 // deterministic across runs regardless of the order Linear returns findings in.
 func TestAlreadyFiledSortsDeterministically(t *testing.T) {
-	searcher := &fakeSearcher{existing: []linear.ExistingFinding{
+	searcher := &fakeSearcher{existing: []tracker.ExistingFinding{
 		{Identifier: "BEH-3", Title: "Z last", Key: "zzz-class"},
 		{Identifier: "BEH-1", Title: "A first", Key: "aaa-class"},
 		{Identifier: "BEH-2", Title: "mmm title only"},
@@ -509,7 +509,7 @@ func TestFileSemanticMatchBumpsInsteadOfFiling(t *testing.T) {
 	writeDropbox(t, dir, `[{"title":"review aborted on spend cap yet PR still opened","body":"no verdict","key":"review-spendcap-abort-pushes-pr-without-verdict"}]`)
 
 	filer := &fakeFiler{}
-	searcher := &fakeSearcher{existing: []linear.ExistingFinding{
+	searcher := &fakeSearcher{existing: []tracker.ExistingFinding{
 		{Identifier: "BEH-572", Title: "spending-cap-aborted review still pushes a PR", Key: "review-spending-cap-abort-still-pushes-pr-without-qualitative-review"},
 	}}
 	matcher := &fakeMatcher{matchTo: "BEH-572"}
@@ -538,7 +538,7 @@ func TestFileExactMatchBumpsAndSkipsSemanticPass(t *testing.T) {
 	writeDropbox(t, dir, `[{"title":"Playwright can't run in sandbox","body":"missing deps","key":"sandbox-playwright-missing-deps"}]`)
 
 	filer := &fakeFiler{}
-	searcher := &fakeSearcher{existing: []linear.ExistingFinding{
+	searcher := &fakeSearcher{existing: []tracker.ExistingFinding{
 		{Identifier: "BEH-405", Title: "Storybook unrunnable", Key: "sandbox-playwright-missing-deps"},
 	}}
 	matcher := &fakeMatcher{matchTo: "BEH-999"} // would mis-match if ever consulted
@@ -564,8 +564,8 @@ func TestFileFilesNewWhenSemanticReturnsNoMatch(t *testing.T) {
 	dir := t.TempDir()
 	writeDropbox(t, dir, `[{"title":"a brand new failure class","body":"x"}]`)
 
-	filer := &fakeFiler{results: []fakeResult{{issue: linear.CreatedIssue{Identifier: "BEH-700"}}}}
-	searcher := &fakeSearcher{existing: []linear.ExistingFinding{
+	filer := &fakeFiler{results: []fakeResult{{issue: tracker.CreatedIssue{Identifier: "BEH-700"}}}}
+	searcher := &fakeSearcher{existing: []tracker.ExistingFinding{
 		{Identifier: "BEH-405", Title: "unrelated open finding"},
 	}}
 	matcher := &fakeMatcher{matchTo: ""} // explicitly "none of these"
@@ -591,8 +591,8 @@ func TestFileFilesWhenSemanticMatcherErrors(t *testing.T) {
 	dir := t.TempDir()
 	writeDropbox(t, dir, `[{"title":"some finding","body":"x"}]`)
 
-	filer := &fakeFiler{results: []fakeResult{{issue: linear.CreatedIssue{Identifier: "BEH-701"}}}}
-	searcher := &fakeSearcher{existing: []linear.ExistingFinding{
+	filer := &fakeFiler{results: []fakeResult{{issue: tracker.CreatedIssue{Identifier: "BEH-701"}}}}
+	searcher := &fakeSearcher{existing: []tracker.ExistingFinding{
 		{Identifier: "BEH-405", Title: "an open finding"},
 	}}
 	matcher := &fakeMatcher{err: errBoom}
@@ -620,7 +620,7 @@ func TestFileSkipsWithoutRefilingWhenRecorderErrors(t *testing.T) {
 	writeDropbox(t, dir, `[{"title":"dup","body":"x","key":"same-class"}]`)
 
 	filer := &fakeFiler{}
-	searcher := &fakeSearcher{existing: []linear.ExistingFinding{
+	searcher := &fakeSearcher{existing: []tracker.ExistingFinding{
 		{Identifier: "BEH-405", Title: "tracked", Key: "same-class"},
 	}}
 	bumper := &fakeRecorder{err: errBoom}
@@ -642,8 +642,8 @@ func TestFilePassesOpenFindingsToMatcher(t *testing.T) {
 	dir := t.TempDir()
 	writeDropbox(t, dir, `[{"title":"new wording","body":"x"}]`)
 
-	filer := &fakeFiler{results: []fakeResult{{issue: linear.CreatedIssue{Identifier: "BEH-702"}}}}
-	searcher := &fakeSearcher{existing: []linear.ExistingFinding{
+	filer := &fakeFiler{results: []fakeResult{{issue: tracker.CreatedIssue{Identifier: "BEH-702"}}}}
+	searcher := &fakeSearcher{existing: []tracker.ExistingFinding{
 		{Identifier: "BEH-405", Title: "open one", Closed: false},
 		{Identifier: "BEH-406", Title: "closed one", Closed: true},
 	}}

@@ -5,11 +5,11 @@ import (
 	"testing"
 
 	"github.com/beherd/agent-harness/internal/findings"
-	"github.com/beherd/agent-harness/internal/linear"
+	"github.com/beherd/agent-harness/internal/tracker"
 )
 
-func openSet() []linear.ExistingFinding {
-	return []linear.ExistingFinding{
+func openSet() []tracker.ExistingFinding {
+	return []tracker.ExistingFinding{
 		{Identifier: "BEH-572", Title: "spending-cap-aborted review still pushes a PR", Key: "review-spending-cap-abort"},
 		{Identifier: "BEH-547", Title: "Docker container died mid-session (exit 125)"},
 	}

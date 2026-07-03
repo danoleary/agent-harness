@@ -21,7 +21,7 @@ import (
 	"strings"
 
 	"github.com/beherd/agent-harness/internal/findings"
-	"github.com/beherd/agent-harness/internal/linear"
+	"github.com/beherd/agent-harness/internal/tracker"
 )
 
 // noMatch is the sentinel the model returns when a finding matches no open issue.
@@ -44,7 +44,7 @@ func New(complete Complete) *Matcher { return &Matcher{complete: complete} }
 // MatchFinding asks the model which open finding f duplicates, returning that
 // issue's identifier or "" for none. A Complete error propagates so the caller
 // degrades; a reply that names no open identifier resolves to "".
-func (m *Matcher) MatchFinding(f findings.Finding, open []linear.ExistingFinding) (string, error) {
+func (m *Matcher) MatchFinding(f findings.Finding, open []tracker.ExistingFinding) (string, error) {
 	if len(open) == 0 {
 		return "", nil
 	}
@@ -59,7 +59,7 @@ func (m *Matcher) MatchFinding(f findings.Finding, open []linear.ExistingFinding
 // candidates (identifier + title + dedup key), and a strict instruction to reply
 // with exactly one open identifier or the NONE sentinel. Titles/keys give the
 // model the signal to spot a same-class recurrence under different prose.
-func buildPrompt(f findings.Finding, open []linear.ExistingFinding) string {
+func buildPrompt(f findings.Finding, open []tracker.ExistingFinding) string {
 	var b strings.Builder
 	b.WriteString("You are deduplicating engineering-harness findings.\n")
 	b.WriteString("A NEW finding was just surfaced. Decide whether it describes the SAME root-cause class as any of the EXISTING open findings below — same underlying problem, even if worded differently. Different symptoms of the same root cause count as the same class; superficially similar but distinct root causes do NOT.\n\n")
@@ -85,7 +85,7 @@ func buildPrompt(f findings.Finding, open []linear.ExistingFinding) string {
 // for NONE, an empty reply, or any identifier not in the candidate set. Being
 // strict here — only ever returning an identifier we actually offered — is what
 // lets filing trust the match without re-verifying it.
-func parseVerdict(reply string, open []linear.ExistingFinding) string {
+func parseVerdict(reply string, open []tracker.ExistingFinding) string {
 	tokens := strings.FieldsFunc(reply, func(r rune) bool {
 		// Split on everything but identifier characters (letters, digits, hyphen),
 		// so "BEH-572." or "(BEH-572)" still yields the bare identifier token.

@@ -174,17 +174,21 @@ func withRetry(op func() error, sleep func(time.Duration), now func() time.Time)
 // is at risk of freshly re-dispatching.
 const mainHistoryLookback = 50
 
-// TicketAlreadyOnMain reports whether the ticket key already appears in recent
+// TicketAlreadyOnMain reports whether the ticket Key already appears in recent
 // origin/main history — i.e. its work merged, so dispatching a fresh tdd session
 // would burn a whole worktree + install only to discover an empty diff and raise
 // no PR (BEH-528). It first refreshes origin/main with a single best-effort fetch
 // (the host checkout's remote-tracking ref can lag a just-merged PR), then scans.
 //
+// The key is the tracker-agnostic Key (ADR-0010) the adapter produced — a Linear
+// `BEH-123` or a Jira `PROJ-123` all the same; the scan makes no `BEH-`
+// assumption, treating the Key as an opaque token to word-boundary-match.
+//
 // It fails OPEN: any git error (no remote, detached/corrupt checkout, a fetch
 // blip) returns false so a flaky read never blocks a legitimate dispatch. The
 // asymmetry is deliberate — a false negative costs one session (the pre-guard
 // status quo), whereas a false positive would silently drop real work.
-func TicketAlreadyOnMain(herdPath, identifier string) bool {
+func TicketAlreadyOnMain(herdPath, key string) bool {
 	// Best-effort refresh; an offline/blipping remote just means we scan whatever
 	// origin/main we already have rather than block dispatch behind the network.
 	_ = execRun("git", "-C", herdPath, "fetch", "-q", "origin", "main")
@@ -194,16 +198,18 @@ func TicketAlreadyOnMain(herdPath, identifier string) bool {
 	if err != nil {
 		return false
 	}
-	return mainHistoryReferences(string(out), identifier)
+	return mainHistoryReferences(string(out), key)
 }
 
 // mainHistoryReferences reports whether `git log` output contains a commit
-// referencing the exact ticket key. Matched on word boundaries so BEH-52 never
-// matches BEH-521 and BEH-521 never matches BEH-5210 (a substring grep — what
-// the finding literally proposed — would conflate those), and case-insensitively
-// because a subject sometimes lower-cases the key.
-func mainHistoryReferences(logOutput, identifier string) bool {
-	return regexp.MustCompile(`(?i)\b` + regexp.QuoteMeta(identifier) + `\b`).MatchString(logOutput)
+// referencing the exact ticket Key. The Key is tracker-agnostic (ADR-0010): the
+// match quotes it literally and makes no `BEH-` assumption, so a Jira `PROJ-123`
+// works identically. Matched on word boundaries so BEH-52 never matches BEH-521
+// and BEH-521 never matches BEH-5210 (a substring grep — what the finding
+// literally proposed — would conflate those), and case-insensitively because a
+// subject sometimes lower-cases the key.
+func mainHistoryReferences(logOutput, key string) bool {
+	return regexp.MustCompile(`(?i)\b` + regexp.QuoteMeta(key) + `\b`).MatchString(logOutput)
 }
 
 // WorktreePath is the host path of the worktree the tdd skill is told to create.

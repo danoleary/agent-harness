@@ -10,7 +10,6 @@ import (
 	"github.com/beherd/agent-harness/internal/ci"
 	"github.com/beherd/agent-harness/internal/config"
 	gitpkg "github.com/beherd/agent-harness/internal/git"
-	"github.com/beherd/agent-harness/internal/linear"
 	"github.com/beherd/agent-harness/internal/loopstream"
 	"github.com/beherd/agent-harness/internal/pr"
 	"github.com/beherd/agent-harness/internal/proc"
@@ -19,6 +18,7 @@ import (
 	"github.com/beherd/agent-harness/internal/sandbox"
 	"github.com/beherd/agent-harness/internal/session"
 	"github.com/beherd/agent-harness/internal/ticket"
+	"github.com/beherd/agent-harness/internal/trackers"
 	"github.com/beherd/agent-harness/internal/verify"
 )
 
@@ -82,7 +82,10 @@ func Review(cfg config.Config, log *runlog.Logger, runID string, args Args) Resu
 	}
 	log.Structured(loopstream.Record{Kind: loopstream.KindStageStart, Ticket: args.Identifier, Stage: "review", Message: fmt.Sprintf("run %s — review %s%s", runID, args.Identifier, dry)})
 
-	client := linear.NewClient(linear.NewTransport(cfg.LinearAPIKey))
+	client, err := trackers.New(cfg.Tracker.Kind, cfg.LinearAPIKey)
+	if err != nil {
+		return Result{Err: err}
+	}
 
 	// The ticket is the intent to review against (review reconstructs intent from
 	// the branch/issue/diff). Review does NOT claim or move it — implementation
