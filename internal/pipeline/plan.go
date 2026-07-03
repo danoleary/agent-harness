@@ -50,7 +50,7 @@ func Plan(cfg config.Config, identifier string) string {
 	b.WriteString("exit 0 iff every stage that ran succeeded.\n")
 
 	// --- implementation ---
-	implPrompt := prompt.BuildTdd(t, slug)
+	implPrompt := prompt.BuildTdd(t, slug, cfg.BranchPrefix, cfg.Prompts.Implement)
 	implDocker := sandbox.BuildDockerRunArgs(sandbox.Config{
 		Image:           cfg.Image,
 		HerdPath:        cfg.HerdPath,
@@ -75,7 +75,7 @@ func Plan(cfg config.Config, identifier string) string {
 	}
 
 	// --- review ---
-	reviewPrompt := prompt.BuildReview(t, slug, worktreePath)
+	reviewPrompt := prompt.BuildReview(t, slug, worktreePath, cfg.BranchPrefix, cfg.Prompts.Review)
 	reviewDocker := sandbox.BuildDockerRunArgs(sandbox.Config{
 		Image:           cfg.Image,
 		HerdPath:        cfg.HerdPath,
@@ -94,7 +94,7 @@ func Plan(cfg config.Config, identifier string) string {
 
 	// --- retrospective ---
 	// Dry-run never fetches Linear, so there's no already-filed context to inject.
-	retroPrompt := prompt.BuildRetrospective(t, slug, nil)
+	retroPrompt := prompt.BuildRetrospective(t, slug, nil, cfg.BranchPrefix, cfg.Prompts.Retro)
 	retroDocker := sandbox.BuildDockerRunArgs(sandbox.Config{
 		Image:           cfg.Image,
 		HerdPath:        cfg.HerdPath,

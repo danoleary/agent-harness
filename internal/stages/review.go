@@ -93,7 +93,7 @@ func Review(cfg config.Config, log *runlog.Logger, runID string, args Args) Resu
 	}
 	log.Event(fmt.Sprintf("fetched %s — %s", t.Identifier, t.Title))
 
-	p := prompt.BuildReview(t, slug, worktreePath)
+	p := prompt.BuildReview(t, slug, worktreePath, cfg.BranchPrefix, cfg.Prompts.Review)
 	// Review emits no findings (retrospective owns them) → no findings mount.
 	containerName := fmt.Sprintf("herd-harness-%s-%d-%s", runID, os.Getpid(), reviewSession)
 	// Closure so the BEH-624 in-stage re-launch can run the same review prompt under a

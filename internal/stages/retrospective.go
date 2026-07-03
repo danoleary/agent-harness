@@ -107,7 +107,7 @@ func Retrospective(cfg config.Config, log *runlog.Logger, runID string, args Arg
 		return Result{Err: err}
 	}
 
-	p := prompt.BuildRetrospective(t, slug, toPromptFindings(prior))
+	p := prompt.BuildRetrospective(t, slug, toPromptFindings(prior), cfg.BranchPrefix, cfg.Prompts.Retro)
 
 	// runID is second-resolution; include the pid so two runs started in the same
 	// second still get distinct container names (and distinct `docker kill` targets).

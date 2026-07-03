@@ -116,12 +116,21 @@ type Config struct {
 	// Tracker holds the project config's non-secret tracker selection names
 	// (label ids, ready/blocked labels). The tracker credential stays env-only.
 	Tracker TrackerConfig
+	// Prompts holds the Consumer's per-Stage prompt bodies, read from the
+	// bind-mounted checkout's `.agent-harness/prompts/` (ADR-0009). The harness
+	// composes each body inside its non-overridable contract envelope.
+	Prompts PromptBodies
 }
 
 // projectLoader resolves the Consumer's committed project config from the
 // bind-mounted checkout. It is a package var so tests can inject a fixture
 // instead of laying down a real .agent-harness/config.toml (ADR-0008).
 var projectLoader = LoadProject
+
+// promptsLoader resolves the Consumer's committed per-Stage prompt bodies from
+// the bind-mounted checkout. A package var so tests can inject fixture bodies
+// instead of laying down real .agent-harness/prompts/*.md files (ADR-0009).
+var promptsLoader = LoadPrompts
 
 const (
 	defaultTddTimeout       = 30 * time.Minute
@@ -204,6 +213,14 @@ func Load(get Getenv) (Config, error) {
 		return Config{}, err
 	}
 
+	// Per-Stage prompt bodies live alongside the project config in the checkout
+	// (ADR-0009). A missing body is tolerated (the Stage runs under the envelope),
+	// so this only fails loud on a real filesystem error.
+	prompts, err := promptsLoader(herdPath)
+	if err != nil {
+		return Config{}, err
+	}
+
 	// The cmd/loop knobs are validated strictly (a nonsensical override fails loud at
 	// load, before the daemon launches), unlike the lenient parseTimeout above whose
 	// fallback-on-junk contract predates this slice.
@@ -263,6 +280,7 @@ func Load(get Getenv) (Config, error) {
 		BranchPrefix: project.BranchPrefix,
 		Gates:        project.Gates,
 		Tracker:      project.Tracker,
+		Prompts:      prompts,
 	}
 	if err := validateIdleBelowCaps(cfg); err != nil {
 		return Config{}, err

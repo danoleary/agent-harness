@@ -141,10 +141,10 @@ func Implementation(cfg config.Config, log *runlog.Logger, runID string, args Ar
 	// have ADDED code rather than deleting any. We don't skip (the branch can hold
 	// incomplete work) — instead we steer the session to verify-and-handoff over
 	// re-implementing by swapping in BuildTddResumedBranch.
-	p := prompt.BuildTdd(t, slug)
+	p := prompt.BuildTdd(t, slug, cfg.BranchPrefix, cfg.Prompts.Implement)
 	if adv := gitpkg.ResumedBranchAdvisory(cfg.HerdPath, slug, t.Identifier); adv != "" {
 		log.Event(adv)
-		p = prompt.BuildTddResumedBranch(t, slug)
+		p = prompt.BuildTddResumedBranch(t, slug, cfg.BranchPrefix, cfg.Prompts.Implement)
 	}
 	findingsDir := log.FindingsDir(implementationSession)
 	if err := os.MkdirAll(findingsDir, 0o755); err != nil {
@@ -245,7 +245,7 @@ func Implementation(cfg config.Config, log *runlog.Logger, runID string, args Ar
 			attemptContainer = fmt.Sprintf("%s-retry%d", containerName, attempt)
 			// The retry resumes the existing worktree (it already holds the surviving
 			// diff) rather than recreating it (BEH-389).
-			attemptPrompt = prompt.BuildTddResume(t, slug, worktreePath)
+			attemptPrompt = prompt.BuildTddResume(t, slug, worktreePath, cfg.BranchPrefix, cfg.Prompts.Implement)
 			attemptLabel = fmt.Sprintf("%s-retry%d", implementationSession, attempt)
 			log.Event(fmt.Sprintf(
 				"tdd ↻ usage-policy refusal on attempt %d — retrying once on the same ticket (BEH-389); the worktree diff survives on disk",
