@@ -105,11 +105,25 @@ type Config struct {
 	// before the hard 5 GiB sandbox preflight floor would refuse a launch (ADR-0005).
 	// It defaults above that floor with headroom; 0 disables reclaim entirely.
 	LoopDiskReclaimThreshold uint64
+
+	// BranchPrefix is the canonical worktree branch prefix (from the project
+	// config's branch_prefix, default "feat"). The harness keys verify/push/PR/
+	// dispatch-guards off `<BranchPrefix>/<slug>` (ADR-0008).
+	BranchPrefix string
+	// Gates is the ordered, named host-side gate list from the project config.
+	// BEH-631 only sources it; the runner that iterates it is BEH-634.
+	Gates []Gate
+	// Tracker holds the project config's non-secret tracker selection names
+	// (label ids, ready/blocked labels). The tracker credential stays env-only.
+	Tracker TrackerConfig
 }
 
+// projectLoader resolves the Consumer's committed project config from the
+// bind-mounted checkout. It is a package var so tests can inject a fixture
+// instead of laying down a real .agent-harness/config.toml (ADR-0008).
+var projectLoader = LoadProject
+
 const (
-	defaultImage            = "herd-agent-harness:latest"
-	defaultPnpmStoreVolume  = "herd-pnpm-store"
 	defaultTddTimeout       = 30 * time.Minute
 	defaultReviewTimeout    = 25 * time.Minute
 	defaultRetroTimeout     = 45 * time.Minute
@@ -182,6 +196,14 @@ func Load(get Getenv) (Config, error) {
 		return Config{}, err
 	}
 
+	// Project config lives in the bind-mounted checkout, not the environment
+	// (ADR-0008). A missing/invalid file fails loud here, before any sandbox
+	// launches, rather than surfacing as a wrong image or empty gate list later.
+	project, err := projectLoader(herdPath)
+	if err != nil {
+		return Config{}, err
+	}
+
 	// The cmd/loop knobs are validated strictly (a nonsensical override fails loud at
 	// load, before the daemon launches), unlike the lenient parseTimeout above whose
 	// fallback-on-junk contract predates this slice.
@@ -213,8 +235,8 @@ func Load(get Getenv) (Config, error) {
 	cfg := Config{
 		LinearAPIKey:         linearKey,
 		HerdPath:             herdPath,
-		Image:                orDefault(get("HARNESS_IMAGE"), defaultImage),
-		PnpmStoreVolume:      orDefault(get("PNPM_STORE_VOLUME"), defaultPnpmStoreVolume),
+		Image:                orDefault(get("HARNESS_IMAGE"), project.Image),
+		PnpmStoreVolume:      orDefault(get("PNPM_STORE_VOLUME"), project.PnpmStoreVolume),
 		TddTimeout:           parseTimeout(get("TDD_TIMEOUT_MS"), defaultTddTimeout),
 		ReviewTimeout:        parseTimeout(get("REVIEW_TIMEOUT_MS"), defaultReviewTimeout),
 		RetrospectiveTimeout: parseTimeout(get("RETROSPECTIVE_TIMEOUT_MS"), defaultRetroTimeout),
@@ -237,6 +259,10 @@ func Load(get Getenv) (Config, error) {
 		LoopMaxRuntime:             maxRuntime,
 		StopFile:                   orDefault(get("STOP_FILE"), defaultStopFile),
 		LoopDiskReclaimThreshold:   diskReclaim,
+
+		BranchPrefix: project.BranchPrefix,
+		Gates:        project.Gates,
+		Tracker:      project.Tracker,
 	}
 	if err := validateIdleBelowCaps(cfg); err != nil {
 		return Config{}, err
