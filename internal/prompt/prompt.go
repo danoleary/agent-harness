@@ -30,6 +30,22 @@ import (
 // steers around all four instead.
 const bashQuirkSteer = "Sandbox bash quirk (BEH-401/BEH-598/BEH-601/BEH-645): the bundled Claude CLI's Bash tool can surface opaque errors that look like a bug in your command but are an environment artifact, in four ways. (1) It intermittently mangles a single Bash call that BOTH pipes into `head`/`tail` AND uses a command substitution like `cd \"$(...)\"`, producing errors like `head: invalid number of bytes: 'set -euo pipefail; ...'` or `cd: too many arguments`. (2) When a plain command exits non-zero BY DESIGN, the tool can collapse that into a bare `Error` string with the real exit code and stderr stripped — e.g. `git merge-base HEAD origin/main` exits 1 when two commits share no common ancestor, which is an expected signal, not a failure. (3) A `VAR=value; cmd \"$VAR\"` assignment-then-use within ONE Bash call can expand `$VAR` to the EMPTY string: the failure is silent (empty output) or surfaces as a path with the prefix missing (e.g. `\"$DP/dist\"` becomes `/dist` → `cannot access '/dist'`). `&&`-chaining the assignment to its use (`VAR=value && cmd \"$VAR\"`) expands fine; `;`-separating it is what drops the variable. (4) THE WORST, because it makes a GREEN gate look RED: chaining trailing statements onto a GATE command in one Bash call — e.g. `pnpm run check > /tmp/check.log 2>&1; echo exit=$?; grep -i error /tmp/check.log | head` — can concatenate those trailing statements as ARGUMENTS onto the gate's own command (the `oxfmt --check` inside `pnpm run check` receives `echo exit=$? grep …` as file args), so the gate fails with `Expected at least one target file. All matched files may have been excluded by ignore rules.` and pnpm emits `[ELIFECYCLE] Command failed with exit code 2` — a spurious failure on a gate that actually PASSED. Work around all four: run one command per Bash call, prefer absolute paths over `cd \"$(...)\"`, and don't tack `| head -n N` onto a compound command; when a plain command returns a bare `Error`, do NOT assume it broke — re-run it capturing the exit code explicitly (append `; echo exit=$?`, or use `cmd || echo \"exit $?\"`) to tell an expected non-zero exit from a real failure; avoid intra-call shell variables — inline the absolute path, `&&`-chain instead of `;`, split into separate calls, or use the Grep/Glob tools with literal absolute paths; and run each verification gate (`pnpm run check`/`lint`/`build`/`test…`) as its OWN Bash call with NOTHING appended — no `; echo exit=$?`, no `> log 2>&1; grep … | head` — reading its exit status in a separate call, and if a gate reds with `ELIFECYCLE`/`Expected at least one target file`, re-run it ALONE before treating it as a real failure. Retrying verbatim won't help in any case — split it up, inspect the exit code, drop the intra-call variable, or re-run the gate alone."
 
+// a11yNameSteer corrects the specific, recurring a11y misconception that shipped a
+// real defect to CI in BEH-515 (surfaced as BEH-672). Hardening the Spinner moved
+// role="status" onto a wrapper whose accessible name was meant to come from an
+// `sr-only` "Loading" child, and the story asserted `getByRole("status", { name })`.
+// That assertion failed EVERYWHERE — live-region roles (status / alert / log / timer
+// / marquee) do NOT derive their accessible name from descendant/`sr-only` content;
+// the name must come from `aria-label` / `aria-labelledby`. The implementation
+// session hit the jsdom name miss head-on and reasoned — explicitly and wrongly —
+// that real Chromium computes the name from content differently, so the story would
+// still pass; it never ran the browser story gate to check. Real Chromium behaves
+// the SAME as jsdom here, so the miss was a real defect, not a jsdom artifact. And
+// the one gate that would have caught it — the browser Storybook run — can't run
+// in-sandbox (it OOMs during Vite dep-optimize, BEH-477), so the agent must reason
+// about the accessible name statically rather than defer it to a gate that never runs.
+const a11yNameSteer = "Accessible-name a11y gotcha (BEH-515/BEH-672): live-region roles — role=\"status\", role=\"alert\", role=\"log\", role=\"timer\", role=\"marquee\" — do NOT derive their accessible name from descendant or `sr-only` content. Their name must come from `aria-label` or `aria-labelledby` on the element carrying the role. So a `getByRole(role, { name })` query — in a jsdom/unit test OR a Storybook story — can NEVER be satisfied by an `sr-only` child alone; add an explicit `aria-label` to the region. Real Chromium behaves the SAME as jsdom here: if a jsdom/unit `getByRole(role, { name })` returns an empty name, that is a REAL defect, NOT a jsdom limitation to work around by asserting `textContent` and assuming the browser will pass — it will not. The browser Storybook gate that would otherwise catch this cannot run in-sandbox (it OOMs during Vite dep-optimize, BEH-477), so you must reason about the accessible name statically: any live-region role that you or a story query by name needs an explicit `aria-label`/`aria-labelledby`, and a jsdom name miss is your signal to fix the component, not to defer to the browser."
+
 // BuildTdd builds the `-p` prompt for the sandboxed /tdd session. The harness
 // has already claimed the ticket and owns all Linear I/O (ADR-0001), so the
 // prompt steers the skill off `mcp__linear-server__*`, injects the ticket
@@ -57,6 +73,8 @@ func BuildTdd(t ticket.Ticket, slug string) string {
 		t.Identifier+" is already claimed and moved to In Progress for you. Do NOT touch Linear — do not call any `mcp__linear-server__*` tool, do not move the ticket, do not open or comment on issues. The harness owns all Linear I/O.",
 		"",
 		"If you hit problems with the harness or environment itself (setup friction, systemic gaps, missing patterns) during your session retrospective, do NOT file Linear issues. Instead append them to `/findings/out.json` as a JSON array of `{title, body, kind, key}` objects (kind is a free-form category; key is a stable, lowercase failure-class slug like `sandbox-playwright-missing-deps` used to dedup re-runs — pick the same key any session would for this class of problem). The harness reads this file after the session and files the issues for you, skipping any whose key already has an open issue. If you have no findings, leave the file untouched.",
+		"",
+		a11yNameSteer,
 		"",
 		bashQuirkSteer,
 	)
@@ -118,6 +136,8 @@ func BuildTddResumedBranch(t ticket.Ticket, slug string) string {
 		"",
 		"If you hit problems with the harness or environment itself (setup friction, systemic gaps, missing patterns) during your session retrospective, do NOT file Linear issues. Instead append them to `/findings/out.json` as a JSON array of `{title, body, kind, key}` objects (kind is a free-form category; key is a stable, lowercase failure-class slug like `sandbox-playwright-missing-deps` used to dedup re-runs — pick the same key any session would for this class of problem). The harness reads this file after the session and files the issues for you, skipping any whose key already has an open issue. If you have no findings, leave the file untouched.",
 		"",
+		a11yNameSteer,
+		"",
 		bashQuirkSteer,
 	)
 	return strings.Join(lines, "\n")
@@ -160,6 +180,8 @@ func BuildTddResume(t ticket.Ticket, slug, worktreePath string) string {
 		t.Identifier+" is already claimed and moved to In Progress for you. Do NOT touch Linear — do not call any `mcp__linear-server__*` tool, do not move the ticket, do not open or comment on issues. The harness owns all Linear I/O.",
 		"",
 		"If you hit problems with the harness or environment itself (setup friction, systemic gaps, missing patterns) during your session retrospective, do NOT file Linear issues. Instead append them to `/findings/out.json` as a JSON array of `{title, body, kind, key}` objects (kind is a free-form category; key is a stable, lowercase failure-class slug like `sandbox-playwright-missing-deps` used to dedup re-runs — pick the same key any session would for this class of problem). The harness reads this file after the session and files the issues for you, skipping any whose key already has an open issue. If you have no findings, leave the file untouched.",
+		"",
+		a11yNameSteer,
 		"",
 		bashQuirkSteer,
 	)
@@ -378,6 +400,8 @@ func BuildReview(t ticket.Ticket, slug, worktreePath string) string {
 		"Do the diff-reading + seven-lens review FIRST, before running the memory-heavy gates (`pnpm run lint`/`build`/`test-storybook`/`typecheck`). This sandbox is memory-constrained and those gates routinely OOM-kill the session (exit 137); the harness re-runs every gate host-side anyway, so running them in-session mostly risks aborting the review before the lenses are applied. Whatever else happens, ALWAYS emit your `## Review:` report once the lenses are done — even though you don't push or open the PR, the harness keys off that report header to confirm the qualitative review actually ran, and otherwise flags the ticket as 'gates green but review incomplete'.",
 		"",
 		"This runs UNATTENDED — there is no human to approve anything. Do NOT ask for approval and do NOT wait for a decision; that question is never answered and the finding ships unaddressed. Instead SELF-RESOLVE every Blocker/Important finding: apply the fix if it's clearly-correct, or accept-and-document a deliberate behaviour change (record it in your report for the PR body). End your `## Review:` report with a mandatory `Disposition:` line that the harness reads as the push decision: `Disposition: clear — <reason>` when everything is fixed or accepted-and-documented (the harness pushes), or `Disposition: blocked — <reason>` ONLY for a finding you genuinely cannot resolve and that needs a human judgement call (the harness fails the push closed and keeps the worktree). Use `blocked` instead of asking; never leave a finding open under a `clear` disposition.",
+		"",
+		a11yNameSteer,
 		"",
 		bashQuirkSteer,
 	}

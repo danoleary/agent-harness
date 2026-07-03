@@ -169,6 +169,39 @@ func assertCarriesBashQuirkSteer(t *testing.T, p, label string) {
 	}
 }
 
+// assertCarriesA11yNameSteer checks a prompt carries the BEH-672 accessible-name
+// steer. The steer must (a) name the live-region roles whose name is NOT derived
+// from descendant/`sr-only` content, (b) point at aria-label / aria-labelledby as
+// the real naming mechanism, (c) correct the belief that real Chromium computes
+// the name from content differently than jsdom (it does not — a jsdom
+// `getByRole(role, { name })` miss is a REAL defect, not an artifact to work
+// around), and (d) name the getByRole-by-name assertion that the mistake shows up in.
+func assertCarriesA11yNameSteer(t *testing.T, p, label string) {
+	t.Helper()
+	for _, role := range []string{`role="status"`, `role="alert"`} {
+		if !strings.Contains(p, role) {
+			t.Errorf("%s does not name the live-region role %s", label, role)
+		}
+	}
+	if !regexp.MustCompile(`(?i)aria-label`).MatchString(p) {
+		t.Errorf("%s does not point at aria-label/aria-labelledby as the naming mechanism", label)
+	}
+	if !regexp.MustCompile(`(?i)sr-only|descendant`).MatchString(p) {
+		t.Errorf("%s does not say the name is NOT taken from sr-only/descendant content", label)
+	}
+	if !regexp.MustCompile(`(?i)getByRole`).MatchString(p) {
+		t.Errorf("%s does not name the getByRole(role, { name }) assertion the defect surfaces in", label)
+	}
+	// The core misconception to correct: jsdom and real Chromium agree here, so a
+	// jsdom name miss is a real defect, not a jsdom limitation to defer to the browser.
+	if !regexp.MustCompile(`(?i)chromium|browser`).MatchString(p) {
+		t.Errorf("%s does not correct the jsdom-vs-real-browser belief", label)
+	}
+	if !regexp.MustCompile(`(?i)real defect|not a jsdom|same`).MatchString(p) {
+		t.Errorf("%s does not say the jsdom name miss is a real defect (Chromium behaves the same)", label)
+	}
+}
+
 // BEH-544: a ticket can be dispatched as live work after its fix already merged
 // (often under a *sibling* ticket the host-side own-key guard can't catch). The
 // prompt must steer the agent to verify the ticket's cited symbols/premise still
@@ -193,6 +226,19 @@ func TestBuildTddSteersToVerifyPremiseBeforePlanning(t *testing.T) {
 
 func TestBuildTddCarriesBashQuirkSteer(t *testing.T) {
 	assertCarriesBashQuirkSteer(t, BuildTdd(sample, "beh-362"), "tdd prompt")
+}
+
+// BEH-672: the /tdd session that hardened the Spinner's a11y (BEH-515) moved
+// role="status" onto a wrapper and expected its accessible name to come from an
+// `sr-only` child — then reasoned EXPLICITLY that a jsdom name miss was a jsdom
+// limitation real Chromium would not share, and never ran the (in-sandbox
+// unrunnable, BEH-477) browser story gate. It shipped a real defect: live-region
+// roles do NOT take their name from descendant content, so the story's
+// `getByRole("status", { name })` failed everywhere, not just in jsdom. The
+// implementation prompt must carry the steer that corrects this belief so the
+// defect is reasoned about statically rather than deferred to a gate that cannot run.
+func TestBuildTddCarriesA11yNameSteer(t *testing.T) {
+	assertCarriesA11yNameSteer(t, BuildTdd(sample, "beh-362"), "tdd prompt")
 }
 
 // BEH-554: when the dispatched ticket's OWN feat branch already carries un-merged
@@ -238,6 +284,13 @@ func TestBuildTddResumedBranchKeepsStandardSteers(t *testing.T) {
 		t.Error("resumed-branch prompt missing the findings dropbox path")
 	}
 	assertCarriesBashQuirkSteer(t, p, "tdd resumed-branch prompt")
+}
+
+// BEH-672: the resumed-branch prompt is a swap-in for BuildTdd, so a resumed
+// implementation session that extends the branch's code needs the same
+// accessible-name steer the fresh /tdd prompt carries.
+func TestBuildTddResumedBranchCarriesA11yNameSteer(t *testing.T) {
+	assertCarriesA11yNameSteer(t, BuildTddResumedBranch(sample, "beh-362"), "tdd resumed-branch prompt")
 }
 
 // BEH-619: the resumed-branch and resume prompts are direct swap-ins for the
@@ -310,6 +363,12 @@ func TestBuildTddResumeSteersToExistingWorktree(t *testing.T) {
 
 func TestBuildTddResumeCarriesBashQuirkSteer(t *testing.T) {
 	assertCarriesBashQuirkSteer(t, BuildTddResume(sample, "beh-362", sampleWorktree), "tdd resume prompt")
+}
+
+// BEH-672: the resume prompt (re-entering an existing worktree) is likewise a
+// BuildTdd swap-in and must carry the accessible-name steer.
+func TestBuildTddResumeCarriesA11yNameSteer(t *testing.T) {
+	assertCarriesA11yNameSteer(t, BuildTddResume(sample, "beh-362", sampleWorktree), "tdd resume prompt")
 }
 
 func TestBuildTddResumeStillSteersOffLinearAndToDropbox(t *testing.T) {
@@ -474,6 +533,15 @@ func TestBuildReviewCommitsLocallyOnly(t *testing.T) {
 
 func TestBuildReviewCarriesBashQuirkSteer(t *testing.T) {
 	assertCarriesBashQuirkSteer(t, BuildReview(sample, "beh-362", sampleWorktree), "review prompt")
+}
+
+// BEH-672: the cold review that followed BEH-515 also missed the role="status"
+// accessible-name defect — it verified the primitives with jsdom unit tests only
+// and never ran the browser story gate (it can't in-sandbox, BEH-477). The review
+// prompt must carry the same accessible-name steer so a reviewer treats a jsdom
+// `getByRole(role, { name })` miss as a real defect to fix, not a jsdom artifact.
+func TestBuildReviewCarriesA11yNameSteer(t *testing.T) {
+	assertCarriesA11yNameSteer(t, BuildReview(sample, "beh-362", sampleWorktree), "review prompt")
 }
 
 // BEH-525: the review session runs in a memory-constrained sandbox where the heavy
