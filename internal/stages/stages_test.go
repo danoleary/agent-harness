@@ -50,6 +50,74 @@ func TestFixSessionErrorCleanSessionReturnsNil(t *testing.T) {
 	}
 }
 
+// BEH-634: runGates iterates the config-declared named gate list host-side,
+// running each gate in order and stopping at the first non-green one. When every
+// gate passes it runs them all and reports no failing gate; when one fails it
+// reports that gate's name and does not run the gates after it (the push gate
+// only needs the first red to withhold the push, and skipping the rest saves a
+// container launch). The failing gate's name is what flows into the log + CI-fix
+// diagnosis, matching how internal/ci names a failing check.
+func TestRunGatesAllGreenRunsEveryGateInOrder(t *testing.T) {
+	gates := []config.Gate{
+		{Name: "check", Command: "pnpm run check"},
+		{Name: "typecheck", Command: "pnpm run typecheck"},
+	}
+	var ran []string
+	res := runGates(gates, func(g config.Gate) session.Outcome {
+		ran = append(ran, g.Name)
+		return session.Outcome{ExitCode: 0}
+	})
+	if res.FailedGate != "" {
+		t.Errorf("all-green gates must report no failing gate, got %q", res.FailedGate)
+	}
+	if res.Outcome.ExitCode != 0 {
+		t.Errorf("all-green outcome must be exit 0, got %d", res.Outcome.ExitCode)
+	}
+	if !reflect.DeepEqual(ran, []string{"check", "typecheck"}) {
+		t.Errorf("gates must run in config order, ran %v", ran)
+	}
+}
+
+func TestRunGatesStopsAtFirstFailureAndReportsItsName(t *testing.T) {
+	gates := []config.Gate{
+		{Name: "check", Command: "pnpm run check"},
+		{Name: "typecheck", Command: "pnpm run typecheck"},
+	}
+	var ran []string
+	res := runGates(gates, func(g config.Gate) session.Outcome {
+		ran = append(ran, g.Name)
+		if g.Name == "check" {
+			return session.Outcome{ExitCode: 2}
+		}
+		return session.Outcome{ExitCode: 0}
+	})
+	if res.FailedGate != "check" {
+		t.Errorf("the first red gate must be reported by name, got %q", res.FailedGate)
+	}
+	if res.Outcome.ExitCode != 2 {
+		t.Errorf("the failing gate's outcome (exit 2) must be returned, got %d", res.Outcome.ExitCode)
+	}
+	if !reflect.DeepEqual(ran, []string{"check"}) {
+		t.Errorf("gates after the first failure must not run, ran %v", ran)
+	}
+}
+
+func TestRunGatesReportsLaterFailingGateByName(t *testing.T) {
+	gates := []config.Gate{
+		{Name: "check", Command: "pnpm run check"},
+		{Name: "typecheck", Command: "pnpm run typecheck"},
+	}
+	res := runGates(gates, func(g config.Gate) session.Outcome {
+		if g.Name == "typecheck" {
+			return session.Outcome{ExitCode: 1}
+		}
+		return session.Outcome{ExitCode: 0}
+	})
+	if res.FailedGate != "typecheck" {
+		t.Errorf("the failing gate (typecheck) must be reported by name, got %q", res.FailedGate)
+	}
+}
+
 // BEH-553: hasUpstreamTranscripts is the retrospective's host-side precondition
 // that an upstream /tdd or /review session actually ran and left something to
 // mine. It counts implementation-*.jsonl and review-*.jsonl transcripts under the

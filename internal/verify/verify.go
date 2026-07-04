@@ -137,8 +137,9 @@ func RetrospectivePreconditions(in RetrospectiveInputs) Result {
 // ReviewOutcome is the result of the harness's OWN host-side gate re-run after a
 // review session plus whether that session actually reviewed — the inputs that
 // together authorise a push (never the agent's self-report). GatesGreen is true iff
-// `pnpm check && pnpm typecheck` passed in the throwaway container on the feature
-// branch (DESIGN.md: ground truth = the harness's own gate run is green). WorktreeClean
+// every config-declared named gate (herd: `pnpm run check`, `pnpm run typecheck`;
+// BEH-634) passed in the throwaway containers on the feature branch (DESIGN.md:
+// ground truth = the harness's own gate run is green). WorktreeClean
 // is true iff the worktree had no uncommitted changes when the gate ran. ReviewComplete
 // is true iff the in-sandbox /review-worktree session emitted its seven-lens verdict
 // (see ReviewQualitative) — a green gate proves the diff compiles but is NOT a review.

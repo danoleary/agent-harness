@@ -47,6 +47,35 @@ const (
 	oomRetryBackoff = 10 * time.Second
 )
 
+// gateResult is the outcome of re-running the config-declared named gate list
+// host-side (BEH-634). Outcome is the failing gate's session outcome, or — when
+// every gate is green — the last gate's. FailedGate names the first gate that
+// exited non-zero (empty when all passed); it is what the log surfaces and what
+// flows into the CI-fix diagnosis, matching how internal/ci names a failing check.
+type gateResult struct {
+	Outcome    session.Outcome
+	FailedGate string
+}
+
+// runGates runs each configured named gate in order via runOne, stopping at the
+// first non-zero exit. runOne launches one gate's throwaway container (with its
+// own OOM retry) and returns its outcome; runGates is the pure orchestration over
+// it, so it is unit-testable with an injected runner. An empty gate list — a
+// Consumer misconfiguration guarded upstream by config.validate — yields a green
+// zero result. The first red gate's name is surfaced so it can flow into the log
+// + CI-fix diagnosis; the gates after it are skipped (the push gate only needs the
+// first red to withhold the push).
+func runGates(gates []config.Gate, runOne func(config.Gate) session.Outcome) gateResult {
+	var last session.Outcome
+	for _, g := range gates {
+		last = runOne(g)
+		if last.ExitCode != 0 {
+			return gateResult{Outcome: last, FailedGate: g.Name}
+		}
+	}
+	return gateResult{Outcome: last}
+}
+
 // reviewVerdictMaxAttempts bounds the total review-session launches when a session
 // exits cleanly (code 0) one turn short of its verdict over an already-verified,
 // clean, gate-green worktree (BEH-624). The initial session plus one in-stage
@@ -124,10 +153,10 @@ func Review(cfg config.Config, log *runlog.Logger, runID string, args Args) Resu
 		WorktreePath:    worktreePath,
 		PnpmStoreVolume: cfg.PnpmStoreVolume,
 	}
-	buildGateArgs := func(name string) []string {
+	buildGateArgs := func(name, command string) []string {
 		c := gateConfig
 		c.ContainerName = name
-		return sandbox.BuildGateRunArgs(c)
+		return sandbox.BuildGateRunArgs(c, command)
 	}
 	buildInstallArgs := func(name string) []string {
 		c := gateConfig
@@ -136,7 +165,6 @@ func Review(cfg config.Config, log *runlog.Logger, runID string, args Args) Resu
 	}
 
 	gateName := fmt.Sprintf("herd-harness-%s-%d-gate", runID, os.Getpid())
-	gateArgs := buildGateArgs(gateName)
 
 	// The implementation tool strips web/node_modules on handoff (BEH-412), so the
 	// cold review session would otherwise discover it missing and pay a full
@@ -147,9 +175,15 @@ func Review(cfg config.Config, log *runlog.Logger, runID string, args Args) Resu
 
 	if args.DryRun {
 		log.Event("dry-run — not launching the install, review, or gate containers")
+		// One gate container per config-declared named gate, run in order (BEH-634).
+		gatePreviews := make([]string, 0, len(cfg.Gates))
+		for _, g := range cfg.Gates {
+			gateArgs := buildGateArgs(fmt.Sprintf("%s-%s", gateName, g.Name), g.Command)
+			gatePreviews = append(gatePreviews, fmt.Sprintf("# gate %q\ndocker %s", g.Name, strings.Join(gateArgs, " ")))
+		}
 		fmt.Printf(
-			"\n--- prompt ---\n%s\n\n--- install docker command ---\ndocker %s\n\n--- review docker command ---\ndocker %s\n\n--- gate docker command ---\ndocker %s\n",
-			p, strings.Join(installArgs, " "), strings.Join(dockerArgs, " "), strings.Join(gateArgs, " "),
+			"\n--- prompt ---\n%s\n\n--- install docker command ---\ndocker %s\n\n--- review docker command ---\ndocker %s\n\n--- gate docker commands ---\n%s\n",
+			p, strings.Join(installArgs, " "), strings.Join(dockerArgs, " "), strings.Join(gatePreviews, "\n\n"),
 		)
 		return Result{OK: true}
 	}
@@ -273,38 +307,45 @@ func Review(cfg config.Config, log *runlog.Logger, runID string, args Args) Resu
 	// which would flip a genuinely green branch red and push nothing. A 137 is
 	// environmental, never the diff — a real gate failure (check/typecheck error)
 	// returns a non-137 code and is final on the first attempt.
-	// runHostGate runs `pnpm check && typecheck` in a throwaway container under the
-	// OOM-retry, keyed by a base container name + a transcript tag so it can run more
-	// than once per stage (the pre-push conflict path re-gates the resolved tree —
-	// BEH-581; the BEH-624 review re-launch re-gates the possibly-rewritten tree).
-	// baseName/transcriptTag are the (runID-derived) first-attempt names; retries suffix them.
-	runHostGate := func(baseName, transcriptTag string) session.Outcome {
-		gateBackoff := session.ExponentialBackoff(gateOOMBackoffBase, gateOOMBackoffCap)
-		outcome, _ := session.RetryTransient(gateOOMMaxAttempts, gateBackoff, time.Sleep, func(attempt int) session.Outcome {
-			name, transcript := baseName, runlog.GateTranscriptName(transcriptTag)
-			if attempt > 1 {
-				name = fmt.Sprintf("%s-retry%d", baseName, attempt)
-				transcript = runlog.GateTranscriptName(fmt.Sprintf("%s-retry%d", transcriptTag, attempt))
-				log.Event(fmt.Sprintf(
-					"review ↻ host-side gate OOM-killed (exit 137) — retry %d/%d after %s (BEH-530)",
-					attempt-1, gateOOMMaxAttempts-1, gateBackoff(attempt-1),
-				))
-			}
-			out := session.Run(buildGateArgs(name), session.Options{
-				ContainerName:  name,
-				TranscriptFile: transcript,
-				Timeout:        cfg.ReviewTimeout,
-				IdleTimeout:    cfg.SessionIdleTimeout,
-				Verbose:        args.Verbose,
-				Log:            log,
+	// runHostGate re-runs the config-declared named gate list host-side in throwaway
+	// containers — one per gate, in order, stopping at the first red (BEH-634) — and
+	// reports the first failing gate by name (gateResult.FailedGate). Each gate runs
+	// under its own OOM-retry (BEH-530). It is keyed by a base container name + a
+	// transcript tag so the whole gate run can happen more than once per stage (the
+	// pre-push conflict path re-gates the resolved tree — BEH-581; the BEH-624 review
+	// re-launch re-gates the possibly-rewritten tree); baseName/transcriptTag are the
+	// (runID-derived) first-attempt names, suffixed per gate and per retry.
+	runHostGate := func(baseName, transcriptTag string) gateResult {
+		return runGates(cfg.Gates, func(g config.Gate) session.Outcome {
+			log.Event(fmt.Sprintf("review · gate %q: %s", g.Name, g.Command))
+			gateBackoff := session.ExponentialBackoff(gateOOMBackoffBase, gateOOMBackoffCap)
+			outcome, _ := session.RetryTransient(gateOOMMaxAttempts, gateBackoff, time.Sleep, func(attempt int) session.Outcome {
+				name := fmt.Sprintf("%s-%s", baseName, g.Name)
+				transcript := runlog.GateTranscriptName(fmt.Sprintf("%s-%s", transcriptTag, g.Name))
+				if attempt > 1 {
+					name = fmt.Sprintf("%s-%s-retry%d", baseName, g.Name, attempt)
+					transcript = runlog.GateTranscriptName(fmt.Sprintf("%s-%s-retry%d", transcriptTag, g.Name, attempt))
+					log.Event(fmt.Sprintf(
+						"review ↻ host-side gate %q OOM-killed (exit 137) — retry %d/%d after %s (BEH-530)",
+						g.Name, attempt-1, gateOOMMaxAttempts-1, gateBackoff(attempt-1),
+					))
+				}
+				out := session.Run(buildGateArgs(name, g.Command), session.Options{
+					ContainerName:  name,
+					TranscriptFile: transcript,
+					Timeout:        cfg.ReviewTimeout,
+					IdleTimeout:    cfg.SessionIdleTimeout,
+					Verbose:        args.Verbose,
+					Log:            log,
+				})
+				// Raw-stdout step log: a gate's `tsgo`/pnpm output just stops mid-line on an
+				// OOM-kill. Stamp the exit so the abrupt end is self-describing rather than
+				// needing a run.jsonl cross-reference to confirm the 137 (BEH-537).
+				log.TeeLine(transcript, runlog.StepFooter(out.ExitCode))
+				return out
 			})
-			// Raw-stdout step log: the gate's `pnpm install`/`tsgo` just stops mid-output
-			// on an OOM-kill. Stamp the exit so the abrupt end is self-describing rather
-			// than needing a run.jsonl cross-reference to confirm the 137 (BEH-537).
-			log.TeeLine(transcript, runlog.StepFooter(out.ExitCode))
-			return out
+			return outcome
 		})
-		return outcome
 	}
 
 	reviewOutcome := runReviewSession(1)
@@ -316,8 +357,8 @@ func Review(cfg config.Config, log *runlog.Logger, runID string, args Args) Resu
 	}
 
 	log.Event(fmt.Sprintf("re-running gates host-side (cap %d min)", int(cfg.ReviewTimeout.Minutes())))
-	gateOutcome := runHostGate(gateName, runID)
-	gateExit := gateOutcome.ExitCode
+	gateRes := runHostGate(gateName, runID)
+	gateExit := gateRes.Outcome.ExitCode
 
 	// The gate runs against the worktree's working tree (committed + uncommitted),
 	// but Push ships only the committed tip — so the push is authorised only when
@@ -353,8 +394,8 @@ func Review(cfg config.Config, log *runlog.Logger, runID string, args Args) Resu
 			attempt-1, reviewVerdictMaxAttempts-1,
 		))
 		reviewOutcome = runReviewSession(attempt)
-		gateOutcome = runHostGate(fmt.Sprintf("%s-retry%d", gateName, attempt), fmt.Sprintf("%s-retry%d", runID, attempt))
-		gateExit = gateOutcome.ExitCode
+		gateRes = runHostGate(fmt.Sprintf("%s-retry%d", gateName, attempt), fmt.Sprintf("%s-retry%d", runID, attempt))
+		gateExit = gateRes.Outcome.ExitCode
 		clean = gitpkg.WorktreeClean(worktreePath)
 		completeness = verify.ReviewQualitative(reviewOutcome.ExitCode, reviewOutcome.ReviewVerdictEmitted)
 	}
@@ -430,8 +471,14 @@ func Review(cfg config.Config, log *runlog.Logger, runID string, args Args) Resu
 		// Red/crash/dirty → keep the worktree (recoverable artifact), do not push.
 		// A spending-cap abort that killed the review before it could ship is surfaced
 		// so the loop classifies this as retry-after-reset (breaker-neutral), not a
-		// ship failure that should advance the circuit breaker.
-		log.Event(fmt.Sprintf("review ✗ %s (gate exit %d) — keeping worktree, nothing pushed", result.Reason, gateExit))
+		// ship failure that should advance the circuit breaker. Name the failing gate
+		// (BEH-634) so a red gate is diagnosable by name, matching how internal/ci names
+		// a failing check — the empty-name case (a non-gate failure) omits the clause.
+		gateClause := ""
+		if gateRes.FailedGate != "" {
+			gateClause = fmt.Sprintf(" [gate %q]", gateRes.FailedGate)
+		}
+		log.Event(fmt.Sprintf("review ✗ %s (gate exit %d)%s — keeping worktree, nothing pushed", result.Reason, gateExit, gateClause))
 		return Result{OK: false, SpendingCapAbort: reviewOutcome.SpendingCapAbort}
 	}
 	log.Event("review ✓ " + result.Reason)
@@ -479,7 +526,7 @@ func Review(cfg config.Config, log *runlog.Logger, runID string, args Args) Resu
 			return Result{OK: false}
 		}
 		resolved := resolvePrePushConflict(cfg, args, slug, worktreePath, runID, t, log, comment,
-			func() session.Outcome { return runHostGate(gateName+"-postrebase", runID+"-postrebase") })
+			func() session.Outcome { return runHostGate(gateName+"-postrebase", runID+"-postrebase").Outcome })
 		if !resolved {
 			return Result{OK: false}
 		}

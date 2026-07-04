@@ -244,8 +244,10 @@ loop:
   # agent has no GH_TOKEN; it can only commit into the shared local .git
 
   --- review ground truth + push gate (harness, host-side) ---
-  re-run gates in a throwaway container: `pnpm check && pnpm typecheck` on feat/beh-nnn
-  review OK <=> gates are GREEN AND worktree is clean AND the review session emitted its verdict
+  re-run each config-declared named gate (BEH-634) in its own throwaway container, in
+    order, on feat/beh-nnn — herd's are `pnpm run check` then `pnpm run typecheck`; a Go
+    Consumer's would be `go test ./...`. Stops at the first red and reports it by name.
+  review OK <=> ALL gates are GREEN AND worktree is clean AND the review session emitted its verdict
                 AND that verdict's disposition is NOT `blocked` (BEH-580)
                 AND the branch makes a NON-empty net diff against origin/main (BEH-603)
                 // never the agent's self-report; a green gate is NOT a review (BEH-569)

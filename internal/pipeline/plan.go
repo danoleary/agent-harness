@@ -86,10 +86,15 @@ func Plan(cfg config.Config, identifier string) string {
 		ContainerName:   name("review"),
 	})
 	installDocker := sandbox.BuildInstallRunArgs(withName("install"))
-	gateDocker := sandbox.BuildGateRunArgs(withName("gate"))
+	// One gate container per config-declared named gate, run in order (BEH-634).
+	gateLines := make([]string, 0, len(cfg.Gates))
+	for _, g := range cfg.Gates {
+		gateDocker := sandbox.BuildGateRunArgs(withName("gate-"+g.Name), g.Command)
+		gateLines = append(gateLines, fmt.Sprintf("# gate %q\n%s", g.Name, dockerLine(gateDocker)))
+	}
 	fmt.Fprintf(&b,
-		"\n=== stage 2: review (only if implementation succeeded) ===\n--- prompt ---\n%s\n\n--- install docker command ---\n%s\n\n--- review docker command ---\n%s\n\n--- gate docker command ---\n%s\n",
-		reviewPrompt, dockerLine(installDocker), dockerLine(reviewDocker), dockerLine(gateDocker),
+		"\n=== stage 2: review (only if implementation succeeded) ===\n--- prompt ---\n%s\n\n--- install docker command ---\n%s\n\n--- review docker command ---\n%s\n\n--- gate docker commands ---\n%s\n",
+		reviewPrompt, dockerLine(installDocker), dockerLine(reviewDocker), strings.Join(gateLines, "\n\n"),
 	)
 
 	// --- retrospective ---

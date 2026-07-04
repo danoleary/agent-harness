@@ -273,28 +273,27 @@ type GateConfig struct {
 // from `web/`, the source of truth for the pnpm scripts (see herd CLAUDE.md).
 const installCommand = "cd web && pnpm install --frozen-lockfile"
 
-// gateCommand is the gate the harness re-runs as ground truth: a fresh install
-// (against the warm pnpm store) then the repo's own `check` + `typecheck`.
-//
-// It runs `typecheck` (tsgo --noEmit), NOT the full `pnpm run build`. The build's
-// vite bundling + prerender crawl is memory-heavy enough to be OOM-killed (exit
-// 137) in the sandbox even on a correct diff — and the OOM is not confined to the
-// prerender step, so the baked-in HERD_SANDBOX=1 (which skips prerender) does not
-// save it. That once killed a green, reviewed branch out of shipping (BEH-529;
-// same class as BEH-407/477/491/519). `typecheck` is the accepted in-sandbox diff-
-// validation signal; CI's full `build` is the SSR-shell backstop (the harness
-// watches CI post-PR via ci.WatchAndFix).
-const gateCommand = installCommand + " && pnpm run check && pnpm run typecheck"
-
 // BuildGateRunArgs builds the argv (everything after `docker`) for the throwaway
-// container that re-runs `pnpm check && pnpm typecheck` on the reviewed branch. This
-// is the harness's OWN ground truth — never the agent's self-report — and the
-// push gate (DESIGN.md). The container carries NO secrets at all (not even the
-// Claude credential): it runs no model, only the gates, so nothing needs to cross
-// the boundary. It runs in the worktree (the branch under review), not the main
-// checkout.
-func BuildGateRunArgs(c GateConfig) []string {
-	return buildWorktreeBashArgs(c, gateCommand)
+// container that re-runs ONE config-declared named gate's `command` on the reviewed
+// branch. This is the harness's OWN ground truth — never the agent's self-report —
+// and the push gate (DESIGN.md). The container carries NO secrets at all (not even
+// the Claude credential): it runs no model, only the gate command, so nothing needs
+// to cross the boundary. It runs in the worktree (the branch under review), not the
+// main checkout.
+//
+// The command is now the sole source of truth (BEH-634): the harness no longer
+// prepends a pnpm-specific `install && check && typecheck` — node_modules is
+// pre-populated by the separate install container (BEH-490, BuildInstallRunArgs),
+// and each gate command runs verbatim from config, so a Go (`go test ./...`) or
+// .NET (`dotnet test`) Consumer differs only in config. herd's `pnpm run check` /
+// `pnpm run typecheck` resolve from the worktree root via the committed root
+// package.json passthrough — no `cd web` needed. herd deliberately gates on
+// `typecheck` (tsgo --noEmit), NOT the full `pnpm run build`, whose vite bundling +
+// prerender crawl OOM-kills correct diffs in the sandbox (BEH-529; that guard now
+// lives in the Consumer's config, not here); CI's full build is the SSR-shell
+// backstop (the harness watches CI post-PR via ci.WatchAndFix).
+func BuildGateRunArgs(c GateConfig, command string) []string {
+	return buildWorktreeBashArgs(c, command)
 }
 
 // BuildInstallRunArgs builds the argv for the throwaway container that pre-populates

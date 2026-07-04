@@ -86,17 +86,19 @@ func TestMountsFindingsWhenFindingsDirGiven(t *testing.T) {
 	}
 }
 
-// The throwaway gate-re-run container (DESIGN.md: harness re-runs `pnpm check &&
-// pnpm typecheck` on the branch) carries NO secrets — not even the Claude credential
-// — and runs in the worktree, not the main checkout.
-func TestGateRunArgsCarryNoSecretsAndRunGatesInWorktree(t *testing.T) {
+// The throwaway gate-re-run container (DESIGN.md: harness re-runs the config-
+// declared named gates on the branch) carries NO secrets — not even the Claude
+// credential — and runs the config-supplied gate command verbatim in the worktree,
+// not the main checkout. BEH-634 makes the command a parameter (was a hardcoded
+// `pnpm check && pnpm typecheck`), so a Go/.NET Consumer differs only in config.
+func TestGateRunArgsCarryNoSecretsAndRunGateCommandInWorktree(t *testing.T) {
 	args := BuildGateRunArgs(GateConfig{
 		Image:           "herd-agent-harness:latest",
 		HerdPath:        "/Users/dan/herd",
 		WorktreePath:    "/Users/dan/herd/.claude/worktrees/beh-371",
 		PnpmStoreVolume: "herd-pnpm-store",
 		ContainerName:   "herd-harness-gate-1",
-	})
+	}, "pnpm run check")
 	joined := strings.Join(args, " ")
 
 	// No credential of any kind crosses into the gate container.
@@ -105,15 +107,24 @@ func TestGateRunArgsCarryNoSecretsAndRunGatesInWorktree(t *testing.T) {
 			t.Errorf("gate container must carry no secrets, but argv mentions %q: %v", secret, args)
 		}
 	}
-	// Runs the real gate commands: lint+format (`check`) and `typecheck`. It must
-	// NOT run the full `pnpm run build` — its vite bundling + prerender crawl is
-	// memory-heavy and gets OOM-killed (exit 137) in the sandbox even on a correct
-	// diff (BEH-407/477/491/519/529), which once blocked a green, reviewed branch
-	// from shipping. `typecheck` (tsgo --noEmit) is the accepted in-sandbox diff-
-	// validation signal; CI's full `build` is the SSR-shell backstop.
-	if !strings.Contains(joined, "check") || !strings.Contains(joined, "typecheck") {
-		t.Errorf("gate args must run `pnpm check && pnpm typecheck`, got: %v", args)
+	// Runs exactly the config-supplied gate command — verbatim, and nothing else.
+	// The command is now the sole source of truth (no hardcoded install prefix, no
+	// hardcoded typecheck): node_modules is pre-populated by the separate install
+	// container (BEH-490), and herd's `pnpm run check` resolves from the worktree
+	// root via the committed root package.json passthrough.
+	if !strings.Contains(joined, "pnpm run check") {
+		t.Errorf("gate args must run the supplied command verbatim, got: %v", args)
 	}
+	// The command param is the ONLY gate content — the builder must not smuggle in
+	// a second hardcoded gate the caller didn't ask for.
+	if strings.Contains(joined, "typecheck") {
+		t.Errorf("gate must run only the supplied command, not a hardcoded typecheck: %v", args)
+	}
+	// It must NOT run the full `pnpm run build` — its vite bundling + prerender
+	// crawl is memory-heavy and gets OOM-killed (exit 137) in the sandbox even on a
+	// correct diff (BEH-407/477/491/519/529), which once blocked a green, reviewed
+	// branch from shipping. That guard belongs to the config; the builder just must
+	// not inject build itself.
 	if strings.Contains(joined, "run build") {
 		t.Errorf("gate must not run the OOM-prone `pnpm run build`, got: %v", args)
 	}
@@ -131,7 +142,7 @@ func TestGateRunArgsMountCheckoutAndPnpmStore(t *testing.T) {
 		WorktreePath:    "/Users/dan/herd/.claude/worktrees/beh-371",
 		PnpmStoreVolume: "herd-pnpm-store",
 	}
-	mounts := valuesForFlag(BuildGateRunArgs(c), "-v")
+	mounts := valuesForFlag(BuildGateRunArgs(c, "pnpm run check"), "-v")
 
 	// The whole checkout is bind-mounted at its real path so the worktree's
 	// absolute .git pointer resolves; the pnpm store keeps install near-instant.
@@ -146,7 +157,7 @@ func TestGateRunArgsMountCheckoutAndPnpmStore(t *testing.T) {
 }
 
 func TestGateRunArgsNameContainerForKill(t *testing.T) {
-	args := BuildGateRunArgs(GateConfig{ContainerName: "herd-harness-gate-1"})
+	args := BuildGateRunArgs(GateConfig{ContainerName: "herd-harness-gate-1"}, "pnpm run check")
 	if !slices.Contains(valuesForFlag(args, "--name"), "herd-harness-gate-1") {
 		t.Error("gate container must be nameable so the harness can kill it on timeout")
 	}
