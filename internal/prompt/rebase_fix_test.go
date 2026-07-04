@@ -11,7 +11,7 @@ import (
 // the origin/main a sibling PR advanced underneath it. It must name the worktree +
 // ticket and tell the agent to work in the existing worktree, not create one.
 func TestBuildRebaseFixNamesWorktreeAndTicket(t *testing.T) {
-	p := BuildRebaseFix(sample, "beh-362", sampleWorktree)
+	p := BuildRebaseFix(sample, "beh-362", "feat", sampleWorktree)
 
 	for _, want := range []string{"BEH-362", sampleWorktree, "feat/beh-362"} {
 		if !strings.Contains(p, want) {
@@ -23,6 +23,21 @@ func TestBuildRebaseFixNamesWorktreeAndTicket(t *testing.T) {
 	}
 }
 
+// BEH-675: the worktree this session rebases was created with the Consumer's
+// configured branch prefix, not a hardcoded `feat`. A non-`feat` prefix must flow
+// into the prompt so it names the real branch instead of a non-existent
+// `feat/<slug>`.
+func TestBuildRebaseFixNamesBranchWithConfiguredPrefix(t *testing.T) {
+	p := BuildRebaseFix(sample, "beh-362", "wip", sampleWorktree)
+
+	if !strings.Contains(p, "wip/beh-362") {
+		t.Error("prompt does not name the branch with the configured prefix (wip/beh-362)")
+	}
+	if strings.Contains(p, "feat/beh-362") {
+		t.Error("prompt still hardcodes feat/beh-362 instead of using the configured prefix")
+	}
+}
+
 // BEH-618: the core job is to replay onto origin/main, resolve the conflicts,
 // continue the replay, and commit — leaving a clean, rebased worktree. It must steer
 // the agent AWAY from bare `git rebase`, which false-fails ("local changes would be
@@ -30,7 +45,7 @@ func TestBuildRebaseFixNamesWorktreeAndTicket(t *testing.T) {
 // The known-good recipe is `reset --hard origin/main` + `cherry-pick` (continued with
 // `cherry-pick --continue`), which the session runs in the same linked worktree.
 func TestBuildRebaseFixSteersTheCherryPickReplay(t *testing.T) {
-	p := BuildRebaseFix(sample, "beh-362", sampleWorktree)
+	p := BuildRebaseFix(sample, "beh-362", "feat", sampleWorktree)
 
 	if !strings.Contains(p, "git reset --hard origin/main") {
 		t.Error("prompt should instruct the agent to move onto the fresh base with `git reset --hard origin/main`")
@@ -57,7 +72,7 @@ func TestBuildRebaseFixSteersTheCherryPickReplay(t *testing.T) {
 // The resolution must preserve BOTH intents — the ticket's change AND the
 // incoming changes from main — not blindly take one side.
 func TestBuildRebaseFixSteersToPreserveBothIntents(t *testing.T) {
-	p := BuildRebaseFix(sample, "beh-362", sampleWorktree)
+	p := BuildRebaseFix(sample, "beh-362", "feat", sampleWorktree)
 
 	if !regexp.MustCompile(`(?i)both`).MatchString(p) {
 		t.Error("prompt should tell the agent to preserve both the ticket's and main's intent")
@@ -73,7 +88,7 @@ func TestBuildRebaseFixSteersToPreserveBothIntents(t *testing.T) {
 // no findings. It must NOT abort the rebase as an escape hatch (that would strand
 // the branch on its stale base — the very thing this session exists to fix).
 func TestBuildRebaseFixForbidsRemoteLinearAndAbortEscape(t *testing.T) {
-	p := BuildRebaseFix(sample, "beh-362", sampleWorktree)
+	p := BuildRebaseFix(sample, "beh-362", "feat", sampleWorktree)
 
 	if !regexp.MustCompile(`(?i)do not push`).MatchString(p) {
 		t.Error("prompt must forbid pushing (the harness owns remote I/O)")
@@ -95,7 +110,7 @@ func TestBuildRebaseFixForbidsRemoteLinearAndAbortEscape(t *testing.T) {
 // run, the prompt must tell the agent to `rm -f .worktree-ready` rather than
 // rediscover the abort by hand.
 func TestBuildRebaseFixWarnsAboutReadySentinel(t *testing.T) {
-	p := BuildRebaseFix(sample, "beh-362", sampleWorktree)
+	p := BuildRebaseFix(sample, "beh-362", "feat", sampleWorktree)
 
 	if !strings.Contains(p, ".worktree-ready") {
 		t.Error("prompt should name the .worktree-ready sentinel that can block the rebase checkout")
@@ -106,7 +121,7 @@ func TestBuildRebaseFixWarnsAboutReadySentinel(t *testing.T) {
 }
 
 func TestBuildRebaseFixCarriesBashQuirkSteer(t *testing.T) {
-	p := BuildRebaseFix(sample, "beh-362", sampleWorktree)
+	p := BuildRebaseFix(sample, "beh-362", "feat", sampleWorktree)
 	if !strings.Contains(p, bashQuirkSteer) {
 		t.Error("prompt missing the shared bash-quirk steer")
 	}
@@ -119,7 +134,7 @@ func TestBuildRebaseFixCarriesBashQuirkSteer(t *testing.T) {
 // the redundant commit and continuing), so it doesn't misread the empty state as
 // an unresolvable conflict and give up. Distinct from the genuine-conflict steer.
 func TestBuildRebaseFixSteersEmptyCommitSkip(t *testing.T) {
-	p := BuildRebaseFix(sample, "beh-362", sampleWorktree)
+	p := BuildRebaseFix(sample, "beh-362", "feat", sampleWorktree)
 
 	if !regexp.MustCompile(`(?i)now empty`).MatchString(p) {
 		t.Error("prompt should name the \"the previous cherry-pick is now empty\" state that a redundant commit produces")

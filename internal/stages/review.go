@@ -621,7 +621,7 @@ func ciFixRunner(cfg config.Config, args Args, slug, worktreePath, runID string,
 		// fix (BEH-561). A read failure leaves headBefore empty, which degrades to
 		// "treat any HEAD as a real commit" — never a spurious empty commit.
 		headBefore, _ := gitpkg.HeadSHA(worktreePath)
-		fixPrompt := prompt.BuildCIFix(t, slug, worktreePath, ciLogs, logAvailable)
+		fixPrompt := prompt.BuildCIFix(t, slug, cfg.BranchPrefix, worktreePath, ciLogs, logAvailable)
 		containerName := fmt.Sprintf("herd-harness-%s-%d-cifix-%d", runID, os.Getpid(), attempt)
 		fixArgs := sandbox.BuildDockerRunArgs(sandbox.Config{
 			Image:           cfg.Image,
@@ -679,7 +679,7 @@ func resolvePrePushConflict(
 	regate func() session.Outcome,
 ) bool {
 	log.Event("review ↻ pre-push rebase hit a content conflict — launching a sandboxed conflict-resolution session (BEH-581)")
-	fixPrompt := prompt.BuildRebaseFix(t, slug, worktreePath)
+	fixPrompt := prompt.BuildRebaseFix(t, slug, cfg.BranchPrefix, worktreePath)
 	containerName := fmt.Sprintf("herd-harness-%s-%d-rebasefix", runID, os.Getpid())
 	fixArgs := sandbox.BuildDockerRunArgs(sandbox.Config{
 		Image:           cfg.Image,

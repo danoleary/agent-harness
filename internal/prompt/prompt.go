@@ -314,7 +314,7 @@ func BuildReview(t ticket.Ticket, slug, worktreePath, branchPrefix, body string)
 // deterministic code defect — so the prompt warns the agent up front and gives it
 // an explicit flake early-exit, rather than letting it assume a real, reproducible
 // failure and exhaustively re-derive every PR gate to a dead end (BEH-558).
-func ciFixLogSteer(slug, ciLogs string, logAvailable bool) (logFraming, job []string) {
+func ciFixLogSteer(slug, branchPrefix, ciLogs string, logAvailable bool) (logFraming, job []string) {
 	if logAvailable {
 		return []string{
 				"Here are the failing CI job logs the harness fetched for you (host-side, via `gh run view --log-failed`):",
@@ -323,7 +323,7 @@ func ciFixLogSteer(slug, ciLogs string, logAvailable bool) (logFraming, job []st
 				ciLogs,
 				"```",
 			}, []string{
-				"Your job: read those logs, reproduce/diagnose the failure locally in the worktree where you can, and apply a fix as a NEW LOCAL commit on `feat/" + slug + "`. Re-run the relevant gate locally (the specific test/lint/typecheck/check that failed) to verify the fix before you stop. Keep the fix to its own commit — do NOT amend or force-push over the existing history.",
+				"Your job: read those logs, reproduce/diagnose the failure locally in the worktree where you can, and apply a fix as a NEW LOCAL commit on `" + branchPrefix + "/" + slug + "`. Re-run the relevant gate locally (the specific test/lint/typecheck/check that failed) to verify the fix before you stop. Keep the fix to its own commit — do NOT amend or force-push over the existing history.",
 			}
 	}
 	return []string{
@@ -339,10 +339,10 @@ func ciFixLogSteer(slug, ciLogs string, logAvailable bool) (logFraming, job []st
 		}
 }
 
-func BuildCIFix(t ticket.Ticket, slug, worktreePath, ciLogs string, logAvailable bool) string {
-	logFraming, job := ciFixLogSteer(slug, ciLogs, logAvailable)
+func BuildCIFix(t ticket.Ticket, slug, branchPrefix, worktreePath, ciLogs string, logAvailable bool) string {
+	logFraming, job := ciFixLogSteer(slug, branchPrefix, ciLogs, logAvailable)
 	lines := []string{
-		"A GitHub CI check is failing on the open PR for " + t.Identifier + ". The worktree already exists at `" + worktreePath + "` on branch `feat/" + slug + "` — work in it; do NOT create a new worktree.",
+		"A GitHub CI check is failing on the open PR for " + t.Identifier + ". The worktree already exists at `" + worktreePath + "` on branch `" + branchPrefix + "/" + slug + "` — work in it; do NOT create a new worktree.",
 		"",
 		"The branch already passed the harness's local gate re-run, but CI on GitHub went red. The cause is usually a CI-vs-local difference (a different toolchain/env, a lockfile or native-binding skew, or a flaky spec) rather than something the local gate could catch.",
 		"",
@@ -385,9 +385,9 @@ func BuildCIFix(t ticket.Ticket, slug, worktreePath, ciLogs string, logAvailable
 // harness then independently re-runs the gate host-side before pushing, so the
 // session never pushes or touches the remote/Linear itself. This prompt invokes no
 // skill, so it stays harness-composed (no Consumer body).
-func BuildRebaseFix(t ticket.Ticket, slug, worktreePath string) string {
+func BuildRebaseFix(t ticket.Ticket, slug, branchPrefix, worktreePath string) string {
 	lines := []string{
-		"A pre-push rebase for " + t.Identifier + " hit a genuine content conflict. The branch already passed the cold review and the harness gate, but origin/main advanced underneath it (a sibling PR merged) and the changes overlap, so it cannot be replayed automatically. The worktree already exists at `" + worktreePath + "` on branch `feat/" + slug + "` — work in it; do NOT create a new worktree.",
+		"A pre-push rebase for " + t.Identifier + " hit a genuine content conflict. The branch already passed the cold review and the harness gate, but origin/main advanced underneath it (a sibling PR merged) and the changes overlap, so it cannot be replayed automatically. The worktree already exists at `" + worktreePath + "` on branch `" + branchPrefix + "/" + slug + "` — work in it; do NOT create a new worktree.",
 		"",
 		"Do NOT use `git rebase` here. This is a LINKED worktree (`git worktree add`), and `git rebase`'s detach-to-onto checkout false-fails with `Your local changes to the following files would be overwritten by merge` / `could not detach HEAD` even when the tree is byte-clean (`git status` empty) — a worktree checkout-safety artifact, not a real conflict. Burning attempts on `git rebase`/`git rebase --merge` here is wasted effort (BEH-618).",
 		"",
