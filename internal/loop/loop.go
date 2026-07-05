@@ -43,6 +43,18 @@ type TicketOutcome struct {
 	RecommendClose bool
 }
 
+// StaleClaim is one agent-claimed In Progress ticket the between-ticket reaper
+// evaluates (BEH-677): when it was claimed (StartedAt) and whether a PR is linked.
+// A claim older than ClaimTTL with no linked PR and no remote branch was abandoned
+// by a dead agent (sandbox OOM/timeout/crash before pushing) and is released back to
+// Todo so it stops occupying the In Progress lane. The grace TTL is what keeps a
+// healthy agent mid-work (which looks identical — no branch/PR yet) from being reaped.
+type StaleClaim struct {
+	Identifier  string
+	StartedAt   time.Time
+	HasLinkedPR bool
+}
+
 // Narrator is the one-line console + run.jsonl narration sink (satisfied by
 // *runlog.Logger, as in the pipeline). Structured additionally feeds the global
 // loop.jsonl the viewer tails (ADR-0005). An interface keeps Run testable.
@@ -84,6 +96,23 @@ type Deps struct {
 	// one ticket and returns the typed outcome the breaker keys on (did it reach a
 	// pushed PR?), not the opaque exit code.
 	RunPipeline func(identifier string) TicketOutcome
+	// ListInProgressClaims returns the agent-claimed In Progress tickets the reaper
+	// evaluates each pass (BEH-677). A nil func disables reaping entirely — the loop
+	// makes no reaper query at all. A list error is warned and swallowed (best-effort,
+	// never fatal): the reaper is host-side cleanup, never a ticket outcome.
+	ListInProgressClaims func() ([]StaleClaim, error)
+	// TicketHasRemoteBranch reports whether a branch was pushed for the ticket — the
+	// second "has work in flight" signal (alongside StaleClaim.HasLinkedPR) that spares
+	// a claim from reaping. It must fail SAFE toward true (don't reap on a flaky read).
+	// A nil func treats every claim as having no branch, so the linked-PR signal alone
+	// decides — sound because the harness pushes branch+PR together, but wiring it makes
+	// the "no branch AND no PR" acceptance faithful.
+	TicketHasRemoteBranch func(identifier string) bool
+	// ClaimTTL is the grace period past a claim's StartedAt before a no-branch/no-PR
+	// claim is reaped back to Todo. It must comfortably clear the claim→first-push
+	// window so a healthy mid-work agent is never mistaken for a dead one. A
+	// non-positive value disables reaping.
+	ClaimTTL time.Duration
 	// Sleep waits for d, broken by the caller into short ticks so a stop landing
 	// during an idle wait is observed within one TickInterval, not one PollInterval.
 	Sleep func(d time.Duration)
@@ -196,6 +225,12 @@ func Run(d Deps) int {
 		// a failed prune is narrated and swallowed — reclaim is never a ticket outcome
 		// and never touches the breaker.
 		d.reclaimDisk()
+
+		// Reap claims stranded In Progress by a dead agent (no branch/PR past the TTL),
+		// returning them to Todo BEFORE selecting — so a reaped ticket is selectable on
+		// this very pass rather than occupying the lane forever (BEH-677). Best-effort:
+		// a failed list/release is narrated and swallowed, never a ticket outcome.
+		d.reapStaleClaims()
 
 		identifier, ok := d.ResolveNext()
 		if !ok {
@@ -364,6 +399,54 @@ func (d Deps) reclaimDisk() {
 			msg += fmt.Sprintf("; freed %d MiB", (after-before)>>20)
 		}
 		d.Log.Event(msg)
+	}
+}
+
+// reapStaleClaims releases In Progress claims stranded by a dead agent back to Todo
+// (BEH-677). The harness moves a ticket to In Progress on claim, but an agent that
+// dies (sandbox OOM/timeout/crash) before pushing leaves the ticket occupying the
+// lane forever, never re-grabbed. Each pass lists the agent-claimed In Progress set
+// and releases a claim when ALL hold: it is older than ClaimTTL, has no linked PR,
+// and has no remote branch.
+//
+// The grace TTL is load-bearing: a healthy agent between claim and first push looks
+// IDENTICAL to a dead one (no branch/PR yet), so reaping on the no-branch signal
+// alone would kill live work (the BEH-447 race). The TTL is the only thing that tells
+// them apart, so it is never skipped.
+//
+// Best-effort, never a ticket outcome (like reclaimDisk): a nil lister or non-positive
+// TTL disables it silently; a list/release failure is narrated and swallowed so a
+// Linear hiccup can never crash the daemon.
+func (d Deps) reapStaleClaims() {
+	if d.ListInProgressClaims == nil || d.ClaimTTL <= 0 {
+		return // reaping disabled
+	}
+	claims, err := d.ListInProgressClaims()
+	if err != nil {
+		d.Log.Event("loop … warning: could not list In Progress claims for reaping (skipping): " + err.Error())
+		return
+	}
+	now := d.clock()()
+	for _, c := range claims {
+		if now.Sub(c.StartedAt) < d.ClaimTTL {
+			continue // inside the grace window — a healthy agent may still be mid-work
+		}
+		if c.HasLinkedPR {
+			continue // shipped or mid-review — there is work to show for the claim
+		}
+		if d.TicketHasRemoteBranch != nil && d.TicketHasRemoteBranch(c.Identifier) {
+			continue // a branch is in flight even without a PR yet
+		}
+		d.Log.Structured(loopstream.Record{
+			Kind:    loopstream.KindTicketReleased,
+			Ticket:  c.Identifier,
+			Message: "loop — reaping stale claim " + c.Identifier + " (In Progress past TTL with no branch/PR); releasing to Todo (BEH-677)",
+		})
+		if err := d.ReleaseTicket(c.Identifier); err != nil {
+			d.Log.Event("loop … warning: could not reap stale claim " + c.Identifier + " to Todo: " + err.Error())
+			continue
+		}
+		d.comment(c.Identifier, "Autonomous reaper released this claim back to Todo: it sat In Progress past the claim TTL with no branch and no linked PR, so the agent that claimed it almost certainly died before pushing (sandbox OOM/timeout/crash). A later run can now re-grab it.")
 	}
 }
 

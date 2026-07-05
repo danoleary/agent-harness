@@ -10,6 +10,8 @@
 package tracker
 
 import (
+	"time"
+
 	"github.com/beherd/agent-harness/internal/findings"
 	"github.com/beherd/agent-harness/internal/ticket"
 )
@@ -56,15 +58,29 @@ type TicketSource interface {
 	FetchTicket(key Key) (ticket.Ticket, error)
 }
 
+// InProgressClaim is one agent-claimed In Progress ticket, carrying the raw signals
+// the stale-claim reaper needs to decide abandonment (BEH-677): when it was claimed
+// (StartedAt) and whether it has anything to show for the claim (HasLinkedPR). A
+// claim past the grace TTL with no linked PR (and no branch, checked separately) is
+// a dead claim to release back to Todo.
+type InProgressClaim struct {
+	Identifier  string
+	StartedAt   time.Time
+	HasLinkedPR bool
+}
+
 // Queue is the select + claim/release layer (ADR-0010 layer 2): pick the next
 // ready ticket and move it to/from an in-progress state. SelectNextTicket is a
 // pure read (ok=false means the queue is empty) so claim-on-select (ADR-0003) is
 // the caller composing it with MoveToInProgress; ReleaseToTodo undoes a claim that
-// yielded nothing.
+// yielded nothing. ListInProgressClaims is the reaper's read: the agent-claimed
+// In Progress set, so a claim stranded by a dead agent (no branch/PR past the TTL)
+// can be released back to Todo (BEH-677).
 type Queue interface {
 	SelectNextTicket() (ticket.Ticket, bool, error)
 	MoveToInProgress(key Key) error
 	ReleaseToTodo(key Key) error
+	ListInProgressClaims() ([]InProgressClaim, error)
 }
 
 // FindingsSink files and dedups findings (ADR-0010 layer 3). SearchFindings lists

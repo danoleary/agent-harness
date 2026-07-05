@@ -18,6 +18,10 @@ type issueNode struct {
 	// blockers each model one inverse "blocks" relation: the state type of the
 	// issue that blocks this one ("started"/"completed"/…).
 	blockers []string
+	// children each model one sub-issue: the state type of that child
+	// ("started"/"unstarted"/"completed"/…). A non-empty children list marks this
+	// node an umbrella/tracker issue.
+	children []string
 }
 
 func (n issueNode) toMap() map[string]any {
@@ -32,6 +36,12 @@ func (n issueNode) toMap() map[string]any {
 			"issue": map[string]any{"state": map[string]any{"type": stateType}},
 		})
 	}
+	childNodes := make([]any, 0, len(n.children))
+	for _, stateType := range n.children {
+		childNodes = append(childNodes, map[string]any{
+			"state": map[string]any{"type": stateType},
+		})
+	}
 	return map[string]any{
 		"identifier":       n.identifier,
 		"title":            n.identifier + " title",
@@ -44,6 +54,7 @@ func (n issueNode) toMap() map[string]any {
 		"team":             map[string]any{"id": "team-uuid"},
 		"labels":           map[string]any{"nodes": labelNodes},
 		"inverseRelations": map[string]any{"nodes": relNodes},
+		"children":         map[string]any{"nodes": childNodes},
 	}
 }
 
@@ -192,6 +203,37 @@ func TestSelectNextTicketIgnoresClosedBlockers(t *testing.T) {
 	}
 	if !ok || got.Identifier != "BEH-7" {
 		t.Errorf("selected = %q (ok=%v), want BEH-7 — a closed blocker must not block", got.Identifier, ok)
+	}
+}
+
+// An umbrella/tracker issue — one with an OPEN sub-issue (a child whose state is
+// not completed/canceled) — must never be auto-selected, even with ready-for-agent
+// and top priority. Its real work lives in the children; grabbing the umbrella
+// would strand it In Progress producing no branch/PR. The unblocked leaf wins.
+func TestSelectNextTicketSkipsUmbrellaWithOpenChild(t *testing.T) {
+	umbrella := issueNode{identifier: "BEH-UMB", priority: 1, labels: []string{"ready-for-agent"}, children: []string{"unstarted"}}
+	leaf := eligibleNode("BEH-LEAF", 3)
+	tr, _ := selectTransport(t, umbrella, leaf)
+	got, ok, err := NewClient(tr).SelectNextTicket()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !ok || got.Identifier != "BEH-LEAF" {
+		t.Errorf("selected = %q (ok=%v), want BEH-LEAF — an umbrella with an open child must be skipped despite higher priority", got.Identifier, ok)
+	}
+}
+
+// A tracker issue whose children are ALL closed (completed/canceled) is no longer
+// an umbrella deferring live work — it is eligible like any leaf.
+func TestSelectNextTicketAllowsIssueWithOnlyClosedChildren(t *testing.T) {
+	done := issueNode{identifier: "BEH-DONE", priority: 1, labels: []string{"ready-for-agent"}, children: []string{"completed", "canceled"}}
+	tr, _ := selectTransport(t, done)
+	got, ok, err := NewClient(tr).SelectNextTicket()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !ok || got.Identifier != "BEH-DONE" {
+		t.Errorf("selected = %q (ok=%v), want BEH-DONE — a ticket with only closed children is not an umbrella", got.Identifier, ok)
 	}
 }
 

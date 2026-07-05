@@ -209,7 +209,40 @@ func TicketAlreadyOnMain(herdPath, key string) bool {
 // literally proposed — would conflate those), and case-insensitively because a
 // subject sometimes lower-cases the key.
 func mainHistoryReferences(logOutput, key string) bool {
-	return regexp.MustCompile(`(?i)\b` + regexp.QuoteMeta(key) + `\b`).MatchString(logOutput)
+	return keyReferenced(logOutput, key)
+}
+
+// keyReferenced reports whether text word-boundary-matches the ticket Key,
+// case-insensitively. Shared by the main-history scan and the remote-branch scan so
+// both apply identical, Key-agnostic word-boundary semantics (BEH-52 ≠ BEH-521).
+func keyReferenced(text, key string) bool {
+	return regexp.MustCompile(`(?i)\b` + regexp.QuoteMeta(key) + `\b`).MatchString(text)
+}
+
+// TicketHasRemoteBranch reports whether a branch referencing the ticket Key has been
+// pushed to origin — the "work is in flight" signal the stale-claim reaper (BEH-677)
+// checks alongside the linked-PR signal before releasing a claim. The harness names
+// its feature branches `<prefix>/<slug>` where the slug carries the key, so a
+// word-boundary match over `git ls-remote --heads` names finds it.
+//
+// It fails SAFE toward NOT reaping: any git error (no remote, a network blip)
+// returns TRUE, so a flaky ls-remote can never cause a live claim to be released.
+// The asymmetry with TicketAlreadyOnMain (which fails open to false) is deliberate —
+// there a false positive drops work; here a false negative would reap live work, so
+// each fails in its own safe direction.
+func TicketHasRemoteBranch(herdPath, key string) bool {
+	out, _, err := proc.OutputInDir(remoteOpTimeout, herdPath, "git", "ls-remote", "--heads", "origin")
+	if err != nil {
+		return true
+	}
+	return remoteBranchesReference(string(out), key)
+}
+
+// remoteBranchesReference reports whether `git ls-remote --heads` output contains a
+// branch name referencing the exact ticket Key, on word boundaries so a shorter key
+// is never a prefix-match of a longer branch's key.
+func remoteBranchesReference(lsRemoteOutput, key string) bool {
+	return keyReferenced(lsRemoteOutput, key)
 }
 
 // WorktreePath is the host path of the worktree the tdd skill is told to create.

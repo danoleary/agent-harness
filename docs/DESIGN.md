@@ -816,6 +816,26 @@ ships. The `ready-for-agent` label remains the human gate on *what* runs unatten
   it waits, and a wake record on re-poll — so a multi-hour backoff is never mistaken
   for a dead daemon, and `cmd/watch` can render "capped, resuming at HH:MM" instead of
   going blank.
+- **Stale-claim reaper (dead-agent cleanup).** The harness moves a ticket to In
+  Progress on claim, but an agent that dies before pushing — sandbox OOM, timeout,
+  crash — strands it In Progress with **no branch and no PR**, occupying the lane
+  forever because the queue reads "started" as "someone's on it" and never re-grabs
+  it (BEH-677). Between tickets, before selecting, the loop lists the agent-claimed
+  In Progress set (unassigned + `ready-for-agent` + `started`, so a human's In
+  Progress work is never a candidate) and **releases a claim back to Todo** — with a
+  breadcrumb comment — when **all three** hold: (1) it is older than
+  `LOOP_CLAIM_TTL_MS` (default 30 min), (2) it has no linked PR (a Linear `.../pull/`
+  attachment), and (3) it has no remote branch (`git ls-remote` word-boundary-matched
+  on the key). The **grace TTL is load-bearing**: between claim and first push a
+  *healthy* agent looks identical to a dead one (no branch/PR yet — the observed
+  mid-flight case was ~18 min), so reaping on the no-branch signal alone would kill
+  live work; the TTL is the only thing that tells them apart, so it is never skipped.
+  Both I/O signals fail **safe toward not-reaping** (a git error → assume a branch
+  exists; a list error → skip the pass and narrate), and the whole pass is
+  best-effort like disk reclaim — never a ticket outcome, never touching the breaker.
+  Separately, an **umbrella/tracker issue with an open child is excluded from
+  selection** entirely (its real work lives in the children; claiming it would only
+  produce another stranded In Progress claim).
 
 ## Logging
 
@@ -898,6 +918,7 @@ reader over a structured stream rather than a `--tui` flag on the daemon.
   | `LOOP_MAX_TICKETS` | `0` (unlimited) | optional ceiling: stop after N *attempted* tickets |
   | `LOOP_MAX_RUNTIME_MS` | `0` (unlimited) | optional ceiling: stop after T wall-clock |
   | `LOOP_DISK_RECLAIM_THRESHOLD_BYTES` | `8589934592` (8 GiB) | soft free-disk floor below which the loop prunes merged worktrees between tickets (ADR-0005); `0` disables reclaim |
+  | `LOOP_CLAIM_TTL_MS` | `1800000` (30 min) | grace period after which an In Progress claim with no branch/PR is reaped back to Todo (§Stale-claim reaper) |
   | `STOP_FILE` | `agent-harness/STOP` | sentinel path; cleared at clean startup, `touch` to wind down |
 
   `LOOP_MAX_TICKETS`/`LOOP_MAX_RUNTIME_MS` default to **unlimited** because the loop

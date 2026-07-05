@@ -291,6 +291,9 @@ func TestLoadLoopDefaults(t *testing.T) {
 	if cfg.LoopDiskReclaimThreshold != 8<<30 {
 		t.Errorf("LoopDiskReclaimThreshold = %d, want %d (8 GiB — above the 5 GiB sandbox floor)", cfg.LoopDiskReclaimThreshold, 8<<30)
 	}
+	if cfg.LoopClaimTTL != 30*time.Minute {
+		t.Errorf("LoopClaimTTL = %v, want 30m (grace past the claim→first-push window)", cfg.LoopClaimTTL)
+	}
 }
 
 // The disk-reclaim threshold is env-overridable in bytes, and an explicit 0 disables
@@ -335,10 +338,14 @@ func TestLoadLoopOverrides(t *testing.T) {
 		"LOOP_MAX_CONSECUTIVE_FAILURES": "5",
 		"LOOP_MAX_TICKETS":              "10",
 		"LOOP_MAX_RUNTIME_MS":           "3600000", // 1h
+		"LOOP_CLAIM_TTL_MS":             "600000",  // 10m
 		"STOP_FILE":                     "/tmp/custom-stop",
 	}))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.LoopClaimTTL != 10*time.Minute {
+		t.Errorf("LoopClaimTTL = %v, want 10m", cfg.LoopClaimTTL)
 	}
 	if cfg.LoopPollInterval != 5*time.Second {
 		t.Errorf("LoopPollInterval = %v, want 5s", cfg.LoopPollInterval)

@@ -59,6 +59,13 @@ const selectNextQuery = `
 						}
 					}
 				}
+				children {
+					nodes {
+						state {
+							type
+						}
+					}
+				}
 			}
 		}
 	}
@@ -93,6 +100,13 @@ type selectedIssue struct {
 			} `json:"issue"`
 		} `json:"nodes"`
 	} `json:"inverseRelations"`
+	Children struct {
+		Nodes []struct {
+			State *struct {
+				Type string `json:"type"`
+			} `json:"state"`
+		} `json:"nodes"`
+	} `json:"children"`
 }
 
 // SelectNextTicket resolves the top-of-queue eligible ticket from the BeHerd
@@ -181,6 +195,17 @@ func eligible(s selectedIssue) bool {
 	}
 	if hasLabel(s, blockedLabel) {
 		return false
+	}
+	// An umbrella/tracker issue with an OPEN child defers its real work to that
+	// child; claiming it would strand it In Progress producing no branch/PR (the
+	// BEH-497 incident). Skip it while any child is still open.
+	for _, ch := range s.Children.Nodes {
+		if ch.State == nil {
+			continue
+		}
+		if !isClosedStateType(ch.State.Type) {
+			return false
+		}
 	}
 	for _, r := range s.InverseRelations.Nodes {
 		if r.Type != "blocks" {

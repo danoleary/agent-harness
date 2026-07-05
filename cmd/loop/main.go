@@ -43,6 +43,7 @@ import (
 	"github.com/beherd/agent-harness/internal/runlog"
 	"github.com/beherd/agent-harness/internal/sandbox"
 	"github.com/beherd/agent-harness/internal/stages"
+	"github.com/beherd/agent-harness/internal/tracker"
 	"github.com/beherd/agent-harness/internal/trackers"
 )
 
@@ -127,9 +128,15 @@ func main() {
 			}
 			return sel.Identifier, true
 		},
-		RunPipeline:            func(id string) loop.TicketOutcome { return runPipeline(cfg, id) },
-		ReleaseTicket:          func(id string) error { return client.ReleaseToTodo(id) },
-		CommentTicket:          func(id, body string) error { return client.AddComment(id, body) },
+		RunPipeline:   func(id string) loop.TicketOutcome { return runPipeline(cfg, id) },
+		ReleaseTicket: func(id string) error { return client.ReleaseToTodo(id) },
+		CommentTicket: func(id, body string) error { return client.AddComment(id, body) },
+		// Stale-claim reaper (BEH-677): list the agent-claimed In Progress set from the
+		// tracker, map it onto the loop's StaleClaim shape, and check for a pushed branch
+		// host-side via git. All three run on the host, never inside the sandbox.
+		ListInProgressClaims:   func() ([]loop.StaleClaim, error) { return listStaleClaims(client) },
+		TicketHasRemoteBranch:  func(id string) bool { return gitpkg.TicketHasRemoteBranch(cfg.HerdPath, id) },
+		ClaimTTL:               cfg.LoopClaimTTL,
 		Sleep:                  time.Sleep,
 		Now:                    time.Now,
 		PollInterval:           cfg.LoopPollInterval,
@@ -150,6 +157,26 @@ func main() {
 		Log:                  log,
 	})
 	os.Exit(code)
+}
+
+// listStaleClaims fetches the agent-claimed In Progress set from the tracker and maps
+// it onto the loop's StaleClaim shape (BEH-677). The mapping is a straight projection —
+// the loop stays decoupled from the tracker port, taking primitive claims the same way
+// it takes primitive thunks for every other dependency.
+func listStaleClaims(client tracker.Tracker) ([]loop.StaleClaim, error) {
+	claims, err := client.ListInProgressClaims()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]loop.StaleClaim, 0, len(claims))
+	for _, c := range claims {
+		out = append(out, loop.StaleClaim{
+			Identifier:  c.Identifier,
+			StartedAt:   c.StartedAt,
+			HasLinkedPR: c.HasLinkedPR,
+		})
+	}
+	return out, nil
 }
 
 // runPipeline runs the full implementation → review → retrospective chain over one

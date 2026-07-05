@@ -97,6 +97,11 @@ type Config struct {
 	// LoopMaxRuntime is the optional wall-clock ceiling; 0 = unlimited (the default).
 	// A non-zero value stops the loop cleanly once reached.
 	LoopMaxRuntime time.Duration
+	// LoopClaimTTL is the grace period after which an In Progress claim that produced
+	// no branch/PR is reaped back to Todo — long enough to comfortably clear the
+	// claim→first-push window (the observed mid-flight case was ~18 min), so a healthy
+	// agent mid-work is never mistaken for a dead one. Defaults to 30m.
+	LoopClaimTTL time.Duration
 	// StopFile is the STOP sentinel path used by startup-clear and the stop check. A
 	// relative path is resolved against HerdPath by cmd/loop.
 	StopFile string
@@ -158,6 +163,7 @@ const (
 	defaultLoopMaxConsecutiveFailures = 3
 	defaultLoopMaxTickets             = 0 // unlimited
 	defaultLoopMaxRuntime             = time.Duration(0)
+	defaultLoopClaimTTL               = 30 * time.Minute
 	defaultStopFile                   = "agent-harness/STOP"
 	// 8 GiB: the 5 GiB MinFreeDiskBytes sandbox floor plus headroom, so reclaim fires
 	// before a launch would ever be refused (ADR-0005).
@@ -248,6 +254,10 @@ func Load(get Getenv) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	claimTTL, err := parsePositiveDurationMs(get, "LOOP_CLAIM_TTL_MS", defaultLoopClaimTTL)
+	if err != nil {
+		return Config{}, err
+	}
 
 	cfg := Config{
 		LinearAPIKey:         linearKey,
@@ -274,6 +284,7 @@ func Load(get Getenv) (Config, error) {
 		LoopMaxConsecutiveFailures: maxFailures,
 		LoopMaxTickets:             maxTickets,
 		LoopMaxRuntime:             maxRuntime,
+		LoopClaimTTL:               claimTTL,
 		StopFile:                   orDefault(get("STOP_FILE"), defaultStopFile),
 		LoopDiskReclaimThreshold:   diskReclaim,
 
