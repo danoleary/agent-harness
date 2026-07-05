@@ -64,6 +64,25 @@ func renderBody(body string, d bodyData) string {
 	return b.String()
 }
 
+// defang neutralizes the pinned Claude CLI's `!`…“ inline-bash directive inside
+// UNTRUSTED, externally-sourced prompt text — ticket titles/bodies, inlined
+// sub-issue specs, prior retrospective findings, and fetched CI logs. When
+// `claude -p` sees a `!` immediately followed by a backtick, it treats the
+// backtick-delimited text as a shell command, runs it host-of-sandbox, and — when
+// that command errors (e.g. a stray “ !`/` “ runs `/`, "Is a directory") — the
+// WHOLE session degenerates to a zero-turn no-op: no model call, no worktree, yet
+// it exits 0. The harness reads that as "environmental crash before any work"
+// (BEH-543), retries, and after three such tickets the circuit breaker trips and
+// the loop winds down. So any ticket whose body merely CONTAINS a `!`…“ sequence
+// silently kills its own implementation session and can strand the whole daemon.
+// We break the `!`+backtick adjacency with a zero-width space (U+200B): invisible
+// to the model reading the prompt (the text still renders as `!`cmd“), but no
+// longer a literal `!“ for the CLI's directive matcher. Only external text is
+// defanged; the harness-owned envelope prose is trusted and left byte-exact.
+func defang(s string) string {
+	return strings.ReplaceAll(s, "!`", "!"+"\u200b"+"`")
+}
+
 // join assembles a prompt from its sections, dropping empties and separating the
 // rest with a blank line — the format every Build* function shares.
 func join(sections ...string) string {
@@ -82,7 +101,7 @@ func join(sections ...string) string {
 func ticketContext(t ticket.Ticket) string {
 	s := join(
 		"Ticket context (already fetched for you — do not look it up):",
-		"# "+t.Identifier+": "+t.Title+"\n\n"+t.Description,
+		"# "+t.Identifier+": "+defang(t.Title)+"\n\n"+defang(t.Description),
 	)
 	if sub := subIssuesSection(t.SubIssues); sub != "" {
 		s = join(s, sub)
@@ -170,9 +189,9 @@ func subIssuesSection(subs []ticket.SubIssue) string {
 	var b strings.Builder
 	b.WriteString("This is an umbrella/batch ticket: its real work lives in the sub-issues below, whose full specs are inlined here (already fetched for you — the sandbox CANNOT reach Linear, so do NOT try to look them up with `mcp__linear-server__*`). Implement EVERY sub-issue, not just the umbrella body above; if you defer one, say which and why in your handoff:")
 	for _, s := range subs {
-		b.WriteString("\n\n### " + s.Identifier + ": " + s.Title)
+		b.WriteString("\n\n### " + s.Identifier + ": " + defang(s.Title))
 		if strings.TrimSpace(s.Description) != "" {
-			b.WriteString("\n\n" + s.Description)
+			b.WriteString("\n\n" + defang(s.Description))
 		}
 	}
 	return b.String()
@@ -265,7 +284,7 @@ func alreadyFiledSection(filed []FiledFinding) string {
 		if f.Key != "" {
 			b.WriteString(f.Key + " — ")
 		}
-		b.WriteString(f.Title)
+		b.WriteString(defang(f.Title))
 	}
 	return b.String()
 }
@@ -340,7 +359,7 @@ func ciFixLogSteer(slug, branchPrefix, ciLogs string, logAvailable bool) (logFra
 }
 
 func BuildCIFix(t ticket.Ticket, slug, branchPrefix, worktreePath, ciLogs string, logAvailable bool) string {
-	logFraming, job := ciFixLogSteer(slug, branchPrefix, ciLogs, logAvailable)
+	logFraming, job := ciFixLogSteer(slug, branchPrefix, defang(ciLogs), logAvailable)
 	lines := []string{
 		"A GitHub CI check is failing on the open PR for " + t.Identifier + ". The worktree already exists at `" + worktreePath + "` on branch `" + branchPrefix + "/" + slug + "` — work in it; do NOT create a new worktree.",
 		"",
@@ -358,9 +377,9 @@ func BuildCIFix(t ticket.Ticket, slug, branchPrefix, worktreePath, ciLogs string
 		"",
 		"Ticket context (the intent — already fetched for you):",
 		"",
-		"# "+t.Identifier+": "+t.Title,
+		"# "+t.Identifier+": "+defang(t.Title),
 		"",
-		t.Description,
+		defang(t.Description),
 		"",
 		"---",
 		"",
@@ -408,9 +427,9 @@ func BuildRebaseFix(t ticket.Ticket, slug, branchPrefix, worktreePath string) st
 		"",
 		"Ticket context (the intent to preserve — already fetched for you):",
 		"",
-		"# " + t.Identifier + ": " + t.Title,
+		"# " + t.Identifier + ": " + defang(t.Title),
 		"",
-		t.Description,
+		defang(t.Description),
 		"",
 		"---",
 		"",

@@ -726,3 +726,104 @@ func TestBuildReviewForbidsLinearAndFindings(t *testing.T) {
 		t.Error("prompt does not steer review off emitting findings (retrospective owns that)")
 	}
 }
+
+// --- defang: neutralize the pinned Claude CLI's `!`…`` inline-bash directive ---
+//
+// A ticket/finding/CI-log body that contains a `!` immediately followed by a
+// backtick makes `claude -p` execute the backtick-delimited text as a shell
+// command; when it errors the whole session no-ops (zero model turns, no
+// worktree) and the harness mis-reads it as an environmental crash, eventually
+// tripping the circuit breaker. The fix breaks the `!`+backtick adjacency with a
+// zero-width space, so no builder may emit a raw `!`` for external text.
+
+const zwsp = "\u200b"
+
+// bangBacktick is the exact two-byte sequence the CLI treats as a directive
+// opener. No builder output over untrusted text may contain it.
+const bangBacktick = "!`"
+
+func TestDefangBreaksBangBacktickAdjacency(t *testing.T) {
+	in := "forbid !`getUser()` in guards"
+	out := defang(in)
+	if strings.Contains(out, bangBacktick) {
+		t.Fatalf("defang left a raw %q directive opener: %q", bangBacktick, out)
+	}
+	if !strings.Contains(out, "!"+zwsp+"`getUser()`") {
+		t.Errorf("defang did not insert the zero-width-space breaker: %q", out)
+	}
+	// The visible characters are all preserved (only a ZWSP is inserted), so the
+	// model still reads the same text.
+	if strings.ReplaceAll(out, zwsp, "") != in {
+		t.Errorf("defang altered visible text: got %q want %q", strings.ReplaceAll(out, zwsp, ""), in)
+	}
+}
+
+func TestDefangLeavesCleanTextUntouched(t *testing.T) {
+	// No `!` is immediately followed by a backtick anywhere here (the bare `!` is
+	// followed by a space; the inline code opens with a letter), so nothing is a
+	// CLI directive and defang must be a no-op.
+	in := "a plain `getUser()` call and a bare ! mark plus `negate()`"
+	if out := defang(in); out != in {
+		t.Errorf("defang changed text with no bang-backtick adjacency: got %q want %q", out, in)
+	}
+}
+
+// poisoned is a ticket whose body carries the exact directive that no-opped
+// BEH-381's implementation sessions.
+var poisoned = ticket.Ticket{
+	Identifier:  "BEH-381",
+	Title:       "Lint rule: forbid !`negate` on getUser()",
+	Description: "Flag any `!`/`` negation of the raw envelope, e.g. !`await getUser()`.",
+}
+
+func TestBuildTddDefangsPoisonedTicketBody(t *testing.T) {
+	p := bImpl(t, poisoned, "beh-381")
+	if strings.Contains(p, bangBacktick) {
+		t.Errorf("implementation prompt carries a live %q directive opener from the ticket body — session would no-op", bangBacktick)
+	}
+}
+
+func TestBuildReviewDefangsPoisonedTicketBody(t *testing.T) {
+	p := bReview(t, poisoned, "beh-381", sampleWorktree)
+	if strings.Contains(p, bangBacktick) {
+		t.Errorf("review prompt carries a live %q directive opener from the ticket body", bangBacktick)
+	}
+}
+
+func TestBuildTddDefangsPoisonedSubIssue(t *testing.T) {
+	umbrella := ticket.Ticket{
+		Identifier:  "BEH-999",
+		Title:       "umbrella",
+		Description: "do the children",
+		SubIssues: []ticket.SubIssue{
+			{Identifier: "BEH-381", Title: "forbid !`negate`", Description: "flag !`getUser()`"},
+		},
+	}
+	p := bImpl(t, umbrella, "beh-999")
+	if strings.Contains(p, bangBacktick) {
+		t.Errorf("implementation prompt carries a live %q directive opener from an inlined sub-issue", bangBacktick)
+	}
+}
+
+func TestBuildRetrospectiveDefangsPoisonedFinding(t *testing.T) {
+	p := bRetro(t, sample, "beh-362", []FiledFinding{
+		{Key: "sandbox-bang-backtick", Title: "session no-ops on a !`cmd` directive in the body"},
+	})
+	if strings.Contains(p, bangBacktick) {
+		t.Errorf("retrospective prompt carries a live %q directive opener from an already-filed finding", bangBacktick)
+	}
+}
+
+func TestBuildCIFixDefangsPoisonedTicketAndLogs(t *testing.T) {
+	p := BuildCIFix(poisoned, "beh-381", testPrefix, sampleWorktree, "log line with !`oops` in it", true)
+	if strings.Contains(p, bangBacktick) {
+		t.Errorf("CI-fix prompt carries a live %q directive opener from the ticket body or CI logs", bangBacktick)
+	}
+}
+
+func TestBuildRebaseFixDefangsPoisonedTicketBody(t *testing.T) {
+	p := BuildRebaseFix(poisoned, "beh-381", testPrefix, sampleWorktree)
+	if strings.Contains(p, bangBacktick) {
+		t.Errorf("rebase-fix prompt carries a live %q directive opener from the ticket body", bangBacktick)
+	}
+}
