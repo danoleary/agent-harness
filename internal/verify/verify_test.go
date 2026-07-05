@@ -294,6 +294,38 @@ func TestReviewDoesNotRecommendCloseWhenDiffPresent(t *testing.T) {
 	}
 }
 
+// BEH-680: the pre-rebase EmptyDiff gate (BEH-603) runs before the pre-push rebase,
+// so it cannot see a branch that collapses to zero net change DURING the replay — a
+// sibling PR landed the same fix, or a conflict-resolution session skipped a
+// now-empty commit, leaving the branch identical to origin/main. Pushing then and
+// running `gh pr create` hard-fails with "No commits between main and feat/…". After
+// the rebase, a re-check of the branch's emptiness must route to the same
+// recommend-close disposition rather than push + open a PR that has nothing to open.
+func TestPostRebasePushRecommendsCloseWhenBranchCollapsedToEmpty(t *testing.T) {
+	r := PostRebasePush(true)
+	if r.OK {
+		t.Error("a branch the rebase collapsed to zero net diff must NOT clear the push gate — there is nothing to open a PR for")
+	}
+	if !r.RecommendClose {
+		t.Error("a branch that became empty during the pre-push rebase must be the recommend-close disposition, not a push")
+	}
+	if !regexp.MustCompile(`(?i)close|empty|no.*change|nothing to (ship|open)|zero`).MatchString(r.Reason) {
+		t.Errorf("reason %q should explain the post-rebase empty diff / recommend-close", r.Reason)
+	}
+}
+
+// The normal path: the rebase replayed the branch and it still carries a real diff,
+// so the push proceeds — recommend-close must stay off.
+func TestPostRebasePushClearsWhenDiffPresent(t *testing.T) {
+	r := PostRebasePush(false)
+	if r.RecommendClose {
+		t.Error("a branch that still has a real diff after the rebase must not be flagged recommend-close")
+	}
+	if !r.OK {
+		t.Errorf("a non-empty branch must clear the post-rebase push gate, got %+v", r)
+	}
+}
+
 // BEH-525: completeness of the qualitative review is independent of the push gate.
 // When the review session emitted its verdict (the "## Review:" report), the
 // seven-lens pass ran — complete, regardless of how the container exited.

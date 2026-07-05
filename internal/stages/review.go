@@ -534,6 +534,20 @@ func Review(cfg config.Config, log *runlog.Logger, runID string, args Args) Resu
 	}
 	log.Event("rebased " + gitpkg.BranchName(slug) + " onto origin/main")
 
+	// Re-check the branch's emptiness AFTER the rebase, before the push (BEH-680). The
+	// pre-rebase BEH-603 EmptyDiff gate above ran on the stale tree; the rebase can
+	// collapse the branch to zero net change — a sibling PR landed the same fix during
+	// the multi-minute gate, or the BEH-581 conflict-resolution session skipped a
+	// now-empty commit — leaving it identical to origin/main. Pushing then and running
+	// `gh pr create` hard-fails with "No commits between main and feat/…" (a wasted push
+	// and a misleading "open the PR manually" hint for a branch with nothing to open).
+	// Route to the same recommend-close disposition instead: keep the worktree, push
+	// nothing, and let the loop flag the ticket for a human to close as superseded.
+	if postRebase := verify.PostRebasePush(gitpkg.BranchDiffEmpty(worktreePath)); postRebase.RecommendClose {
+		log.Event("review ⊘ " + postRebase.Reason + " — keeping worktree, nothing pushed; recommending close (BEH-680)")
+		return Result{OK: false, RecommendClose: true}
+	}
+
 	if err := gitpkg.Push(cfg.HerdPath, slug); err != nil {
 		log.Event("review ✗ push failed: " + err.Error() + " — keeping worktree")
 		return Result{OK: false}

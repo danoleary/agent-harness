@@ -222,6 +222,28 @@ func Review(outcome ReviewOutcome) Result {
 	return Result{OK: true, Reason: "harness gate re-run is green and the qualitative review emitted a clear verdict — clear to push + open PR"}
 }
 
+// PostRebasePush is the second empty-diff gate, checked AFTER the pre-push rebase
+// replays the branch onto the latest origin/main and BEFORE the push + `gh pr create`
+// (BEH-680). The BEH-603 EmptyDiff check in Review runs on the pre-rebase tree, so it
+// cannot see a branch that collapses to zero net change DURING the replay: a sibling
+// PR merged the same fix while the multi-minute gate ran, or the BEH-581
+// conflict-resolution session skipped a now-empty commit, leaving the branch
+// identical to origin/main. Pushing that branch and running `gh pr create` hard-fails
+// with "No commits between main and feat/…" — a wasted push, a hard error, and a
+// misleading "open the PR manually" hint for a branch that has nothing to open a PR
+// for. When emptyDiff is true, route to the same recommend-close disposition Review
+// uses (OK false, RecommendClose true) so the ticket is handed off for a human to
+// close as superseded rather than pushed. A non-empty branch is the normal ship path
+// (OK true), clearing the push. emptyDiff is read host-side by BranchDiffEmpty after
+// the rebase succeeds; a clean worktree is the rebase precondition, so — unlike
+// Review — no WorktreeClean re-check is needed here.
+func PostRebasePush(emptyDiff bool) Result {
+	if emptyDiff {
+		return Result{OK: false, RecommendClose: true, Reason: "rebase collapsed the branch to zero net change against origin/main (empty diff) — nothing to ship; recommend closing the ticket as superseded rather than pushing an empty branch that `gh pr create` cannot open"}
+	}
+	return Result{OK: true, Reason: "branch still carries a real diff after the rebase — clear to push + open PR"}
+}
+
 // ReviewCompleteness reports whether the in-sandbox /review-worktree session
 // actually performed its qualitative seven-lens pass. It is deliberately separate
 // from Review (the push gate): the push is authorised by the harness's own host-
