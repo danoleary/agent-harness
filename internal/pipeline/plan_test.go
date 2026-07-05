@@ -9,10 +9,11 @@ import (
 
 func planCfg() config.Config {
 	return config.Config{
-		Image:           "herd-agent-harness:latest",
-		HerdPath:        "/herd",
-		PnpmStoreVolume: "herd-pnpm-store",
-		Model:           "claude-opus-4-8",
+		Image:          "herd-agent-harness:latest",
+		HerdPath:       "/herd",
+		CacheVolume:    "herd-pnpm-store",
+		CacheMountPath: "/pnpm-store",
+		Model:          "claude-opus-4-8",
 	}
 }
 

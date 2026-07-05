@@ -15,12 +15,20 @@ import (
 type Config struct {
 	// LinearAPIKey is the host-only Linear key (ADR-0001) — never passed into the sandbox.
 	LinearAPIKey string
-	// Image is the sandbox image tag.
+	// Image is the sandbox image tag/ref the harness runs sessions in.
 	Image string
+	// Dockerfile is the checkout-relative path to the Consumer Dockerfile (FROM the
+	// base) to build the sandbox image from on a local miss (ADR-0008). Empty means
+	// the Image is a prebuilt ref the harness pulls instead of building.
+	Dockerfile string
 	// HerdPath is the absolute host path to the herd checkout to bind-mount.
 	HerdPath string
-	// PnpmStoreVolume is the Docker volume name for the persistent pnpm store.
-	PnpmStoreVolume string
+	// CacheVolume is the Docker volume name for the optional persistent toolchain
+	// cache (pnpm store / GOMODCACHE / NuGet). Empty means no cache mount.
+	CacheVolume string
+	// CacheMountPath is the in-container path CacheVolume mounts at (Consumer-
+	// declared; BEH-635). Only meaningful when CacheVolume is set.
+	CacheMountPath string
 	// TddTimeout is the wall-clock cap for the tdd (implementation) session.
 	TddTimeout time.Duration
 	// ReviewTimeout is the wall-clock cap for every review-family session (the prep
@@ -259,11 +267,24 @@ func Load(get Getenv) (Config, error) {
 		return Config{}, err
 	}
 
+	// The PNPM_STORE_VOLUME env override is the host twin of the deprecated
+	// pnpm_store_volume key: if it supplies the cache volume but the project
+	// declared no `[cache]` path, default the mount to /pnpm-store — mirroring
+	// applyDefaults' back-compat mapping so an env override alone can't produce a
+	// pathless `-v <vol>:` that dies at docker run (exit 125) after the claim.
+	cacheVolume := orDefault(get("PNPM_STORE_VOLUME"), project.Cache.Volume)
+	cachePath := project.Cache.Path
+	if cachePath == "" && cacheVolume != "" {
+		cachePath = legacyPnpmStoreMountPath
+	}
+
 	cfg := Config{
 		LinearAPIKey:         linearKey,
 		HerdPath:             herdPath,
 		Image:                orDefault(get("HARNESS_IMAGE"), project.Image),
-		PnpmStoreVolume:      orDefault(get("PNPM_STORE_VOLUME"), project.PnpmStoreVolume),
+		Dockerfile:           project.Dockerfile,
+		CacheVolume:          cacheVolume,
+		CacheMountPath:       cachePath,
 		TddTimeout:           parseTimeout(get("TDD_TIMEOUT_MS"), defaultTddTimeout),
 		ReviewTimeout:        parseTimeout(get("REVIEW_TIMEOUT_MS"), defaultReviewTimeout),
 		RetrospectiveTimeout: parseTimeout(get("RETROSPECTIVE_TIMEOUT_MS"), defaultRetroTimeout),

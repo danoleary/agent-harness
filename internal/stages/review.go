@@ -3,7 +3,6 @@ package stages
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -133,13 +132,14 @@ func Review(cfg config.Config, log *runlog.Logger, runID string, args Args) Resu
 	// retry must not collide with the first attempt's container).
 	buildReviewArgs := func(name string) []string {
 		return sandbox.BuildDockerRunArgs(sandbox.Config{
-			Image:           cfg.Image,
-			HerdPath:        cfg.HerdPath,
-			FindingsDir:     "",
-			PnpmStoreVolume: cfg.PnpmStoreVolume,
-			Prompt:          p,
-			Model:           cfg.Model,
-			ContainerName:   name,
+			Image:          cfg.Image,
+			HerdPath:       cfg.HerdPath,
+			FindingsDir:    "",
+			CacheVolume:    cfg.CacheVolume,
+			CacheMountPath: cfg.CacheMountPath,
+			Prompt:         p,
+			Model:          cfg.Model,
+			ContainerName:  name,
 		})
 	}
 	dockerArgs := buildReviewArgs(containerName)
@@ -148,10 +148,11 @@ func Review(cfg config.Config, log *runlog.Logger, runID string, args Args) Resu
 	// name must match Options.ContainerName for the timeout `docker kill` to target
 	// the right container, and a retry must not collide with the killed attempt's.
 	gateConfig := sandbox.GateConfig{
-		Image:           cfg.Image,
-		HerdPath:        cfg.HerdPath,
-		WorktreePath:    worktreePath,
-		PnpmStoreVolume: cfg.PnpmStoreVolume,
+		Image:          cfg.Image,
+		HerdPath:       cfg.HerdPath,
+		WorktreePath:   worktreePath,
+		CacheVolume:    cfg.CacheVolume,
+		CacheMountPath: cfg.CacheMountPath,
 	}
 	buildGateArgs := func(name, command string) []string {
 		c := gateConfig
@@ -196,7 +197,7 @@ func Review(cfg config.Config, log *runlog.Logger, runID string, args Args) Resu
 	}
 
 	// Fail fast if Docker can't run the container before we burn the session.
-	if err := sandbox.Preflight(cfg.Image, filepath.Join(cfg.HerdPath, "agent-harness"), sandbox.ProbeRunner, sandbox.BuildImage, sandbox.FreeDiskBytes); err != nil {
+	if err := sandbox.Preflight(sandbox.PreflightFor(cfg.Image, cfg.HerdPath, cfg.Dockerfile)); err != nil {
 		return Result{Err: err}
 	}
 
@@ -624,13 +625,14 @@ func ciFixRunner(cfg config.Config, args Args, slug, worktreePath, runID string,
 		fixPrompt := prompt.BuildCIFix(t, slug, cfg.BranchPrefix, worktreePath, ciLogs, logAvailable)
 		containerName := fmt.Sprintf("herd-harness-%s-%d-cifix-%d", runID, os.Getpid(), attempt)
 		fixArgs := sandbox.BuildDockerRunArgs(sandbox.Config{
-			Image:           cfg.Image,
-			HerdPath:        cfg.HerdPath,
-			FindingsDir:     "",
-			PnpmStoreVolume: cfg.PnpmStoreVolume,
-			Prompt:          fixPrompt,
-			Model:           cfg.Model,
-			ContainerName:   containerName,
+			Image:          cfg.Image,
+			HerdPath:       cfg.HerdPath,
+			FindingsDir:    "",
+			CacheVolume:    cfg.CacheVolume,
+			CacheMountPath: cfg.CacheMountPath,
+			Prompt:         fixPrompt,
+			Model:          cfg.Model,
+			ContainerName:  containerName,
 		})
 		transcript := runlog.TranscriptName(fmt.Sprintf("cifix-%d", attempt), runID)
 		log.Event(fmt.Sprintf("CI red — launching auto-fix session %d (cap %d min)", attempt, int(cfg.ReviewTimeout.Minutes())))
@@ -682,13 +684,14 @@ func resolvePrePushConflict(
 	fixPrompt := prompt.BuildRebaseFix(t, slug, cfg.BranchPrefix, worktreePath)
 	containerName := fmt.Sprintf("herd-harness-%s-%d-rebasefix", runID, os.Getpid())
 	fixArgs := sandbox.BuildDockerRunArgs(sandbox.Config{
-		Image:           cfg.Image,
-		HerdPath:        cfg.HerdPath,
-		FindingsDir:     "",
-		PnpmStoreVolume: cfg.PnpmStoreVolume,
-		Prompt:          fixPrompt,
-		Model:           cfg.Model,
-		ContainerName:   containerName,
+		Image:          cfg.Image,
+		HerdPath:       cfg.HerdPath,
+		FindingsDir:    "",
+		CacheVolume:    cfg.CacheVolume,
+		CacheMountPath: cfg.CacheMountPath,
+		Prompt:         fixPrompt,
+		Model:          cfg.Model,
+		ContainerName:  containerName,
 	})
 	transcript := runlog.TranscriptName("rebasefix", runID)
 	log.Event(fmt.Sprintf("launching conflict-resolution session (cap %d min)", int(cfg.ReviewTimeout.Minutes())))

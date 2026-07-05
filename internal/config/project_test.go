@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -12,9 +13,9 @@ import (
 // the real file read is covered by the LoadProject tests in this file.
 func testProjectConfig() ProjectConfig {
 	return ProjectConfig{
-		Image:           "herd-agent-harness:latest",
-		PnpmStoreVolume: "herd-pnpm-store",
-		BranchPrefix:    "feat",
+		Image:        "herd-agent-harness:latest",
+		Cache:        CacheConfig{Volume: "herd-pnpm-store", Path: "/pnpm-store"},
+		BranchPrefix: "feat",
 		Gates: []Gate{
 			{Name: "check", Command: "pnpm run check"},
 			{Name: "typecheck", Command: "pnpm run typecheck"},
@@ -141,6 +142,17 @@ func TestHerdCommittedConfigLoads(t *testing.T) {
 	if pc.Image == "" || pc.Tracker.Kind == "" || len(pc.Gates) == 0 {
 		t.Errorf("herd committed config is under-populated: %+v", pc)
 	}
+	// herd stays on the BUILD path (it commits a Dockerfile), so a bad edit that
+	// dropped `dockerfile` — which would flip herd to a doomed pull of an
+	// unpublished tag — is caught here (BEH-635).
+	if pc.Dockerfile == "" {
+		t.Error("herd committed config must declare `dockerfile` to stay on the build path")
+	}
+	// The generalized cache must resolve to herd's pnpm store at its historical
+	// mount, whether declared via `[cache]` or the deprecated pnpm_store_volume.
+	if pc.Cache.Volume == "" || pc.Cache.Path == "" {
+		t.Errorf("herd committed config must resolve a cache volume + path, got %+v", pc.Cache)
+	}
 }
 
 func TestLoadProjectMissingFileErrors(t *testing.T) {
@@ -202,6 +214,139 @@ command = "c"
 				t.Errorf("want error for %s, got nil", name)
 			}
 		})
+	}
+}
+
+// A Consumer that commits a `.agent-harness/Dockerfile` (FROM the base) declares
+// `dockerfile` instead of naming a prebuilt `image` — the harness BUILDS it on a
+// local miss (ADR-0008). So a config with a dockerfile and no image is valid.
+func TestLoadProjectAcceptsDockerfileWithoutImage(t *testing.T) {
+	dir := t.TempDir()
+	writeProjectConfig(t, dir, `
+dockerfile = ".agent-harness/Dockerfile"
+[tracker]
+kind = "linear"
+[[gates]]
+name = "check"
+command = "c"
+`)
+	pc, err := LoadProject(dir)
+	if err != nil {
+		t.Fatalf("LoadProject with a dockerfile and no image should succeed, got: %v", err)
+	}
+	if pc.Dockerfile != ".agent-harness/Dockerfile" {
+		t.Errorf("Dockerfile = %q, want the declared path", pc.Dockerfile)
+	}
+}
+
+// Declaring NEITHER a prebuilt `image` nor a `dockerfile` is a misconfiguration:
+// there is no sane cross-language default sandbox, so the harness hard-errors at
+// load rather than launching a doomed `docker run` (ADR-0008). The error must name
+// both knobs so the operator knows the fix.
+func TestLoadProjectRequiresImageOrDockerfile(t *testing.T) {
+	dir := t.TempDir()
+	writeProjectConfig(t, dir, `
+[tracker]
+kind = "linear"
+[[gates]]
+name = "check"
+command = "c"
+`)
+	_, err := LoadProject(dir)
+	if err == nil {
+		t.Fatal("want error when neither image nor dockerfile is declared, got nil")
+	}
+	if !strings.Contains(err.Error(), "image") || !strings.Contains(err.Error(), "dockerfile") {
+		t.Errorf("error should name both image and dockerfile, got: %v", err)
+	}
+}
+
+// The cache volume is generalized (BEH-635) from the herd-specific pnpm store to
+// a Consumer-declared name + mount path, so a NuGet/GOMODCACHE/pnpm Consumer
+// differs only in config.
+func TestLoadProjectGeneralizedCacheVolume(t *testing.T) {
+	dir := t.TempDir()
+	writeProjectConfig(t, dir, `
+image = "x"
+[cache]
+volume = "myproj-nuget"
+path = "/root/.nuget/packages"
+[tracker]
+kind = "linear"
+[[gates]]
+name = "check"
+command = "c"
+`)
+	pc, err := LoadProject(dir)
+	if err != nil {
+		t.Fatalf("LoadProject: %v", err)
+	}
+	if pc.Cache.Volume != "myproj-nuget" || pc.Cache.Path != "/root/.nuget/packages" {
+		t.Errorf("Cache = %+v, want the declared NuGet volume + path", pc.Cache)
+	}
+}
+
+// Back-compat: the deprecated herd-specific `pnpm_store_volume` key still maps
+// onto the generalized cache surface, defaulting to its historical /pnpm-store
+// mount so herd's committed config keeps working unchanged (BEH-635).
+func TestLoadProjectCacheBackCompatFromPnpmStoreVolume(t *testing.T) {
+	dir := t.TempDir()
+	writeProjectConfig(t, dir, `
+image = "x"
+pnpm_store_volume = "herd-pnpm-store"
+[tracker]
+kind = "linear"
+[[gates]]
+name = "check"
+command = "c"
+`)
+	pc, err := LoadProject(dir)
+	if err != nil {
+		t.Fatalf("LoadProject: %v", err)
+	}
+	if pc.Cache.Volume != "herd-pnpm-store" || pc.Cache.Path != "/pnpm-store" {
+		t.Errorf("Cache = %+v, want the legacy pnpm store mapped to /pnpm-store", pc.Cache)
+	}
+}
+
+// A `[cache].volume` with no `path` is a misconfiguration: the whole point of the
+// generalization is that the mount path is Consumer-declared, so there is no
+// implicit default for the new surface — it fails loud at load (BEH-635).
+func TestLoadProjectCachePathRequiredWhenVolumeSet(t *testing.T) {
+	dir := t.TempDir()
+	writeProjectConfig(t, dir, `
+image = "x"
+[cache]
+volume = "v"
+[tracker]
+kind = "linear"
+[[gates]]
+name = "check"
+command = "c"
+`)
+	if _, err := LoadProject(dir); err == nil {
+		t.Fatal("want error when cache.volume is set without cache.path, got nil")
+	}
+}
+
+// No cache at all is valid — the cache volume is OPTIONAL (BEH-635); a Consumer
+// with no toolchain cache mounts nothing.
+func TestLoadProjectCacheOptional(t *testing.T) {
+	dir := t.TempDir()
+	writeProjectConfig(t, dir, `
+image = "x"
+[tracker]
+kind = "linear"
+[[gates]]
+name = "check"
+command = "c"
+`)
+	pc, err := LoadProject(dir)
+	if err != nil {
+		t.Fatalf("LoadProject: %v", err)
+	}
+	if pc.Cache.Volume != "" || pc.Cache.Path != "" {
+		t.Errorf("Cache = %+v, want empty when no cache is declared", pc.Cache)
 	}
 }
 

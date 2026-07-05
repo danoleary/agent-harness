@@ -15,10 +15,25 @@ import (
 // list, and the tracker's non-secret selection names. Secrets and host paths
 // stay env-only (see Load) — nothing in here is a credential.
 type ProjectConfig struct {
-	// Image is the sandbox image tag (was defaultImage).
+	// Image is the sandbox image tag/ref. A Consumer either names a prebuilt,
+	// compatible image here (the harness PULLS it on a local miss) or commits a
+	// Dockerfile below (the harness BUILDS it) — see ADR-0008. When a dockerfile
+	// is also set, this is the local tag the harness builds to and runs.
 	Image string `toml:"image"`
-	// PnpmStoreVolume is the Docker volume name for the persistent pnpm store
-	// (was defaultPnpmStoreVolume).
+	// Dockerfile is the checkout-relative path to a Consumer Dockerfile that
+	// `FROM`s the published base image (ADR-0007/0008). When set, the harness
+	// builds the sandbox image on a local miss instead of pulling it. Declaring
+	// neither Image nor Dockerfile is a hard error (validate).
+	Dockerfile string `toml:"dockerfile"`
+	// Cache is the optional persistent cache volume mounted into every sandbox +
+	// gate container (BEH-635). It generalizes the herd-specific pnpm store into a
+	// Consumer-declared volume name + mount path, so a NuGet/GOMODCACHE/pnpm
+	// Consumer differs only in config.
+	Cache CacheConfig `toml:"cache"`
+	// PnpmStoreVolume is the deprecated herd-specific alias for the cache volume
+	// name; when set (and `[cache]` is absent) it maps onto Cache with the
+	// historical /pnpm-store mount, so herd's committed config keeps working
+	// unchanged (BEH-635). New Consumers should use `[cache]`.
 	PnpmStoreVolume string `toml:"pnpm_store_volume"`
 	// BranchPrefix is the canonical worktree branch prefix (was the hardcoded
 	// "feat"); the harness keys verify/push/PR/dispatch-guards off
@@ -31,6 +46,15 @@ type ProjectConfig struct {
 	// Tracker holds the non-secret tracker selection names (was the hardcoded
 	// Linear label UUIDs + ready/blocked label names).
 	Tracker TrackerConfig `toml:"tracker"`
+}
+
+// CacheConfig is the optional persistent cache volume the harness mounts into
+// every sandbox + gate container (BEH-635). Volume is the Docker volume name;
+// Path is the in-container mount point the toolchain's cache env points at
+// (pnpm store, GOMODCACHE, NuGet packages, …). Both empty => no cache mount.
+type CacheConfig struct {
+	Volume string `toml:"volume"`
+	Path   string `toml:"path"`
 }
 
 // Gate is one named host-side gate command.
@@ -80,9 +104,23 @@ func LoadProject(checkoutPath string) (ProjectConfig, error) {
 // "feat" so herd's behaviour is unchanged.
 const defaultBranchPrefix = "feat"
 
+// legacyPnpmStoreMountPath is the container mount the herd pnpm store historically
+// used. It is the default Cache.Path ONLY for the deprecated `pnpm_store_volume`
+// alias, so herd's committed config keeps mounting at /pnpm-store unchanged; the
+// generalized `[cache]` surface has no implicit path (validate requires it).
+const legacyPnpmStoreMountPath = "/pnpm-store"
+
 func (pc *ProjectConfig) applyDefaults() {
 	if pc.BranchPrefix == "" {
 		pc.BranchPrefix = defaultBranchPrefix
+	}
+	// Map the deprecated herd-specific pnpm_store_volume onto the generalized
+	// cache surface, defaulting to its historical /pnpm-store mount.
+	if pc.Cache.Volume == "" && pc.PnpmStoreVolume != "" {
+		pc.Cache.Volume = pc.PnpmStoreVolume
+		if pc.Cache.Path == "" {
+			pc.Cache.Path = legacyPnpmStoreMountPath
+		}
 	}
 }
 
@@ -91,8 +129,8 @@ func (pc *ProjectConfig) applyDefaults() {
 // default (ADR-0008), so the harness must refuse to launch rather than silently
 // fall back.
 func (pc *ProjectConfig) validate() error {
-	if pc.Image == "" {
-		return fmt.Errorf("image is required")
+	if pc.Image == "" && pc.Dockerfile == "" {
+		return fmt.Errorf("a sandbox image source is required: set either `image` (a prebuilt ref to pull) or `dockerfile` (a Consumer Dockerfile FROM the base to build)")
 	}
 	if pc.Tracker.Kind == "" {
 		return fmt.Errorf("tracker.kind is required")
@@ -107,6 +145,11 @@ func (pc *ProjectConfig) validate() error {
 		if g.Command == "" {
 			return fmt.Errorf("gates[%d] (%q) has no command", i, g.Name)
 		}
+	}
+	// The generalized cache surface has no implicit mount path — a Consumer that
+	// declares a volume must declare where it mounts (BEH-635).
+	if pc.Cache.Volume != "" && pc.Cache.Path == "" {
+		return fmt.Errorf("cache.path is required when cache.volume is set")
 	}
 	return nil
 }

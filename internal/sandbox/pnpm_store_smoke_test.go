@@ -149,7 +149,8 @@ func TestPnpmStoreResolvesUnderMountedVolumeInImage(t *testing.T) {
 	if _, err := smokeRunner("docker", "image", "inspect", image); err != nil {
 		// Build on miss so the check is self-contained — opting in means we want
 		// the full behavioral verification, not a skip.
-		if berr := BuildImage(image, filepath.Join(repoRoot(t), "agent-harness")); berr != nil {
+		buildContext := filepath.Join(repoRoot(t), "agent-harness")
+		if berr := BuildImage(image, filepath.Join(buildContext, "Dockerfile"), buildContext); berr != nil {
 			t.Fatalf("building sandbox image %q for the smoke check failed: %v", image, berr)
 		}
 	}

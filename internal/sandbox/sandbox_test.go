@@ -28,11 +28,45 @@ func valuesForFlag(args []string, flag string) []string {
 
 func baseConfig() Config {
 	return Config{
-		Image:           "herd-agent-harness:latest",
-		HerdPath:        "/Users/dan/herd",
-		FindingsDir:     "/Users/dan/herd/agent-harness/logs/run-1/findings/BEH-362-tdd",
-		PnpmStoreVolume: "herd-pnpm-store",
-		Prompt:          "/tdd Work on BEH-362.",
+		Image:          "herd-agent-harness:latest",
+		HerdPath:       "/Users/dan/herd",
+		FindingsDir:    "/Users/dan/herd/agent-harness/logs/run-1/findings/BEH-362-tdd",
+		CacheVolume:    "herd-pnpm-store",
+		CacheMountPath: "/pnpm-store",
+		Prompt:         "/tdd Work on BEH-362.",
+	}
+}
+
+// The toolchain cache is generalized (BEH-635): a Consumer declares both the
+// volume name AND its in-container mount path, so a non-pnpm toolchain (NuGet,
+// GOMODCACHE) mounts its cache wherever its tooling expects — not a hardcoded
+// /pnpm-store.
+func TestMountsCacheVolumeAtConfiguredPath(t *testing.T) {
+	c := baseConfig()
+	c.CacheVolume = "myproj-nuget"
+	c.CacheMountPath = "/root/.nuget/packages"
+	mounts := valuesForFlag(BuildDockerRunArgs(c), "-v")
+
+	if !slices.Contains(mounts, "myproj-nuget:/root/.nuget/packages") {
+		t.Errorf("cache should mount at the configured path, got mounts: %v", mounts)
+	}
+	// The old hardcoded /pnpm-store path must not leak in for a non-pnpm Consumer.
+	for _, m := range mounts {
+		if strings.HasSuffix(m, ":/pnpm-store") {
+			t.Errorf("no /pnpm-store mount expected for a NuGet cache, got %q", m)
+		}
+	}
+}
+
+// The cache volume is OPTIONAL (BEH-635): a Consumer with no toolchain cache
+// mounts nothing rather than a dead volume.
+func TestOmitsCacheMountWhenNoCacheVolume(t *testing.T) {
+	c := baseConfig()
+	c.CacheVolume = ""
+	for _, m := range valuesForFlag(BuildDockerRunArgs(c), "-v") {
+		if strings.HasPrefix(m, ":") || strings.Contains(m, "pnpm-store") {
+			t.Errorf("no cache mount expected when CacheVolume is empty, got %q", m)
+		}
 	}
 }
 
@@ -93,11 +127,12 @@ func TestMountsFindingsWhenFindingsDirGiven(t *testing.T) {
 // `pnpm check && pnpm typecheck`), so a Go/.NET Consumer differs only in config.
 func TestGateRunArgsCarryNoSecretsAndRunGateCommandInWorktree(t *testing.T) {
 	args := BuildGateRunArgs(GateConfig{
-		Image:           "herd-agent-harness:latest",
-		HerdPath:        "/Users/dan/herd",
-		WorktreePath:    "/Users/dan/herd/.claude/worktrees/beh-371",
-		PnpmStoreVolume: "herd-pnpm-store",
-		ContainerName:   "herd-harness-gate-1",
+		Image:          "herd-agent-harness:latest",
+		HerdPath:       "/Users/dan/herd",
+		WorktreePath:   "/Users/dan/herd/.claude/worktrees/beh-371",
+		CacheVolume:    "herd-pnpm-store",
+		CacheMountPath: "/pnpm-store",
+		ContainerName:  "herd-harness-gate-1",
 	}, "pnpm run check")
 	joined := strings.Join(args, " ")
 
@@ -137,10 +172,11 @@ func TestGateRunArgsCarryNoSecretsAndRunGateCommandInWorktree(t *testing.T) {
 
 func TestGateRunArgsMountCheckoutAndPnpmStore(t *testing.T) {
 	c := GateConfig{
-		Image:           "herd-agent-harness:latest",
-		HerdPath:        "/Users/dan/herd",
-		WorktreePath:    "/Users/dan/herd/.claude/worktrees/beh-371",
-		PnpmStoreVolume: "herd-pnpm-store",
+		Image:          "herd-agent-harness:latest",
+		HerdPath:       "/Users/dan/herd",
+		WorktreePath:   "/Users/dan/herd/.claude/worktrees/beh-371",
+		CacheVolume:    "herd-pnpm-store",
+		CacheMountPath: "/pnpm-store",
 	}
 	mounts := valuesForFlag(BuildGateRunArgs(c, "pnpm run check"), "-v")
 
@@ -148,7 +184,7 @@ func TestGateRunArgsMountCheckoutAndPnpmStore(t *testing.T) {
 	// absolute .git pointer resolves; the pnpm store keeps install near-instant.
 	for _, want := range []string{
 		c.HerdPath + ":" + c.HerdPath,
-		c.PnpmStoreVolume + ":" + PnpmStoreMountPath,
+		c.CacheVolume + ":" + c.CacheMountPath,
 	} {
 		if !slices.Contains(mounts, want) {
 			t.Errorf("gate mounts missing %q, got: %v", want, mounts)
@@ -171,11 +207,12 @@ func TestGateRunArgsNameContainerForKill(t *testing.T) {
 // later ground-truth gate's job) — carrying no secrets.
 func TestInstallRunArgsRunsFrozenInstallOnlyInWorktree(t *testing.T) {
 	args := BuildInstallRunArgs(GateConfig{
-		Image:           "herd-agent-harness:latest",
-		HerdPath:        "/Users/dan/herd",
-		WorktreePath:    "/Users/dan/herd/.claude/worktrees/beh-490",
-		PnpmStoreVolume: "herd-pnpm-store",
-		ContainerName:   "herd-harness-install-1",
+		Image:          "herd-agent-harness:latest",
+		HerdPath:       "/Users/dan/herd",
+		WorktreePath:   "/Users/dan/herd/.claude/worktrees/beh-490",
+		CacheVolume:    "herd-pnpm-store",
+		CacheMountPath: "/pnpm-store",
+		ContainerName:  "herd-harness-install-1",
 	})
 	joined := strings.Join(args, " ")
 
@@ -242,7 +279,7 @@ func TestBindMountsCheckoutAtRealHostPath(t *testing.T) {
 
 	for _, want := range []string{
 		c.HerdPath + ":" + c.HerdPath,
-		c.PnpmStoreVolume + ":/pnpm-store",
+		c.CacheVolume + ":/pnpm-store",
 		c.FindingsDir + ":" + FindingsMountPath,
 	} {
 		if !slices.Contains(mounts, want) {
@@ -466,9 +503,36 @@ func TestIsRetryableStartFailure(t *testing.T) {
 }
 
 const (
-	testImage   = "herd-agent-harness:latest"
-	testContext = "/herd/agent-harness"
+	testImage      = "herd-agent-harness:latest"
+	testContext    = "/herd/agent-harness"
+	testDockerfile = "/herd/agent-harness/Dockerfile"
 )
+
+// pf is the BUILD-path PreflightConfig the existing tests exercise: a Dockerfile
+// is declared, so an image miss is resolved by building. Pull is a no-op (never
+// reached on the build path); pull-path tests construct PreflightConfig directly
+// with Dockerfile:"" and their own Pull.
+func pf(run func(string, ...string) ([]byte, error), build func(image, dockerfile, buildContext string) error, disk func(string) (uint64, error)) PreflightConfig {
+	return PreflightConfig{
+		Image:        testImage,
+		Dockerfile:   testDockerfile,
+		BuildContext: testContext,
+		Run:          run,
+		Build:        build,
+		Pull:         func(string) error { return nil },
+		DiskFree:     disk,
+	}
+}
+
+// noPull is a puller that fails the test if invoked — for the build path, where
+// the image is resolved by building and pull must never be called.
+func noPull(t *testing.T) func(string) error {
+	return func(image string) error {
+		t.Helper()
+		t.Errorf("pull should not be called on the build path (image=%q)", image)
+		return nil
+	}
+}
 
 // reply is one canned docker response. A reply of {nil,nil} means "succeeds
 // with no output".
@@ -507,8 +571,8 @@ func one(out []byte, err error) []reply { return []reply{{out, err}} }
 
 // noBuild is a builder that fails the test if invoked — for the paths where the
 // image is already present and no build should happen.
-func noBuild(t *testing.T) func(string, string) error {
-	return func(image, _ string) error {
+func noBuild(t *testing.T) func(string, string, string) error {
+	return func(image, _, _ string) error {
 		t.Helper()
 		t.Errorf("build should not be called when the image is present (image=%q)", image)
 		return nil
@@ -520,7 +584,7 @@ func TestPreflightOKWhenDaemonAndImagePresent(t *testing.T) {
 		"info":  one([]byte("Server Version: 27.0.0"), nil),
 		"image": one([]byte(`[{"Id":"sha256:abc"}]`), nil),
 	}, nil)
-	if err := Preflight(testImage, testContext, run, noBuild(t), plentyDisk); err != nil {
+	if err := Preflight(pf(run, noBuild(t), plentyDisk)); err != nil {
 		t.Errorf("Preflight should pass when daemon is up and image is present, got: %v", err)
 	}
 }
@@ -532,7 +596,7 @@ func TestPreflightSurfacesDaemonDownReason(t *testing.T) {
 			errFake,
 		),
 	}, nil)
-	err := Preflight(testImage, testContext, run, noBuild(t), plentyDisk)
+	err := Preflight(pf(run, noBuild(t), plentyDisk))
 	if err == nil {
 		t.Fatal("Preflight should fail when the daemon is unreachable")
 	}
@@ -545,11 +609,11 @@ func TestPreflightSurfacesDaemonDownReason(t *testing.T) {
 }
 
 func TestPreflightBuildsImageOnMiss(t *testing.T) {
-	var builtImage, builtContext string
+	var builtImage, builtDockerfile, builtContext string
 	builds := 0
-	build := func(image, buildContext string) error {
+	build := func(image, dockerfile, buildContext string) error {
 		builds++
-		builtImage, builtContext = image, buildContext
+		builtImage, builtDockerfile, builtContext = image, dockerfile, buildContext
 		return nil
 	}
 	// inspect fails first (missing), then succeeds (after the build).
@@ -560,14 +624,14 @@ func TestPreflightBuildsImageOnMiss(t *testing.T) {
 			{[]byte(`[{"Id":"sha256:abc"}]`), nil},
 		},
 	}, nil)
-	if err := Preflight(testImage, testContext, run, build, plentyDisk); err != nil {
+	if err := Preflight(pf(run, build, plentyDisk)); err != nil {
 		t.Fatalf("Preflight should build the image on miss and pass, got: %v", err)
 	}
 	if builds != 1 {
 		t.Errorf("build should be called exactly once, got %d", builds)
 	}
-	if builtImage != testImage || builtContext != testContext {
-		t.Errorf("build called with (%q, %q), want (%q, %q)", builtImage, builtContext, testImage, testContext)
+	if builtImage != testImage || builtDockerfile != testDockerfile || builtContext != testContext {
+		t.Errorf("build called with (%q, %q, %q), want (%q, %q, %q)", builtImage, builtDockerfile, builtContext, testImage, testDockerfile, testContext)
 	}
 }
 
@@ -576,8 +640,8 @@ func TestPreflightSurfacesBuildFailure(t *testing.T) {
 		"info":  one([]byte("Server Version: 27.0.0"), nil),
 		"image": one([]byte("Error: No such image: herd-agent-harness:latest"), errFake),
 	}, nil)
-	build := func(string, string) error { return errFake }
-	err := Preflight(testImage, testContext, run, build, plentyDisk)
+	build := func(string, string, string) error { return errFake }
+	err := Preflight(pf(run, build, plentyDisk))
 	if err == nil {
 		t.Fatal("Preflight should fail when the build fails")
 	}
@@ -596,8 +660,8 @@ func TestPreflightFailsWhenImageAbsentAfterBuild(t *testing.T) {
 		"info":  one([]byte("Server Version: 27.0.0"), nil),
 		"image": one([]byte("Error: No such image: herd-agent-harness:latest"), errFake),
 	}, nil)
-	build := func(string, string) error { return nil }
-	err := Preflight(testImage, testContext, run, build, plentyDisk)
+	build := func(string, string, string) error { return nil }
+	err := Preflight(pf(run, build, plentyDisk))
 	if err == nil {
 		t.Fatal("Preflight should fail when the image is still absent after a 'successful' build")
 	}
@@ -606,12 +670,83 @@ func TestPreflightFailsWhenImageAbsentAfterBuild(t *testing.T) {
 	}
 }
 
+// A Consumer that names a prebuilt image (no Dockerfile) has its image PULLED on
+// a local miss, not built (ADR-0008). Preflight must call pull, never build.
+func TestPreflightPullsImageOnMissWhenNoDockerfile(t *testing.T) {
+	var pulledImage string
+	pulls := 0
+	// inspect fails first (missing), then succeeds (after the pull).
+	run := fakeDocker(map[string][]reply{
+		"info": one([]byte("Server Version: 27.0.0"), nil),
+		"image": {
+			{[]byte("Error: No such image: myproj/sandbox:1.2.3"), errFake},
+			{[]byte(`[{"Id":"sha256:abc"}]`), nil},
+		},
+	}, nil)
+	pc := PreflightConfig{
+		Image:        "myproj/sandbox:1.2.3",
+		Dockerfile:   "", // prebuilt ref => pull path
+		BuildContext: testContext,
+		Run:          run,
+		Build: func(string, string, string) error {
+			t.Errorf("build must not be called on the pull path")
+			return nil
+		},
+		Pull:     func(image string) error { pulls++; pulledImage = image; return nil },
+		DiskFree: plentyDisk,
+	}
+	if err := Preflight(pc); err != nil {
+		t.Fatalf("Preflight should pull the image on miss and pass, got: %v", err)
+	}
+	if pulls != 1 || pulledImage != "myproj/sandbox:1.2.3" {
+		t.Errorf("pull called %d time(s) with %q, want 1 with the prebuilt ref", pulls, pulledImage)
+	}
+}
+
+func TestPreflightSurfacesPullFailure(t *testing.T) {
+	run := fakeDocker(map[string][]reply{
+		"info":  one([]byte("Server Version: 27.0.0"), nil),
+		"image": one([]byte("Error: No such image: myproj/sandbox:1.2.3"), errFake),
+	}, nil)
+	pc := PreflightConfig{
+		Image:        "myproj/sandbox:1.2.3",
+		BuildContext: testContext,
+		Run:          run,
+		Build:        noBuild(t),
+		Pull:         func(string) error { return errFake },
+		DiskFree:     plentyDisk,
+	}
+	err := Preflight(pc)
+	if err == nil {
+		t.Fatal("Preflight should fail when the pull fails")
+	}
+	if !strings.Contains(err.Error(), "myproj/sandbox:1.2.3") || !strings.Contains(err.Error(), "docker pull") {
+		t.Errorf("error should name the image and the manual pull command, got: %v", err)
+	}
+}
+
+// The build path must never pull — a Consumer that commits a Dockerfile builds it.
+func TestPreflightBuildsNotPullsWhenDockerfileGiven(t *testing.T) {
+	run := fakeDocker(map[string][]reply{
+		"info": one([]byte("Server Version: 27.0.0"), nil),
+		"image": {
+			{[]byte("Error: No such image: herd-agent-harness:latest"), errFake},
+			{[]byte(`[{"Id":"sha256:abc"}]`), nil},
+		},
+	}, nil)
+	pc := pf(run, func(string, string, string) error { return nil }, plentyDisk)
+	pc.Pull = noPull(t) // fails the test if pull is called on the build path
+	if err := Preflight(pc); err != nil {
+		t.Fatalf("Preflight build path should pass, got: %v", err)
+	}
+}
+
 func TestPreflightDoesNotInspectImageWhenDaemonDown(t *testing.T) {
 	var calls []string
 	run := fakeDocker(map[string][]reply{
 		"info": one(nil, errFake),
 	}, &calls)
-	_ = Preflight(testImage, testContext, run, noBuild(t), plentyDisk)
+	_ = Preflight(pf(run, noBuild(t), plentyDisk))
 	// A down daemon should short-circuit before the image check — no point
 	// inspecting an image we can't run anyway.
 	if len(calls) != 1 || calls[0] != "docker info" {
@@ -625,7 +760,7 @@ func TestPreflightProbesDaemonNotClientVersion(t *testing.T) {
 		"info":  one(nil, nil),
 		"image": one(nil, nil),
 	}, &calls)
-	_ = Preflight(testImage, testContext, run, noBuild(t), plentyDisk)
+	_ = Preflight(pf(run, noBuild(t), plentyDisk))
 	// `docker info` round-trips to the daemon; `docker --version` is client-only
 	// and would pass even with the daemon down.
 	if len(calls) == 0 || calls[0] != "docker info" {
@@ -640,7 +775,7 @@ func TestPreflightFallsBackToErrWhenNoOutput(t *testing.T) {
 	run := fakeDocker(map[string][]reply{
 		"info": one(nil, errFake),
 	}, nil)
-	err := Preflight(testImage, testContext, run, noBuild(t), plentyDisk)
+	err := Preflight(pf(run, noBuild(t), plentyDisk))
 	if err == nil || !strings.Contains(err.Error(), errFake.Error()) {
 		t.Errorf("Preflight should fall back to the runner error when there is no output, got: %v", err)
 	}
@@ -657,7 +792,7 @@ func TestPreflightRefusesToLaunchWhenDiskBelowFloor(t *testing.T) {
 		"info":  one([]byte("Server Version: 27.0.0"), nil),
 		"image": one([]byte(`[{"Id":"sha256:abc"}]`), nil),
 	}, nil)
-	err := Preflight(testImage, testContext, run, noBuild(t), scantDisk)
+	err := Preflight(pf(run, noBuild(t), scantDisk))
 	if err == nil {
 		t.Fatal("Preflight should refuse to launch when free disk is below the floor")
 	}
@@ -672,7 +807,7 @@ func TestPreflightChecksDiskBeforeTouchingDocker(t *testing.T) {
 		"info":  one([]byte("Server Version: 27.0.0"), nil),
 		"image": one([]byte(`[{"Id":"sha256:abc"}]`), nil),
 	}, &calls)
-	_ = Preflight(testImage, testContext, run, noBuild(t), scantDisk)
+	_ = Preflight(pf(run, noBuild(t), scantDisk))
 	if len(calls) != 0 {
 		t.Errorf("Preflight should fail on the disk floor before any docker call, got calls: %v", calls)
 	}
@@ -682,7 +817,7 @@ func TestPreflightChecksDiskBeforeTouchingDocker(t *testing.T) {
 // — otherwise the operator is left with a bare "insufficient disk" and no next move.
 func TestPreflightDiskErrorIsActionable(t *testing.T) {
 	run := fakeDocker(map[string][]reply{}, nil)
-	err := Preflight(testImage, testContext, run, noBuild(t), scantDisk)
+	err := Preflight(pf(run, noBuild(t), scantDisk))
 	if err == nil {
 		t.Fatal("expected a disk-floor error")
 	}
@@ -706,7 +841,7 @@ func TestPreflightProceedsWhenDiskProbeErrors(t *testing.T) {
 		"image": one([]byte(`[{"Id":"sha256:abc"}]`), nil),
 	}, nil)
 	probeErr := func(string) (uint64, error) { return 0, errFake }
-	if err := Preflight(testImage, testContext, run, noBuild(t), probeErr); err != nil {
+	if err := Preflight(pf(run, noBuild(t), probeErr)); err != nil {
 		t.Errorf("a statfs error should not block launch, got: %v", err)
 	}
 }
@@ -718,7 +853,7 @@ func TestPreflightAllowsLaunchAtTheFloor(t *testing.T) {
 		"image": one([]byte(`[{"Id":"sha256:abc"}]`), nil),
 	}, nil)
 	atFloor := func(string) (uint64, error) { return MinFreeDiskBytes, nil }
-	if err := Preflight(testImage, testContext, run, noBuild(t), atFloor); err != nil {
+	if err := Preflight(pf(run, noBuild(t), atFloor)); err != nil {
 		t.Errorf("Preflight should allow launch with free space exactly at the floor, got: %v", err)
 	}
 }

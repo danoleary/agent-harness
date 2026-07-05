@@ -174,13 +174,14 @@ func Implementation(cfg config.Config, log *runlog.Logger, runID string, args Ar
 	// the first attempt's (it resumes the existing worktree rather than creating one).
 	buildArgs := func(name, prmpt string) []string {
 		return sandbox.BuildDockerRunArgs(sandbox.Config{
-			Image:           cfg.Image,
-			HerdPath:        cfg.HerdPath,
-			FindingsDir:     findingsDir,
-			PnpmStoreVolume: cfg.PnpmStoreVolume,
-			Prompt:          prmpt,
-			Model:           cfg.Model,
-			ContainerName:   name,
+			Image:          cfg.Image,
+			HerdPath:       cfg.HerdPath,
+			FindingsDir:    findingsDir,
+			CacheVolume:    cfg.CacheVolume,
+			CacheMountPath: cfg.CacheMountPath,
+			Prompt:         prmpt,
+			Model:          cfg.Model,
+			ContainerName:  name,
 		})
 	}
 	dockerArgs := buildArgs(containerName, p)
@@ -215,7 +216,7 @@ func Implementation(cfg config.Config, log *runlog.Logger, runID string, args Ar
 	// the ticket was already claimed during selection (ADR-0003), so a preflight
 	// failure means we dequeued a ticket we can't work: release it back to Todo
 	// rather than strand it In Progress (a no-op on the hand-passed path).
-	if err := sandbox.Preflight(cfg.Image, filepath.Join(cfg.HerdPath, "agent-harness"), sandbox.ProbeRunner, sandbox.BuildImage, sandbox.FreeDiskBytes); err != nil {
+	if err := sandbox.Preflight(sandbox.PreflightFor(cfg.Image, cfg.HerdPath, cfg.Dockerfile)); err != nil {
 		releaseIfPreClaimed(client, args.Identifier, args.PreClaimed, log)
 		return Result{Err: err}
 	}

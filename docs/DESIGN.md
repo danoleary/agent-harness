@@ -679,17 +679,78 @@ ships. The `ready-for-agent` label remains the human gate on *what* runs unatten
 
 ## Sandbox image
 
-- Node 20, `pnpm` (corepack), `git`, `bash`, the `claude` CLI (pinned),
-  `supabase` CLI (for schema-touching tdd tickets). `gh` is **not** needed in the
-  image — push/PR are host-side (ADR-0002).
-- Entrypoint: set git committer identity, trust the repo, `corepack enable`. It
-  does **not** run `gh auth setup-git` or wire HTTPS push — the container has no
-  `GH_TOKEN` and never pushes.
-- **Persistent pnpm content-addressed store** mounted as a Docker volume so the
-  per-worktree `pnpm install` (run several times per ticket — worktree create,
-  review prep, gate re-run) is a near-instant hardlink op instead of a network fetch.
+The image is split into a **base** (the harness↔sandbox contract) and a
+**Consumer layer** (the project toolchain), so a new project adopts the harness by
+`FROM`-ing the base and adding its own tools — never by forking the harness
+(ADR-0008).
+
+### The base image (the contract surface)
+
+Carries only what the harness↔sandbox contract requires, and nothing project-
+specific:
+
+- The `claude` CLI (pinned), `git`, `bash`, `gosu`, `ca-certificates`.
+- The **uid-re-exec entrypoint**: it stats the bind-mounted checkout and drops
+  from root to the checkout owner's uid via `gosu` before exec'ing `claude`
+  (`--dangerously-skip-permissions` refuses to run as root). It sets the git
+  committer identity and trusts the repo. It does **not** run `gh auth setup-git`
+  or wire HTTPS push — the container has no `GH_TOKEN` and never pushes (ADR-0002).
+- The **bind-mount layout**: the workspace checkout at its real host path, the
+  optional `/findings` dropbox, and an optional toolchain cache volume.
+
+`gh` is **not** in the image — push/PR are host-side (ADR-0002).
+
+### Consumer image composition (build-or-pull)
+
+A Consumer declares its sandbox image in `.agent-harness/config.toml` one of two
+ways; declaring **neither** is a hard error at config load (there is no sane
+cross-language default):
+
+- **`dockerfile`** — a checkout-relative path to a Consumer Dockerfile that `FROM`s
+  the base and adds its toolchain. The harness **builds** it (`docker build -f
+  <dockerfile> <dir>`) on a local image miss.
+- **`image`** — a prebuilt, published, base-compatible image ref. The harness
+  **pulls** it on a local miss.
+
+`Preflight` (`internal/sandbox`) makes this build-or-pull decision on a miss, then
+re-inspects to confirm the tag now exists before committing the run — so a bad
+Dockerfile / mistyped ref / missing registry auth fails loud *before* the ticket
+is claimed, not as an opaque exit-125 after. herd stays on the build path (it
+commits `agent-harness/Dockerfile` and names the local tag `herd-agent-harness:latest`).
+
+### Generalized toolchain cache
+
+The persistent cache is a **Consumer-declared volume name + mount path** (`[cache]`
+in config), mounted into every sandbox + gate container so the per-worktree install
+(run several times per ticket — worktree create, review prep, gate re-run) is a
+near-instant hardlink op instead of a network fetch. It generalizes the old
+herd-specific pnpm store: a NuGet (`/root/.nuget/packages`), Go (`GOMODCACHE`), or
+pnpm (`/pnpm-store`) Consumer differs only in config. The cache is **optional** — a
+Consumer that declares none mounts no cache volume. The deprecated
+`pnpm_store_volume` key still maps onto `[cache]` with the historical `/pnpm-store`
+mount for back-compat.
+
 - **Commit identity:** `Herd Agent Harness <agent-harness@beherd.co>`. The
   skills' existing `Co-Authored-By: Claude` trailer stays.
+
+### Base-image registry, publishing & versioning (HITL)
+
+**Recommendation (to confirm):** publish the base to **GHCR** at
+`ghcr.io/herd-video-call-limited/agent-harness-base`, tagged with an **immutable
+semver** (`:0.1.0`, …) plus a moving `:latest`. A Consumer Dockerfile pins the
+immutable tag (`FROM ghcr.io/.../agent-harness-base:0.1.0`) so a base bump is a
+deliberate, reviewable edit — never a silent floating pull. Publish from a CI
+workflow in the (future) standalone harness repo (ADR-0007) on a tagged release,
+building `Dockerfile.base` for `linux/amd64` + `linux/arm64`.
+
+> **Deferred to the publish decision (this ADR's HITL):** creating the standalone
+> `Dockerfile.base` artifact and rebasing herd's `agent-harness/Dockerfile` to
+> `FROM` the published base. A genuine `FROM <published-base>` cannot build until
+> the base is actually published (or local base-build orchestration is added,
+> which is out of scope), so the split lands with the publish, keeping herd's
+> single-Dockerfile build working unchanged in the meantime. The harness code
+> contract above (build-or-pull, image-or-dockerfile, generalized cache) is in
+> place and ready for it.
 
 ## Stop control
 

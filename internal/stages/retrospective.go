@@ -3,7 +3,6 @@ package stages
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/beherd/agent-harness/internal/config"
@@ -116,13 +115,14 @@ func Retrospective(cfg config.Config, log *runlog.Logger, runID string, args Arg
 	// second still get distinct container names (and distinct `docker kill` targets).
 	containerName := fmt.Sprintf("herd-harness-%s-%d-%s", runID, os.Getpid(), retrospectiveSession)
 	dockerArgs := sandbox.BuildDockerRunArgs(sandbox.Config{
-		Image:           cfg.Image,
-		HerdPath:        cfg.HerdPath,
-		FindingsDir:     findingsDir,
-		PnpmStoreVolume: cfg.PnpmStoreVolume,
-		Prompt:          p,
-		Model:           cfg.Model,
-		ContainerName:   containerName,
+		Image:          cfg.Image,
+		HerdPath:       cfg.HerdPath,
+		FindingsDir:    findingsDir,
+		CacheVolume:    cfg.CacheVolume,
+		CacheMountPath: cfg.CacheMountPath,
+		Prompt:         p,
+		Model:          cfg.Model,
+		ContainerName:  containerName,
 	})
 
 	if args.DryRun {
@@ -135,7 +135,7 @@ func Retrospective(cfg config.Config, log *runlog.Logger, runID string, args Arg
 	}
 
 	// Fail fast if Docker can't run the container before launching the session.
-	if err := sandbox.Preflight(cfg.Image, filepath.Join(cfg.HerdPath, "agent-harness"), sandbox.ProbeRunner, sandbox.BuildImage, sandbox.FreeDiskBytes); err != nil {
+	if err := sandbox.Preflight(sandbox.PreflightFor(cfg.Image, cfg.HerdPath, cfg.Dockerfile)); err != nil {
 		return Result{Err: err}
 	}
 

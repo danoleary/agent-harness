@@ -52,21 +52,23 @@ func Plan(cfg config.Config, identifier string) string {
 	// --- implementation ---
 	implPrompt := prompt.BuildTdd(t, slug, cfg.BranchPrefix, cfg.Prompts.Implement)
 	implDocker := sandbox.BuildDockerRunArgs(sandbox.Config{
-		Image:           cfg.Image,
-		HerdPath:        cfg.HerdPath,
-		FindingsDir:     findingsDir("implementation"),
-		PnpmStoreVolume: cfg.PnpmStoreVolume,
-		Prompt:          implPrompt,
-		Model:           cfg.Model,
-		ContainerName:   name("implementation"),
+		Image:          cfg.Image,
+		HerdPath:       cfg.HerdPath,
+		FindingsDir:    findingsDir("implementation"),
+		CacheVolume:    cfg.CacheVolume,
+		CacheMountPath: cfg.CacheMountPath,
+		Prompt:         implPrompt,
+		Model:          cfg.Model,
+		ContainerName:  name("implementation"),
 	})
 	fmt.Fprintf(&b, "\n=== stage 1: implementation ===\n--- prompt ---\n%s\n\n--- docker command ---\n%s\n", implPrompt, dockerLine(implDocker))
 
 	gateConfig := sandbox.GateConfig{
-		Image:           cfg.Image,
-		HerdPath:        cfg.HerdPath,
-		WorktreePath:    worktreePath,
-		PnpmStoreVolume: cfg.PnpmStoreVolume,
+		Image:          cfg.Image,
+		HerdPath:       cfg.HerdPath,
+		WorktreePath:   worktreePath,
+		CacheVolume:    cfg.CacheVolume,
+		CacheMountPath: cfg.CacheMountPath,
 	}
 	withName := func(session string) sandbox.GateConfig {
 		c := gateConfig
@@ -77,13 +79,14 @@ func Plan(cfg config.Config, identifier string) string {
 	// --- review ---
 	reviewPrompt := prompt.BuildReview(t, slug, worktreePath, cfg.BranchPrefix, cfg.Prompts.Review)
 	reviewDocker := sandbox.BuildDockerRunArgs(sandbox.Config{
-		Image:           cfg.Image,
-		HerdPath:        cfg.HerdPath,
-		FindingsDir:     "",
-		PnpmStoreVolume: cfg.PnpmStoreVolume,
-		Prompt:          reviewPrompt,
-		Model:           cfg.Model,
-		ContainerName:   name("review"),
+		Image:          cfg.Image,
+		HerdPath:       cfg.HerdPath,
+		FindingsDir:    "",
+		CacheVolume:    cfg.CacheVolume,
+		CacheMountPath: cfg.CacheMountPath,
+		Prompt:         reviewPrompt,
+		Model:          cfg.Model,
+		ContainerName:  name("review"),
 	})
 	installDocker := sandbox.BuildInstallRunArgs(withName("install"))
 	// One gate container per config-declared named gate, run in order (BEH-634).
@@ -101,13 +104,14 @@ func Plan(cfg config.Config, identifier string) string {
 	// Dry-run never fetches Linear, so there's no already-filed context to inject.
 	retroPrompt := prompt.BuildRetrospective(t, slug, nil, cfg.BranchPrefix, cfg.Prompts.Retro)
 	retroDocker := sandbox.BuildDockerRunArgs(sandbox.Config{
-		Image:           cfg.Image,
-		HerdPath:        cfg.HerdPath,
-		FindingsDir:     findingsDir("retrospective"),
-		PnpmStoreVolume: cfg.PnpmStoreVolume,
-		Prompt:          retroPrompt,
-		Model:           cfg.Model,
-		ContainerName:   name("retrospective"),
+		Image:          cfg.Image,
+		HerdPath:       cfg.HerdPath,
+		FindingsDir:    findingsDir("retrospective"),
+		CacheVolume:    cfg.CacheVolume,
+		CacheMountPath: cfg.CacheMountPath,
+		Prompt:         retroPrompt,
+		Model:          cfg.Model,
+		ContainerName:  name("retrospective"),
 	})
 	fmt.Fprintf(&b, "\n=== stage 3: retrospective (always) ===\n--- prompt ---\n%s\n\n--- docker command ---\n%s\n", retroPrompt, dockerLine(retroDocker))
 

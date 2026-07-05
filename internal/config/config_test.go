@@ -37,8 +37,11 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.Image != "herd-agent-harness:latest" {
 		t.Errorf("Image = %q", cfg.Image)
 	}
-	if cfg.PnpmStoreVolume != "herd-pnpm-store" {
-		t.Errorf("PnpmStoreVolume = %q", cfg.PnpmStoreVolume)
+	if cfg.CacheVolume != "herd-pnpm-store" {
+		t.Errorf("CacheVolume = %q", cfg.CacheVolume)
+	}
+	if cfg.CacheMountPath != "/pnpm-store" {
+		t.Errorf("CacheMountPath = %q, want /pnpm-store from the legacy pnpm_store_volume mapping", cfg.CacheMountPath)
 	}
 	if cfg.TddTimeout != 30*time.Minute {
 		t.Errorf("TddTimeout = %v, want 30m", cfg.TddTimeout)
@@ -147,14 +150,39 @@ func TestLoadHonoursOverrides(t *testing.T) {
 	if cfg.Image != "custom:tag" {
 		t.Errorf("Image = %q", cfg.Image)
 	}
-	if cfg.PnpmStoreVolume != "my-store" {
-		t.Errorf("PnpmStoreVolume = %q", cfg.PnpmStoreVolume)
+	if cfg.CacheVolume != "my-store" {
+		t.Errorf("CacheVolume = %q", cfg.CacheVolume)
 	}
 	if cfg.TddTimeout != time.Minute {
 		t.Errorf("TddTimeout = %v, want 1m", cfg.TddTimeout)
 	}
 	if cfg.Model != "sonnet" {
 		t.Errorf("Model = %q, want sonnet (TDD_MODEL override)", cfg.Model)
+	}
+}
+
+// The deprecated PNPM_STORE_VOLUME env override is the host twin of the
+// pnpm_store_volume key: when it supplies the cache volume against a project that
+// declared no `[cache]` path, the resolved mount must still default to
+// /pnpm-store — otherwise a pathless volume produces an invalid `-v <vol>:`
+// docker arg that dies at run (exit 125) after the ticket is already claimed.
+func TestLoadEnvCacheVolumeWithoutPathDefaultsMount(t *testing.T) {
+	orig := projectLoader
+	t.Cleanup(func() { projectLoader = orig })
+	projectLoader = func(string) (ProjectConfig, error) {
+		pc := testProjectConfig()
+		pc.Cache = CacheConfig{} // a Consumer that declares no cache
+		return pc, nil
+	}
+	cfg, err := Load(fullEnv(map[string]string{"PNPM_STORE_VOLUME": "env-store"}))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.CacheVolume != "env-store" {
+		t.Errorf("CacheVolume = %q, want the env override", cfg.CacheVolume)
+	}
+	if cfg.CacheMountPath != "/pnpm-store" {
+		t.Errorf("CacheMountPath = %q, want /pnpm-store default so the mount is not pathless", cfg.CacheMountPath)
 	}
 }
 

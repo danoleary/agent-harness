@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"syscall"
@@ -122,7 +123,11 @@ func FreeDiskBytes(path string) (uint64, error) {
 // FindingsMountPath is the fixed container path the findings dropbox is mounted at.
 const FindingsMountPath = "/findings"
 
-// PnpmStoreMountPath is the fixed container path the persistent pnpm store is mounted at.
+// PnpmStoreMountPath is the container path herd's pnpm store mounts at — retained
+// as the herd-toolchain invariant tests' reference and the back-compat default for
+// the deprecated pnpm_store_volume key. The actual mount path is now Consumer-
+// configurable per container (Config.CacheMountPath / GateConfig.CacheMountPath),
+// so a NuGet/GOMODCACHE Consumer mounts elsewhere (BEH-635).
 const PnpmStoreMountPath = "/pnpm-store"
 
 // bashDefaultTimeoutMS / bashMaxTimeoutMS raise Claude Code's per-Bash-command
@@ -161,8 +166,12 @@ type Config struct {
 	// FindingsDir is the host path to this session's findings dropbox dir,
 	// mounted at /findings.
 	FindingsDir string
-	// PnpmStoreVolume is the Docker volume name for the persistent pnpm store.
-	PnpmStoreVolume string
+	// CacheVolume is the Docker volume name for the optional persistent toolchain
+	// cache. Empty omits the cache mount entirely (BEH-635).
+	CacheVolume string
+	// CacheMountPath is the in-container path CacheVolume mounts at (Consumer-
+	// declared). Only used when CacheVolume is set.
+	CacheMountPath string
 	// Prompt is the `-p` prompt to hand to claude.
 	Prompt string
 	// Model is the claude `--model` to pin the session to (e.g. "claude-opus-4-8"). Empty
@@ -218,10 +227,14 @@ func BuildDockerRunArgs(c Config) []string {
 		"-e", "GIT_COMMITTER_EMAIL="+git.HarnessAuthorEmail,
 	)
 
-	args = append(args,
-		"-v", c.HerdPath+":"+c.HerdPath,
-		"-v", c.PnpmStoreVolume+":"+PnpmStoreMountPath,
-	)
+	args = append(args, "-v", c.HerdPath+":"+c.HerdPath)
+
+	// The toolchain cache is mounted only when a Consumer declares one (BEH-635):
+	// a language with no persistent cache (or a Consumer that opts out) mounts
+	// nothing rather than a dead volume.
+	if c.CacheVolume != "" {
+		args = append(args, "-v", c.CacheVolume+":"+c.CacheMountPath)
+	}
 
 	// The findings dropbox is mounted only when the tool produces findings.
 	// Review emits none (retrospective owns findings, DESIGN.md), so it passes an
@@ -259,9 +272,13 @@ type GateConfig struct {
 	// WorktreePath is the host path of the feature worktree the gates run against
 	// (the branch under review). It resolves into the mounted checkout.
 	WorktreePath string
-	// PnpmStoreVolume is the Docker volume name for the persistent pnpm store, so
-	// the gate run's `pnpm install` is a near-instant hardlink op, not a fetch.
-	PnpmStoreVolume string
+	// CacheVolume is the Docker volume name for the optional persistent toolchain
+	// cache, so the gate/install run is a near-instant hardlink op, not a fetch.
+	// Empty omits the cache mount (BEH-635).
+	CacheVolume string
+	// CacheMountPath is the in-container path CacheVolume mounts at. Only used when
+	// CacheVolume is set.
+	CacheMountPath string
 	// ContainerName is an optional `--name` so the harness can `docker kill` it on timeout.
 	ContainerName string
 }
@@ -321,9 +338,11 @@ func buildWorktreeBashArgs(c GateConfig, command string) []string {
 	// to the checkout owner. It is the mount path, not a secret — passed by value.
 	args = append(args, "-e", "HERD_PATH="+c.HerdPath)
 
+	args = append(args, "-v", c.HerdPath+":"+c.HerdPath)
+	if c.CacheVolume != "" {
+		args = append(args, "-v", c.CacheVolume+":"+c.CacheMountPath)
+	}
 	args = append(args,
-		"-v", c.HerdPath+":"+c.HerdPath,
-		"-v", c.PnpmStoreVolume+":"+PnpmStoreMountPath,
 		"-w", c.WorktreePath,
 		c.Image,
 		"bash", "-lc", command,
@@ -332,16 +351,18 @@ func buildWorktreeBashArgs(c GateConfig, command string) []string {
 	return args
 }
 
-// BuildImage builds the sandbox image, streaming docker's progress so the
-// operator sees the (multi-minute) build rather than a silent hang. It is the
-// production builder; Preflight tests inject a fake. buildContext is the
-// directory holding the harness Dockerfile (the agent-harness dir).
-func BuildImage(image, buildContext string) error {
+// BuildImage builds the sandbox image from a Consumer Dockerfile, streaming
+// docker's progress so the operator sees the (multi-minute) build rather than a
+// silent hang. It is the production builder; Preflight tests inject a fake. The
+// dockerfile is passed with `-f` (so a Consumer's `.agent-harness/Dockerfile` is
+// found regardless of the context root's own `Dockerfile`), and buildContext is
+// the directory the build runs in.
+func BuildImage(image, dockerfile, buildContext string) error {
 	fmt.Fprintf(os.Stderr,
 		"sandbox image %q not present — building it now from %s (first run, or it was pruned; this takes a few minutes)…\n",
-		image, buildContext,
+		image, dockerfile,
 	)
-	cmd := exec.Command("docker", "build", "-t", image, buildContext) // allow-unbounded-exec: docker build can take minutes, streams user-visible progress
+	cmd := exec.Command("docker", "build", "-t", image, "-f", dockerfile, buildContext) // allow-unbounded-exec: docker build can take minutes, streams user-visible progress
 	// Build chatter is diagnostic, not harness output — keep it off stdout so a
 	// caller parsing stdout (e.g. --dry-run) stays clean.
 	cmd.Stdout = os.Stderr
@@ -349,59 +370,136 @@ func BuildImage(image, buildContext string) error {
 	return cmd.Run()
 }
 
+// PullImage pulls a prebuilt sandbox image, streaming docker's progress. It is
+// the production puller for the Consumer path that names a prebuilt `image`
+// (rather than committing a Dockerfile); Preflight tests inject a fake.
+func PullImage(image string) error {
+	fmt.Fprintf(os.Stderr,
+		"sandbox image %q not present locally — pulling it now (first run, or it was pruned)…\n",
+		image,
+	)
+	cmd := exec.Command("docker", "pull", image) // allow-unbounded-exec: docker pull can take minutes, streams user-visible progress
+	cmd.Stdout = os.Stderr
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+// PreflightConfig describes what Preflight needs to guarantee a runnable sandbox
+// image before a run commits to a ticket. Dockerfile selects how a local image
+// miss is resolved (ADR-0008): when set, the harness BUILDS the image from the
+// Consumer's Dockerfile; when empty, Image is a prebuilt ref the harness PULLS.
+// BuildContext is the docker build context (for the build path) and doubles as
+// the disk-check path (the checkout filesystem, where worktree + overlay churn
+// lands) for both paths. Run/Build/Pull/DiskFree are injected so the check is
+// unit-testable; production passes ProbeRunner, BuildImage, PullImage, and
+// FreeDiskBytes.
+type PreflightConfig struct {
+	Image        string
+	Dockerfile   string
+	BuildContext string
+	Run          func(name string, args ...string) ([]byte, error)
+	Build        func(image, dockerfile, buildContext string) error
+	Pull         func(image string) error
+	DiskFree     func(path string) (uint64, error)
+}
+
+// PreflightFor builds the production PreflightConfig for a checkout, wiring the
+// real Run/Build/Pull/DiskFree. dockerfileRel is the Consumer's checkout-relative
+// Dockerfile path (config `dockerfile`): when set, it resolves to an absolute
+// Dockerfile + its directory as the build context (the build path); when empty,
+// Image is a prebuilt ref to pull and the checkout root is the disk-check path.
+func PreflightFor(image, herdPath, dockerfileRel string) PreflightConfig {
+	pc := PreflightConfig{
+		Image:        image,
+		BuildContext: herdPath,
+		Run:          ProbeRunner,
+		Build:        BuildImage,
+		Pull:         PullImage,
+		DiskFree:     FreeDiskBytes,
+	}
+	if dockerfileRel != "" {
+		pc.Dockerfile = filepath.Join(herdPath, dockerfileRel)
+		pc.BuildContext = filepath.Dir(pc.Dockerfile)
+	}
+	return pc
+}
+
 // Preflight verifies the harness can actually launch a sandbox before it commits
-// to a run (claiming the ticket, mutating Linear state) — first that the Docker
-// daemon is reachable, then that the sandbox image is present locally, building
-// it on miss. A bare missing image otherwise surfaces only as exit 125 *after*
-// the ticket is already claimed with no worktree (BEH-316); and because every
-// session runs `docker run --rm`, the image is left unreferenced between runs,
-// so a `docker system prune -a` (or Docker Desktop's "reclaim disk") quietly
-// deletes it — build-on-miss makes that self-healing instead of a hard failure.
-// run is injected so the check can be unit-tested; build is the (injected)
-// image builder, diskFree the (injected) free-space probe. Production passes
-// ProbeRunner, BuildImage, and FreeDiskBytes.
-func Preflight(image, buildContext string, run func(name string, args ...string) ([]byte, error), build func(image, buildContext string) error, diskFree func(path string) (uint64, error)) error {
+// to a run (claiming the ticket, mutating Linear state) — first that free disk is
+// above the floor, then that the Docker daemon is reachable, then that the sandbox
+// image is present locally, resolving it on miss by BUILDING (when a Consumer
+// Dockerfile is declared) or PULLING (when a prebuilt image is named). A bare
+// missing image otherwise surfaces only as exit 125 *after* the ticket is already
+// claimed with no worktree (BEH-316); and because every session runs `docker run
+// --rm`, the image is left unreferenced between runs, so a `docker system prune -a`
+// (or Docker Desktop's "reclaim disk") quietly deletes it — resolve-on-miss makes
+// that self-healing instead of a hard failure.
+func Preflight(pc PreflightConfig) error {
 	// Disk precondition FIRST — before any docker call. A full host disk is the
 	// root cause that, downstream, wedges the daemon (overlay2 read-only, exit
 	// 125) and fails the findings mkdir (ENOSPC) — opaquely, and after the ticket
 	// is claimed (BEH-540). Refuse to launch with an actionable message instead. A
 	// statfs error is itself non-fatal: don't block a launch because free space
 	// couldn't be read — let the docker probes below run.
-	if free, err := diskFree(buildContext); err == nil && free < MinFreeDiskBytes {
+	if free, err := pc.DiskFree(pc.BuildContext); err == nil && free < MinFreeDiskBytes {
 		return fmt.Errorf(
 			"insufficient free disk to launch a sandbox: %d MiB free at %s, need ≥ %d MiB — %s and re-run",
-			free>>20, buildContext, MinFreeDiskBytes>>20, DiskReclaimHint,
+			free>>20, pc.BuildContext, MinFreeDiskBytes>>20, DiskReclaimHint,
 		)
 	}
 
 	// Daemon reachable? `docker info` is the cheapest call that actually
 	// round-trips to the daemon — `docker --version` is client-only and passes
 	// even when the daemon is down.
-	if out, err := run("docker", "info"); err != nil {
+	if out, err := pc.Run("docker", "info"); err != nil {
 		return fmt.Errorf(
 			"docker daemon not reachable — is Docker Desktop running? (%s)", reasonOr(out, err),
 		)
 	}
 
 	// Image present? A missing image makes `docker run` try to pull a private/
-	// nonexistent repo and die with exit 125. Build it instead of failing.
-	if _, err := run("docker", "image", "inspect", image); err != nil {
-		if berr := build(image, buildContext); berr != nil {
-			return fmt.Errorf(
-				"sandbox image %q missing and the build failed — run `docker build -t %s %s` manually (%s)",
-				image, image, buildContext, berr,
-			)
+	// nonexistent repo and die with exit 125. Resolve it (build or pull) first.
+	if _, err := pc.Run("docker", "image", "inspect", pc.Image); err != nil {
+		if err := pc.resolveMissingImage(); err != nil {
+			return err
 		}
-		// Re-verify: a build that "succeeded" but produced no such tag (wrong
-		// context, bad Dockerfile) would otherwise still die at `docker run`.
-		if out, err := run("docker", "image", "inspect", image); err != nil {
+		// Re-verify: a build/pull that "succeeded" but produced no such tag (wrong
+		// context, bad Dockerfile, mistyped ref) would otherwise still die at
+		// `docker run`.
+		if out, err := pc.Run("docker", "image", "inspect", pc.Image); err != nil {
+			what := "pull"
+			if pc.Dockerfile != "" {
+				what = "build"
+			}
 			return fmt.Errorf(
-				"sandbox image %q still not present after build — check the Dockerfile in %s (%s)",
-				image, buildContext, reasonOr(out, err),
+				"sandbox image %q still not present after %s — check the image source (%s)",
+				pc.Image, what, reasonOr(out, err),
 			)
 		}
 	}
 
+	return nil
+}
+
+// resolveMissingImage builds the image from the Consumer Dockerfile when one is
+// declared, else pulls the named prebuilt ref (ADR-0008). Each path surfaces the
+// manual recovery command in its error.
+func (pc PreflightConfig) resolveMissingImage() error {
+	if pc.Dockerfile != "" {
+		if err := pc.Build(pc.Image, pc.Dockerfile, pc.BuildContext); err != nil {
+			return fmt.Errorf(
+				"sandbox image %q missing and the build failed — run `docker build -t %s -f %s %s` manually (%s)",
+				pc.Image, pc.Image, pc.Dockerfile, pc.BuildContext, err,
+			)
+		}
+		return nil
+	}
+	if err := pc.Pull(pc.Image); err != nil {
+		return fmt.Errorf(
+			"sandbox image %q missing and the pull failed — run `docker pull %s` manually, or check the ref/registry auth (%s)",
+			pc.Image, pc.Image, err,
+		)
+	}
 	return nil
 }
 
