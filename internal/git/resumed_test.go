@@ -43,7 +43,7 @@ func seedBranchRepo(t *testing.T, slug string, aheadSubjects ...string) string {
 func TestResumedBranchAdvisoryWarnsWhenBranchAheadReferencesTicket(t *testing.T) {
 	repo := seedBranchRepo(t, "beh-318", "fix(chat): give the GIF picker error paths (BEH-318)")
 
-	msg := ResumedBranchAdvisory(repo, "beh-318", "BEH-318")
+	msg := ResumedBranchAdvisory(repo, "feat", "beh-318", "BEH-318")
 	if msg == "" {
 		t.Fatal("expected an advisory for a branch already carrying an un-merged fix for the ticket")
 	}
@@ -61,7 +61,7 @@ func TestResumedBranchAdvisoryWarnsWhenBranchAheadReferencesTicket(t *testing.T)
 func TestResumedBranchAdvisorySilentWhenBranchHasNoCommitsAhead(t *testing.T) {
 	repo := seedBranchRepo(t, "beh-318") // branch created, zero commits ahead
 
-	if msg := ResumedBranchAdvisory(repo, "beh-318", "BEH-318"); msg != "" {
+	if msg := ResumedBranchAdvisory(repo, "feat", "beh-318", "BEH-318"); msg != "" {
 		t.Fatalf("a branch with no commits ahead must not warn, got: %s", msg)
 	}
 }
@@ -80,7 +80,7 @@ func TestResumedBranchAdvisorySilentWhenBranchAbsent(t *testing.T) {
 	runGit(t, repo, "add", "-A")
 	runGit(t, repo, "commit", "-q", "-m", "init")
 
-	if msg := ResumedBranchAdvisory(repo, "beh-318", "BEH-318"); msg != "" {
+	if msg := ResumedBranchAdvisory(repo, "feat", "beh-318", "BEH-318"); msg != "" {
 		t.Fatalf("an absent branch must fail quiet (no advisory), got: %s", msg)
 	}
 }
@@ -92,7 +92,7 @@ func TestResumedBranchAdvisorySilentWhenBranchAbsent(t *testing.T) {
 func TestResumedBranchAdvisorySilentWhenAheadCommitsReferenceOtherTicket(t *testing.T) {
 	repo := seedBranchRepo(t, "beh-318", "chore: unrelated work (BEH-999)", "fixup BEH-3180 typo")
 
-	if msg := ResumedBranchAdvisory(repo, "beh-318", "BEH-318"); msg != "" {
+	if msg := ResumedBranchAdvisory(repo, "feat", "beh-318", "BEH-318"); msg != "" {
 		t.Fatalf("ahead commits not referencing the ticket must not warn, got: %s", msg)
 	}
 }

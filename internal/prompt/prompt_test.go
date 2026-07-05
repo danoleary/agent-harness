@@ -69,17 +69,25 @@ func TestBuildTddInvokesSkillOnTicketAndSlug(t *testing.T) {
 }
 
 // The whole pipeline (verify, push, PR, CI, review, rebase) keys off the
-// canonical `feat/<slug>` branch. If the prompt leaves the branch prefix to the
-// agent's judgement, a bug-fix ticket invites `fix/<slug>`, whose committed,
-// gate-passing handoff the harness then never sees on the empty `feat/<slug>` it
-// checks — the work is silently stranded (BEH-615). So the prompt must pin the
-// prefix: instruct the canonical `new-worktree.sh <slug> feat` verbatim, the same
-// way every other prompt hardcodes `feat/<slug>`.
-func TestBuildTddPinsFeatBranchPrefix(t *testing.T) {
+// canonical `feat/<slug>` branch. The harness now creates that worktree + branch
+// host-side (BEH-636), so the fresh instruction must point the agent AT the
+// pre-created `feat/<slug>` worktree and forbid running `new-worktree.sh` — a
+// bug-fix ticket must never end up on `fix/<slug>`, whose committed handoff the
+// harness never sees on the `feat/<slug>` it checks (the BEH-615 strand).
+func TestBuildTddPointsAtPreCreatedFeatWorktree(t *testing.T) {
 	p := bImpl(t, sample, "beh-362")
 
-	if !strings.Contains(p, "new-worktree.sh beh-362 feat") {
-		t.Errorf("prompt does not pin the canonical `new-worktree.sh <slug> feat` command:\n%s", p)
+	if !strings.Contains(p, "feat/beh-362") {
+		t.Errorf("prompt does not pin the canonical feat/<slug> branch:\n%s", p)
+	}
+	if !strings.Contains(p, ".claude/worktrees/beh-362") {
+		t.Errorf("prompt does not point the agent at the pre-created worktree path:\n%s", p)
+	}
+	// The retired coupling: the harness owns creation now, so the fresh prompt must
+	// FORBID creating a worktree (it may still name new-worktree.sh in a negative
+	// "do NOT run it" steer, like the resume variant), never instruct running it.
+	if !regexp.MustCompile(`(?i)(do not|don't|never).{0,40}(create|new-worktree)`).MatchString(p) {
+		t.Errorf("fresh prompt must forbid creating the worktree (harness owns creation now):\n%s", p)
 	}
 }
 
@@ -183,8 +191,10 @@ func TestBuildTddHonorsConfiguredBranchPrefix(t *testing.T) {
 	if !strings.Contains(p, "fix/beh-362") {
 		t.Errorf("prompt does not use the configured branch prefix in the contract:\n%s", p)
 	}
-	if !strings.Contains(p, "new-worktree.sh beh-362 fix") {
-		t.Errorf("prompt does not use the configured branch prefix in the worktree instruction:\n%s", p)
+	// The pre-created worktree instruction names the configured-prefix branch, not
+	// a hardcoded feat.
+	if strings.Contains(p, "feat/beh-362") {
+		t.Errorf("prompt leaks a hardcoded feat prefix under a fix-prefix Consumer:\n%s", p)
 	}
 }
 

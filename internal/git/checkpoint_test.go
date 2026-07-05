@@ -57,7 +57,7 @@ func newRepoWithWorktree(t *testing.T, slug string) (string, string) {
 	runGit(t, repo, "add", "-A")
 	runGit(t, repo, "commit", "-q", "-m", "init")
 	wt := filepath.Join(repo, "wt")
-	runGit(t, repo, "worktree", "add", "-q", "-b", BranchName(slug), wt)
+	runGit(t, repo, "worktree", "add", "-q", "-b", BranchName("feat", slug), wt)
 	return repo, wt
 }
 

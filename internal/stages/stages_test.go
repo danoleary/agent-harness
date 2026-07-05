@@ -31,6 +31,30 @@ func TestFixSessionErrorSpendingCapTakesPrecedence(t *testing.T) {
 	}
 }
 
+// BEH-636: provisionWorktree creates the worktree host-side and runs post_create
+// before the session — but it must be a no-op when the worktree already exists on
+// disk (a usage-policy retry, or a resumed worktree a prior session kept). The
+// guard matters: without it, provisioning would re-run `git worktree add` and the
+// post_create container against an already-provisioned tree. Here HerdPath is a
+// bare temp dir (NOT a git repo), so if the guard were removed, CreateWorktree's
+// real `git worktree add` would fail and provisionWorktree would error — the guard
+// short-circuits before any git/docker call, so it returns nil.
+func TestProvisionWorktreeNoOpWhenWorktreeExists(t *testing.T) {
+	herdPath := t.TempDir()
+	slug := "beh-636-x"
+	if err := os.MkdirAll(filepath.Join(herdPath, ".claude", "worktrees", slug), 0o755); err != nil {
+		t.Fatalf("seed worktree dir: %v", err)
+	}
+	log, err := runlog.New(t.TempDir(), "BEH-636")
+	if err != nil {
+		t.Fatalf("runlog.New: %v", err)
+	}
+	cfg := config.Config{HerdPath: herdPath, BranchPrefix: "feat", PostCreate: "cd web && pnpm install"}
+	if err := provisionWorktree(cfg, slug, "run-1", Args{}, log); err != nil {
+		t.Fatalf("provisionWorktree must be a no-op when the worktree exists, got: %v", err)
+	}
+}
+
 func TestFixSessionErrorNonZeroExitIsGenericFailure(t *testing.T) {
 	err := fixSessionError(session.Outcome{ExitCode: 2}, 3)
 	if err == nil {

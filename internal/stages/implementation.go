@@ -96,6 +96,77 @@ func disjointWorkTrapped(truth verify.GroundTruth) bool {
 	return truth.WorktreeExists && truth.CommitsAhead > 0 && truth.DisjointHistory
 }
 
+// provisionWorktree creates the feature worktree + canonical branch host-side and
+// runs the Consumer's post_create toolchain hook in it (ADR-0008/BEH-636), retiring
+// the coupling where the sandboxed agent ran new-worktree.sh and the host depended
+// on its output. It is a no-op when the worktree already exists on disk — a
+// usage-policy retry (BEH-389) or a resumed worktree a prior session kept is already
+// provisioned. A CreateWorktree failure is fatal (there is nothing to run the
+// session against); a post_create failure is warn-only, mirroring review's install
+// degradation (BEH-490): the session can still install toolchain deps itself.
+func provisionWorktree(cfg config.Config, slug, runID string, args Args, log *runlog.Logger) error {
+	worktreePath := gitpkg.WorktreePath(cfg.HerdPath, slug)
+	if _, err := os.Stat(worktreePath); err == nil {
+		return nil
+	}
+	if err := gitpkg.CreateWorktree(cfg.HerdPath, cfg.BranchPrefix, slug); err != nil {
+		return fmt.Errorf("creating worktree %s: %w", worktreePath, err)
+	}
+	log.Event("created worktree " + worktreePath + " on " + gitpkg.BranchName(cfg.BranchPrefix, slug) + " (host-side)")
+	if cfg.PostCreate != "" {
+		runPostCreate(cfg, worktreePath, runID, args, log)
+	}
+	return nil
+}
+
+// runPostCreate runs the Consumer's post_create command in the freshly-created
+// worktree via a secret-free container (BuildPostCreateRunArgs). It retries an
+// OOM-kill (exit 137) — the same transient host-memory-pressure class the review
+// prep-install rides out (BEH-524) — and degrades to a warning on a persistent
+// non-zero exit rather than failing the run, so a flaky toolchain install doesn't
+// strand an otherwise-workable ticket.
+func runPostCreate(cfg config.Config, worktreePath, runID string, args Args, log *runlog.Logger) {
+	base := fmt.Sprintf("herd-harness-%s-%d-postcreate", runID, os.Getpid())
+	gc := sandbox.GateConfig{
+		Image:          cfg.Image,
+		HerdPath:       cfg.HerdPath,
+		WorktreePath:   worktreePath,
+		CacheVolume:    cfg.CacheVolume,
+		CacheMountPath: cfg.CacheMountPath,
+	}
+	log.Event("provisioning worktree — running post_create toolchain setup")
+	outcome, _ := session.RetryTransient(oomMaxAttempts, session.ConstantBackoff(oomRetryBackoff), time.Sleep, func(attempt int) session.Outcome {
+		name := base
+		transcript := runlog.StepLogName("postcreate", runID)
+		if attempt > 1 {
+			name = fmt.Sprintf("%s-retry%d", base, attempt)
+			transcript = runlog.StepLogName(fmt.Sprintf("postcreate-retry%d", attempt), runID)
+			log.Event(fmt.Sprintf(
+				"tdd ↻ post_create OOM-killed (exit 137) — retry %d/%d after %s (BEH-524)",
+				attempt-1, oomMaxAttempts-1, oomRetryBackoff,
+			))
+		}
+		c := gc
+		c.ContainerName = name
+		out := session.Run(sandbox.BuildPostCreateRunArgs(c, cfg.PostCreate), session.Options{
+			ContainerName:  name,
+			TranscriptFile: transcript,
+			Timeout:        cfg.TddTimeout,
+			IdleTimeout:    cfg.SessionIdleTimeout,
+			Verbose:        args.Verbose,
+			Log:            log,
+		})
+		log.TeeLine(transcript, runlog.StepFooter(out.ExitCode))
+		return out
+	})
+	if outcome.ExitCode != 0 {
+		log.Event(fmt.Sprintf(
+			"⚠ post_create exited %d — the worktree may lack toolchain deps; the session must install them before the gates run",
+			outcome.ExitCode,
+		))
+	}
+}
+
 // Implementation runs the first stage: fetch + claim one ticket, run only the
 // /tdd session in a Docker sandbox, verify the worktree + handoff commit by
 // ground truth, and file any dropped findings. No push, no PR (review owns
@@ -145,7 +216,7 @@ func Implementation(cfg config.Config, log *runlog.Logger, runID string, args Ar
 	// incomplete work) — instead we steer the session to verify-and-handoff over
 	// re-implementing by swapping in BuildTddResumedBranch.
 	p := prompt.BuildTdd(t, slug, cfg.BranchPrefix, cfg.Prompts.Implement)
-	if adv := gitpkg.ResumedBranchAdvisory(cfg.HerdPath, slug, t.Identifier); adv != "" {
+	if adv := gitpkg.ResumedBranchAdvisory(cfg.HerdPath, cfg.BranchPrefix, slug, t.Identifier); adv != "" {
 		log.Event(adv)
 		p = prompt.BuildTddResumedBranch(t, slug, cfg.BranchPrefix, cfg.Prompts.Implement)
 	}
@@ -227,6 +298,20 @@ func Implementation(cfg config.Config, log *runlog.Logger, runID string, args Ar
 		return Result{Err: err}
 	}
 
+	// Create the worktree + branch host-side and run the Consumer's post_create
+	// toolchain hook before launching the session (ADR-0008/BEH-636). This retires
+	// the coupling where the sandboxed agent ran new-worktree.sh and the host
+	// depended on its output. A failure means there is no worktree to run against, so
+	// release the claim (best-effort) and surface it as a retryable env failure — the
+	// same class as a launch crash that left no worktree (BEH-543).
+	if err := provisionWorktree(cfg, slug, runID, args, log); err != nil {
+		log.Event("tdd ✗ host-side worktree provisioning failed: " + err.Error())
+		if rErr := client.ReleaseToTodo(args.Identifier); rErr != nil {
+			log.Event("⚠ releasing the claim after a provisioning failure also failed (" + rErr.Error() + ") — move " + args.Identifier + " out of In Progress manually")
+		}
+		return Result{OK: false, Retryable: true}
+	}
+
 	// The tdd session runs at most twice. A terminal usage-policy refusal is a
 	// known intermittent false-positive that disproportionately strikes long
 	// agentic sessions (BEH-389); because the diff survives on disk (ADR-0002
@@ -291,7 +376,7 @@ func Implementation(cfg config.Config, log *runlog.Logger, runID string, args Ar
 		))
 
 		// Ground truth, never self-report.
-		truth = gitpkg.GatherTddGroundTruth(cfg.HerdPath, slug)
+		truth = gitpkg.GatherTddGroundTruth(cfg.HerdPath, cfg.BranchPrefix, slug)
 		result = verify.Tdd(truth)
 		capAborted = outcome.SpendingCapAbort
 
@@ -319,7 +404,7 @@ func Implementation(cfg config.Config, log *runlog.Logger, runID string, args Ar
 			log.Event("⚠ disjoint branch detected but the regraft failed (" + rErr.Error() + ") — keeping the worktree for manual recovery (BEH-609)")
 		} else {
 			log.Event("↻ verified work was trapped on a disjoint branch — re-grafted its content diff onto a fresh base off origin/main (BEH-609)")
-			truth = gitpkg.GatherTddGroundTruth(cfg.HerdPath, slug)
+			truth = gitpkg.GatherTddGroundTruth(cfg.HerdPath, cfg.BranchPrefix, slug)
 			result = verify.Tdd(truth)
 		}
 	}
@@ -366,7 +451,7 @@ func Implementation(cfg config.Config, log *runlog.Logger, runID string, args Ar
 			if cErr := gitpkg.CheckpointCommit(worktreePath, args.Identifier, "tdd"); cErr != nil {
 				log.Event("⚠ uncommitted work remains in the worktree at " + worktreePath + " and the recovery checkpoint commit failed (" + cErr.Error() + ") — recover it manually before re-running")
 			} else {
-				log.Event("✓ harness recovery checkpoint committed on " + gitpkg.BranchName(slug) + " — the session's uncommitted diff is preserved (unverified: finish or re-run, then amend, before opening a PR)")
+				log.Event("✓ harness recovery checkpoint committed on " + gitpkg.BranchName(cfg.BranchPrefix, slug) + " — the session's uncommitted diff is preserved (unverified: finish or re-run, then amend, before opening a PR)")
 			}
 		} else if retryableEnvCrash(truth, capAborted) {
 			// The session crashed environmentally before it ever created a worktree —

@@ -59,7 +59,7 @@ func Retrospective(cfg config.Config, log *runlog.Logger, runID string, args Arg
 	// transcripts but no branch — one real input is enough to proceed. A skip is a
 	// clean no-op, not a failure — return OK so it never reds the pipeline.
 	if pre := verify.RetrospectivePreconditions(verify.RetrospectiveInputs{
-		BranchExists:     gitpkg.BranchExists(cfg.HerdPath, slug),
+		BranchExists:     gitpkg.BranchExists(cfg.HerdPath, cfg.BranchPrefix, slug),
 		PriorTranscripts: hasUpstreamTranscripts(log.Dir),
 	}); !pre.OK {
 		log.Event(fmt.Sprintf("retrospective ⊘ skipped %s — %s", args.Identifier, pre.Reason))
@@ -203,7 +203,7 @@ func Retrospective(cfg config.Config, log *runlog.Logger, runID string, args Arg
 	// captures everything — so tear it down host-side (the real-path mount makes
 	// its .git pointer resolve from the main checkout). If the branch was never
 	// pushed, keep the worktree so unpushed work is never lost.
-	if gitpkg.BranchPushed(cfg.HerdPath, slug) {
+	if gitpkg.BranchPushed(cfg.HerdPath, cfg.BranchPrefix, slug) {
 		if err := gitpkg.RemoveWorktree(cfg.HerdPath, slug); err != nil {
 			log.Event("worktree kept — removal failed: " + err.Error())
 		} else {

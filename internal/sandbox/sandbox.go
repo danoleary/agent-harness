@@ -324,6 +324,19 @@ func BuildInstallRunArgs(c GateConfig) []string {
 	return buildWorktreeBashArgs(c, installCommand)
 }
 
+// BuildPostCreateRunArgs builds the argv for the throwaway container that runs the
+// Consumer's `post_create` toolchain-setup command in a worktree the harness just
+// created host-side (ADR-0008/BEH-636). It replaces the retired coupling where the
+// sandbox agent ran `new-worktree.sh`: herd's env-file symlinks + `pnpm install` +
+// Playwright install now arrive as a config-declared command run here. Like the
+// gate/install containers it carries NO secrets (it runs no model) and runs in the
+// worktree; buildWorktreeBashArgs passes HERD_PATH so a Consumer's env-symlink step
+// can reference the main checkout. The command runs verbatim, so a Go/.NET Consumer
+// differs only in config.
+func BuildPostCreateRunArgs(c GateConfig, command string) []string {
+	return buildWorktreeBashArgs(c, command)
+}
+
 // buildWorktreeBashArgs is the shared skeleton for the throwaway worktree containers
 // (install prep + ground-truth gate): a secret-free container that bind-mounts the
 // checkout and the warm pnpm store and runs `command` in the worktree via bash.

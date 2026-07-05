@@ -253,6 +253,48 @@ func TestInstallRunArgsRunsFrozenInstallOnlyInWorktree(t *testing.T) {
 	}
 }
 
+// BEH-636: after the harness creates the worktree host-side, it runs the
+// Consumer's `post_create` toolchain-setup command in that worktree. Like the
+// install/gate containers it is secret-free (it runs no model), runs in the
+// worktree, and carries HERD_PATH so a Consumer's env-symlink step can reference
+// the main checkout (herd's post_create symlinks web/.env.local from $HERD_PATH).
+func TestPostCreateRunArgsRunCommandInWorktreeWithHerdPathNoSecrets(t *testing.T) {
+	postCreate := `for f in .env.local; do ln -sf "$HERD_PATH/web/$f" "web/$f"; done; cd web && pnpm install --frozen-lockfile`
+	args := BuildPostCreateRunArgs(GateConfig{
+		Image:          "herd-agent-harness:latest",
+		HerdPath:       "/Users/dan/herd",
+		WorktreePath:   "/Users/dan/herd/.claude/worktrees/beh-636",
+		CacheVolume:    "herd-pnpm-store",
+		CacheMountPath: "/pnpm-store",
+		ContainerName:  "herd-harness-postcreate-1",
+	}, postCreate)
+	joined := strings.Join(args, " ")
+
+	// Runs the supplied command verbatim.
+	if !strings.Contains(joined, "pnpm install --frozen-lockfile") {
+		t.Errorf("post_create args must run the supplied command, got: %v", args)
+	}
+	// Carries HERD_PATH so the env-symlink step can reach the main checkout.
+	if !slices.Contains(valuesForFlag(args, "-e"), "HERD_PATH=/Users/dan/herd") {
+		t.Errorf("post_create must pass HERD_PATH so env-symlink steps resolve, got: %v", args)
+	}
+	// No credential of any kind crosses into the post_create container.
+	for _, secret := range []string{"ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "GH_TOKEN", "LINEAR"} {
+		if regexp.MustCompile(`(?i)` + secret).MatchString(joined) {
+			t.Errorf("post_create container must carry no secrets, but argv mentions %q: %v", secret, args)
+		}
+	}
+	// Runs in the worktree (the freshly-created branch), not the main checkout.
+	workdirs := valuesForFlag(args, "-w")
+	if len(workdirs) == 0 || workdirs[len(workdirs)-1] != "/Users/dan/herd/.claude/worktrees/beh-636" {
+		t.Errorf("post_create must run in the worktree, got -w %v", workdirs)
+	}
+	// Nameable so the harness can kill it on timeout.
+	if !slices.Contains(valuesForFlag(args, "--name"), "herd-harness-postcreate-1") {
+		t.Error("post_create container must be nameable so the harness can kill it on timeout")
+	}
+}
+
 func TestPinsModelWhenGiven(t *testing.T) {
 	c := baseConfig()
 	c.Model = "opus"

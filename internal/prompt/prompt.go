@@ -130,13 +130,16 @@ func branchHandoffContract(branchPrefix, slug string) string {
 	return "The harness keys its handoff check, push, PR, and review off the canonical `" + branchPrefix + "/" + slug + "` branch, so committing to any other branch (e.g. `fix/" + slug + "`) silently strands your work where the harness never sees it."
 }
 
-// freshWorktreeInstr is the implementation stage's worktree-creation instruction
-// for a fresh run: create the worktree on the canonical branch prefix. It is
-// envelope content (not body) because it varies per implementation variant
-// (fresh / resumed-branch / usage-policy retry), each of which enters the
-// worktree differently.
+// freshWorktreeInstr is the implementation stage's worktree instruction for a
+// fresh run. The harness now creates the worktree + canonical branch host-side
+// (ADR-0008/BEH-636), so this points the agent AT that pre-created worktree and
+// forbids running `new-worktree.sh` — it never creates one itself. It is envelope
+// content (not body) because it varies per implementation variant (fresh /
+// resumed-branch / usage-policy retry), each of which enters the worktree
+// differently.
 func freshWorktreeInstr(slug, branchPrefix string) string {
-	return "Create the worktree with slug `" + slug + "` by running `scripts/new-worktree.sh " + slug + " " + branchPrefix + "` — use the `" + branchPrefix + "` prefix verbatim regardless of the ticket type (bug-fix, chore, docs, …)."
+	branch := branchPrefix + "/" + slug
+	return "The worktree for slug `" + slug + "` has already been created for you at `.claude/worktrees/" + slug + "` on branch `" + branch + "` — the harness owns worktree and branch creation, so do NOT run `scripts/new-worktree.sh` and do NOT create a new worktree or branch. `cd` into that worktree and do all your work there, committing your handoff on `" + branch + "` verbatim regardless of the ticket type (bug-fix, chore, docs, …)."
 }
 
 // tddFooter is the shared contract footer for every implementation-stage prompt
@@ -206,7 +209,7 @@ func subIssuesSection(subs []ticket.SubIssue) string {
 func resumedBranchWorktreeState(slug, branchPrefix string) string {
 	branch := branchPrefix + "/" + slug
 	return join(
-		"Create/enter the worktree with slug `"+slug+"` (`scripts/new-worktree.sh` resumes the existing branch).",
+		"Enter the worktree already created for you at `.claude/worktrees/"+slug+"` on branch `"+branch+"` — the harness owns worktree and branch creation, so do NOT run `scripts/new-worktree.sh`.",
 		"IMPORTANT — RESUMED WORKTREE: branch `"+branch+"` ALREADY carries commit(s) for this ticket ahead of `main` from a previous session — the fix may already be COMPLETE. Before you plan or write any code, enter the worktree and inspect that history: run `git log origin/main..HEAD` (equivalently `git log main..HEAD`) and read the diff. If the ticket's behaviour is already implemented and tested on the branch, do NOT re-implement, rewrite, or redo it — instead verify the gates pass and record \"already fixed on branch — recommend review/handoff\" in your handoff, then stop. Only finish or extend the work if the branch's fix is genuinely incomplete. The ticket prose below may describe the code as still un-fixed even though the branch already resolves it, so trust the branch's git history over the prose.",
 	)
 }

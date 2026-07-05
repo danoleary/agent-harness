@@ -131,6 +131,10 @@ type Config struct {
 	// config's branch_prefix, default "feat"). The harness keys verify/push/PR/
 	// dispatch-guards off `<BranchPrefix>/<slug>` (ADR-0008).
 	BranchPrefix string
+	// PostCreate is the Consumer's per-worktree toolchain-setup command the harness
+	// runs in the freshly-created worktree after host-side branch creation
+	// (BEH-636). Empty means no setup step.
+	PostCreate string
 	// Gates is the ordered, named host-side gate list from the project config.
 	// BEH-631 only sources it; the runner that iterates it is BEH-634.
 	Gates []Gate
@@ -326,6 +330,7 @@ func Load(get Getenv) (Config, error) {
 		LoopDiskReclaimThreshold:   diskReclaim,
 
 		BranchPrefix: project.BranchPrefix,
+		PostCreate:   project.PostCreate,
 		Gates:        project.Gates,
 		Tracker:      project.Tracker,
 		Prompts:      prompts,

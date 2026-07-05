@@ -266,9 +266,9 @@ func ResolvedAdvisory(srcRoot, identifier, description string) string {
 // dispatch outright would risk discarding a genuinely unfinished ticket. Reads
 // origin/main as-is (no fetch): a slightly stale ref can only over-report commits
 // as "ahead", which at worst yields a verify-first nudge — never a false skip.
-func ResumedBranchAdvisory(herdPath, slug, identifier string) string {
+func ResumedBranchAdvisory(herdPath, branchPrefix, slug, identifier string) string {
 	out, err := exec.Command(
-		"git", "-C", herdPath, "log", "--oneline", "-"+strconv.Itoa(mainHistoryLookback), "origin/main.."+BranchName(slug),
+		"git", "-C", herdPath, "log", "--oneline", "-"+strconv.Itoa(mainHistoryLookback), "origin/main.."+BranchName(branchPrefix, slug),
 	).Output()
 	if err != nil {
 		// Branch absent, no upstream, or any git error → nothing to advise on. Fail
@@ -278,7 +278,7 @@ func ResumedBranchAdvisory(herdPath, slug, identifier string) string {
 	if !mainHistoryReferences(string(out), identifier) {
 		return ""
 	}
-	branch := BranchName(slug)
+	branch := BranchName(branchPrefix, slug)
 	return fmt.Sprintf(
 		"⚠ %s already has commit(s) on %s ahead of origin/main referencing it — a resumed worktree likely already holds a complete, un-merged fix. Before re-implementing, verify the work is done (`git log origin/main..%s` + the diff, run the gates) and prefer verify-and-handoff; recommend opening the PR / close if it's already fixed.",
 		identifier, branch, branch,

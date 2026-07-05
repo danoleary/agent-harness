@@ -16,6 +16,7 @@ func testProjectConfig() ProjectConfig {
 		Image:        "herd-agent-harness:latest",
 		Cache:        CacheConfig{Volume: "herd-pnpm-store", Path: "/pnpm-store"},
 		BranchPrefix: "feat",
+		PostCreate:   "cd web && pnpm install --frozen-lockfile",
 		Gates: []Gate{
 			{Name: "check", Command: "pnpm run check"},
 			{Name: "typecheck", Command: "pnpm run typecheck"},
@@ -39,6 +40,9 @@ func TestLoadSourcesProjectConfig(t *testing.T) {
 	}
 	if cfg.BranchPrefix != "feat" {
 		t.Errorf("BranchPrefix = %q, want feat (from project config)", cfg.BranchPrefix)
+	}
+	if cfg.PostCreate != "cd web && pnpm install --frozen-lockfile" {
+		t.Errorf("PostCreate = %q, want it plumbed from project config (BEH-636)", cfg.PostCreate)
 	}
 	if len(cfg.Gates) != 2 || cfg.Gates[0].Name != "check" {
 		t.Errorf("Gates = %+v, want the project-config gate list", cfg.Gates)
@@ -77,6 +81,7 @@ const herdConfigTOML = `
 image = "herd-agent-harness:latest"
 pnpm_store_volume = "herd-pnpm-store"
 branch_prefix = "feat"
+post_create = "cd web && pnpm install --frozen-lockfile"
 
 [tracker]
 kind = "linear"
@@ -106,6 +111,9 @@ func TestLoadProjectReadsAllFields(t *testing.T) {
 	}
 	if pc.BranchPrefix != "feat" {
 		t.Errorf("BranchPrefix = %q", pc.BranchPrefix)
+	}
+	if pc.PostCreate != "cd web && pnpm install --frozen-lockfile" {
+		t.Errorf("PostCreate = %q, want the toolchain-setup command", pc.PostCreate)
 	}
 	if pc.Tracker.Kind != "linear" {
 		t.Errorf("Tracker.Kind = %q", pc.Tracker.Kind)
@@ -147,6 +155,13 @@ func TestHerdCommittedConfigLoads(t *testing.T) {
 	// unpublished tag — is caught here (BEH-635).
 	if pc.Dockerfile == "" {
 		t.Error("herd committed config must declare `dockerfile` to stay on the build path")
+	}
+	// The harness now owns worktree/branch creation host-side; herd's per-worktree
+	// toolchain setup (env links + pnpm install + Playwright) moved into post_create
+	// (BEH-636). A committed config that dropped it would launch sessions against an
+	// un-provisioned worktree, so pin its presence here.
+	if pc.PostCreate == "" {
+		t.Error("herd committed config must declare a `post_create` toolchain-setup hook (BEH-636)")
 	}
 	// The generalized cache must resolve to herd's pnpm store at its historical
 	// mount, whether declared via `[cache]` or the deprecated pnpm_store_volume.

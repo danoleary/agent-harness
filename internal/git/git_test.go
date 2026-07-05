@@ -10,6 +10,131 @@ import (
 	"time"
 )
 
+// BranchName derives the canonical feature branch from the Consumer's configured
+// branch prefix + slug (BEH-636); the harness keys verify/push/PR/dispatch off it,
+// so a Consumer that sets branch_prefix = "fix" gets `fix/<slug>`, not `feat/<slug>`.
+func TestBranchNameDerivesFromPrefix(t *testing.T) {
+	if got := BranchName("feat", "beh-636-x"); got != "feat/beh-636-x" {
+		t.Errorf(`BranchName("feat", "beh-636-x") = %q, want "feat/beh-636-x"`, got)
+	}
+	if got := BranchName("fix", "beh-636-x"); got != "fix/beh-636-x" {
+		t.Errorf(`BranchName("fix", "beh-636-x") = %q, want "fix/beh-636-x"`, got)
+	}
+}
+
+// BEH-636: the harness now creates the worktree + canonical branch host-side
+// (retiring the sandbox-runs-new-worktree.sh coupling). CreateWorktree adds the
+// worktree on `<branchPrefix>/<slug>` based on the freshly-fetched origin/main.
+func TestCreateWorktreeAddsBranchFromPrefixOntoOriginMain(t *testing.T) {
+	// Fresh run: the feature branch does not yet exist (refs/heads probe fails), so
+	// the `-b`-off-origin/main path runs, not the resumed-branch attach.
+	run, calls := recordingRunner(func(args []string) error {
+		if strings.Contains(strings.Join(args, " "), "refs/heads/") {
+			return errors.New("no such branch yet")
+		}
+		return nil
+	})
+	wt := "/herd/.claude/worktrees/beh-636-x"
+	if err := createWorktree("/herd", "feat", "beh-636-x", wt, run); err != nil {
+		t.Fatalf("createWorktree: %v", err)
+	}
+	var add []string
+	for _, c := range *calls {
+		if hasArg(c, "worktree") && hasArg(c, "add") {
+			add = c
+		}
+	}
+	if add == nil {
+		t.Fatalf("expected a `git worktree add`, calls: %v", *calls)
+	}
+	joined := strings.Join(add, " ")
+	if !strings.Contains(joined, "-b feat/beh-636-x") {
+		t.Errorf("worktree add must create the prefix-derived branch, got %q", joined)
+	}
+	if !strings.Contains(joined, wt) {
+		t.Errorf("worktree add must target the worktree path %q, got %q", wt, joined)
+	}
+	if !strings.Contains(joined, "refs/remotes/origin/main") {
+		t.Errorf("worktree add must base on origin/main when it resolves, got %q", joined)
+	}
+}
+
+// When origin/main can't be resolved (no remote-tracking ref — a fresh clone or an
+// offline host), CreateWorktree falls back to local `main` rather than failing, so
+// a first run on a repo without a fetched origin/main still gets a worktree.
+func TestCreateWorktreeFallsBackToLocalMain(t *testing.T) {
+	run, calls := recordingRunner(func(args []string) error {
+		if strings.Contains(strings.Join(args, " "), "rev-parse --verify") {
+			return errors.New("no origin/main")
+		}
+		return nil
+	})
+	if err := createWorktree("/herd", "feat", "beh-636-x", "/wt", run); err != nil {
+		t.Fatalf("createWorktree: %v", err)
+	}
+	var add []string
+	for _, c := range *calls {
+		if hasArg(c, "worktree") && hasArg(c, "add") {
+			add = c
+		}
+	}
+	joined := strings.Join(add, " ")
+	if strings.Contains(joined, "origin/main") {
+		t.Errorf("with origin/main unresolved, add must base on local main, got %q", joined)
+	}
+	if !hasArg(add, "main") {
+		t.Errorf("expected local `main` as the base, got %q", joined)
+	}
+}
+
+// Resumed-branch case (BEH-554): a prior session already created `<branch>` with
+// un-merged commits but its worktree dir was torn down. CreateWorktree must
+// RE-ATTACH a worktree to the existing branch (`worktree add <path> <branch>`, no
+// `-b`) rather than `-b` it (which fails "branch already exists") — preserving the
+// prior work for the resumed-branch session to verify-and-handoff.
+func TestCreateWorktreeAttachesToExistingBranch(t *testing.T) {
+	run, calls := recordingRunner(func(args []string) error {
+		// The feature branch already resolves; origin/main does not matter here.
+		if strings.Contains(strings.Join(args, " "), "rev-parse --verify -q refs/heads/feat/beh-636-x") {
+			return nil
+		}
+		if strings.Contains(strings.Join(args, " "), "rev-parse") {
+			return errors.New("only the feature branch resolves")
+		}
+		return nil
+	})
+	if err := createWorktree("/herd", "feat", "beh-636-x", "/wt", run); err != nil {
+		t.Fatalf("createWorktree: %v", err)
+	}
+	var add []string
+	for _, c := range *calls {
+		if hasArg(c, "worktree") && hasArg(c, "add") {
+			add = c
+		}
+	}
+	joined := strings.Join(add, " ")
+	if hasArg(add, "-b") {
+		t.Errorf("attaching to an existing branch must NOT use `-b` (that fails 'branch already exists'), got %q", joined)
+	}
+	if !hasArg(add, "feat/beh-636-x") {
+		t.Errorf("attach must target the existing branch, got %q", joined)
+	}
+}
+
+// A failing `worktree add` (e.g. the branch already exists) is surfaced, not
+// swallowed — the caller must know the worktree wasn't created.
+func TestCreateWorktreePropagatesAddError(t *testing.T) {
+	run, _ := recordingRunner(func(args []string) error {
+		if strings.Contains(strings.Join(args, " "), "worktree add") {
+			return errors.New("fatal: branch already exists")
+		}
+		return nil
+	})
+	if err := createWorktree("/herd", "feat", "beh-636-x", "/wt", run); err == nil {
+		t.Fatal("expected createWorktree to propagate a failing `worktree add`")
+	}
+}
+
 // execIn runs a git command in dir to completion for test setup (init a repo,
 // create a branch). Distinct from the production commandRunner seam — these are
 // real git calls against a throwaway repo, the only way to exercise the host-git
@@ -213,7 +338,7 @@ func TestRebaseOntoMainAgainstRealGit(t *testing.T) {
 		git("add", "-A")
 		git("commit", "-q", "-m", "base")
 		// feat branch edits feat.txt.
-		git("checkout", "-q", "-b", BranchName(slug))
+		git("checkout", "-q", "-b", BranchName("feat", slug))
 		write("feat.txt", "feat change\n")
 		git("add", "-A")
 		git("commit", "-q", "-m", "feat work")
@@ -223,7 +348,7 @@ func TestRebaseOntoMainAgainstRealGit(t *testing.T) {
 		git("add", "-A")
 		git("commit", "-q", "-m", "main moved")
 		git("update-ref", "refs/remotes/origin/main", "main")
-		git("checkout", "-q", BranchName(slug))
+		git("checkout", "-q", BranchName("feat", slug))
 		return repo
 	}
 
@@ -314,7 +439,7 @@ func TestRebaseOntoMainDropsRedundantCommit(t *testing.T) {
 	git("commit", "-q", "-m", "base")
 	// feat branch makes two commits: the first sets shared.txt to a value main will
 	// also adopt (becomes redundant on replay); the second is feat-only (must survive).
-	git("checkout", "-q", "-b", BranchName(slug))
+	git("checkout", "-q", "-b", BranchName("feat", slug))
 	write("shared.txt", "shared change\n")
 	git("add", "-A")
 	git("commit", "-q", "-m", "feat redundant")
@@ -329,7 +454,7 @@ func TestRebaseOntoMainDropsRedundantCommit(t *testing.T) {
 	git("add", "-A")
 	git("commit", "-q", "-m", "main moved")
 	git("update-ref", "refs/remotes/origin/main", "main")
-	git("checkout", "-q", BranchName(slug))
+	git("checkout", "-q", BranchName("feat", slug))
 
 	if res := RebaseOntoMain(repo); res != RebaseClean {
 		t.Fatalf("res = %v, want RebaseClean — a commit already present in origin/main must be auto-dropped, not misread as a conflict (BEH-622)", res)
@@ -390,7 +515,7 @@ func TestRebaseOntoMainStripsReadySentinelBeforeRebase(t *testing.T) {
 	write("feat.txt", "base\n")
 	git("add", "-A")
 	git("commit", "-q", "-m", "base")
-	git("checkout", "-q", "-b", BranchName(slug))
+	git("checkout", "-q", "-b", BranchName("feat", slug))
 	write("feat.txt", "feat change\n")
 	git("add", "-A")
 	git("commit", "-q", "-m", "feat work")
@@ -403,7 +528,7 @@ func TestRebaseOntoMainStripsReadySentinelBeforeRebase(t *testing.T) {
 	git("add", "-A")
 	git("commit", "-q", "-m", "main moved")
 	git("update-ref", "refs/remotes/origin/main", "main")
-	git("checkout", "-q", BranchName(slug))
+	git("checkout", "-q", BranchName("feat", slug))
 	// The live worktree carries the untracked readiness sentinel new-worktree.sh drops.
 	write(WorktreeReadySentinel, "")
 
@@ -454,7 +579,7 @@ func TestRebaseOntoMainReplaysInLinkedWorktree(t *testing.T) {
 		git(base, "add", "-A")
 		git(base, "commit", "-q", "-m", "base")
 		// feat branch edits feat.txt, then main advances; origin/main tracks main's tip.
-		git(base, "checkout", "-q", "-b", BranchName(slug))
+		git(base, "checkout", "-q", "-b", BranchName("feat", slug))
 		write(base, "feat.txt", "feat change\n")
 		git(base, "add", "-A")
 		git(base, "commit", "-q", "-m", "feat work")
@@ -467,7 +592,7 @@ func TestRebaseOntoMainReplaysInLinkedWorktree(t *testing.T) {
 		// can claim the branch). This is the harness's real shape (ADR-0002).
 		git(base, "checkout", "-q", "main")
 		linked := filepath.Join(t.TempDir(), "wt")
-		git(base, "worktree", "add", "-q", linked, BranchName(slug))
+		git(base, "worktree", "add", "-q", linked, BranchName("feat", slug))
 		// new-worktree.sh drops the untracked readiness sentinel in every worktree.
 		write(linked, WorktreeReadySentinel, "")
 		return linked
@@ -602,7 +727,7 @@ func TestIsRebasedOntoAgainstRealGit(t *testing.T) {
 	write("base.txt", "base\n")
 	git("add", "-A")
 	git("commit", "-q", "-m", "base")
-	git("checkout", "-q", "-b", BranchName(slug))
+	git("checkout", "-q", "-b", BranchName("feat", slug))
 	write("feat.txt", "feat\n")
 	git("add", "-A")
 	git("commit", "-q", "-m", "feat work")
@@ -612,7 +737,7 @@ func TestIsRebasedOntoAgainstRealGit(t *testing.T) {
 	git("add", "-A")
 	git("commit", "-q", "-m", "main moved")
 	git("update-ref", "refs/remotes/origin/main", "main")
-	git("checkout", "-q", BranchName(slug))
+	git("checkout", "-q", BranchName("feat", slug))
 
 	// Before rebasing, origin/main is NOT an ancestor of feat's tip.
 	if IsRebasedOnto(repo, "origin/main") {
@@ -680,7 +805,7 @@ func TestIsDisjointFromAgainstRealGit(t *testing.T) {
 	git("update-ref", "refs/remotes/origin/main", "main")
 
 	// A normal feature branch off main shares main's history → NOT disjoint.
-	git("checkout", "-q", "-b", BranchName("beh-597-joined"))
+	git("checkout", "-q", "-b", BranchName("feat", "beh-597-joined"))
 	write("feat.txt", "feat\n")
 	git("add", "-A")
 	git("commit", "-q", "-m", "feat work")
@@ -689,7 +814,7 @@ func TestIsDisjointFromAgainstRealGit(t *testing.T) {
 	}
 
 	// An orphan branch (built with no parent) shares NO history with main → disjoint.
-	git("checkout", "-q", "--orphan", BranchName("beh-597-orphan"))
+	git("checkout", "-q", "--orphan", BranchName("feat", "beh-597-orphan"))
 	write("orphan.txt", "orphan\n")
 	git("add", "-A")
 	git("commit", "-q", "-m", "orphan root")
@@ -732,7 +857,7 @@ func TestRegraftOntoBaseEscapesDisjointHistory(t *testing.T) {
 	// Build a DISJOINT branch (orphan root, no shared history) that carries the
 	// same base file plus a verified fix — the BEH-500 shape, where the content
 	// diff against origin/main is just the real fix despite the disjoint root.
-	git("checkout", "-q", "--orphan", BranchName("beh-500"))
+	git("checkout", "-q", "--orphan", BranchName("feat", "beh-500"))
 	git("rm", "-rfq", "--cached", ".")
 	write("base.txt", "base\n")
 	write("fix.txt", "the verified fix\n")
@@ -796,7 +921,7 @@ func TestRegraftOntoBaseEmptyDiffErrors(t *testing.T) {
 
 	// An orphan branch with the SAME tree as main: disjoint history, but zero content
 	// diff against origin/main.
-	git("checkout", "-q", "--orphan", BranchName("beh-500-empty"))
+	git("checkout", "-q", "--orphan", BranchName("feat", "beh-500-empty"))
 	git("add", "-A")
 	git("commit", "-q", "-m", "identical tree, unrelated root")
 	if err := RegraftOntoBase(repo, "origin/main"); err == nil {
@@ -867,7 +992,7 @@ func TestBranchDiffEmptyAgainstRealGit(t *testing.T) {
 	git("update-ref", "refs/remotes/origin/main", "main")
 
 	// An empty-commit branch: a commit ahead of main that changes nothing.
-	git("checkout", "-q", "-b", BranchName("beh-603-empty"))
+	git("checkout", "-q", "-b", BranchName("feat", "beh-603-empty"))
 	git("commit", "-q", "--allow-empty", "-m", "document finding (no functional change)")
 	if !BranchDiffEmpty(repo) {
 		t.Fatal("an empty-commit branch makes no net change against origin/main — must read as empty diff")
@@ -913,9 +1038,9 @@ func TestGatherTddGroundTruthFlagsDisjointHistory(t *testing.T) {
 		git("update-ref", "refs/remotes/origin/main", "main")
 		const slug = "beh-597-gather"
 		if orphan {
-			git("checkout", "-q", "--orphan", BranchName(slug))
+			git("checkout", "-q", "--orphan", BranchName("feat", slug))
 		} else {
-			git("checkout", "-q", "-b", BranchName(slug))
+			git("checkout", "-q", "-b", BranchName("feat", slug))
 		}
 		write("feat.txt", "feat\n")
 		git("add", "-A")
@@ -925,7 +1050,7 @@ func TestGatherTddGroundTruthFlagsDisjointHistory(t *testing.T) {
 
 	t.Run("orphan branch is disjoint", func(t *testing.T) {
 		repo, slug := mkRepo(true)
-		truth := GatherTddGroundTruth(repo, slug)
+		truth := GatherTddGroundTruth(repo, "feat", slug)
 		if !truth.DisjointHistory {
 			t.Errorf("an orphan branch (no common ancestor) must be flagged disjoint, got %+v", truth)
 		}
@@ -936,7 +1061,7 @@ func TestGatherTddGroundTruthFlagsDisjointHistory(t *testing.T) {
 
 	t.Run("normal feature branch is not disjoint", func(t *testing.T) {
 		repo, slug := mkRepo(false)
-		truth := GatherTddGroundTruth(repo, slug)
+		truth := GatherTddGroundTruth(repo, "feat", slug)
 		if truth.DisjointHistory {
 			t.Errorf("a feature branch off main shares a common ancestor — must NOT be flagged disjoint, got %+v", truth)
 		}
@@ -1039,23 +1164,23 @@ func TestBranchExistsTracksLocalFeatureBranch(t *testing.T) {
 	gitInRepo("commit", "-q", "--allow-empty", "-m", "root")
 
 	const slug = "beh-553-retro-precondition"
-	if BranchExists(repo, slug) {
+	if BranchExists(repo, "feat", slug) {
 		t.Fatal("BranchExists should be false before feat/<slug> is created")
 	}
 
-	gitInRepo("branch", BranchName(slug))
-	if !BranchExists(repo, slug) {
+	gitInRepo("branch", BranchName("feat", slug))
+	if !BranchExists(repo, "feat", slug) {
 		t.Error("BranchExists should be true once feat/<slug> resolves")
 	}
 
 	// An unrelated slug must not resolve — the gate is keyed to the exact branch.
-	if BranchExists(repo, "beh-999-nope") {
+	if BranchExists(repo, "feat", "beh-999-nope") {
 		t.Error("BranchExists must not report a branch that was never created")
 	}
 
 	// A path that isn't a git repo makes rev-parse fail; the documented contract
 	// treats any git failure as "ref absent" (false), never a panic or true.
-	if BranchExists(t.TempDir(), slug) {
+	if BranchExists(t.TempDir(), "feat", slug) {
 		t.Error("BranchExists must read an unreadable ref (non-repo path) as absent")
 	}
 }
@@ -1063,7 +1188,7 @@ func TestBranchExistsTracksLocalFeatureBranch(t *testing.T) {
 func TestPushUsesNoVerifyAndCorrectArgs(t *testing.T) {
 	clock := newFakeClock()
 	run, calls := scriptedRunner(0, nil)
-	if err := push("/herd", "beh-403", run, clock.sleep, clock.now); err != nil {
+	if err := push("/herd", "feat", "beh-403", run, clock.sleep, clock.now); err != nil {
 		t.Fatalf("expected success, got %v", err)
 	}
 	if len(*calls) != 1 {
@@ -1088,7 +1213,7 @@ func TestPushUsesNoVerifyAndCorrectArgs(t *testing.T) {
 func TestPushForceWithLeaseUsesLeaseAndNoVerify(t *testing.T) {
 	clock := newFakeClock()
 	run, calls := scriptedRunner(0, nil)
-	if err := pushForceWithLease("/herd", "beh-570", run, clock.sleep, clock.now); err != nil {
+	if err := pushForceWithLease("/herd", "feat", "beh-570", run, clock.sleep, clock.now); err != nil {
 		t.Fatalf("expected success, got %v", err)
 	}
 	if len(*calls) != 1 {
@@ -1109,7 +1234,7 @@ func TestPushForceWithLeaseUsesLeaseAndNoVerify(t *testing.T) {
 func TestPushForceWithLeaseRetriesThenSucceeds(t *testing.T) {
 	clock := newFakeClock()
 	run, calls := scriptedRunner(2, errors.New("exit status 128"))
-	if err := pushForceWithLease("/herd", "beh-570", run, clock.sleep, clock.now); err != nil {
+	if err := pushForceWithLease("/herd", "feat", "beh-570", run, clock.sleep, clock.now); err != nil {
 		t.Fatalf("expected eventual success, got %v", err)
 	}
 	if len(*calls) != 3 {
@@ -1121,7 +1246,7 @@ func TestPushRetriesThenSucceeds(t *testing.T) {
 	// Two transient failures, then success — must not be stranded.
 	clock := newFakeClock()
 	run, calls := scriptedRunner(2, errors.New("exit status 128"))
-	if err := push("/herd", "beh-403", run, clock.sleep, clock.now); err != nil {
+	if err := push("/herd", "feat", "beh-403", run, clock.sleep, clock.now); err != nil {
 		t.Fatalf("expected eventual success, got %v", err)
 	}
 	if len(*calls) != 3 {
@@ -1135,7 +1260,7 @@ func TestPushRetriesThenSucceeds(t *testing.T) {
 func TestPushRidesOutMultiMinuteBlip(t *testing.T) {
 	clock := newFakeClock()
 	run, calls := blipRunner(clock, 2*time.Minute, errors.New("exit status 128"))
-	if err := push("/herd", "beh-403", run, clock.sleep, clock.now); err != nil {
+	if err := push("/herd", "feat", "beh-403", run, clock.sleep, clock.now); err != nil {
 		t.Fatalf("expected eventual success once the blip cleared, got %v", err)
 	}
 	if *calls < 2 {
@@ -1152,7 +1277,7 @@ func TestPushGivesUpNearBudgetAfterPersistentFailure(t *testing.T) {
 	clock := newFakeClock()
 	boom := errors.New("exit status 128")
 	run, calls := scriptedRunner(1<<30, boom) // always fails
-	err := push("/herd", "beh-403", run, clock.sleep, clock.now)
+	err := push("/herd", "feat", "beh-403", run, clock.sleep, clock.now)
 	if !errors.Is(err, boom) {
 		t.Fatalf("expected the last error %v, got %v", boom, err)
 	}
@@ -1178,7 +1303,7 @@ func TestPushFailsFastOnPermanentAuthFailure(t *testing.T) {
 	authErr := errors.New("exit status 128: fatal: unable to access " +
 		"'https://github.com/org/herd.git/': The requested URL returned error: 403")
 	run, calls := scriptedRunner(1<<30, authErr) // would fail forever if retried
-	err := push("/herd", "beh-475", run, sleep, clock.now)
+	err := push("/herd", "feat", "beh-475", run, sleep, clock.now)
 	if !errors.Is(err, authErr) {
 		t.Fatalf("expected the underlying auth error preserved, got %v", err)
 	}
@@ -1440,7 +1565,7 @@ func TestBranchDocsOnlyAgainstRealGit(t *testing.T) {
 	git("commit", "-q", "-m", "base")
 	git("update-ref", "refs/remotes/origin/main", "main")
 
-	git("checkout", "-q", "-b", BranchName("beh-687-docs"))
+	git("checkout", "-q", "-b", BranchName("feat", "beh-687-docs"))
 	write("AGENTS.md", "base\nnew guidance line\n")
 	git("add", "-A")
 	git("commit", "-q", "-m", "docs: add guidance")

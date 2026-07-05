@@ -61,7 +61,22 @@ func Plan(cfg config.Config, identifier string) string {
 		Model:          cfg.Model,
 		ContainerName:  name("implementation"),
 	})
-	fmt.Fprintf(&b, "\n=== stage 1: implementation ===\n--- prompt ---\n%s\n\n--- docker command ---\n%s\n", implPrompt, dockerLine(implDocker))
+	// The harness creates the worktree + canonical branch host-side, then runs the
+	// Consumer's post_create hook, BEFORE the session (BEH-636) — show both so the
+	// plan is honest about the full lifecycle, not just the model session.
+	worktreeCreate := fmt.Sprintf("host-side: git worktree add -b %s %s (based on origin/main)", gitpkg.BranchName(cfg.BranchPrefix, slug), worktreePath)
+	postCreateLine := "(none — no post_create hook configured)"
+	if cfg.PostCreate != "" {
+		postCreateLine = dockerLine(sandbox.BuildPostCreateRunArgs(sandbox.GateConfig{
+			Image:          cfg.Image,
+			HerdPath:       cfg.HerdPath,
+			WorktreePath:   worktreePath,
+			CacheVolume:    cfg.CacheVolume,
+			CacheMountPath: cfg.CacheMountPath,
+			ContainerName:  name("postcreate"),
+		}, cfg.PostCreate))
+	}
+	fmt.Fprintf(&b, "\n=== stage 1: implementation ===\n--- worktree creation ---\n%s\n\n--- post_create hook ---\n%s\n\n--- prompt ---\n%s\n\n--- docker command ---\n%s\n", worktreeCreate, postCreateLine, implPrompt, dockerLine(implDocker))
 
 	gateConfig := sandbox.GateConfig{
 		Image:          cfg.Image,

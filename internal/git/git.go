@@ -254,14 +254,48 @@ func remoteBranchesReference(lsRemoteOutput, key string) bool {
 	return keyReferenced(lsRemoteOutput, key)
 }
 
-// WorktreePath is the host path of the worktree the tdd skill is told to create.
+// WorktreePath is the host path of the worktree the harness creates for a slug.
 func WorktreePath(herdPath, slug string) string {
 	return filepath.Join(herdPath, ".claude", "worktrees", slug)
 }
 
-// BranchName is the deterministic feature branch the tdd skill creates for a slug.
-func BranchName(slug string) string {
-	return "feat/" + slug
+// CreateWorktree creates the feature worktree + canonical branch host-side
+// (ADR-0008/BEH-636), retiring the old coupling where the sandbox agent ran the
+// Consumer's `new-worktree.sh` and the host depended on its output. It adds a
+// `git worktree add -b <branchPrefix>/<slug>` at WorktreePath, based on the
+// freshly-fetched origin/main (falling back to local `main` when the remote-
+// tracking ref doesn't resolve). Toolchain provisioning inside the created
+// worktree is the Consumer's `post_create` hook, run separately by the caller —
+// this does pure git only, so it is language-agnostic.
+func CreateWorktree(herdPath, branchPrefix, slug string) error {
+	return createWorktree(herdPath, branchPrefix, slug, WorktreePath(herdPath, slug), execRun)
+}
+
+func createWorktree(herdPath, branchPrefix, slug, worktreePath string, run commandRunner) error {
+	branch := BranchName(branchPrefix, slug)
+	// Resumed-branch case (BEH-554): the branch already exists from a prior session
+	// but its worktree dir was torn down. Re-attach a worktree to it (no `-b`, which
+	// would fail "branch already exists") so the prior work is preserved.
+	if run("git", "-C", herdPath, "rev-parse", "--verify", "-q", "refs/heads/"+branch) == nil {
+		return run("git", "-C", herdPath, "worktree", "add", worktreePath, branch)
+	}
+	// Fresh branch: root it at current origin/main. Best-effort refresh — an
+	// offline/blipping remote just means we branch off whatever ref we already have.
+	_ = run("git", "-C", herdPath, "fetch", "-q", "origin", "main")
+	base := "main"
+	if run("git", "-C", herdPath, "rev-parse", "--verify", "-q", "refs/remotes/origin/main") == nil {
+		base = "refs/remotes/origin/main"
+	}
+	return run("git", "-C", herdPath, "worktree", "add", "-b", branch, worktreePath, base)
+}
+
+// BranchName is the canonical feature branch the harness creates for a slug: the
+// Consumer's configured branch prefix joined to the slug (ADR-0008/BEH-636). The
+// harness owns this branch host-side and keys verify/push/PR/dispatch-guards off
+// it, so the prefix is no longer the hardcoded "feat" — a Consumer that sets
+// branch_prefix = "fix" gets `fix/<slug>`.
+func BranchName(branchPrefix, slug string) string {
+	return branchPrefix + "/" + slug
 }
 
 // HeadSHA returns the commit SHA at the worktree's HEAD, read host-side via the
@@ -294,9 +328,9 @@ func fetchMain(herdPath string, run commandRunner, sleep func(time.Duration), no
 // ahead of origin/main, newest last — the raw material for the templated PR body.
 // Read from the main checkout (the shared `.git` holds the branch's objects); an
 // empty result on any git failure keeps the caller crash-free.
-func CommitSubjects(herdPath, slug string) []string {
+func CommitSubjects(herdPath, branchPrefix, slug string) []string {
 	out, err := exec.Command(
-		"git", "-C", herdPath, "log", "--reverse", "--format=%s", "origin/main.."+BranchName(slug),
+		"git", "-C", herdPath, "log", "--reverse", "--format=%s", "origin/main.."+BranchName(branchPrefix, slug),
 	).Output()
 	if err != nil {
 		return nil
@@ -673,13 +707,13 @@ func abortRebase(worktreePath string, run commandRunner) {
 // push-file set is empty) or, if it ran, would build the wrong tree against
 // host-platform node_modules the worktree doesn't have. Retried against transient
 // remote blips under a wall-clock budget (BEH-329, widened in BEH-403).
-func Push(herdPath, slug string) error {
-	return push(herdPath, slug, execRun, time.Sleep, time.Now)
+func Push(herdPath, branchPrefix, slug string) error {
+	return push(herdPath, branchPrefix, slug, execRun, time.Sleep, time.Now)
 }
 
-func push(herdPath, slug string, run commandRunner, sleep func(time.Duration), now func() time.Time) error {
+func push(herdPath, branchPrefix, slug string, run commandRunner, sleep func(time.Duration), now func() time.Time) error {
 	return withRetry(func() error {
-		return run("git", "-C", herdPath, "push", "--no-verify", "origin", BranchName(slug))
+		return run("git", "-C", herdPath, "push", "--no-verify", "origin", BranchName(branchPrefix, slug))
 	}, sleep, now)
 }
 
@@ -690,13 +724,13 @@ func push(herdPath, slug string, run commandRunner, sleep func(time.Duration), n
 // remote commits the harness hasn't observed (it never will here — the harness owns
 // the branch — but the lease is the correct, non-destructive force). --no-verify and
 // the transient-retry budget match Push.
-func PushForceWithLease(herdPath, slug string) error {
-	return pushForceWithLease(herdPath, slug, execRun, time.Sleep, time.Now)
+func PushForceWithLease(herdPath, branchPrefix, slug string) error {
+	return pushForceWithLease(herdPath, branchPrefix, slug, execRun, time.Sleep, time.Now)
 }
 
-func pushForceWithLease(herdPath, slug string, run commandRunner, sleep func(time.Duration), now func() time.Time) error {
+func pushForceWithLease(herdPath, branchPrefix, slug string, run commandRunner, sleep func(time.Duration), now func() time.Time) error {
 	return withRetry(func() error {
-		return run("git", "-C", herdPath, "push", "--no-verify", "--force-with-lease", "origin", BranchName(slug))
+		return run("git", "-C", herdPath, "push", "--no-verify", "--force-with-lease", "origin", BranchName(branchPrefix, slug))
 	}, sleep, now)
 }
 
@@ -705,14 +739,15 @@ func pushForceWithLease(herdPath, slug string, run commandRunner, sleep func(tim
 // ref + objects are visible here without touching the worktree itself — the
 // harness never runs git inside a worktree (whose `.git` pointer is container-
 // relative), only against the main checkout.
-func GatherTddGroundTruth(herdPath, slug string) verify.GroundTruth {
+func GatherTddGroundTruth(herdPath, branchPrefix, slug string) verify.GroundTruth {
 	_, statErr := os.Stat(WorktreePath(herdPath, slug))
 	worktreeExists := statErr == nil
 
+	branch := BranchName(branchPrefix, slug)
 	commitsAhead := 0
 	// On any failure (branch doesn't exist / no upstream) treat as zero ahead.
 	out, err := exec.Command(
-		"git", "-C", herdPath, "rev-list", "--count", "origin/main..feat/"+slug,
+		"git", "-C", herdPath, "rev-list", "--count", "origin/main.."+branch,
 	).Output()
 	if err == nil {
 		if n, perr := strconv.Atoi(strings.TrimSpace(string(out))); perr == nil {
@@ -725,7 +760,7 @@ func GatherTddGroundTruth(herdPath, slug string) verify.GroundTruth {
 	// ahead, so both refs resolve and a non-zero merge-base means genuine disjoint
 	// rather than an unresolved ref; an absent/zero-ahead branch already fails the
 	// CommitsAhead gate (BEH-597).
-	disjoint := commitsAhead > 0 && branchesDisjoint(herdPath, "feat/"+slug, "origin/main", execRun)
+	disjoint := commitsAhead > 0 && branchesDisjoint(herdPath, branch, "origin/main", execRun)
 
 	return verify.GroundTruth{WorktreeExists: worktreeExists, CommitsAhead: commitsAhead, DisjointHistory: disjoint}
 }
@@ -737,9 +772,9 @@ func GatherTddGroundTruth(herdPath, slug string) verify.GroundTruth {
 // which reads the remote-tracking ref. It is the retrospective's host-side
 // precondition (BEH-553): a branch that doesn't resolve means there is no diff to
 // retrospect. Any git failure → false (treat an unreadable ref as absent).
-func BranchExists(herdPath, slug string) bool {
+func BranchExists(herdPath, branchPrefix, slug string) bool {
 	err := exec.Command(
-		"git", "-C", herdPath, "rev-parse", "--verify", "--quiet", "refs/heads/"+BranchName(slug),
+		"git", "-C", herdPath, "rev-parse", "--verify", "--quiet", "refs/heads/"+BranchName(branchPrefix, slug),
 	).Run()
 	return err == nil
 }
@@ -749,9 +784,9 @@ func BranchExists(herdPath, slug string) bool {
 // is the safe gate on tearing down a worktree: the harness only removes a
 // worktree whose branch is on the remote, so a teardown can never lose work
 // that hasn't been pushed (DESIGN.md "On a clean run … git worktree remove").
-func BranchPushed(herdPath, slug string) bool {
+func BranchPushed(herdPath, branchPrefix, slug string) bool {
 	err := exec.Command(
-		"git", "-C", herdPath, "rev-parse", "--verify", "--quiet", "refs/remotes/origin/feat/"+slug,
+		"git", "-C", herdPath, "rev-parse", "--verify", "--quiet", "refs/remotes/origin/"+BranchName(branchPrefix, slug),
 	).Run()
 	return err == nil
 }

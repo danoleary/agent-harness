@@ -30,6 +30,28 @@ func TestPlanNamesAllThreeStagesInOrder(t *testing.T) {
 	}
 }
 
+// BEH-636: the harness now creates the worktree + branch host-side and runs the
+// Consumer's post_create hook before the implementation session (retiring the
+// sandbox-runs-new-worktree.sh coupling). The dry-run plan must be honest about
+// that: it shows the host-side creation and the resolved post_create docker command.
+func TestPlanShowsHostSideWorktreeProvisioning(t *testing.T) {
+	cfg := planCfg()
+	cfg.BranchPrefix = "feat"
+	cfg.PostCreate = "cd web && pnpm install --frozen-lockfile"
+	plan := Plan(cfg, "BEH-636")
+
+	low := strings.ToLower(plan)
+	if !strings.Contains(low, "host-side") || !strings.Contains(low, "worktree") {
+		t.Errorf("plan does not show host-side worktree creation:\n%s", plan)
+	}
+	if !strings.Contains(plan, "feat/beh-636") {
+		t.Errorf("plan does not name the canonical host-side branch:\n%s", plan)
+	}
+	if !strings.Contains(plan, "cd web && pnpm install --frozen-lockfile") {
+		t.Errorf("plan does not show the resolved post_create hook command:\n%s", plan)
+	}
+}
+
 func TestPlanReflectsSkipAndAlwaysSemantics(t *testing.T) {
 	plan := Plan(planCfg(), "BEH-1")
 	// Review is conditional on implementation succeeding; retrospective is not.

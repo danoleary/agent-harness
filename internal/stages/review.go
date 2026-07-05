@@ -477,7 +477,7 @@ func Review(cfg config.Config, log *runlog.Logger, runID string, args Args) Resu
 			if cErr := gitpkg.CheckpointCommit(worktreePath, args.Identifier, reviewSession); cErr != nil {
 				log.Event("⚠ review session left uncommitted edits and the recovery checkpoint commit failed (" + cErr.Error() + ") — recover them manually at " + worktreePath)
 			} else {
-				log.Event("✓ harness recovery checkpoint committed on " + gitpkg.BranchName(slug) + " — the review session's in-progress edits are preserved (unverified: a resumed review will see them, finish or re-run before opening a PR)")
+				log.Event("✓ harness recovery checkpoint committed on " + gitpkg.BranchName(cfg.BranchPrefix, slug) + " — the review session's in-progress edits are preserved (unverified: a resumed review will see them, finish or re-run before opening a PR)")
 			}
 		}
 		// Red/crash/dirty → keep the worktree (recoverable artifact), do not push.
@@ -533,7 +533,7 @@ func Review(cfg config.Config, log *runlog.Logger, runID string, args Args) Resu
 			log.Event("review ✗ disjoint branch history — no common ancestor with origin/main; not a content conflict, needs manual recovery (BEH-597) — keeping worktree, nothing pushed")
 			comment(fmt.Sprintf(
 				"Branch `%s` has a disjoint history from `main` (no common ancestor / empty merge-base), so it cannot be rebased or merged as-is. This is not a content conflict — the handoff commits need to be re-applied onto current `main` (e.g. `git reset --hard origin/main` then cherry-pick them). The branch passed cold review and the harness gate; it is waiting in a worktree. (BEH-597)",
-				gitpkg.BranchName(slug),
+				gitpkg.BranchName(cfg.BranchPrefix, slug),
 			))
 			return Result{OK: false}
 		}
@@ -543,7 +543,7 @@ func Review(cfg config.Config, log *runlog.Logger, runID string, args Args) Resu
 			return Result{OK: false}
 		}
 	}
-	log.Event("rebased " + gitpkg.BranchName(slug) + " onto origin/main")
+	log.Event("rebased " + gitpkg.BranchName(cfg.BranchPrefix, slug) + " onto origin/main")
 
 	// Re-check the branch's emptiness AFTER the rebase, before the push (BEH-680). The
 	// pre-rebase BEH-603 EmptyDiff gate above ran on the stale tree; the rebase can
@@ -559,14 +559,14 @@ func Review(cfg config.Config, log *runlog.Logger, runID string, args Args) Resu
 		return Result{OK: false, RecommendClose: true}
 	}
 
-	if err := gitpkg.Push(cfg.HerdPath, slug); err != nil {
+	if err := gitpkg.Push(cfg.HerdPath, cfg.BranchPrefix, slug); err != nil {
 		log.Event("review ✗ push failed: " + err.Error() + " — keeping worktree")
 		return Result{OK: false}
 	}
-	log.Event("pushed " + gitpkg.BranchName(slug) + " to origin")
+	log.Event("pushed " + gitpkg.BranchName(cfg.BranchPrefix, slug) + " to origin")
 
-	subjects := gitpkg.CommitSubjects(cfg.HerdPath, slug)
-	url, err := createPR(cfg.HerdPath, slug, pr.BuildTitle(t), pr.BuildBody(t, subjects))
+	subjects := gitpkg.CommitSubjects(cfg.HerdPath, cfg.BranchPrefix, slug)
+	url, err := createPR(cfg.HerdPath, cfg.BranchPrefix, slug, pr.BuildTitle(t), pr.BuildBody(t, subjects))
 	if err != nil {
 		log.Event("review ✗ gh pr create failed: " + err.Error() + " — branch pushed, open the PR manually")
 		return Result{OK: false}
@@ -593,14 +593,16 @@ func Review(cfg config.Config, log *runlog.Logger, runID string, args Args) Resu
 		PollMaxBudget:  cfg.CIPollMaxBudget,
 	}
 	driver := ci.NewGhDriver(
-		cfg.HerdPath, gitpkg.BranchName(slug), ciCfg, ciGhTimeout,
+		cfg.HerdPath, gitpkg.BranchName(cfg.BranchPrefix, slug), ciCfg, ciGhTimeout,
 		ciFixRunner(cfg, args, slug, worktreePath, runID, t, log),
-		func() error { return gitpkg.Push(cfg.HerdPath, slug) },
-		func() (ci.RebaseVerdict, error) { return rebaseOntoBase(cfg.HerdPath, worktreePath, slug) },
+		func() error { return gitpkg.Push(cfg.HerdPath, cfg.BranchPrefix, slug) },
+		func() (ci.RebaseVerdict, error) {
+			return rebaseOntoBase(cfg.HerdPath, cfg.BranchPrefix, worktreePath, slug)
+		},
 		func() bool { return gitpkg.BranchDiffEmpty(worktreePath) },
 		func() bool { return gitpkg.BranchDocsOnly(worktreePath) },
 	)
-	log.Event("watching CI for " + gitpkg.BranchName(slug) + " …")
+	log.Event("watching CI for " + gitpkg.BranchName(cfg.BranchPrefix, slug) + " …")
 	ciResult := ci.WatchAndFix(driver, ciCfg, time.Now)
 	// Zero-net-diff short-circuit (BEH-602): the branch became a no-op against the
 	// latest origin/main only AFTER the pre-push rebase (a sibling PR landed the same
@@ -623,7 +625,7 @@ func Review(cfg config.Config, log *runlog.Logger, runID string, args Args) Resu
 	if !ciResult.OK {
 		log.Event("review ✗ CI did not go green: " + ciResult.Reason + " — keeping PR + worktree")
 		if s := ci.Summarize(ciResult.Failing); s != "" {
-			fmt.Fprintf(os.Stderr, "\nFailing CI checks for %s:\n%s", gitpkg.BranchName(slug), s)
+			fmt.Fprintf(os.Stderr, "\nFailing CI checks for %s:\n%s", gitpkg.BranchName(cfg.BranchPrefix, slug), s)
 		}
 		// CI red after the auto-fix budget still leaves a reviewable PR for a human to
 		// take over — NOT a ship failure, so the breaker must not count it.
@@ -752,7 +754,7 @@ func resolvePrePushConflict(
 		log.Event("review ✗ " + res.Reason + " — keeping worktree, nothing pushed")
 		comment(fmt.Sprintf(
 			"Pre-push auto-rebase onto `main` could not be completed for `%s`: %s This branch passed cold review and the harness gate, but it now needs a manual rebase onto `main`. It is waiting in a worktree. (BEH-581)",
-			gitpkg.BranchName(slug), res.Reason,
+			gitpkg.BranchName(cfg.BranchPrefix, slug), res.Reason,
 		))
 		return false
 	}
@@ -766,7 +768,7 @@ func resolvePrePushConflict(
 		log.Event(fmt.Sprintf("review ✗ post-rebase gate re-run failed (exit %d) — keeping worktree, nothing pushed", gateOutcome.ExitCode))
 		comment(fmt.Sprintf(
 			"Pre-push conflict was auto-resolved on `%s`, but the post-rebase gate re-run failed (exit %d). The rebased branch is waiting in a worktree for a look. (BEH-581)",
-			gitpkg.BranchName(slug), gateOutcome.ExitCode,
+			gitpkg.BranchName(cfg.BranchPrefix, slug), gateOutcome.ExitCode,
 		))
 		return false
 	}
@@ -800,14 +802,14 @@ func fixSessionError(outcome session.Outcome, attempt int) error {
 // fetch/push failure is surfaced as an error the watch reports. This is the
 // host-side git effect wired into the ci.Driver, kept here so internal/ci needn't
 // import internal/git (BEH-570).
-func rebaseOntoBase(herdPath, worktreePath, slug string) (ci.RebaseVerdict, error) {
+func rebaseOntoBase(herdPath, branchPrefix, worktreePath, slug string) (ci.RebaseVerdict, error) {
 	if err := gitpkg.FetchMain(herdPath); err != nil {
 		return ci.RebaseConflict, fmt.Errorf("fetch origin/main before rebase: %w", err)
 	}
 	if gitpkg.RebaseOntoMain(worktreePath) == gitpkg.RebaseConflict {
 		return ci.RebaseConflict, nil
 	}
-	if err := gitpkg.PushForceWithLease(herdPath, slug); err != nil {
+	if err := gitpkg.PushForceWithLease(herdPath, branchPrefix, slug); err != nil {
 		return ci.RebaseClean, fmt.Errorf("force-with-lease re-push after rebase: %w", err)
 	}
 	return ci.RebaseClean, nil
@@ -817,11 +819,11 @@ func rebaseOntoBase(herdPath, worktreePath, slug string) (ci.RebaseVerdict, erro
 // the origin repo from the checkout. GH_TOKEN stays host-only (ADR-0002) — gh
 // reads it from the harness env. Returns the created PR URL (gh prints it to
 // stdout).
-func createPR(herdPath, slug, title, body string) (string, error) {
+func createPR(herdPath, branchPrefix, slug, title, body string) (string, error) {
 	out, err := proc.CombinedOutputInDir(
 		prCreateTimeout, herdPath,
 		"gh", "pr", "create",
-		"--head", gitpkg.BranchName(slug),
+		"--head", gitpkg.BranchName(branchPrefix, slug),
 		"--base", "main",
 		"--title", title,
 		"--body", body,
