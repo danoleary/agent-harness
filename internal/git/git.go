@@ -616,14 +616,28 @@ func DocsOnlyPaths(paths []string) bool {
 // internal/skills contract tests, so a skill markdown edit triggers the Agent
 // Harness CI job (agent-harness.yaml keys on `.agents/skills/**`) and can turn it
 // red — treating it as docs-only would short-circuit a watch that could fail.
-// Outside those trees, markdown anywhere (AGENTS.md, CLAUDE.md, docs/adr/*.md, …)
+//
+// docsOnlyExcludedRoots must stay a superset of every non-web/-supabase directory a
+// workflow's `on.pull_request.paths` triggers on, so a markdown edit UNDER such a
+// root (scripts/README.md, .github/workflows/notes.md, infra/cloudflare/DESIGN.md)
+// is never treated as inert while the workflow it triggers goes unwatched. This is
+// enforced against the real workflow files by TestDocsOnlyClassifierNeverMatchesCI-
+// TriggerPath (BEH-705) — add a new trigger root here and that cross-check goes
+// green; forget to, and it fails. Excluding a root can only make the classifier more
+// conservative (run a gate that would have run anyway), never wrongly skip one.
+// Outside these trees, markdown anywhere (AGENTS.md, CLAUDE.md, docs/adr/*.md, …)
 // and the repo-root docs/ tree feed no gate or CI job.
+var docsOnlyExcludedRoots = []string{
+	"web/", "agent-harness/", ".agents/", ".claude/",
+	".github/", "scripts/", "supabase/", "infra/",
+}
+
 func docsOnlyPath(p string) bool {
 	p = strings.TrimSpace(p)
 	if p == "" {
 		return false
 	}
-	for _, codeRoot := range []string{"web/", "agent-harness/", ".agents/", ".claude/"} {
+	for _, codeRoot := range docsOnlyExcludedRoots {
 		if strings.HasPrefix(p, codeRoot) {
 			return false
 		}
