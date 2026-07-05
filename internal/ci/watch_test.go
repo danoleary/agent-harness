@@ -26,6 +26,11 @@ type fakeDriver struct {
 	// existing test exercises the normal watch.
 	diffEmpty bool
 
+	// docsOnly is what DocsOnly() reports — the docs-only short-circuit signal
+	// WatchAndFix consults before its first poll (BEH-687). Defaults false so every
+	// existing test exercises the normal watch.
+	docsOnly bool
+
 	reruns, fixes, pushes, awaits int
 	rerunErr, fixErr, awaitErr    error
 
@@ -52,6 +57,7 @@ func (d *fakeDriver) Poll() (Verdict, []Check, error) {
 	return r.v, r.checks, r.err
 }
 func (d *fakeDriver) DiffEmpty() bool     { return d.diffEmpty }
+func (d *fakeDriver) DocsOnly() bool      { return d.docsOnly }
 func (d *fakeDriver) Rerun([]Check) error { d.reruns++; return d.rerunErr }
 func (d *fakeDriver) Fix([]Check) error {
 	d.fixes++
@@ -113,6 +119,43 @@ func TestWatchDoesNotShortCircuitOnRealDiff(t *testing.T) {
 	}
 	if d.pollCalls == 0 {
 		t.Fatalf("expected the normal watch to poll on a real-diff branch")
+	}
+}
+
+// BEH-687: a docs-only diff (root markdown / docs/**, nothing a gate or CI job reads)
+// cannot break CI, so polling the full job just burns the poll budget on a change that
+// can never fail it. WatchAndFix must short-circuit to a green ship BEFORE the first
+// poll. Scripted with NO polls so any poll attempt panics — proving the watch never
+// started — and a clean merge state so the mergeability gate passes.
+func TestWatchShortCircuitsDocsOnlyBranch(t *testing.T) {
+	d := &fakeDriver{docsOnly: true, mergeState: MergeClean}
+	out := WatchAndFix(d, testWatchCfg(), newFakeClock().now)
+	if !out.OK {
+		t.Fatalf("a docs-only branch is a trivially-mergeable green ship; want OK, got %+v", out)
+	}
+	if out.RecommendClose {
+		t.Fatalf("a docs-only branch has a real diff to ship — must NOT recommend close; got %+v", out)
+	}
+	if d.pollCalls != 0 {
+		t.Fatalf("expected no poll on a docs-only branch (short-circuit before the watch); got %d", d.pollCalls)
+	}
+	if d.reruns != 0 || d.fixes != 0 {
+		t.Fatalf("a docs-only branch must not rerun/fix anything; got rerun=%d fix=%d", d.reruns, d.fixes)
+	}
+}
+
+// The docs-only pass is still mergeability-gated, exactly like the wedged-ready case:
+// a docs-only branch that genuinely conflicts with base (main moved underneath it) and
+// cannot be auto-rebased is NOT shippable, so the short-circuit must route through the
+// same greenOutcome merge gate rather than blindly passing.
+func TestWatchDocsOnlyStillGatedOnMergeability(t *testing.T) {
+	d := &fakeDriver{docsOnly: true, mergeState: MergeConflicting, rebaseVerdict: RebaseConflict}
+	out := WatchAndFix(d, testWatchCfg(), newFakeClock().now)
+	if out.OK {
+		t.Fatalf("a docs-only branch with a genuine merge conflict is not shippable; got %+v", out)
+	}
+	if d.pollCalls != 0 {
+		t.Fatalf("still no poll — the short-circuit fires before the watch; got %d", d.pollCalls)
 	}
 }
 

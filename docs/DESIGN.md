@@ -247,6 +247,14 @@ loop:
   re-run each config-declared named gate (BEH-634) in its own throwaway container, in
     order, on feat/beh-nnn — herd's are `pnpm run check` then `pnpm run typecheck`; a Go
     Consumer's would be `go test ./...`. Stops at the first red and reports it by name.
+  docs-only short-circuit (BEH-687): if the branch's net diff against origin/main touches ONLY
+    documentation/prose paths no gate reads (root markdown, `docs/**` — NOT anything under a module
+    source tree like `web/`, NOT the skill trees `.agents/`/`.claude/` whose SKILL.md files feed the
+    agent-harness skill-contract CI job, and NOT scripts/workflows/migrations/manifests), SKIP the heavy host gate
+    re-run entirely (oxlint + oxfmt over ~1200 files + tsgo validate nothing a prose edit could break —
+    the PR #743 waste). Treated as a green gate. Read fresh at each gate call so a code edit committed by
+    an earlier session flips it off; fail-safe to running the full gate on any git doubt. The qualitative
+    review + clean-tree + mergeability gates still apply — only the compile/format gate is skipped.
   review OK <=> ALL gates are GREEN AND worktree is clean AND the review session emitted its verdict
                 AND that verdict's disposition is NOT `blocked` (BEH-580)
                 AND the branch makes a NON-empty net diff against origin/main (BEH-603)
@@ -292,6 +300,15 @@ loop:
     push (BEH-603), so this is the BACKSTOP for a branch that became a no-op only AFTER the pre-push
     rebase (a sibling PR merged the same fix during the multi-minute gate), plus any standalone/resumed
     review. Fail-safe: any git doubt reads NON-empty, so a flaky read falls through to the normal watch.
+  docs-only short-circuit (BEH-687): BEFORE the first poll, if the pushed branch's net diff against
+    origin/main touches ONLY documentation/prose paths no gate or CI job reads (root markdown, `docs/**`;
+    NOT the `.agents/`/`.claude/` skill trees, whose SKILL.md files feed the agent-harness skill-contract CI job;
+    `gitpkg.BranchDocsOnly`) -> the change cannot break CI, so polling the full job just burns the whole
+    poll budget on something that can never fail it (the PR #743 waste: a one-line AGENTS.md edit died to
+    the ~12-min poll timeout). PASS immediately as a trivially-mergeable green ship — still routed through
+    the same greenOutcome mergeability gate as the wedged-ready pass, so a genuine base conflict is NOT
+    shipped. Distinct from the zero-diff case: here the diff is REAL, it just touches nothing a gate reads.
+    Fail-safe: any git doubt reads NON-docs-only, so a real code change falls through to the normal watch.
   structurally-wedged required-context short-circuit (BEH-614): a repo whose branch protection requires a
     context that only runs on `merge_group`/`refs/heads/main` (a merge-queue or main-only check) lists that
     context on the PR as `state=EXPECTED` in `gh pr checks` and NEVER schedules a run for it on the PR head,
@@ -827,6 +844,7 @@ building `Dockerfile.base` for `linux/amd64` + `linux/arm64`.
   | Ran but ground-truth fails | no commit → skip + breadcrumb | gates **red** (or dirty worktree, or **no verdict** — spending-cap/OOM, BEH-569, or verdict **blocked** on an unresolved finding, BEH-580) → no push, breadcrumb, keep worktree, next; OR PR open but **CI red after auto-fix budget** → keep PR + worktree, print failing checks | `out.json` absent → breadcrumb, keep worktree, next |
   | **Recommend-close (BEH-603)** — clean worktree, **empty** `git diff origin/main` | (n/a) | zero net change → **no push, no PR**; breadcrumb recommending the ticket be closed as a duplicate/superseded; keep worktree for audit; **kept In Progress** (NOT released to Todo); breaker-neutral | runs as usual |
   | **Recommend-close at the CI watch (BEH-602)** — branch became **empty** only AFTER the pre-push rebase (sibling merged the same fix during the gate), so the PR is already open | (n/a) | CI watch short-circuits BEFORE the first poll (no ~20-min poll-budget waste) → keep PR + worktree; same recommend-close breadcrumb + **kept In Progress**; breaker-neutral | runs as usual |
+  | **Docs-only (BEH-687)** — net diff touches ONLY docs/prose paths no gate or CI job reads (root markdown, `docs/**`) | commit ahead → run review | host gate re-run **skipped** (nothing a prose edit could break) → push + PR → CI watch **short-circuits BEFORE the first poll** (no ~12-min poll-budget waste, the PR #743 death) → PASS as trivially-mergeable (still mergeability-gated) → run retrospective; treated as clean success (breaker resets) | runs as usual |
 
 - **Circuit breaker:** 3 consecutive ticket failures → **exit and report
   loudly** (assume something environmental broke, e.g. expired auth or a broken

@@ -317,6 +317,17 @@ func Review(cfg config.Config, log *runlog.Logger, runID string, args Args) Resu
 	// re-launch re-gates the possibly-rewritten tree); baseName/transcriptTag are the
 	// (runID-derived) first-attempt names, suffixed per gate and per retry.
 	runHostGate := func(baseName, transcriptTag string) gateResult {
+		// A docs-only diff (root markdown / docs/**) feeds none of the gates, so the heavy
+		// host re-run (oxlint + oxfmt over ~1200 files + tsgo) validates nothing a prose
+		// edit could break — skip it and treat the gate as green (BEH-687, the PR #743
+		// waste). Read fresh here, not once up front: an earlier review/conflict session
+		// may have committed a code edit, and BranchDocsOnly over the current tree (which
+		// `git diff origin/main` reads including uncommitted work) reflects that — fail-safe
+		// to running the full gate on any doubt.
+		if gitpkg.BranchDocsOnly(worktreePath) {
+			log.Event("review · host gate skipped — diff touches only docs/prose paths no gate depends on (BEH-687)")
+			return gateResult{}
+		}
 		return runGates(cfg.Gates, func(g config.Gate) session.Outcome {
 			log.Event(fmt.Sprintf("review · gate %q: %s", g.Name, g.Command))
 			gateBackoff := session.ExponentialBackoff(gateOOMBackoffBase, gateOOMBackoffCap)
@@ -587,6 +598,7 @@ func Review(cfg config.Config, log *runlog.Logger, runID string, args Args) Resu
 		func() error { return gitpkg.Push(cfg.HerdPath, slug) },
 		func() (ci.RebaseVerdict, error) { return rebaseOntoBase(cfg.HerdPath, worktreePath, slug) },
 		func() bool { return gitpkg.BranchDiffEmpty(worktreePath) },
+		func() bool { return gitpkg.BranchDocsOnly(worktreePath) },
 	)
 	log.Event("watching CI for " + gitpkg.BranchName(slug) + " …")
 	ciResult := ci.WatchAndFix(driver, ciCfg, time.Now)

@@ -1284,3 +1284,174 @@ func TestWithRetryNoSleepOnFirstSuccess(t *testing.T) {
 		t.Fatalf("expected no sleeps on immediate success, got %d", sleeps)
 	}
 }
+
+// BEH-687: DocsOnlyPaths recognises a diff that touches ONLY documentation/prose
+// paths no build gate or CI job reads — the condition under which the host gate
+// re-run and the CI poll can be skipped. The concrete case is a root-markdown edit
+// (AGENTS.md, which CLAUDE.md symlinks to) plus an ADR under docs/.
+func TestDocsOnlyPathsTrueForRootMarkdownAndDocs(t *testing.T) {
+	if !DocsOnlyPaths([]string{"AGENTS.md", "docs/adr/0026-comments.md"}) {
+		t.Fatal("a diff of only root markdown + a docs/ ADR must be docs-only")
+	}
+}
+
+// A single code path anywhere in the diff disqualifies the whole set: the change
+// can affect a gate, so it must NOT short-circuit.
+func TestDocsOnlyPathsFalseWhenAnyCodePathPresent(t *testing.T) {
+	if DocsOnlyPaths([]string{"AGENTS.md", "web/src/routes/call/index.tsx"}) {
+		t.Fatal("a diff that also touches web/src is not docs-only")
+	}
+}
+
+// An empty change set is not docs-only — a branch with nothing to ship is the
+// zero-net-diff case (BEH-602), classified elsewhere.
+func TestDocsOnlyPathsFalseWhenEmpty(t *testing.T) {
+	if DocsOnlyPaths(nil) {
+		t.Fatal("an empty diff must not classify as docs-only")
+	}
+}
+
+// Conservative exclusion: markdown INSIDE a module source tree (a README fixture, a
+// Storybook doc) may feed a gate, so it is never treated as inert even though it is
+// prose. Only prose OUTSIDE the source trees short-circuits.
+func TestDocsOnlyPathsFalseForMarkdownUnderSourceTree(t *testing.T) {
+	for _, p := range []string{"web/test/integration/README.md", "agent-harness/docs/DESIGN.md"} {
+		if DocsOnlyPaths([]string{p}) {
+			t.Fatalf("%q lives under a module source tree — must not classify as docs-only", p)
+		}
+	}
+}
+
+// A skill markdown edit is NOT inert: the agent-harness internal/skills contract
+// tests read the SKILL.md files, so `.agents/skills/**` (and its `.claude/` symlink
+// form) triggers the Agent Harness CI job (agent-harness.yaml) and can turn it red.
+// Classifying it docs-only would short-circuit a watch that could fail.
+func TestDocsOnlyPathsFalseForSkillMarkdown(t *testing.T) {
+	for _, p := range []string{
+		".agents/skills/review-worktree/SKILL.md",
+		".claude/skills/retrospective/SKILL.md",
+	} {
+		if DocsOnlyPaths([]string{p}) {
+			t.Fatalf("%q feeds the agent-harness skill-contract CI tests — must not classify as docs-only", p)
+		}
+	}
+}
+
+// Non-markdown gate/CI inputs (scripts with sibling tests, workflows, package
+// manifests, migrations) must never read as inert prose.
+func TestDocsOnlyPathsFalseForGateInputs(t *testing.T) {
+	for _, p := range []string{
+		"scripts/new-worktree.sh",
+		".github/workflows/main.yaml",
+		"web/package.json",
+		"supabase/migrations/20260101000000_x.sql",
+	} {
+		if DocsOnlyPaths([]string{p}) {
+			t.Fatalf("%q is a gate/CI input — must not classify as docs-only", p)
+		}
+	}
+}
+
+// A non-markdown file under the repo-root docs/ tree (a diagram, an image) still
+// feeds no gate, so a docs/-only diff is inert.
+func TestDocsOnlyPathsTrueForNonMarkdownUnderDocs(t *testing.T) {
+	if !DocsOnlyPaths([]string{"docs/adr/assets/flow.png"}) {
+		t.Fatal("a non-md asset under docs/ feeds no gate — must be docs-only")
+	}
+}
+
+// scriptedOutput returns an outputRunner that yields fixed stdout + err, recording
+// the argv it saw — the output-capturing sibling of scriptedRunner.
+func scriptedOutput(stdout string, err error) (outputRunner, *[][]string) {
+	var calls [][]string
+	run := func(name string, args ...string) ([]byte, error) {
+		calls = append(calls, append([]string{name}, args...))
+		return []byte(stdout), err
+	}
+	return run, &calls
+}
+
+// branchDocsOnly reads `git diff --name-only origin/main` and classifies the paths:
+// an all-docs diff is docs-only.
+func TestBranchDocsOnlyTrueForAllDocsDiff(t *testing.T) {
+	run, calls := scriptedOutput("AGENTS.md\ndocs/adr/0026.md\n", nil)
+	if !branchDocsOnly("/wt", run) {
+		t.Fatal("a name-only diff of pure docs must classify as docs-only")
+	}
+	got := strings.Join((*calls)[0], " ")
+	want := "git -C /wt diff --name-only origin/main"
+	if got != want {
+		t.Fatalf("argv = %q, want %q", got, want)
+	}
+}
+
+func TestBranchDocsOnlyFalseWhenCodeChanged(t *testing.T) {
+	run, _ := scriptedOutput("AGENTS.md\nweb/src/app.tsx\n", nil)
+	if branchDocsOnly("/wt", run) {
+		t.Fatal("a diff that touches web/src must not classify as docs-only")
+	}
+}
+
+// Fail-safe: an empty name-only diff (the zero-net-diff case, handled elsewhere) is
+// not a docs-only ship — falling back to false keeps the normal gate + watch.
+func TestBranchDocsOnlyFalseWhenDiffEmpty(t *testing.T) {
+	run, _ := scriptedOutput("\n", nil)
+	if branchDocsOnly("/wt", run) {
+		t.Fatal("an empty name-only diff must not classify as docs-only")
+	}
+}
+
+// Fail-safe: any git error (unresolvable ref, gone worktree) reads as NOT docs-only,
+// so the harness never skips the gate + watch on doubt.
+func TestBranchDocsOnlyFalseOnError(t *testing.T) {
+	run, _ := scriptedOutput("", errors.New("fatal: bad revision 'origin/main'"))
+	if branchDocsOnly("/wt", run) {
+		t.Fatal("a git error must read as not-docs-only (fail-safe)")
+	}
+}
+
+// Pins the real-git contract: a branch whose only change against origin/main is a
+// root-markdown edit reads as docs-only; adding a web/src file flips it off.
+func TestBranchDocsOnlyAgainstRealGit(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	repo := t.TempDir()
+	git := func(args ...string) {
+		t.Helper()
+		if err := execIn(repo, args...); err != nil {
+			t.Fatalf("git %v: %v", args, err)
+		}
+	}
+	write := func(name, contents string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(repo, name)), 0o755); err != nil {
+			t.Fatalf("mkdir for %s: %v", name, err)
+		}
+		if err := os.WriteFile(filepath.Join(repo, name), []byte(contents), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	git("init", "-q", "-b", "main")
+	git("config", "user.email", "t@example.com")
+	git("config", "user.name", "Test")
+	write("AGENTS.md", "base\n")
+	git("add", "-A")
+	git("commit", "-q", "-m", "base")
+	git("update-ref", "refs/remotes/origin/main", "main")
+
+	git("checkout", "-q", "-b", BranchName("beh-687-docs"))
+	write("AGENTS.md", "base\nnew guidance line\n")
+	git("add", "-A")
+	git("commit", "-q", "-m", "docs: add guidance")
+	if !BranchDocsOnly(repo) {
+		t.Fatal("a branch whose only change is a root-markdown edit must be docs-only")
+	}
+
+	write("web/src/app.tsx", "export const x = 1\n")
+	git("add", "-A")
+	git("commit", "-q", "-m", "feat: add code")
+	if BranchDocsOnly(repo) {
+		t.Fatal("adding a web/src file must flip the branch off docs-only")
+	}
+}

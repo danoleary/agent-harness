@@ -127,6 +127,22 @@ func TestDiffEmptyDelegatesToCallback(t *testing.T) {
 	}
 }
 
+// DocsOnly must delegate to the injected callback (gitpkg.BranchDocsOnly over the
+// worktree), so the docs-only watch short-circuit reads real git ground truth rather
+// than a hardcoded value (BEH-687).
+func TestDocsOnlyDelegatesToCallback(t *testing.T) {
+	for _, want := range []bool{true, false} {
+		called := false
+		d := &GhDriver{docsOnly: func() bool { called = true; return want }}
+		if got := d.DocsOnly(); got != want {
+			t.Errorf("DocsOnly() = %v, want %v", got, want)
+		}
+		if !called {
+			t.Error("DocsOnly did not invoke the injected callback")
+		}
+	}
+}
+
 func TestInterpretChecksOutputParsesDespiteNonZeroExit(t *testing.T) {
 	// gh pr checks exits non-zero when checks fail, but the JSON is on stdout.
 	stdout := []byte(`[{"name":"lint","bucket":"fail"}]`)

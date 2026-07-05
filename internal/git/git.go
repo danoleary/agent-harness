@@ -22,6 +22,15 @@ import (
 // without touching a real remote (mirrors sandbox.Preflight's runner seam).
 type commandRunner func(name string, args ...string) error
 
+// outputRunner runs a command and returns its stdout + error — the output-capturing
+// sibling of commandRunner, so a path-classifying read (git diff --name-only) is
+// unit-testable with an injected fake. Production uses execOutput.
+type outputRunner func(name string, args ...string) ([]byte, error)
+
+func execOutput(name string, args ...string) ([]byte, error) {
+	return exec.Command(name, args...).Output()
+}
+
 // HarnessAuthorName / HarnessAuthorEmail are the dedicated bot identity the
 // harness stamps on every commit it is responsible for: the host-side recovery
 // (CheckpointCommit) and CI-rerun (EnsureCIRerunCommit) commits it makes
@@ -548,6 +557,78 @@ func BranchDiffEmpty(worktreePath string) bool {
 
 func branchDiffEmpty(worktreePath string, run commandRunner) bool {
 	return run("git", "-C", worktreePath, "diff", "--quiet", "origin/main") == nil
+}
+
+// BranchDocsOnly reports whether the branch's net diff against origin/main touches
+// ONLY documentation/prose paths that no build gate or CI job reads (BEH-687) — the
+// condition under which the review host-gate re-run and the CI poll can be skipped
+// for a change that provably cannot break the build. It reads the changed paths with
+// `git diff --name-only origin/main` and classifies them with DocsOnlyPaths. Like
+// BranchDiffEmpty it is fail-safe: a git error (unresolvable ref, gone worktree) or
+// an empty diff (the zero-net-diff case, BEH-602) reports false, so the normal gate +
+// watch still run — the harness would rather validate than wrongly skip. Read
+// host-side via the real-path mount, the same seam BranchDiffEmpty uses.
+func BranchDocsOnly(worktreePath string) bool {
+	return branchDocsOnly(worktreePath, execOutput)
+}
+
+func branchDocsOnly(worktreePath string, run outputRunner) bool {
+	out, err := run("git", "-C", worktreePath, "diff", "--name-only", "origin/main")
+	if err != nil {
+		return false
+	}
+	var paths []string
+	for _, line := range strings.Split(string(out), "\n") {
+		if p := strings.TrimSpace(line); p != "" {
+			paths = append(paths, p)
+		}
+	}
+	return DocsOnlyPaths(paths)
+}
+
+// DocsOnlyPaths reports whether EVERY given repo-relative changed path is
+// documentation/prose that no build gate or CI job reads — the condition under
+// which the review host-gate re-run and the CI poll can be safely skipped for a
+// change that provably cannot break the build (BEH-687). It is a conservative
+// allowlist: any path it does not positively recognise as inert (source under a
+// module tree, scripts, workflows, migrations, package manifests, …) makes the
+// whole set non-docs-only, so the short-circuit never fires on a change that could
+// affect a gate. An empty set is NOT docs-only — a branch with nothing to ship is
+// the zero-net-diff case (BranchDiffEmpty / BEH-602), handled separately.
+func DocsOnlyPaths(paths []string) bool {
+	if len(paths) == 0 {
+		return false
+	}
+	for _, p := range paths {
+		if !docsOnlyPath(p) {
+			return false
+		}
+	}
+	return true
+}
+
+// docsOnlyPath reports whether one repo-relative changed path is inert prose. A
+// path inside a module's source tree (web/, agent-harness/) is never inert even
+// when it looks like prose — a README fixture or a Storybook doc can feed a gate —
+// so it is excluded before the markdown/docs allowlist is consulted. The skill
+// trees (.agents/, and its .claude/ symlink) are excluded for the same reason:
+// their SKILL.md files are NOT inert, they are read by the agent-harness
+// internal/skills contract tests, so a skill markdown edit triggers the Agent
+// Harness CI job (agent-harness.yaml keys on `.agents/skills/**`) and can turn it
+// red — treating it as docs-only would short-circuit a watch that could fail.
+// Outside those trees, markdown anywhere (AGENTS.md, CLAUDE.md, docs/adr/*.md, …)
+// and the repo-root docs/ tree feed no gate or CI job.
+func docsOnlyPath(p string) bool {
+	p = strings.TrimSpace(p)
+	if p == "" {
+		return false
+	}
+	for _, codeRoot := range []string{"web/", "agent-harness/", ".agents/", ".claude/"} {
+		if strings.HasPrefix(p, codeRoot) {
+			return false
+		}
+	}
+	return strings.HasSuffix(p, ".md") || strings.HasPrefix(p, "docs/")
 }
 
 // AbortRebase restores a worktree a conflict-resolution session left mid-replay to a

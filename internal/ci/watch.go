@@ -43,6 +43,13 @@ type Driver interface {
 	// reports false so the normal watch still runs — the harness would rather watch
 	// than wrongly skip a real branch.
 	DiffEmpty() bool
+	// DocsOnly reports whether the pushed PR branch's net diff against origin/main
+	// touches ONLY documentation/prose paths no build gate or CI job reads (root
+	// markdown, docs/**) — a change that provably cannot break CI, so polling the full
+	// job just burns the poll budget (BEH-687, the PR #743 waste: a one-line AGENTS.md
+	// edit died to the ~12-min poll timeout). Fail-safe like DiffEmpty: any git doubt
+	// reports false so the normal watch still runs. Delegated to gitpkg.BranchDocsOnly.
+	DocsOnly() bool
 	// RebaseOntoBase auto-resolves a stale-base conflict: it rebases the PR branch
 	// onto the latest origin/main and, if the replay is clean, re-pushes (force-with-
 	// lease) and returns RebaseClean; a genuine content conflict aborts the rebase
@@ -135,6 +142,17 @@ func WatchAndFix(d Driver, cfg Config, now func() time.Time) Outcome {
 		return Outcome{OK: false, RecommendClose: true, Reason: zeroDiffReason}
 	}
 
+	// A docs-only diff (root markdown / docs/**, nothing a gate or CI job reads) cannot
+	// break CI, so polling the full job just burns the whole poll budget on a change that
+	// can never fail it (BEH-687, the PR #743 waste: a one-line AGENTS.md edit died to the
+	// ~12-min poll timeout). Short-circuit to a green ship — but still through greenOutcome
+	// so the mergeability gate runs, exactly like the wedged-ready pass (BEH-614). DocsOnly
+	// is fail-safe (false on any git doubt), so a real code change falls through to the
+	// normal watch. Ordered after DiffEmpty: a zero-net-diff branch has no paths to classify.
+	if d.DocsOnly() {
+		return greenOutcome(d, docsOnlyReason)
+	}
+
 	deadline := now().Add(cfg.Budget)
 
 	v, checks, err := d.Poll()
@@ -218,6 +236,13 @@ func WatchAndFix(d Driver, cfg Config, now func() time.Time) Outcome {
 // for CI to validate, so recommend closing the ticket/PR as superseded rather than
 // polling a PR that can never meaningfully go green.
 const zeroDiffReason = "pushed branch makes zero net change against origin/main (empty diff) — nothing for CI to validate; recommend closing the PR/ticket as a duplicate/superseded rather than watching a no-op PR"
+
+// docsOnlyReason is the operator-facing summary when the watch short-circuits a
+// docs-only branch (BEH-687): the diff touches only documentation/prose paths no
+// gate or CI job reads, so the change cannot break CI and the full poll budget would
+// be burned for nothing. The PR is a trivially-mergeable green ship (still gated on
+// mergeability via greenOutcome), so the watch passes immediately.
+const docsOnlyReason = "diff touches only docs/prose paths no gate or CI job reads — the change cannot break CI; passing the watch immediately as trivially-mergeable instead of burning the poll budget on a job it cannot fail"
 
 // wedgedReadyReason is the operator-facing summary for a wedged-ready pass (BEH-614):
 // every real gate is green and the only thing left pending is a structurally-wedged

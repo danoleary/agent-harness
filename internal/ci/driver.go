@@ -113,6 +113,10 @@ type GhDriver struct {
 	// others so this package needn't import internal/git; powers the zero-net-diff
 	// watch short-circuit (BEH-602).
 	diffEmpty func() bool
+	// docsOnly reports whether the pushed branch's net diff touches ONLY docs/prose
+	// paths no gate or CI job reads (gitpkg.BranchDocsOnly over the worktree). Injected
+	// like diffEmpty; powers the docs-only watch short-circuit (BEH-687).
+	docsOnly func() bool
 
 	// fetchRunLog fetches one failing run's log (`gh run view <id> --log-failed`).
 	// Injected so the log-availability logic is unit-testable without shelling out.
@@ -125,7 +129,7 @@ type GhDriver struct {
 // NewGhDriver builds the production Driver. ghTimeout bounds each individual gh
 // call; cfg supplies the poll cadence/budget; runFix and push are the sandbox +
 // remote effects the cmd provides.
-func NewGhDriver(herdPath, branch string, cfg Config, ghTimeout time.Duration, runFix func(ciLogs string, logAvailable bool) error, push func() error, rebase func() (RebaseVerdict, error), diffEmpty func() bool) *GhDriver {
+func NewGhDriver(herdPath, branch string, cfg Config, ghTimeout time.Duration, runFix func(ciLogs string, logAvailable bool) error, push func() error, rebase func() (RebaseVerdict, error), diffEmpty func() bool, docsOnly func() bool) *GhDriver {
 	d := &GhDriver{
 		herdPath:     herdPath,
 		branch:       branch,
@@ -136,6 +140,7 @@ func NewGhDriver(herdPath, branch string, cfg Config, ghTimeout time.Duration, r
 		push:         push,
 		rebase:       rebase,
 		diffEmpty:    diffEmpty,
+		docsOnly:     docsOnly,
 		sleep:        time.Sleep,
 		now:          time.Now,
 	}
@@ -193,6 +198,11 @@ func (d *GhDriver) RebaseOntoBase() (RebaseVerdict, error) { return d.rebase() }
 // DiffEmpty reports whether the pushed branch makes zero net change against
 // origin/main (delegated to the injected gitpkg.BranchDiffEmpty, BEH-602).
 func (d *GhDriver) DiffEmpty() bool { return d.diffEmpty() }
+
+// DocsOnly reports whether the pushed branch's net diff touches only docs/prose
+// paths no gate or CI job reads (delegated to the injected gitpkg.BranchDocsOnly,
+// BEH-687).
+func (d *GhDriver) DocsOnly() bool { return d.docsOnly() }
 
 // AwaitHeadRun polls `gh run list --branch <branch> -L 1 --json headSha` until the
 // latest run's head commit matches the branch HEAD (resolved with git rev-parse) —
