@@ -299,6 +299,51 @@ func TestSleepNoteEmptyWhenWallTracksMonotonic(t *testing.T) {
 	}
 }
 
+// The end-of-session accounting line reports the ACTIVE (monotonic) elapsed the cap
+// actually bounds, against the cap — the only number comparable to `cap N min`
+// (BEH-688). Without a sleep, active tracks wall, so the line stays a clean
+// "active … of … cap" with no sleep note.
+func TestSessionSummaryReportsActiveAgainstCap(t *testing.T) {
+	s := sessionSummary(28*time.Minute, 28*time.Minute+300*time.Millisecond, 30*time.Minute)
+	if !strings.Contains(s, "active 28m") {
+		t.Errorf("expected the active elapsed the cap bounds, got: %q", s)
+	}
+	if !strings.Contains(s, "30m0s cap") {
+		t.Errorf("expected the cap named so active and cap are comparable, got: %q", s)
+	}
+	if strings.Contains(s, "slept") {
+		t.Errorf("no host sleep → no sleep note, got: %q", s)
+	}
+}
+
+// The whole point of the line (BEH-688): claude's own wall-clock `duration_ms`
+// reads far above the cap when the host slept mid-session, since host sleep is
+// excluded from the cap but not from wall time. A session with only 28m of active
+// work but 64m of wall time must report 28m against the 30m cap (NOT blown) and
+// name the ~36m of excluded sleep, so the large claude duration is explained rather
+// than read as a 2x cap overrun.
+func TestSessionSummaryExplainsWallInflationAsExcludedSleep(t *testing.T) {
+	s := sessionSummary(28*time.Minute, 64*time.Minute, 30*time.Minute)
+	if !strings.Contains(s, "active 28m") {
+		t.Errorf("active time (under the cap) must be reported, got: %q", s)
+	}
+	if !strings.Contains(s, "36m") || !strings.Contains(s, "slept") {
+		t.Errorf("expected the ~36m of excluded host sleep named, got: %q", s)
+	}
+}
+
+// A disabled cap (<=0) has nothing to compare against, so the line reports the bare
+// active elapsed with no "cap" clause.
+func TestSessionSummaryOmitsCapWhenDisabled(t *testing.T) {
+	s := sessionSummary(12*time.Minute, 12*time.Minute, 0)
+	if !strings.Contains(s, "active 12m") {
+		t.Errorf("expected the active elapsed, got: %q", s)
+	}
+	if strings.Contains(s, "cap") {
+		t.Errorf("a disabled cap must not be named, got: %q", s)
+	}
+}
+
 // heartbeatReader is the liveness tap on the docker stdout stream: every read
 // that returns bytes counts as a heartbeat, and a read that returns no bytes
 // (EOF / empty) must not — so a dead stream (which only ever returns 0/EOF or

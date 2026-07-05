@@ -348,7 +348,7 @@ func Implementation(cfg config.Config, log *runlog.Logger, runID string, args Ar
 			))
 		}
 
-		log.Structured(loopstream.Record{Kind: loopstream.KindSandboxLaunch, Ticket: args.Identifier, Stage: "implementation", Message: fmt.Sprintf("launching sandbox (cap %d min)", int(cfg.TddTimeout.Minutes()))})
+		log.Structured(loopstream.Record{Kind: loopstream.KindSandboxLaunch, Ticket: args.Identifier, Stage: "implementation", Message: fmt.Sprintf("launching sandbox (cap %d min active)", int(cfg.TddTimeout.Minutes()))})
 		// Retry a transient launch failure (overlay2/read-only-fs exit 125, or a 137
 		// OOM-kill) before it becomes the verdict (BEH-542). Such a crash at the
 		// worktree-creation step — the session's very first heavy host I/O — otherwise

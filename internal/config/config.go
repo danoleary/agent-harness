@@ -29,17 +29,22 @@ type Config struct {
 	// CacheMountPath is the in-container path CacheVolume mounts at (Consumer-
 	// declared; BEH-635). Only meaningful when CacheVolume is set.
 	CacheMountPath string
-	// TddTimeout is the wall-clock cap for the tdd (implementation) session.
+	// TddTimeout is the hard cap for the tdd (implementation) session, enforced on
+	// ACTIVE (monotonic) in-sandbox time — host sleep is excluded (BEH-608), and it is
+	// NOT the total wall-clock the session's claude `duration_ms` reports (that also
+	// carries model/API latency and any host sleep, so it routinely reads a multiple
+	// of this cap without the cap ever being blown — BEH-688).
 	TddTimeout time.Duration
-	// ReviewTimeout is the wall-clock cap for every review-family session (the prep
+	// ReviewTimeout is the active-time (monotonic, host-sleep-excluded — BEH-608) cap
+	// for every review-family session (the prep
 	// install, the qualitative review, the host-side gate re-run, and each CI-fix
 	// cycle). It is kept above SessionIdleTimeout so a stalled review session is
 	// reaped by the idle/no-progress watchdog before this hard cap, not at it; a
 	// 15m cap once sat below the 20m idle window, so the idle watchdog was inert for
 	// the whole family and memory-pressured sessions burned to the cap (BEH-535/538).
 	ReviewTimeout time.Duration
-	// RetrospectiveTimeout is the wall-clock cap for the retrospective session. It
-	// is deliberately larger than the tdd cap (which it used to borrow): the
+	// RetrospectiveTimeout is the active-time (monotonic) cap for the retrospective
+	// session. It is deliberately larger than the tdd cap (which it used to borrow): the
 	// retrospective is a read-heavy step that parses several large jsonl
 	// transcripts, and borrowing the 30m tdd cap killed it mid-read before it
 	// could write findings (BEH-536).
@@ -52,7 +57,7 @@ type Config struct {
 	// single silent in-sandbox command: the agent's stream emits nothing between a
 	// tool_use and its tool_result, so one long quiet tool call (a `pnpm run build`
 	// or `test-storybook` run) is legitimately silent for minutes — set too low it
-	// reaps a healthy session mid-build. The wall-clock hard cap is the backstop, so
+	// reaps a healthy session mid-build. The active-time hard cap is the backstop, so
 	// this only needs to detect a dead stream faster than the cap, not race it.
 	SessionIdleTimeout time.Duration
 	// Model is the claude `--model` the tdd session runs on. Pinned to an exact

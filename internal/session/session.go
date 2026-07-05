@@ -280,6 +280,25 @@ func sleepNote(wallElapsed, monoElapsed time.Duration) string {
 	return fmt.Sprintf(" (host also slept ~%s — not counted toward the cap)", slept.Round(time.Minute))
 }
 
+// sessionSummary formats the truthful end-of-session accounting line the operator
+// reads next to claude's own wall-clock `session success (Ns)`. It reports the
+// ACTIVE (monotonic) elapsed the cap actually bounds — the SAME clock the watchdog
+// measures, and so the only number comparable to the launch label's `cap N min`
+// (BEH-688). claude's `duration_ms` is total wall-clock (model/API latency plus any
+// host sleep), which routinely reads a multiple of the cap without the cap ever
+// being blown — the reported-vs-cap mismatch that read as an unenforced cap. A
+// sleepNote is appended when the host slept, so an inflated claude duration is
+// visibly explained as excluded sleep, not an overrun. A disabled cap (<=0) has
+// nothing to compare against, so the cap clause is omitted.
+func sessionSummary(activeElapsed, wallElapsed, hardCap time.Duration) string {
+	note := sleepNote(wallElapsed, activeElapsed)
+	active := activeElapsed.Round(time.Second)
+	if hardCap > 0 {
+		return fmt.Sprintf("session active %s of %s cap%s", active, hardCap, note)
+	}
+	return fmt.Sprintf("session active %s%s", active, note)
+}
+
 // Run launches the sandboxed session described by dockerArgs (everything after
 // `docker`), teeing the transcript and narrating progress. It returns the
 // container's exit code (1 on any launch failure) plus whether a usage-policy
@@ -393,6 +412,14 @@ func Run(dockerArgs []string, opts Options) Outcome {
 			hint = "see transcript for docker's error"
 		}
 		opts.Log.Event("session ✗ docker could not start the container (exit 125): " + hint)
+	}
+
+	// Emit the truthful active-time accounting (BEH-688): the monotonic elapsed the
+	// cap actually bounds — comparable to the launch label's `cap N min active` —
+	// with any host sleep named so an inflated claude `duration_ms` reads as excluded
+	// sleep, not a blown cap. Skipped on a docker-cannot-start (125): nothing ran.
+	if exitCode != sandbox.ExitCannotStart {
+		opts.Log.Event(sessionSummary(time.Since(monoStart), realNow().Sub(start), opts.Timeout))
 	}
 
 	return Outcome{ExitCode: exitCode, CapKilled: capKilled.Load(), UsagePolicyRefusal: flags.usagePolicyRefusal, SpendingCapAbort: flags.spendingCapAbort, ReviewVerdictEmitted: flags.reviewVerdictEmitted, ReviewBlocked: flags.reviewBlocked, DockerReason: dockerReason}

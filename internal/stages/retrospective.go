@@ -140,7 +140,7 @@ func Retrospective(cfg config.Config, log *runlog.Logger, runID string, args Arg
 	}
 
 	transcriptFile := runlog.TranscriptName(retrospectiveSession, runID)
-	log.Structured(loopstream.Record{Kind: loopstream.KindSandboxLaunch, Ticket: args.Identifier, Stage: "retrospective", Message: fmt.Sprintf("launching sandbox (cap %d min)", int(cfg.RetrospectiveTimeout.Minutes()))})
+	log.Structured(loopstream.Record{Kind: loopstream.KindSandboxLaunch, Ticket: args.Identifier, Stage: "retrospective", Message: fmt.Sprintf("launching sandbox (cap %d min active)", int(cfg.RetrospectiveTimeout.Minutes()))})
 	outcome := session.Run(dockerArgs, session.Options{
 		ContainerName:  containerName,
 		TranscriptFile: transcriptFile,

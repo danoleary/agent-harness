@@ -275,7 +275,7 @@ func Review(cfg config.Config, log *runlog.Logger, runID string, args Args) Resu
 			transcript = runlog.TranscriptName(fmt.Sprintf("%s-retry%d", reviewSession, attempt), runID)
 			args1 = buildReviewArgs(name)
 		}
-		log.Structured(loopstream.Record{Kind: loopstream.KindSandboxLaunch, Ticket: args.Identifier, Stage: "review", Message: fmt.Sprintf("launching review session (attempt %d/%d, cap %d min)", attempt, reviewVerdictMaxAttempts, int(cfg.ReviewTimeout.Minutes()))})
+		log.Structured(loopstream.Record{Kind: loopstream.KindSandboxLaunch, Ticket: args.Identifier, Stage: "review", Message: fmt.Sprintf("launching review session (attempt %d/%d, cap %d min active)", attempt, reviewVerdictMaxAttempts, int(cfg.ReviewTimeout.Minutes()))})
 		out := session.Run(args1, session.Options{
 			ContainerName:  name,
 			TranscriptFile: transcript,
@@ -664,7 +664,7 @@ func ciFixRunner(cfg config.Config, args Args, slug, worktreePath, runID string,
 			ContainerName:  containerName,
 		})
 		transcript := runlog.TranscriptName(fmt.Sprintf("cifix-%d", attempt), runID)
-		log.Event(fmt.Sprintf("CI red — launching auto-fix session %d (cap %d min)", attempt, int(cfg.ReviewTimeout.Minutes())))
+		log.Event(fmt.Sprintf("CI red — launching auto-fix session %d (cap %d min active)", attempt, int(cfg.ReviewTimeout.Minutes())))
 		outcome := session.Run(fixArgs, session.Options{
 			ContainerName:  containerName,
 			TranscriptFile: transcript,
@@ -723,7 +723,7 @@ func resolvePrePushConflict(
 		ContainerName:  containerName,
 	})
 	transcript := runlog.TranscriptName("rebasefix", runID)
-	log.Event(fmt.Sprintf("launching conflict-resolution session (cap %d min)", int(cfg.ReviewTimeout.Minutes())))
+	log.Event(fmt.Sprintf("launching conflict-resolution session (cap %d min active)", int(cfg.ReviewTimeout.Minutes())))
 	outcome := session.Run(fixArgs, session.Options{
 		ContainerName:  containerName,
 		TranscriptFile: transcript,
