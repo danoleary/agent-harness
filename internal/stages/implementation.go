@@ -70,16 +70,21 @@ func releaseIfPreClaimed(client claimReleaser, identifier string, preClaimed boo
 }
 
 // retryableEnvCrash reports whether a failed implementation attempt crashed
-// environmentally with nothing to salvage — no worktree was ever created — as
-// opposed to running to completion and producing no handoff commit. Only the
-// former is worth re-attempting: the crash strikes at the worktree-creation
-// step's heavy host I/O and is usually transient, whereas a worktree that exists
-// (even with no commit) means the agent ran and the diff, if any, is recoverable.
-// A spending-cap abort is excluded — it has its own retry-after-reset handling.
-// The pipeline reads the resulting Result.Retryable to decide whether to
-// re-attempt the whole stage (BEH-543).
-func retryableEnvCrash(truth verify.GroundTruth, capAborted bool) bool {
-	return !truth.WorktreeExists && !capAborted
+// environmentally — the in-session launch retries (125/137, oomMaxAttempts)
+// exhausted, or an idle-timeout kill struck mid-session — as opposed to running
+// to completion and producing no handoff commit. Only the former is worth
+// re-attempting: it is the host momentarily wedging, not a code/config fault, so
+// the same run usually succeeds once it recovers. It keys on the session outcome,
+// NOT truth.WorktreeExists: the harness now pre-creates the worktree host-side
+// (BEH-636), so a crashed session still leaves the worktree present and the old
+// worktree-existence proxy is permanently false (BEH-707). outcome.Retryable()
+// already excludes a watchdog cap-kill (which ran a full session and has its own
+// checkpoint handling) and a clean exit-0 no-op (which must not retry, preserving
+// the pre-BEH-636 behaviour). A spending-cap abort is excluded too — it has its
+// own retry-after-reset handling. The pipeline reads the resulting
+// Result.Retryable to decide whether to re-attempt the whole stage (BEH-543).
+func retryableEnvCrash(outcome session.Outcome, capAborted bool) bool {
+	return outcome.Retryable() && !capAborted
 }
 
 // disjointWorkTrapped reports whether a failed tdd verdict is the BEH-609
@@ -325,6 +330,7 @@ func Implementation(cfg config.Config, log *runlog.Logger, runID string, args Ar
 		truth      verify.GroundTruth
 		result     verify.Result
 		capAborted bool
+		outcome    session.Outcome
 	)
 	for attempt := 1; attempt <= maxTddAttempts; attempt++ {
 		attemptContainer := containerName
@@ -351,7 +357,7 @@ func Implementation(cfg config.Config, log *runlog.Logger, runID string, args Ar
 		// may have failed, leaving the old name taken) and re-runs the SAME prompt: a
 		// creation-time 125 left no worktree, so recreating is the correct recovery.
 		var attemptTranscript string
-		outcome, _ := session.RetryTransient(oomMaxAttempts, session.ConstantBackoff(oomRetryBackoff), time.Sleep, func(launch int) session.Outcome {
+		outcome, _ = session.RetryTransient(oomMaxAttempts, session.ConstantBackoff(oomRetryBackoff), time.Sleep, func(launch int) session.Outcome {
 			name, label := attemptContainer, attemptLabel
 			if launch > 1 {
 				name = fmt.Sprintf("%s-launch%d", attemptContainer, launch)
@@ -453,19 +459,20 @@ func Implementation(cfg config.Config, log *runlog.Logger, runID string, args Ar
 			} else {
 				log.Event("✓ harness recovery checkpoint committed on " + gitpkg.BranchName(cfg.BranchPrefix, slug) + " — the session's uncommitted diff is preserved (unverified: finish or re-run, then amend, before opening a PR)")
 			}
-		} else if retryableEnvCrash(truth, capAborted) {
-			// The session crashed environmentally before it ever created a worktree —
-			// the transient launch failures retried above (125/137) were exhausted, an
-			// idle/cap kill struck pre-work, or the like. There is no partial state to
-			// salvage, so leaving the ticket In Progress just strands it (BEH-543, from
-			// the BEH-324 run that yielded nothing and sat claimed). Release the claim
-			// back to Todo so a later run re-grabs it instead. Best-effort: a Linear
-			// hiccup here must not crash the stage — warn and leave it claimed. (The
-			// spending-cap abort is excluded: it's its own retry-after-reset class above.)
+		} else if retryableEnvCrash(outcome, capAborted) {
+			// The session crashed environmentally and left the pre-provisioned worktree
+			// clean — the transient launch failures retried above (125/137) were
+			// exhausted, or an idle-timeout kill struck mid-session before any work
+			// landed. There is no partial diff to salvage (the checkpoint branch above
+			// handles the uncommitted case), so leaving the ticket In Progress just
+			// strands it (BEH-543/BEH-707). Release the claim back to Todo so a later
+			// run re-grabs it instead. Best-effort: a Linear hiccup here must not crash
+			// the stage — warn and leave it claimed. (The spending-cap abort is excluded:
+			// it's its own retry-after-reset class above.)
 			if rErr := client.ReleaseToTodo(args.Identifier); rErr != nil {
-				log.Event("⚠ no worktree was created and releasing the claim back to Todo failed (" + rErr.Error() + ") — move " + args.Identifier + " out of In Progress manually")
+				log.Event("⚠ environmental crash left no work and releasing the claim back to Todo failed (" + rErr.Error() + ") — move " + args.Identifier + " out of In Progress manually")
 			} else {
-				log.Event("↩ released claim — no worktree was created (environmental crash before any work); " + args.Identifier + " back to Todo for a later run to re-grab (BEH-543)")
+				log.Event("↩ released claim — environmental crash left the worktree clean (no work salvageable); " + args.Identifier + " back to Todo for a later run to re-grab (BEH-543/BEH-707)")
 			}
 		}
 	}
@@ -480,5 +487,5 @@ func Implementation(cfg config.Config, log *runlog.Logger, runID string, args Ar
 	// A successful run is never retryable. Surface a spending-cap abort too so the
 	// loop classifies a capped implementation as retry-after-reset (breaker-neutral)
 	// rather than a ship failure.
-	return Result{OK: result.OK, Retryable: !result.OK && retryableEnvCrash(truth, capAborted), SpendingCapAbort: capAborted}
+	return Result{OK: result.OK, Retryable: !result.OK && retryableEnvCrash(outcome, capAborted), SpendingCapAbort: capAborted}
 }

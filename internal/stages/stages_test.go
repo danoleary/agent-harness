@@ -211,18 +211,36 @@ func runGitForTest(t *testing.T, dir string, args ...string) {
 }
 
 // retryableEnvCrash distinguishes the one failed-implementation outcome worth a
-// fresh attempt — an environmental crash that left no worktree and no commit —
-// from a run that completed and produced no diff, or a spending-cap abort (which
-// has its own retry-after-reset handling). The pipeline re-attempts only the
-// former (BEH-543).
+// fresh attempt — an environmental session crash (the 125/137 launch retries
+// exhausted, or an idle-timeout kill mid-session) — from a run that completed and
+// produced no diff, or a spending-cap abort (which has its own retry-after-reset
+// handling). It keys on the session outcome, NOT WorktreeExists: the harness now
+// pre-creates the worktree host-side (BEH-636), so a crashed session still leaves
+// WorktreeExists == true and the old worktree-existence proxy is permanently
+// false. The pipeline re-attempts only the env-crash case (BEH-543/BEH-707).
 func TestRetryableEnvCrash(t *testing.T) {
-	if !retryableEnvCrash(verify.GroundTruth{WorktreeExists: false}, false) {
-		t.Error("no worktree + not cap-aborted is an environmental crash — should be retryable")
+	// The regression case: a pre-provisioned worktree is present, yet the session
+	// crashed environmentally (137 OOM / idle-timeout kill after the launch retries
+	// exhausted). Must still be retryable — the worktree existing no longer means
+	// the session got anywhere.
+	if !retryableEnvCrash(session.Outcome{ExitCode: sandbox.ExitOOMKill}, false) {
+		t.Error("an environmental crash (137) is retryable even with a pre-provisioned worktree present")
 	}
-	if retryableEnvCrash(verify.GroundTruth{WorktreeExists: true, CommitsAhead: 0}, false) {
-		t.Error("a worktree that exists (ran to completion, empty diff) is NOT an environmental crash")
+	// A clean, non-crash no-op session (agent ran, committed nothing, exited 0) is
+	// NOT an environmental crash — preserve the pre-BEH-636 behaviour of not
+	// releasing/retrying it.
+	if retryableEnvCrash(session.Outcome{ExitCode: 0}, false) {
+		t.Error("a clean exit-0 no-op session is NOT an environmental crash — must not retry")
 	}
-	if retryableEnvCrash(verify.GroundTruth{WorktreeExists: false}, true) {
+	// A watchdog cap-kill exits 137 like an OOM but ran a full session of real
+	// work; it has checkpoint-commit handling, so it must not be treated as a bare
+	// environmental crash.
+	if retryableEnvCrash(session.Outcome{ExitCode: sandbox.ExitOOMKill, CapKilled: true}, false) {
+		t.Error("a watchdog cap-kill (137 + CapKilled) ran a full session — not an environmental crash")
+	}
+	// A spending-cap abort has its own retry-after-reset handling — must not be
+	// reported retryable here even when the outcome otherwise looks transient.
+	if retryableEnvCrash(session.Outcome{ExitCode: sandbox.ExitOOMKill}, true) {
 		t.Error("a spending-cap abort has its own handling — must not be reported retryable here")
 	}
 }
