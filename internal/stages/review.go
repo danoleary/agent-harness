@@ -579,6 +579,7 @@ func Review(cfg config.Config, log *runlog.Logger, runID string, args Args) Resu
 		PollInterval:   cfg.CIPollInterval,
 		PollBudget:     cfg.CIPollBudget,
 		PollStall:      cfg.CIPollStall,
+		PollMaxBudget:  cfg.CIPollMaxBudget,
 	}
 	driver := ci.NewGhDriver(
 		cfg.HerdPath, gitpkg.BranchName(slug), ciCfg, ciGhTimeout,

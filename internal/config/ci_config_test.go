@@ -25,15 +25,19 @@ func TestLoadCIDefaults(t *testing.T) {
 	if cfg.CIPollStall != 8*time.Minute {
 		t.Errorf("CIPollStall = %v, want 8m", cfg.CIPollStall)
 	}
+	if cfg.CIPollMaxBudget != 25*time.Minute {
+		t.Errorf("CIPollMaxBudget = %v, want 25m", cfg.CIPollMaxBudget)
+	}
 }
 
 func TestLoadCIHonoursOverrides(t *testing.T) {
 	cfg, err := Load(fullEnv(map[string]string{
-		"CI_MAX_FIX_ATTEMPTS": "3",
-		"CI_FIX_BUDGET_MS":    "60000",
-		"CI_POLL_INTERVAL_MS": "5000",
-		"CI_POLL_BUDGET_MS":   "120000",
-		"CI_POLL_STALL_MS":    "90000",
+		"CI_MAX_FIX_ATTEMPTS":   "3",
+		"CI_FIX_BUDGET_MS":      "60000",
+		"CI_POLL_INTERVAL_MS":   "5000",
+		"CI_POLL_BUDGET_MS":     "120000",
+		"CI_POLL_STALL_MS":      "90000",
+		"CI_POLL_MAX_BUDGET_MS": "600000",
 	}))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -52,6 +56,9 @@ func TestLoadCIHonoursOverrides(t *testing.T) {
 	}
 	if cfg.CIPollStall != 90*time.Second {
 		t.Errorf("CIPollStall = %v, want 90s", cfg.CIPollStall)
+	}
+	if cfg.CIPollMaxBudget != 10*time.Minute {
+		t.Errorf("CIPollMaxBudget = %v, want 10m", cfg.CIPollMaxBudget)
 	}
 }
 

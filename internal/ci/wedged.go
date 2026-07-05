@@ -50,6 +50,23 @@ func wedgedReady(checks []Check) bool {
 	return wedged && realGreen
 }
 
+// hasRealPending reports whether at least one check is a real (non-EXPECTED) gate
+// still in flight — pending, but not a structurally-wedged merge-queue/main-only
+// context (isWedged). It is the signal the adaptive budget extension keys off (BEH-685):
+// while a genuine required gate is still running (e.g. the browser-backed linting_and_tests,
+// which can outlast the soft poll budget), the poll keeps waiting past the soft budget up to
+// the hard ceiling rather than abandoning an about-to-go-green PR. Returns false for an
+// empty/all-terminal set, and for a frozen set whose only pending checks are EXPECTED wedges
+// (there the wedgedReady/stall paths, not the extension, decide the outcome).
+func hasRealPending(checks []Check) bool {
+	for _, c := range checks {
+		if c.Bucket == BucketPending && !isWedged(c) {
+			return true
+		}
+	}
+	return false
+}
+
 // pendingAllWedged reports whether every still-pending check is a structural wedge
 // (isWedged) — i.e. nothing genuinely running remains. It is the guard the stall
 // detector uses before bailing a frozen-pending run as ErrPollStalled: the no-

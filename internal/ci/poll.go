@@ -40,7 +40,16 @@ var ErrWedgedReadyForMergeQueue = errors.New("ci ready for merge queue (real gat
 type pollConfig struct {
 	interval time.Duration
 	budget   time.Duration
-	stall    time.Duration
+	// maxBudget is the hard ceiling for the adaptive budget extension (BEH-685). When it
+	// exceeds budget, the poll keeps polling past the soft budget *while a real
+	// (non-EXPECTED) gate is still in flight* — a slow-but-running required gate (e.g. the
+	// browser-backed linting_and_tests, which can outlast the soft budget) must not be
+	// abandoned mid-run and routed to manual triage. Once no real gate remains pending, or
+	// maxBudget is reached, the soft-budget timeout stands. Zero (or ≤ budget) disables the
+	// extension, so budget is the only bound — the pre-BEH-685 behaviour for callers/tests
+	// that don't set it.
+	maxBudget time.Duration
+	stall     time.Duration
 }
 
 // poll re-runs fetch until its checks reach a terminal verdict (Passed/Failed),
@@ -52,6 +61,14 @@ type pollConfig struct {
 // in tests (mirrors git.withRetry).
 func poll(fetch func() ([]Check, error), cfg pollConfig, sleep func(time.Duration), now func() time.Time) (Verdict, []Check, error) {
 	deadline := now().Add(cfg.budget)
+	// hardDeadline caps the adaptive extension (BEH-685). The soft budget is only
+	// overridden while a real gate is still in flight, and never past this ceiling, so a
+	// genuinely-hung required gate can extend the wait but can never make the poll run
+	// forever. Disabled (equals the soft deadline) unless maxBudget exceeds budget.
+	hardDeadline := deadline
+	if cfg.maxBudget > cfg.budget {
+		hardDeadline = now().Add(cfg.maxBudget)
+	}
 	// Stall tracking: the signature of the last pending snapshot and the time it
 	// was first observed. While the snapshot keeps changing (jobs flipping
 	// pending→pass as the run progresses) stalledSince keeps resetting, so a
@@ -110,9 +127,16 @@ func poll(fetch func() ([]Check, error), cfg pollConfig, sleep func(time.Duratio
 		}
 
 		// Stop if the next interval would carry us past the budget (no point
-		// sleeping toward a deadline we can't beat).
+		// sleeping toward a deadline we can't beat) — unless a real (non-EXPECTED) gate
+		// is still in flight and we're within the hard ceiling, in which case keep
+		// polling. A slow-but-running required gate (the browser-backed linting_and_tests
+		// routinely outlasts the 12 min soft budget) must not be abandoned mid-run and
+		// routed to manual triage just because CI is slower than the fixed cap (BEH-685).
 		if !now().Add(cfg.interval).Before(deadline) {
-			return Pending, checks, ErrPollTimeout
+			extend := hasRealPending(checks) && now().Add(cfg.interval).Before(hardDeadline)
+			if !extend {
+				return Pending, checks, ErrPollTimeout
+			}
 		}
 		sleep(cfg.interval)
 	}

@@ -76,6 +76,13 @@ type Config struct {
 	// with no such evidence is never stalled — it rides to PollBudget (BEH-620). Zero
 	// disables it.
 	PollStall time.Duration
+	// PollMaxBudget is the hard ceiling for the adaptive budget extension (BEH-685). When it
+	// exceeds PollBudget, a poll that reaches the soft PollBudget while a real (non-EXPECTED)
+	// required gate is still in flight keeps polling up to this ceiling rather than timing
+	// out — a slow-but-running gate (the browser-backed linting_and_tests routinely outlasts
+	// the soft budget) must not be abandoned mid-run. Zero (or ≤ PollBudget) disables it;
+	// PollBudget is then the only bound.
+	PollMaxBudget time.Duration
 }
 
 // ErrSpendingCapActive is the sentinel a Fix callback returns when the auto-fix

@@ -77,6 +77,14 @@ type Config struct {
 	// expected-but-never-run on a PR. A slow all-pending cold start carries no such evidence
 	// and is never stalled; it rides to CIPollBudget (BEH-620).
 	CIPollStall time.Duration
+	// CIPollMaxBudget is the hard ceiling for the adaptive budget extension (BEH-685).
+	// When it exceeds CIPollBudget, a poll that reaches the soft budget while a real
+	// (non-EXPECTED) required gate is still in flight keeps polling up to this ceiling
+	// instead of timing out — a slow-but-running gate (the browser-backed linting_and_tests
+	// routinely outlasts the 12 min soft budget) must not be abandoned mid-run and routed to
+	// manual triage. Zero (or ≤ CIPollBudget) disables the extension; CIPollBudget is then
+	// the only bound (the pre-BEH-685 behaviour).
+	CIPollMaxBudget time.Duration
 	// AnthropicAPIKey is the host-only API key used for the cheap host-side semantic
 	// dedup model call when filing findings (BEH-573). Unlike the sandbox credential
 	// (which is validated for presence but never stored — it crosses into the
@@ -165,6 +173,13 @@ const (
 	// so a 4 min window false-positived between flips on a healthy run. 8 min gives generous
 	// headroom while staying below CIPollBudget (12 min) so a genuine wedge still bails early.
 	defaultCIPollStall = 8 * time.Minute
+	// defaultCIPollMaxBudget is the hard ceiling the adaptive extension (BEH-685) polls to
+	// while a real required gate is still in flight past the 12 min soft budget. The
+	// browser-backed linting_and_tests (full oxlint + Storybook + Playwright + boundary
+	// guards) is the long pole and observably outran 12 min on a healthy PR, dumping it to
+	// manual triage. 25 min comfortably exceeds that job's wall-clock while staying under
+	// defaultCIFixBudget (30 min) so the extension can't outlive the whole watch+fix loop.
+	defaultCIPollMaxBudget = 25 * time.Minute
 
 	defaultLoopPollInterval           = 60 * time.Second
 	defaultLoopCapBackoff             = 45 * time.Minute
@@ -296,6 +311,7 @@ func Load(get Getenv) (Config, error) {
 		CIPollInterval:   parseTimeout(get("CI_POLL_INTERVAL_MS"), defaultCIPollInterval),
 		CIPollBudget:     parseTimeout(get("CI_POLL_BUDGET_MS"), defaultCIPollBudget),
 		CIPollStall:      parseTimeout(get("CI_POLL_STALL_MS"), defaultCIPollStall),
+		CIPollMaxBudget:  parseTimeout(get("CI_POLL_MAX_BUDGET_MS"), defaultCIPollMaxBudget),
 
 		AnthropicAPIKey: get("ANTHROPIC_API_KEY"),
 		DedupModel:      orDefault(get("DEDUP_MODEL"), defaultDedupModel),

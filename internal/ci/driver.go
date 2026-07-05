@@ -129,7 +129,7 @@ func NewGhDriver(herdPath, branch string, cfg Config, ghTimeout time.Duration, r
 	d := &GhDriver{
 		herdPath:     herdPath,
 		branch:       branch,
-		pollCfg:      pollConfig{interval: cfg.PollInterval, budget: cfg.PollBudget, stall: cfg.PollStall},
+		pollCfg:      pollConfig{interval: cfg.PollInterval, budget: cfg.PollBudget, maxBudget: cfg.PollMaxBudget, stall: cfg.PollStall},
 		ghTimeout:    ghTimeout,
 		logTailBytes: defaultLogTailBytes,
 		runFix:       runFix,

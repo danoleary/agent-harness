@@ -99,6 +99,61 @@ func TestPollTimesOutWhileStillPending(t *testing.T) {
 	}
 }
 
+func TestPollExtendsPastSoftBudgetWhileRealGateInFlight(t *testing.T) {
+	clock := newFakeClock()
+	sleep := func(d time.Duration) { clock.sleep(d) }
+	// The BEH-685 scenario: a real required gate (linting_and_tests, the browser-backed
+	// storybook/e2e suite) is still running well past the soft budget, alongside a
+	// merge-queue-only EXPECTED context. With an adaptive maxBudget above the soft budget,
+	// the poll must keep waiting for the slow-but-real gate rather than timing out mid-run
+	// and dumping a healthy about-to-go-green PR to manual triage.
+	running := []Check{
+		{Name: "linting_and_tests", Bucket: BucketPending, State: "IN_PROGRESS"},
+		{Name: "build", Bucket: BucketPending, State: StateExpected}, // merge_group only
+	}
+	green := []Check{
+		{Name: "linting_and_tests", Bucket: BucketPass},
+		{Name: "build", Bucket: BucketPass},
+	}
+	// Soft budget 2m (polls at 0,30,…,120s would time out); the gate only settles green at
+	// t=210s (3.5m), which is inside the 6m hard ceiling. Stall disabled to isolate the
+	// budget behaviour.
+	snaps := [][]Check{running, running, running, running, running, running, running, green}
+	fetch, _ := scriptedChecks(snaps...)
+	cfg := pollConfig{interval: 30 * time.Second, budget: 2 * time.Minute, maxBudget: 6 * time.Minute}
+	v, _, err := poll(fetch, cfg, sleep, clock.now)
+	if err != nil {
+		t.Fatalf("poll: %v (a slow-but-running real gate must not be abandoned at the soft budget)", err)
+	}
+	if v != Passed {
+		t.Fatalf("verdict = %v, want Passed once the extended poll reaches the green terminal", v)
+	}
+}
+
+func TestPollExtensionRespectsHardCeiling(t *testing.T) {
+	clock := newFakeClock()
+	sleep := func(d time.Duration) { clock.sleep(d) }
+	// A real gate stuck pending forever: the adaptive extension buys extra time past the
+	// soft budget, but the hard ceiling still enforces ErrPollTimeout so a genuinely-hung
+	// required gate can never make the poll run indefinitely.
+	fetch, _ := scriptedChecks([]Check{
+		{Name: "linting_and_tests", Bucket: BucketPending, State: "IN_PROGRESS"},
+	})
+	cfg := pollConfig{interval: 30 * time.Second, budget: 2 * time.Minute, maxBudget: 6 * time.Minute}
+	v, _, err := poll(fetch, cfg, sleep, clock.now)
+	if !errors.Is(err, ErrPollTimeout) {
+		t.Fatalf("err = %v, want ErrPollTimeout at the hard ceiling", err)
+	}
+	if v != Pending {
+		t.Fatalf("verdict = %v, want Pending on timeout", v)
+	}
+	// It must have polled well past the 2m soft budget (proving the extension fired) but
+	// stopped at the 6m ceiling rather than looping forever.
+	if elapsed := clock.now().Sub(time.Unix(0, 0)); elapsed <= 2*time.Minute || elapsed > 6*time.Minute {
+		t.Fatalf("elapsed = %v, want in (2m, 6m] — extended past the soft budget, capped at the ceiling", elapsed)
+	}
+}
+
 func TestPollWaitsThroughNoChecksYet(t *testing.T) {
 	// Checks not registered yet (errNoChecksYet) twice, then they appear and fail.
 	clock := newFakeClock()
