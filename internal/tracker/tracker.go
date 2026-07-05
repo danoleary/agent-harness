@@ -80,6 +80,12 @@ type Queue interface {
 	SelectNextTicket() (ticket.Ticket, bool, error)
 	MoveToInProgress(key Key) error
 	ReleaseToTodo(key Key) error
+	// MoveToCanceled moves a ticket into the tracker's terminal canceled state,
+	// consuming a recommend-close verdict (BEH-682): a run that found the branch
+	// makes zero net change is a superseded/duplicate ticket, closed rather than
+	// left claimed. Terminal, so the ticket leaves both the select and reap pools —
+	// unlike ReleaseToTodo, which returns it to the queue for a later run.
+	MoveToCanceled(key Key) error
 	ListInProgressClaims() ([]InProgressClaim, error)
 }
 

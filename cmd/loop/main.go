@@ -130,6 +130,10 @@ func main() {
 		},
 		RunPipeline:   func(id string) loop.TicketOutcome { return runPipeline(cfg, id) },
 		ReleaseTicket: func(id string) error { return client.ReleaseToTodo(id) },
+		// CloseTicket consumes a recommend-close verdict by moving the superseded ticket
+		// to the terminal Canceled state (BEH-682), so it exits the selection + reaper
+		// pools for good rather than re-looping to the same "nothing to ship" conclusion.
+		CloseTicket:   func(id string) error { return client.MoveToCanceled(id) },
 		CommentTicket: func(id, body string) error { return client.AddComment(id, body) },
 		// Stale-claim reaper (BEH-677): list the agent-claimed In Progress set from the
 		// tracker, map it onto the loop's StaleClaim shape, and check for a pushed branch

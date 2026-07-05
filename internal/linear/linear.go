@@ -365,6 +365,20 @@ func (c *Client) ReleaseToTodo(identifier string) error {
 	})
 }
 
+// MoveToCanceled moves a ticket into its team's terminal "canceled" state — the
+// host-side action that consumes a recommend-close verdict (BEH-682): a run that
+// found the branch makes zero net change against origin/main is a superseded /
+// duplicate ticket, so it is closed rather than left In Progress. A canceled ticket
+// is neither unstarted (out of the --next selection pool) nor In Progress (out of
+// the stale-claim reaper pool), so it can never re-enter the pipeline — unlike the
+// old "keep In Progress" disposition, which the reaper released back to Todo past
+// the claim TTL, re-looping to the same conclusion forever.
+func (c *Client) MoveToCanceled(identifier string) error {
+	return c.moveToState(identifier, `canceled "Canceled"`, func(s []issueState) string {
+		return pickState(s, "canceled", "Canceled")
+	})
+}
+
 // FileFinding files a harness-improvement finding as a new issue referencing the
 // worked ticket. It tags the issue with the agent-harness label (so dedup search
 // can find it) and, when the finding carries an explicit dedup key, embeds the

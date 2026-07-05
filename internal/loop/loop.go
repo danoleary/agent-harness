@@ -87,6 +87,14 @@ type Deps struct {
 	// run (BEH-590) — so it isn't stranded In Progress. A release failure is narrated,
 	// not fatal — the daemon still backs off / continues and re-polls.
 	ReleaseTicket func(identifier string) error
+	// CloseTicket moves a ticket into the tracker's terminal canceled state, consuming
+	// a recommend-close verdict (BEH-682): a run that found the branch makes zero net
+	// change against origin/main is a superseded/duplicate ticket, so it is closed
+	// rather than left claimed. Closing (not releasing) is what stops the re-loop —
+	// a canceled ticket leaves both the --next selection pool and the reaper pool, so
+	// it can never re-enter the pipeline. A nil func or a close failure degrades to the
+	// pre-BEH-682 behavior (kept In Progress for a human to close), narrated not fatal.
+	CloseTicket func(identifier string) error
 	// CommentTicket posts a breadcrumb on the released ticket noting the run died and
 	// why (BEH-590), so a repeatedly-failing ticket is visible on the board rather
 	// than silently bouncing Todo↔In Progress. Best-effort: a nil func or a post
@@ -278,14 +286,27 @@ func Run(d Deps) int {
 		// declined to ship as an empty-commit PR. Unlike every other no-PR mode this one
 		// must NOT release back to Todo: releasing would let the dispatch guard re-grab it
 		// and re-run the whole pipeline to the same "nothing to ship" conclusion forever.
-		// Keep it In Progress for a human to close as a duplicate, and leave a breadcrumb
-		// recommending exactly that (distinct from the generic "released to Todo" note,
-		// which would mislead). It is breaker-neutral (handled in b.record), so it falls
-		// through to the normal after-ticket fold below.
+		// So close it — move it to the terminal canceled state (BEH-682) — which takes it
+		// out of BOTH the --next selection pool and the reaper pool for good. (Merely
+		// keeping it In Progress, the prior disposition, was defeated by the stale-claim
+		// reaper releasing it back to Todo past the TTL, re-looping forever.) Leave a
+		// breadcrumb recommending exactly that (distinct from the generic "released to Todo"
+		// note, which would mislead). It is breaker-neutral (handled in b.record), so it
+		// falls through to the normal after-ticket fold below.
 		switch {
 		case outcome.RecommendClose:
-			d.Log.Structured(loopstream.Record{Kind: loopstream.KindRecommendClose, Ticket: identifier, Message: "loop — " + identifier + " makes no net change against main; keeping it In Progress for a human to close as a duplicate/superseded (BEH-603)"})
-			d.comment(identifier, "Autonomous run found this branch makes zero net change against `main` (an empty diff) — there is nothing to ship. The substantively correct outcome is to close this ticket as a duplicate/superseded rather than ship an empty-commit change; if a PR was already opened (the branch only became a no-op after the pre-push rebase) it is a no-op and should be closed too. Kept In Progress for a human to close; it was deliberately NOT released to Todo so it won't be re-picked and re-run to the same conclusion. See the run logs for the cause.")
+			closed := d.closeTicket(identifier)
+			msg := "loop — " + identifier + " makes no net change against main; closing it as a duplicate/superseded (BEH-682)"
+			// The breadcrumb must reflect what actually happened: only claim the ticket was
+			// moved to Canceled when the close succeeded, else a Linear/tracker hiccup would
+			// post "closed" on a ticket still In Progress and suppress the human safety valve.
+			note := "This ticket is a duplicate/superseded, so the run closed it (moved it to Canceled) rather than shipping an empty-commit change; reopen it if that was wrong."
+			if !closed {
+				msg = "loop — " + identifier + " makes no net change against main; could not auto-close — left In Progress for a human to close as a duplicate/superseded (BEH-603)"
+				note = "This ticket is a duplicate/superseded and should be closed, but the run could not auto-close it — please close it manually as a duplicate/superseded. It was left In Progress."
+			}
+			d.Log.Structured(loopstream.Record{Kind: loopstream.KindRecommendClose, Ticket: identifier, Message: msg})
+			d.comment(identifier, "Autonomous run found this branch makes zero net change against `main` (an empty diff) — there is nothing to ship. "+note+" If a PR was already opened (the branch only became a no-op after the pre-push rebase) it is a no-op and should be closed too. It was deliberately NOT released to Todo so it won't be re-picked and re-run to the same conclusion. See the run logs for the cause.")
 		case !outcome.ReachedPushedPR:
 			// Release-on-no-PR (BEH-590): a run that finished WITHOUT opening a pushed PR —
 			// any non-cap failure mode: OOM, sandbox crash, a review stage that died before
@@ -341,6 +362,22 @@ func (d Deps) comment(identifier, body string) {
 	if err := d.CommentTicket(identifier, body); err != nil {
 		d.Log.Event("loop … warning: could not comment on " + identifier + " after release: " + err.Error())
 	}
+}
+
+// closeTicket moves a recommend-close ticket to the terminal canceled state (BEH-682)
+// and reports whether it succeeded. It is best-effort like comment: a nil CloseTicket
+// (no adapter wired) or a close failure degrades to false, and the caller falls back
+// to the pre-BEH-682 disposition (keep In Progress for a human to close) rather than
+// crashing the daemon — a tracker hiccup must never sink the loop.
+func (d Deps) closeTicket(identifier string) bool {
+	if d.CloseTicket == nil {
+		return false
+	}
+	if err := d.CloseTicket(identifier); err != nil {
+		d.Log.Event("loop … warning: could not close " + identifier + " as superseded (leaving it In Progress for a human): " + err.Error())
+		return false
+	}
+	return true
 }
 
 // reclaimDisk proactively frees host disk between tickets when free space has

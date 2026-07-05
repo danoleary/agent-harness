@@ -1,6 +1,7 @@
 package loop
 
 import (
+	"errors"
 	"reflect"
 	"regexp"
 	"strings"
@@ -340,12 +341,13 @@ func TestNoPRRunCommentsOnRelease(t *testing.T) {
 	}
 }
 
-// TestRecommendCloseRunKeepsTicketInProgress is the BEH-603 disposition: a run that
-// concluded the branch makes zero net change (recommend-close) must NOT release the
-// ticket back to Todo. Releasing would let the dispatch guard re-grab it and re-run
-// the whole pipeline to the same "nothing to ship" conclusion forever. Instead the
-// ticket is kept In Progress for a human to close as a duplicate/superseded.
-func TestRecommendCloseRunKeepsTicketInProgress(t *testing.T) {
+// TestRecommendCloseWithoutCloserFallsBackToKeepingInProgress pins the BEH-682
+// best-effort fallback: when no CloseTicket adapter is wired (or it fails), a
+// recommend-close run must STILL never release the ticket back to Todo. Releasing
+// would let the dispatch guard re-grab it and re-run the whole pipeline to the same
+// "nothing to ship" conclusion forever; with no way to close it, keeping it In
+// Progress for a human is the safe degrade — never a bounce back to Todo.
+func TestRecommendCloseWithoutCloserFallsBackToKeepingInProgress(t *testing.T) {
 	r := &recorder{}
 	var released []string
 	code := Run(Deps{
@@ -356,6 +358,7 @@ func TestRecommendCloseRunKeepsTicketInProgress(t *testing.T) {
 		RunPipeline: func(string) TicketOutcome {
 			return TicketOutcome{ReachedPushedPR: false, RecommendClose: true}
 		},
+		// No CloseTicket wired — exercises the nil-closer fallback path.
 		ReleaseTicket:          func(id string) error { released = append(released, id); return nil },
 		Sleep:                  func(time.Duration) {},
 		PollInterval:           time.Minute,
@@ -367,20 +370,56 @@ func TestRecommendCloseRunKeepsTicketInProgress(t *testing.T) {
 		t.Errorf("exit code = %d, want 0 (a recommend-close run then stop is a clean exit)", code)
 	}
 	if len(released) != 0 {
-		t.Errorf("released = %v, want none (a recommend-close ticket must stay In Progress for a human to close, not bounce back to Todo)", released)
+		t.Errorf("released = %v, want none (a recommend-close ticket must never bounce back to Todo, even when it can't be auto-closed)", released)
 	}
 }
 
-// TestRecommendCloseAfterPushedPRKeepsTicketInProgress is the BEH-602 post-PR
-// disposition: the CI watch can recommend-close a branch that became a no-op only
-// AFTER the pre-push rebase, so the PR is already open — the outcome carries BOTH
-// RecommendClose AND ReachedPushedPR. The loop switch orders RecommendClose first
-// precisely so this combo still keeps the ticket In Progress (recommend a human
-// close it) rather than folding it into the normal shipped-PR path. Guards against a
-// reorder that would let a no-op PR look like a clean ship and bounce the ticket on.
-func TestRecommendCloseAfterPushedPRKeepsTicketInProgress(t *testing.T) {
+// TestRecommendCloseRunClosesTicket is the BEH-682 fix: a recommend-close run must
+// actually close the superseded ticket (move it to Canceled via CloseTicket) so it
+// exits the --next selection pool AND the reaper pool for good — never releasing it
+// to Todo (which would re-loop it). Keeping it merely In Progress was defeated by the
+// stale-claim reaper, which released it back to Todo past the TTL, re-running the
+// whole pipeline to the same "nothing to ship" conclusion indefinitely.
+func TestRecommendCloseRunClosesTicket(t *testing.T) {
 	r := &recorder{}
-	var released []string
+	var closed, released []string
+	code := Run(Deps{
+		ClearStopFile: func() error { return nil },
+		FetchMain:     func() error { return nil },
+		StopRequested: stopAfter(1),
+		ResolveNext:   func() (string, bool) { return "BEH-365", true },
+		RunPipeline: func(string) TicketOutcome {
+			return TicketOutcome{ReachedPushedPR: false, RecommendClose: true}
+		},
+		CloseTicket:            func(id string) error { closed = append(closed, id); return nil },
+		ReleaseTicket:          func(id string) error { released = append(released, id); return nil },
+		Sleep:                  func(time.Duration) {},
+		PollInterval:           time.Minute,
+		TickInterval:           2 * time.Second,
+		MaxConsecutiveFailures: 3,
+		Log:                    r,
+	})
+	if code != 0 {
+		t.Errorf("exit code = %d, want 0 (a recommend-close run then stop is a clean exit)", code)
+	}
+	if want := []string{"BEH-365"}; !reflect.DeepEqual(closed, want) {
+		t.Errorf("closed = %v, want %v (a recommend-close ticket must be closed as superseded)", closed, want)
+	}
+	if len(released) != 0 {
+		t.Errorf("released = %v, want none (a recommend-close ticket is closed, never bounced back to Todo)", released)
+	}
+}
+
+// TestRecommendCloseAfterPushedPRClosesTicket is the BEH-602 post-PR disposition: the
+// CI watch can recommend-close a branch that became a no-op only AFTER the pre-push
+// rebase, so the PR is already open — the outcome carries BOTH RecommendClose AND
+// ReachedPushedPR. The loop switch orders RecommendClose first precisely so this combo
+// still closes the ticket (BEH-682) rather than folding it into the normal shipped-PR
+// path. Guards against a reorder that would let a no-op PR look like a clean ship and
+// bounce the ticket on — and confirms it is closed, never released to Todo.
+func TestRecommendCloseAfterPushedPRClosesTicket(t *testing.T) {
+	r := &recorder{}
+	var closed, released []string
 	code := Run(Deps{
 		ClearStopFile: func() error { return nil },
 		FetchMain:     func() error { return nil },
@@ -389,6 +428,7 @@ func TestRecommendCloseAfterPushedPRKeepsTicketInProgress(t *testing.T) {
 		RunPipeline: func(string) TicketOutcome {
 			return TicketOutcome{ReachedPushedPR: true, RecommendClose: true}
 		},
+		CloseTicket:            func(id string) error { closed = append(closed, id); return nil },
 		ReleaseTicket:          func(id string) error { released = append(released, id); return nil },
 		Sleep:                  func(time.Duration) {},
 		PollInterval:           time.Minute,
@@ -399,8 +439,11 @@ func TestRecommendCloseAfterPushedPRKeepsTicketInProgress(t *testing.T) {
 	if code != 0 {
 		t.Errorf("exit code = %d, want 0 (a recommend-close run then stop is a clean exit)", code)
 	}
+	if want := []string{"BEH-365"}; !reflect.DeepEqual(closed, want) {
+		t.Errorf("closed = %v, want %v (a no-op PR combo must still close the ticket, not fold into the shipped path)", closed, want)
+	}
 	if len(released) != 0 {
-		t.Errorf("released = %v, want none (a recommend-close ticket must stay In Progress even when a no-op PR was opened, not bounce back to Todo)", released)
+		t.Errorf("released = %v, want none (a recommend-close ticket is closed even when a no-op PR was opened, not bounced back to Todo)", released)
 	}
 }
 
@@ -417,6 +460,7 @@ func TestRecommendCloseRunCommentsRecommendingClose(t *testing.T) {
 		StopRequested:          stopAfter(1),
 		ResolveNext:            func() (string, bool) { return "BEH-365", true },
 		RunPipeline:            func(string) TicketOutcome { return TicketOutcome{RecommendClose: true} },
+		CloseTicket:            func(string) error { return nil },
 		ReleaseTicket:          func(string) error { return nil },
 		CommentTicket:          c.post,
 		Sleep:                  func(time.Duration) {},
@@ -436,6 +480,43 @@ func TestRecommendCloseRunCommentsRecommendingClose(t *testing.T) {
 	}
 	if len(c.bodies) == 1 && strings.Contains(c.bodies[0], "released back to Todo") {
 		t.Errorf("recommend-close comment must NOT claim the ticket was released to Todo, got %q", c.bodies[0])
+	}
+}
+
+// TestRecommendCloseFailedCloseCommentsInProgressNotCanceled guards the fallback
+// breadcrumb (BEH-682): when the close call FAILS, the loop leaves the ticket In
+// Progress — so the human-facing comment must NOT claim the ticket was moved to
+// Canceled (that would suppress the human safety valve, letting the ticket linger
+// until the reaper re-loops it). The comment must instead tell a human to close it.
+func TestRecommendCloseFailedCloseCommentsInProgressNotCanceled(t *testing.T) {
+	r := &recorder{}
+	c := &commentRec{}
+	code := Run(Deps{
+		ClearStopFile:          func() error { return nil },
+		FetchMain:              func() error { return nil },
+		StopRequested:          stopAfter(1),
+		ResolveNext:            func() (string, bool) { return "BEH-365", true },
+		RunPipeline:            func(string) TicketOutcome { return TicketOutcome{RecommendClose: true} },
+		CloseTicket:            func(string) error { return errors.New("tracker hiccup") },
+		ReleaseTicket:          func(string) error { return nil },
+		CommentTicket:          c.post,
+		Sleep:                  func(time.Duration) {},
+		PollInterval:           time.Minute,
+		TickInterval:           2 * time.Second,
+		MaxConsecutiveFailures: 3,
+		Log:                    r,
+	})
+	if code != 0 {
+		t.Errorf("exit code = %d, want 0", code)
+	}
+	if len(c.bodies) != 1 {
+		t.Fatalf("comment bodies = %v, want exactly one breadcrumb", c.bodies)
+	}
+	if strings.Contains(c.bodies[0], "moved it to Canceled") {
+		t.Errorf("failed-close comment must NOT claim the ticket was moved to Canceled, got %q", c.bodies[0])
+	}
+	if !regexp.MustCompile(`(?i)close it manually|left In Progress`).MatchString(c.bodies[0]) {
+		t.Errorf("failed-close comment must tell a human to close it, got %q", c.bodies[0])
 	}
 }
 

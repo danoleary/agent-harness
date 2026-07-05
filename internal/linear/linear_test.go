@@ -238,6 +238,52 @@ func TestReleaseToTodo(t *testing.T) {
 	}
 }
 
+// MoveToCanceled moves the ticket into its team's terminal "canceled" state — the
+// host-side action that consumes a recommend-close verdict and actually closes a
+// superseded/duplicate ticket (BEH-682), so it exits the --next selection pool and
+// the reaper pool permanently instead of re-looping to the same "nothing to ship".
+func TestMoveToCanceled(t *testing.T) {
+	var calls []call
+	tr := func(query string, variables map[string]any) (json.RawMessage, error) {
+		calls = append(calls, call{query: query, variables: variables})
+		if strings.Contains(query, "states") {
+			return json.Marshal(map[string]any{
+				"issue": map[string]any{
+					"id": "issue-uuid",
+					"team": map[string]any{
+						"states": map[string]any{
+							"nodes": []any{
+								map[string]any{"id": "state-todo", "name": "Todo", "type": "unstarted"},
+								map[string]any{"id": "state-progress", "name": "In Progress", "type": "started"},
+								map[string]any{"id": "state-done", "name": "Done", "type": "completed"},
+								map[string]any{"id": "state-canceled", "name": "Canceled", "type": "canceled"},
+							},
+						},
+					},
+				},
+			})
+		}
+		return json.Marshal(map[string]any{"issueUpdate": map[string]any{"success": true}})
+	}
+
+	if err := NewClient(tr).MoveToCanceled("BEH-682"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var update *call
+	for i := range calls {
+		if strings.Contains(calls[i].query, "issueUpdate") {
+			update = &calls[i]
+		}
+	}
+	if update == nil {
+		t.Fatal("no issueUpdate mutation issued")
+	}
+	if update.variables["stateId"] != "state-canceled" {
+		t.Errorf("update stateId = %v, want state-canceled", update.variables["stateId"])
+	}
+}
+
 func TestSearchFindingsParsesIssuesAndKeys(t *testing.T) {
 	tr, calls := transportReturning(t, map[string]any{
 		"issues": map[string]any{

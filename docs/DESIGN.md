@@ -277,9 +277,13 @@ loop:
     -> NO push, NO PR: this is a correct terminal no-op, not a failure. The implementation +
        review correctly declined to ship an empty commit and concluded the ticket is a
        duplicate/superseded. Surface a Linear breadcrumb recommending the ticket be CLOSED,
-       KEEP the worktree for audit, and return the recommend-close disposition. The loop keeps
-       the ticket In Progress for a human to close (NOT released to Todo — it must never re-loop
-       to the same conclusion) and the breaker treats it as neutral. (Fixes the PR #642 mistake.)
+       KEEP the worktree for audit, and return the recommend-close disposition. The loop CLOSES
+       the ticket — moves it to the terminal Canceled state (BEH-682) — which takes it out of both
+       the --next selection pool and the stale-claim reaper pool, so it can never re-loop to the
+       same conclusion (NOT released to Todo). Merely keeping it In Progress, the prior disposition,
+       was defeated by the reaper releasing it back to Todo past the claim TTL. If no tracker closer
+       is wired or the close call fails, it degrades to keeping the ticket In Progress for a human.
+       The breaker treats it as neutral. (Fixes the PR #642 mistake.)
   if OK     -> git -C <worktree> rebase origin/main   // BEH-570: replay onto the fresh base
                  - clean replay  -> continue (the long pipeline let main move; PR opens current)
                  - content conflict -> NO dead-end (BEH-581): launch a sandboxed conflict-resolution
@@ -389,10 +393,13 @@ loop:
   // never released, even on a non-zero exit (CI red after the auto-fix budget).
   // RECOMMEND-CLOSE (BEH-603) is the one no-PR mode that is NOT released to Todo: the branch
   // makes zero net change, so re-grabbing it would re-run the whole pipeline to the same
-  // "nothing to ship" conclusion forever. Keep it In Progress for a human to close.
+  // "nothing to ship" conclusion forever. CLOSE it — move it to Canceled (BEH-682) — so it
+  // leaves the selection AND reaper pools for good; keeping it merely In Progress was defeated
+  // by the reaper releasing it back to Todo past the claim TTL.
   if RecommendClose:
-    do NOT release            // keep In Progress; a human closes it as a duplicate/superseded
-    comment on ticket: empty diff, recommend closing as duplicate/superseded (breadcrumb, BEH-603)
+    close ticket -> Canceled  // terminal; superseded/duplicate. Falls back to keeping In Progress
+                              // if no closer is wired or the close fails (best-effort, never fatal)
+    comment on ticket: empty diff, closed as duplicate/superseded (breadcrumb, BEH-682)
   else if NOT reached a pushed PR:
     release ticket -> Todo            // don't strand it In Progress; a later run re-grabs it
     comment on ticket: run produced no PR, released to Todo (breadcrumb, BEH-590)
@@ -847,8 +854,8 @@ building `Dockerfile.base` for `linux/amd64` + `linux/arm64`.
   | **Ready for merge queue (BEH-614)** — CI watch finds all real gates green and the only pending check is a structurally-wedged required context (`state=EXPECTED`, merge-queue/main-only) | commit ahead → run review | gates green → push + PR → CI watch **short-circuits the moment the gates are green** (no stall-window/poll-budget waste) → PASS as ready-for-merge-queue (still mergeability-gated) → run retrospective; treated as clean success (breaker resets) | runs as usual |
   | Crash / non-zero exit / timeout | log + breadcrumb, skip rest, next | log + breadcrumb, keep worktree (no push), next | log + breadcrumb, keep worktree, next |
   | Ran but ground-truth fails | no commit → skip + breadcrumb | gates **red** (or dirty worktree, or **no verdict** — spending-cap/OOM, BEH-569, or verdict **blocked** on an unresolved finding, BEH-580) → no push, breadcrumb, keep worktree, next; OR PR open but **CI red after auto-fix budget** → keep PR + worktree, print failing checks | `out.json` absent → breadcrumb, keep worktree, next |
-  | **Recommend-close (BEH-603)** — clean worktree, **empty** `git diff origin/main` | (n/a) | zero net change → **no push, no PR**; breadcrumb recommending the ticket be closed as a duplicate/superseded; keep worktree for audit; **kept In Progress** (NOT released to Todo); breaker-neutral | runs as usual |
-  | **Recommend-close at the CI watch (BEH-602)** — branch became **empty** only AFTER the pre-push rebase (sibling merged the same fix during the gate), so the PR is already open | (n/a) | CI watch short-circuits BEFORE the first poll (no ~20-min poll-budget waste) → keep PR + worktree; same recommend-close breadcrumb + **kept In Progress**; breaker-neutral | runs as usual |
+  | **Recommend-close (BEH-603)** — clean worktree, **empty** `git diff origin/main` | (n/a) | zero net change → **no push, no PR**; breadcrumb noting the ticket is closed as a duplicate/superseded; keep worktree for audit; **closed → Canceled** (BEH-682; NOT released to Todo, so it leaves the selection + reaper pools for good — falls back to kept In Progress if no closer is wired); breaker-neutral | runs as usual |
+  | **Recommend-close at the CI watch (BEH-602)** — branch became **empty** only AFTER the pre-push rebase (sibling merged the same fix during the gate), so the PR is already open | (n/a) | CI watch short-circuits BEFORE the first poll (no ~20-min poll-budget waste) → keep PR + worktree; same recommend-close breadcrumb + **closed → Canceled** (BEH-682; the no-op PR should be closed too); breaker-neutral | runs as usual |
   | **Docs-only (BEH-687)** — net diff touches ONLY docs/prose paths no gate or CI job reads (root markdown, `docs/**`) | commit ahead → run review | host gate re-run **skipped** (nothing a prose edit could break) → push + PR → CI watch **short-circuits BEFORE the first poll** (no ~12-min poll-budget waste, the PR #743 death) → PASS as trivially-mergeable (still mergeability-gated) → run retrospective; treated as clean success (breaker resets) | runs as usual |
 
 - **Circuit breaker:** 3 consecutive ticket failures → **exit and report
