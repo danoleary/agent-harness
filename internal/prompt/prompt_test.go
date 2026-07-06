@@ -372,6 +372,38 @@ func TestBuildTddSteersToVerifyPremiseBeforePlanning(t *testing.T) {
 	}
 }
 
+// BEH-710: a /tdd session on the common "introduce a new reusable primitive +
+// wire N call sites" feature shape is inherently read-heavy (research patterns,
+// docs, and several call-site files before any code) and can exhaust the CONTEXT
+// WINDOW — forcing an auto-compaction that may silently drop a RED→GREEN pairing
+// or a partial multi-edit. Distinct from the wall-clock cap (BEH-688). The
+// implementation prompt must steer the session to keep live context small:
+// front-load research into a compact plan, release large file bodies once a call
+// site is wired, and checkpoint-commit each vertical slice so a compaction has
+// less live state to preserve.
+func TestBuildTddSteersToManageContextBudgetOnReadHeavyWork(t *testing.T) {
+	p := bImpl(t, sample, "beh-362")
+
+	// Must name the context-window / auto-compaction risk (not the wall-clock cap).
+	if !regexp.MustCompile(`(?i)context.{0,20}window`).MatchString(p) {
+		t.Error("prompt does not name the context-window exhaustion risk")
+	}
+	if !regexp.MustCompile(`(?i)(auto-?)?compact`).MatchString(p) {
+		t.Error("prompt does not mention auto-compaction as the failure mode")
+	}
+	// Must steer toward a compact, front-loaded plan and releasing large file bodies.
+	if !regexp.MustCompile(`(?i)(front-?load|compact).{0,30}(plan|research)`).MatchString(p) {
+		t.Error("prompt does not steer toward front-loading research into a compact plan")
+	}
+	if !regexp.MustCompile(`(?i)(stop holding|release|drop).{0,30}(file|source|context)`).MatchString(p) {
+		t.Error("prompt does not steer toward releasing large file bodies from context")
+	}
+	// Must steer toward checkpoint-committing each vertical slice.
+	if !regexp.MustCompile(`(?i)(checkpoint|commit).{0,40}(slice|call ?site)`).MatchString(p) {
+		t.Error("prompt does not steer toward checkpoint-committing each vertical slice")
+	}
+}
+
 func TestBuildTddCarriesBashQuirkSteer(t *testing.T) {
 	assertCarriesBashQuirkSteer(t, bImpl(t, sample, "beh-362"), "tdd prompt")
 }
