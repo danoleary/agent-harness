@@ -19,6 +19,7 @@ type event struct {
 	Subtype    string   `json:"subtype"`
 	IsError    bool     `json:"is_error"`
 	Result     string   `json:"result"`
+	NumTurns   int      `json:"num_turns"`
 	DurationMS *float64 `json:"duration_ms"`
 	Message    struct {
 		// Model is the model that produced the turn. A spending-cap abort ships a
@@ -220,6 +221,44 @@ func IsReviewBlocked(line string) bool {
 	return false
 }
 
+// turnZeroNoOpMaxTurns is the num_turns ceiling below which a subtype="success",
+// non-error result that produced NO final output text is read as a degenerate
+// turn-0 no-op (BEH-709) rather than a real success. The crash the pinned CLI
+// ships when its `!`+backtick inline-bash directive errors reports exactly
+// num_turns=3 with an empty result; a session that did any real work reports both
+// a non-empty final result and many more turns, so this window cannot catch one.
+const turnZeroNoOpMaxTurns = 3
+
+// isTurnZeroNoOp reports whether a result event is the pinned CLI's turn-0 no-op:
+// a subtype="success", non-error terminal result that produced NO final output
+// text (an empty `result`) in a handful of turns. The `!`+backtick directive in
+// the prompt runs host-of-sandbox, errors, and the session degenerates to a
+// zero-work run that still exits 0 with is_error=false — so keying off is_error /
+// exit code alone reads it as success and masks the crash (BEH-709). Requiring a
+// POSITIVE num_turns <= turnZeroNoOpMaxTurns keeps a minimal result event that
+// simply omits num_turns (num_turns=0) from being mislabelled: only a reported,
+// genuinely low turn count paired with an empty result is the crash signature.
+func isTurnZeroNoOp(e event) bool {
+	return e.Type == "result" && e.Subtype == "success" && !e.IsError &&
+		strings.TrimSpace(e.Result) == "" &&
+		e.NumTurns >= 1 && e.NumTurns <= turnZeroNoOpMaxTurns
+}
+
+// IsTurnZeroNoOp reports whether a stream-json line is the pinned CLI's turn-0
+// no-op result (BEH-709), so the session layer can surface it onto its Outcome the
+// way it does a usage-policy refusal or spending-cap abort. It is the terminal
+// masked-success shape: a subtype="success", non-error result that produced no
+// output in a handful of turns because the prompt's `!`+backtick directive errored
+// host-of-sandbox and the session degenerated to zero real work while still
+// exiting 0. A malformed line is never a no-op (it just returns false).
+func IsTurnZeroNoOp(line string) bool {
+	var e event
+	if err := json.Unmarshal([]byte(line), &e); err != nil {
+		return false
+	}
+	return isTurnZeroNoOp(e)
+}
+
 // Narrate turns one line of claude's `--output-format stream-json` into a concise
 // console narration string, returning ok=false to skip it. The full raw stream
 // is teed to the per-run jsonl regardless; this is only the human-friendly
@@ -262,6 +301,15 @@ func NarrateRecord(line string) (string, loopstream.Kind, bool) {
 		// ✗ mark.
 		if e.IsError && subtype == "success" {
 			subtype = "error"
+		}
+		// A non-error "success" result that produced no output in <=3 turns is the
+		// turn-0 no-op (BEH-709), not a real success. Surface it with the ✗ mark and a
+		// distinct word so it is never read as the harness's success signal — the
+		// stage's own ground-truth check (e.g. an absent findings dropbox) then routes
+		// it to the retry/never-ran class instead of a masked "✓ session success".
+		if isTurnZeroNoOp(e) {
+			mark = "✗"
+			subtype = "no-op (turn-0 crash — no output)"
 		}
 		return fmt.Sprintf("%s session %s%s", mark, subtype, secs), loopstream.KindSessionResult, true
 	}

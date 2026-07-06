@@ -44,13 +44,14 @@ func (f *fakeLog) Structured(r loopstream.Record) {
 func (f *fakeLog) TeeLine(_, raw string) { f.teed = append(f.teed, strings.TrimSuffix(raw, "\n")) }
 
 const (
-	lineSystem  = `{"type":"system","subtype":"init"}`
-	lineToolUse = `{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Edit"}]}}`
-	lineResult  = `{"type":"result","subtype":"success","duration_ms":1000}`
-	lineRefusal = `{"type":"result","subtype":"success","is_error":true,"result":"API Error: Claude Code is unable to respond to this request, which appears to violate our Usage Policy. If you are seeing this refusal repeatedly, try running /model to switch models."}`
-	lineCap     = `{"type":"result","subtype":"success","is_error":true,"result":"Spending cap reached resets 8:20am"}`
-	lineVerdict = `{"type":"assistant","message":{"content":[{"type":"text","text":"## Review: feat/x  (BEH-1 — intent)   2 files, +5/-1"}]}}`
-	lineBlocked = `{"type":"assistant","message":{"content":[{"type":"text","text":"## Review: feat/x  (BEH-1 — intent)   2 files, +5/-1\n\nDisposition: blocked — needs a human call"}]}}`
+	lineSystem   = `{"type":"system","subtype":"init"}`
+	lineToolUse  = `{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Edit"}]}}`
+	lineResult   = `{"type":"result","subtype":"success","duration_ms":1000}`
+	lineRefusal  = `{"type":"result","subtype":"success","is_error":true,"result":"API Error: Claude Code is unable to respond to this request, which appears to violate our Usage Policy. If you are seeing this refusal repeatedly, try running /model to switch models."}`
+	lineCap      = `{"type":"result","subtype":"success","is_error":true,"result":"Spending cap reached resets 8:20am"}`
+	lineTurnZero = `{"type":"result","subtype":"success","is_error":false,"num_turns":3,"result":"","duration_ms":400}`
+	lineVerdict  = `{"type":"assistant","message":{"content":[{"type":"text","text":"## Review: feat/x  (BEH-1 — intent)   2 files, +5/-1"}]}}`
+	lineBlocked  = `{"type":"assistant","message":{"content":[{"type":"text","text":"## Review: feat/x  (BEH-1 — intent)   2 files, +5/-1\n\nDisposition: blocked — needs a human call"}]}}`
 )
 
 // Narrated stream events are mirrored into the global loop.jsonl with their
@@ -162,6 +163,22 @@ func TestPumpStdoutReportsSpendingCapAbort(t *testing.T) {
 	clean := pumpStdout(strings.NewReader(lineToolUse+"\n"+lineResult), "x.jsonl", false, &fakeLog{}, &bytes.Buffer{})
 	if clean.spendingCapAbort {
 		t.Error("a clean run must not report a spending-cap abort")
+	}
+}
+
+// pumpStdout reports whether the stream ended on a turn-0 no-op (BEH-709) — the
+// masked-success crash that exits 0 with is_error=false — so Run can surface it on
+// its Outcome and the retrospective completion check can name it distinctly rather
+// than as "✓ session success". A clean run reports no turn-0 no-op.
+func TestPumpStdoutReportsTurnZeroNoOp(t *testing.T) {
+	crashed := pumpStdout(strings.NewReader(lineSystem+"\n"+lineTurnZero), "x.jsonl", false, &fakeLog{}, &bytes.Buffer{})
+	if !crashed.turnZeroNoOp {
+		t.Error("expected a turn-0 no-op to be reported")
+	}
+
+	clean := pumpStdout(strings.NewReader(lineToolUse+"\n"+lineResult), "x.jsonl", false, &fakeLog{}, &bytes.Buffer{})
+	if clean.turnZeroNoOp {
+		t.Error("a clean run must not report a turn-0 no-op")
 	}
 }
 

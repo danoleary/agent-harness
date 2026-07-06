@@ -169,16 +169,25 @@ func Retrospective(cfg config.Config, log *runlog.Logger, runID string, args Arg
 
 	// Ground truth, never self-report: the retrospective ran iff it wrote the
 	// findings dropbox. An empty `[]` is still present → success; an absent file
-	// means the step never ran (DESIGN.md "Success is ground-truth"). Two
+	// means the step never ran (DESIGN.md "Success is ground-truth"). Three
 	// absent-dropbox cases aren't the agent's fault and get the retry class (↻),
-	// not the misleading generic "never ran" (✗): a spending-cap abort (BEH-494)
-	// and a 137 kill — OOM or wall-clock cap — that struck after the read-heavy
-	// analysis but before the write (BEH-536).
-	result := verify.Retrospective(filing.DropboxExists(findingsDir), outcome.SpendingCapAbort, outcome.ExitCode)
+	// not the misleading generic "never ran" (✗): a spending-cap abort (BEH-494),
+	// a 137 kill — OOM or wall-clock cap — that struck after the read-heavy
+	// analysis but before the write (BEH-536), and a turn-0 no-op whose prompt
+	// crashed the session before any work (BEH-709).
+	result := verify.Retrospective(verify.RetrospectiveOutcome{
+		DropboxExists:    filing.DropboxExists(findingsDir),
+		SpendingCapAbort: outcome.SpendingCapAbort,
+		ExitCode:         outcome.ExitCode,
+		TurnZeroNoOp:     outcome.TurnZeroNoOp,
+	})
 	switch {
 	case result.OK:
 		log.Event("retrospective ✓ " + result.Reason)
-	case outcome.SpendingCapAbort, outcome.ExitCode == sandbox.ExitOOMKill:
+	case outcome.SpendingCapAbort, outcome.ExitCode == sandbox.ExitOOMKill, outcome.TurnZeroNoOp:
+		// A turn-0 no-op joins the cap-abort and OOM as a not-the-agent's-fault retry
+		// class (↻): its `!`+backtick trigger is content/parse nondeterministic, so a
+		// re-run may well succeed — unlike a genuine "never ran" skip (BEH-709).
 		log.Event("retrospective ↻ " + result.Reason)
 	default:
 		log.Event("retrospective ✗ " + result.Reason)

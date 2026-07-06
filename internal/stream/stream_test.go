@@ -114,6 +114,46 @@ func TestIsUsagePolicyRefusalRejectsNonRefusals(t *testing.T) {
 // the billing/usage-cap message ("Spending cap reached resets 8:20am"). The
 // session is killed before doing any real work, so the harness must surface it
 // as a distinct retry-after-reset class — not the generic "never ran" failure.
+// The public turn-0 no-op predicate (BEH-709) lets the session layer surface the
+// crash onto its Outcome, mirroring IsSpendingCapAbort. It must fire on the exact
+// crash shape — subtype="success", is_error=false, empty result, num_turns=3 —
+// and never on a real success (non-empty result), a session that merely omitted
+// num_turns, a genuine error, or a malformed line.
+func TestIsTurnZeroNoOpDetectsTheCrashShape(t *testing.T) {
+	line := mustJSON(t, map[string]any{
+		"type": "result", "subtype": "success", "is_error": false,
+		"num_turns": 3, "result": "",
+	})
+	if !IsTurnZeroNoOp(line) {
+		t.Error("expected the turn-0 no-op result to be detected")
+	}
+}
+
+func TestIsTurnZeroNoOpRejectsNonCrashes(t *testing.T) {
+	realSuccess := mustJSON(t, map[string]any{
+		"type": "result", "subtype": "success", "is_error": false,
+		"num_turns": 3, "result": "Done — committed abc1234",
+	})
+	noTurnCount := mustJSON(t, map[string]any{
+		"type": "result", "subtype": "success", "is_error": false, "result": "",
+	})
+	genuineError := mustJSON(t, map[string]any{
+		"type": "result", "subtype": "error_during_execution", "is_error": true,
+		"num_turns": 2, "result": "",
+	})
+	for name, line := range map[string]string{
+		"real success (has output)": realSuccess,
+		"omitted num_turns":         noTurnCount,
+		"genuine error":             genuineError,
+		"malformed":                 "{not json",
+		"empty":                     "",
+	} {
+		if IsTurnZeroNoOp(line) {
+			t.Errorf("%s should not be a turn-0 no-op", name)
+		}
+	}
+}
+
 func TestIsSpendingCapAbortDetectsTheCapResult(t *testing.T) {
 	line := mustJSON(t, map[string]any{
 		"type":     "result",
@@ -454,5 +494,56 @@ func TestNarratesErrorResultWithSuccessSubtypeIsNotContradictory(t *testing.T) {
 	}
 	if !strings.Contains(out, "(2s)") {
 		t.Errorf("error result narration %q lacks rounded duration", out)
+	}
+}
+
+// A subtype="success", non-error result that produced NO final output in a
+// handful of turns is the pinned CLI's turn-0 no-op (BEH-709): the `!`+backtick
+// inline-bash directive ran, errored, and the whole session degenerated to a
+// zero-work run that still exits 0 with is_error=false. Narrating it as
+// "✓ session success" masks a crash as the harness's primary success signal, so
+// it must surface distinctly — the ✗ mark, never the "success" word.
+func TestNarratesTurnZeroNoOpAsFailureNotSuccess(t *testing.T) {
+	line := mustJSON(t, map[string]any{
+		"type":        "result",
+		"subtype":     "success",
+		"is_error":    false,
+		"num_turns":   3,
+		"result":      "",
+		"duration_ms": 400,
+	})
+
+	out, ok := Narrate(line)
+	if !ok {
+		t.Fatal("expected a narration")
+	}
+	if !strings.Contains(out, "✗") {
+		t.Errorf("turn-0 no-op narration %q lacks the ✗ failure mark", out)
+	}
+	if strings.Contains(out, "success") {
+		t.Errorf("turn-0 no-op narration %q echoes the masking \"success\" word", out)
+	}
+}
+
+// The empty-result condition is load-bearing: a short session (few turns) that
+// DID produce final output is a real success, not a turn-0 no-op. Only the crash
+// signature — a low turn count paired with an EMPTY result — is demoted, so a
+// legitimate quick session must still narrate "✓ session success" (BEH-709).
+func TestNarratesShortSessionWithOutputAsSuccess(t *testing.T) {
+	line := mustJSON(t, map[string]any{
+		"type":        "result",
+		"subtype":     "success",
+		"is_error":    false,
+		"num_turns":   3,
+		"result":      "Done — committed abc1234 on feat/beh-000",
+		"duration_ms": 5000,
+	})
+
+	out, ok := Narrate(line)
+	if !ok {
+		t.Fatal("expected a narration")
+	}
+	if !strings.Contains(out, "✓") || !strings.Contains(out, "success") {
+		t.Errorf("short session with real output should narrate success, got: %q", out)
 	}
 }

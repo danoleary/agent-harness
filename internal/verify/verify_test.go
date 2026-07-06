@@ -53,14 +53,14 @@ func TestTddFailsWhenHistoryDisjoint(t *testing.T) {
 // empty `[]` is a valid "ran, found nothing" (still present → success); an
 // absent file means the step never ran and is a failure (DESIGN.md).
 func TestRetrospectivePassesWhenDropboxPresent(t *testing.T) {
-	r := Retrospective(true, false, 0)
+	r := Retrospective(RetrospectiveOutcome{DropboxExists: true})
 	if !r.OK {
 		t.Errorf("expected OK when dropbox present, got %+v", r)
 	}
 }
 
 func TestRetrospectiveFailsWhenDropboxAbsent(t *testing.T) {
-	r := Retrospective(false, false, 0)
+	r := Retrospective(RetrospectiveOutcome{})
 	if r.OK {
 		t.Error("expected failure when dropbox absent")
 	}
@@ -79,7 +79,7 @@ func TestRetrospectiveFailsWhenDropboxAbsent(t *testing.T) {
 // (which reads as the agent skipping the step). This mirrors the spending-cap
 // handling below and ReviewQualitative's OOM branch.
 func TestRetrospectiveReportsKilledBeforeWrite(t *testing.T) {
-	r := Retrospective(false, false, 137)
+	r := Retrospective(RetrospectiveOutcome{ExitCode: 137})
 	if r.OK {
 		t.Error("a 137-killed session wrote no dropbox — still a failure")
 	}
@@ -91,6 +91,38 @@ func TestRetrospectiveReportsKilledBeforeWrite(t *testing.T) {
 	}
 	if regexp.MustCompile(`(?i)never ran`).MatchString(r.Reason) {
 		t.Errorf("a 137 kill must NOT use the misleading 'never ran' wording, got %q", r.Reason)
+	}
+}
+
+// BEH-709: the session exited 0 with is_error=false but did zero real work — the
+// pinned CLI's turn-0 no-op, where a `!`+backtick directive in the prompt crashed
+// the session before it could write findings. Its exit-0/success shape would
+// otherwise fall through to the plain "never ran", masking a genuine crash as the
+// agent skipping the step. It must read distinctly — name the turn-0 crash, signal
+// a retry (the trigger is nondeterministic), and NOT use the "never ran" wording.
+func TestRetrospectiveReportsTurnZeroCrash(t *testing.T) {
+	r := Retrospective(RetrospectiveOutcome{TurnZeroNoOp: true})
+	if r.OK {
+		t.Error("a turn-0 no-op wrote no dropbox — still a failure")
+	}
+	if !regexp.MustCompile(`(?i)turn-0|crash`).MatchString(r.Reason) {
+		t.Errorf("reason %q should name the turn-0 crash", r.Reason)
+	}
+	if !regexp.MustCompile(`(?i)retry`).MatchString(r.Reason) {
+		t.Errorf("reason %q should signal a retry, not a permanent skip", r.Reason)
+	}
+	if regexp.MustCompile(`(?i)never ran`).MatchString(r.Reason) {
+		t.Errorf("a turn-0 crash must NOT use the misleading 'never ran' wording, got %q", r.Reason)
+	}
+}
+
+// A turn-0 no-op that somehow coexists with a PRESENT dropbox must let the genuine
+// output stand: a real out.json is proof the session did work, so dropbox-present
+// is checked before the turn-0 branch (BEH-709). Guards the precedence order.
+func TestRetrospectivePresentDropboxWinsOverTurnZero(t *testing.T) {
+	r := Retrospective(RetrospectiveOutcome{DropboxExists: true, TurnZeroNoOp: true})
+	if !r.OK {
+		t.Errorf("a present dropbox is genuine output and must stand over the turn-0 flag, got %+v", r)
 	}
 }
 
@@ -140,7 +172,7 @@ func TestRetrospectivePreconditionsProceedWhenBothPresent(t *testing.T) {
 // spending-cap class — the more specific, actionable cause (retry after the
 // billing window resets, not just re-run now).
 func TestRetrospectiveSpendingCapWinsOverExitCode(t *testing.T) {
-	r := Retrospective(false, true, 137)
+	r := Retrospective(RetrospectiveOutcome{SpendingCapAbort: true, ExitCode: 137})
 	if !regexp.MustCompile(`(?i)spending cap`).MatchString(r.Reason) {
 		t.Errorf("spending-cap abort must take precedence over the generic 137 kill, got %q", r.Reason)
 	}
@@ -155,7 +187,7 @@ func TestRetrospectiveSpendingCapWinsOverExitCode(t *testing.T) {
 // dropbox-present check, exactly the disagreement that would otherwise let the
 // dropbox silently skip the re-run.
 func TestRetrospectiveSpendingCapWinsOverPresentDropbox(t *testing.T) {
-	r := Retrospective(true, true, 1)
+	r := Retrospective(RetrospectiveOutcome{DropboxExists: true, SpendingCapAbort: true, ExitCode: 1})
 	if r.OK {
 		t.Error("a spending-cap abort must not be masked by a present (stale/[]) dropbox — expected a retry, got OK")
 	}
@@ -171,7 +203,7 @@ func TestRetrospectiveSpendingCapWinsOverPresentDropbox(t *testing.T) {
 // dropbox. The reason must be the distinct retry-after-reset class — NOT the
 // misleading generic "never ran" (which reads as the agent misbehaving).
 func TestRetrospectiveReportsSpendingCapAbort(t *testing.T) {
-	r := Retrospective(false, true, 0)
+	r := Retrospective(RetrospectiveOutcome{SpendingCapAbort: true})
 	if r.OK {
 		t.Error("a spending-cap abort wrote no dropbox — still a failure")
 	}

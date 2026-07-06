@@ -111,6 +111,13 @@ type Outcome struct {
 	// bare pre-work transient. Retryable() reads this flag to avoid re-running the
 	// from-scratch prompt over a worktree that already holds ~a full session of work.
 	CapKilled bool
+	// TurnZeroNoOp is true iff the stream ended on the pinned CLI's turn-0 no-op
+	// (BEH-709): a subtype="success", is_error=false terminal result that produced no
+	// output in <=3 turns because the prompt's `!`+backtick directive errored
+	// host-of-sandbox and the session degenerated to zero real work while still
+	// exiting 0. The caller (retrospective) feeds it to the completion check so the
+	// masked "session success" is named as the crash it is, not a genuine skip.
+	TurnZeroNoOp bool
 	// DockerReason is docker's own error line on a launch failure (exit 125 —
 	// sandbox.ExitCannotStart), extracted from the stderr tail. It lets the caller
 	// tell a transient launch failure (overlay2/read-only-fs, BEH-542) from a
@@ -153,6 +160,7 @@ type streamFlags struct {
 	spendingCapResetTime time.Time
 	reviewVerdictEmitted bool
 	reviewBlocked        bool
+	turnZeroNoOp         bool
 }
 
 // realNow returns the current wall-clock time with the monotonic reading stripped
@@ -432,7 +440,7 @@ func Run(dockerArgs []string, opts Options) Outcome {
 		opts.Log.Event(sessionSummary(time.Since(monoStart), realNow().Sub(start), opts.Timeout))
 	}
 
-	return Outcome{ExitCode: exitCode, CapKilled: capKilled.Load(), UsagePolicyRefusal: flags.usagePolicyRefusal, SpendingCapAbort: flags.spendingCapAbort, SpendingCapResetTime: flags.spendingCapResetTime, ReviewVerdictEmitted: flags.reviewVerdictEmitted, ReviewBlocked: flags.reviewBlocked, DockerReason: dockerReason}
+	return Outcome{ExitCode: exitCode, CapKilled: capKilled.Load(), UsagePolicyRefusal: flags.usagePolicyRefusal, SpendingCapAbort: flags.spendingCapAbort, SpendingCapResetTime: flags.spendingCapResetTime, ReviewVerdictEmitted: flags.reviewVerdictEmitted, ReviewBlocked: flags.reviewBlocked, TurnZeroNoOp: flags.turnZeroNoOp, DockerReason: dockerReason}
 }
 
 // pumpStdout scans claude's stream-json stdout: it tees every line raw to the
@@ -469,6 +477,9 @@ func pumpStdout(r io.Reader, transcriptFile string, verbose bool, log Logger, ec
 		}
 		if stream.IsReviewBlocked(line) {
 			flags.reviewBlocked = true
+		}
+		if stream.IsTurnZeroNoOp(line) {
+			flags.turnZeroNoOp = true
 		}
 		if verbose {
 			fmt.Fprintln(echo, line)

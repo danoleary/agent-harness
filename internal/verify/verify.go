@@ -64,10 +64,10 @@ func Tdd(truth GroundTruth) Result {
 // failure — the rule that stops a silently-skipped retrospective from
 // masquerading as "no issues found" (DESIGN.md "Success is ground-truth").
 //
-// Two parameters distinguish the failure class when the dropbox is absent, so a
-// kill the agent couldn't avoid isn't mislabelled as the agent skipping the step:
+// Three signals distinguish the failure class when the dropbox is absent, so a
+// crash the agent couldn't avoid isn't mislabelled as the agent skipping the step:
 //
-//   - spendingCapAbort (BEH-494): a session killed by a billing/usage cap before
+//   - SpendingCapAbort (BEH-494): a session killed by a billing/usage cap before
 //     doing any work never gets the chance to write the dropbox, so the generic
 //     "never ran" reads as the agent misbehaving. When the cap fired, report the
 //     distinct retry-after-reset class instead. It is the most specific cause, so
@@ -77,26 +77,56 @@ func Tdd(truth GroundTruth) Result {
 //     skill writes before its analysis — never proof the retrospective completed.
 //     Checking dropbox-present first would let that file silently mask the abort
 //     into a false "ran, found nothing" success and skip the re-run (BEH-568).
-//   - exitCode (BEH-536): the retrospective is a long, read-heavy step that hit
+//   - ExitCode (BEH-536): the retrospective is a long, read-heavy step that hit
 //     its wall-clock cap (exit 137) mid-investigation — after the analysis but
 //     before its write. A 137 kill with no dropbox is "killed before writing —
 //     retry", NOT "never ran" (mirrors ReviewQualitative's OOM branch). Combined
 //     with the skill's incremental write, this leaves a clear, actionable signal.
 //     Unlike the cap abort, a 137 is checked *after* dropbox-present: a present
 //     dropbox there is genuine output written before a teardown kill, so it stands.
+//   - TurnZeroNoOp (BEH-709): the session exited 0 with is_error=false but did zero
+//     real work — the pinned CLI's turn-0 no-op, where a `!`+backtick directive in
+//     the prompt errored host-of-sandbox and degenerated the whole session before
+//     it could write. Its exit-0/success shape otherwise falls through to the plain
+//     "never ran", masking a genuine crash as the agent skipping the step; naming it
+//     distinctly (and as a retry, since the trigger is content/parse nondeterministic)
+//     stops that. Checked after the 137 kill: a turn-0 no-op is exit 0 by definition,
+//     so the two never collide.
 //
-// Only a genuinely absent-and-not-killed dropbox keeps the "never ran" wording.
-func Retrospective(dropboxExists, spendingCapAbort bool, exitCode int) Result {
-	if spendingCapAbort {
+// Only a genuinely absent-and-not-crashed dropbox keeps the "never ran" wording.
+func Retrospective(o RetrospectiveOutcome) Result {
+	if o.SpendingCapAbort {
 		return Result{OK: false, Reason: "session aborted before running — spending cap reached, retry after reset"}
 	}
-	if dropboxExists {
+	if o.DropboxExists {
 		return Result{OK: true, Reason: "findings dropbox out.json present"}
 	}
-	if exitCode == oomExitCode {
+	if o.ExitCode == oomExitCode {
 		return Result{OK: false, Reason: "session killed (exit 137) before writing findings — likely OOM or wall-clock cap, retry"}
 	}
+	if o.TurnZeroNoOp {
+		return Result{OK: false, Reason: "session turn-0-crashed (exited 0 with no output after ≤3 turns) before writing findings — the prompt likely poisoned the session, retry"}
+	}
 	return Result{OK: false, Reason: "findings dropbox out.json was not written — retrospective never ran"}
+}
+
+// RetrospectiveOutcome is the ground truth the retrospective completion check reads
+// to decide whether the session really ran and, if not, which failure class it was.
+// It mirrors what retrospective.go knows right after the session and its dropbox
+// write (BEH-709 added TurnZeroNoOp to the pre-existing dropbox/cap/exit signals).
+type RetrospectiveOutcome struct {
+	// DropboxExists reports whether /findings/out.json is present — the ground-truth
+	// proof the retrospective ran (an empty `[]` still counts).
+	DropboxExists bool
+	// SpendingCapAbort marks a session killed by a billing/usage cap before doing any
+	// work — its own retry-after-reset class.
+	SpendingCapAbort bool
+	// ExitCode is the session's container exit code (137 = OOM / wall-clock kill).
+	ExitCode int
+	// TurnZeroNoOp marks the pinned CLI's turn-0 no-op (BEH-709): exit 0 with
+	// is_error=false but zero real work, because the prompt's `!`+backtick directive
+	// crashed the session before it could write findings.
+	TurnZeroNoOp bool
 }
 
 // RetrospectiveInputs is the host-side ground truth that decides whether the

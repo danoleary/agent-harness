@@ -778,6 +778,32 @@ func TestDefangLeavesCleanTextUntouched(t *testing.T) {
 	}
 }
 
+// The bash-quirk steer is harness-owned envelope prose appended to EVERY stage
+// prompt and, being trusted, is deliberately NOT defanged (unlike untrusted ticket
+// / finding text). It is dense with backticks and `!` characters, so a careless
+// edit could introduce the very `!`+backtick directive that no-ops a session at
+// turn 0 — the exact crash class of BEH-709. This guards the constant against that:
+// the one un-defanged block on the hot path must never carry a live directive.
+func TestBashQuirkSteerCarriesNoLiveDirective(t *testing.T) {
+	if strings.Contains(bashQuirkSteer, bangBacktick) {
+		t.Errorf("bashQuirkSteer (un-defanged, appended to every prompt) contains a live %q directive opener — it would no-op the session at turn 0 (BEH-709)", bangBacktick)
+	}
+}
+
+// The assembled retrospective prompt — settled-findings context + the appended
+// bash-quirk paragraph, the exact combination that crashed BEH-451's retrospective
+// at turn 0 — must carry no live `!`+backtick directive: the untrusted findings are
+// defanged and the trusted envelope is clean (BEH-709).
+func TestBuildRetrospectiveWholePromptCarriesNoLiveDirective(t *testing.T) {
+	p := bRetro(t, sample, "beh-362", []FiledFinding{
+		{Key: "sandbox-bang-backtick", Title: "session no-ops on a !`cmd` directive"},
+		{Key: "another-class", Title: "a second settled finding with a `pnpm run check` gate ref"},
+	})
+	if strings.Contains(p, bangBacktick) {
+		t.Errorf("assembled retrospective prompt carries a live %q directive opener (settled findings + bash-quirk envelope)", bangBacktick)
+	}
+}
+
 // poisoned is a ticket whose body carries the exact directive that no-opped
 // BEH-381's implementation sessions.
 var poisoned = ticket.Ticket{
