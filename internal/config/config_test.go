@@ -225,6 +225,36 @@ func TestLoadExposesAnthropicKeyAndDedupModel(t *testing.T) {
 	}
 }
 
+// The Jira Basic-auth triple is surfaced from env as host-only secrets (never
+// committed config), read only when tracker.kind=jira. They are optional at Load
+// — a non-jira consumer sets none — so their absence must not fail the load.
+func TestLoadExposesJiraSecrets(t *testing.T) {
+	cfg, err := Load(fullEnv(map[string]string{
+		"JIRA_BASE_URL":  "https://acme.atlassian.net",
+		"JIRA_EMAIL":     "bot@acme.co",
+		"JIRA_API_TOKEN": "jira_tok",
+	}))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.JiraBaseURL != "https://acme.atlassian.net" || cfg.JiraEmail != "bot@acme.co" || cfg.JiraAPIToken != "jira_tok" {
+		t.Errorf("Jira secrets = %q/%q/%q, want the env values", cfg.JiraBaseURL, cfg.JiraEmail, cfg.JiraAPIToken)
+	}
+}
+
+// The Jira secrets are optional: a consumer on Linear/GitHub sets none, and Load
+// must still succeed with them empty (trackers.New is what fails loud on a jira
+// selection missing its auth, not Load).
+func TestLoadJiraSecretsOptional(t *testing.T) {
+	cfg, err := Load(fullEnv(nil))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.JiraBaseURL != "" || cfg.JiraEmail != "" || cfg.JiraAPIToken != "" {
+		t.Errorf("expected empty Jira secrets by default, got %q/%q/%q", cfg.JiraBaseURL, cfg.JiraEmail, cfg.JiraAPIToken)
+	}
+}
+
 // With only an OAuth token (no API key), AnthropicAPIKey is empty — the x-api-key
 // header rejects an OAuth token (BEH-316), so the matcher is left unwired and
 // filing degrades to exact-match dedup. The credential check still passes.

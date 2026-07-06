@@ -44,7 +44,7 @@ func main() {
 			fmt.Fprintf(os.Stderr, "%v\n", err)
 			os.Exit(1)
 		}
-		client, err := trackers.New(cfg.Tracker, cfg.LinearAPIKey, cfg.GitHubToken)
+		client, err := trackers.New(cfg.Tracker, trackers.Secrets{LinearKey: cfg.LinearAPIKey, GitHubToken: cfg.GitHubToken, JiraBaseURL: cfg.JiraBaseURL, JiraEmail: cfg.JiraEmail, JiraToken: cfg.JiraAPIToken})
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "%v\n", err)
 			os.Exit(1)

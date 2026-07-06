@@ -73,11 +73,11 @@ type Gate struct {
 // TrackerConfig is the non-secret tracker selection surface. The API key stays
 // env-only (LINEAR_API_KEY / GH_TOKEN); only the selection names live here.
 type TrackerConfig struct {
-	// Kind selects the tracker adapter (linear or github today; jira is BEH-638).
+	// Kind selects the tracker adapter (linear, github, or jira).
 	Kind string `toml:"kind"`
 	// FindingsLabelID is the tracker label every harness finding is filed under.
-	// The Linear adapter reads it as a label UUID; the GitHub adapter reads it as a
-	// label name (was linear.agentHarnessLabelID).
+	// The Linear adapter reads it as a label UUID; the GitHub and Jira adapters read
+	// it as a label name (was linear.agentHarnessLabelID).
 	FindingsLabelID string `toml:"findings_label_id"`
 	// ReadyLabel is the human-applied blast-radius gate label the selector
 	// requires (was selection.agentReadyLabel).
@@ -97,6 +97,29 @@ type TrackerConfig struct {
 	// clears on release (the "+ assignee" half of the claim semantics). Empty means
 	// the label transition alone claims the ticket.
 	Assignee string `toml:"assignee"`
+
+	// The fields below are jira-only (ignored by Linear/GitHub). The Jira auth
+	// secrets (base URL + email + token) are NOT here — they are host-only env
+	// secrets (JIRA_BASE_URL / JIRA_EMAIL / JIRA_API_TOKEN), never committed config.
+
+	// ProjectKey is the Jira project findings are filed into and the ticket's
+	// container (the Jira twin of a GitHub repo / Linear team).
+	ProjectKey string `toml:"project_key"`
+	// ReadyJQL is the "ready for the agent" queue expressed as a JQL query — the
+	// Jira twin of the GitHub ready label. It encodes readiness/blocked/ordering.
+	ReadyJQL string `toml:"ready_jql"`
+	// InProgressJQL is the JQL for the agent-claimed In Progress set the reaper reads.
+	InProgressJQL string `toml:"in_progress_jql"`
+	// FindingsIssueType is the Jira issue type new findings are created as (Jira
+	// requires one). Empty defaults to "Task".
+	FindingsIssueType string `toml:"findings_issue_type"`
+	// InProgressTransition / TodoTransition / CanceledTransition are the workflow
+	// transition NAMES that claim / release / cancel a ticket (Jira has no label
+	// column — the claim is a status transition). Named, not id: transition ids are
+	// instance-specific and vary by source status.
+	InProgressTransition string `toml:"in_progress_transition"`
+	TodoTransition       string `toml:"todo_transition"`
+	CanceledTransition   string `toml:"cancel_transition"`
 }
 
 // LoadProject reads and parses `<checkoutPath>/.agent-harness/config.toml`. It

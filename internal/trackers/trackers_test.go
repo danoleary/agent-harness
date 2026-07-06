@@ -9,10 +9,10 @@ import (
 )
 
 // New selects the tracker adapter by the config's kind (ADR-0010: "selected by
-// .agent-harness/config"). Linear and GitHub Issues both sit behind the port.
+// .agent-harness/config"). Linear, GitHub Issues, and Jira all sit behind the port.
 func TestNewSelectsLinearAdapter(t *testing.T) {
 	var got tracker.Tracker
-	got, err := New(config.TrackerConfig{Kind: "linear"}, "lin_api_key", "gh_token")
+	got, err := New(config.TrackerConfig{Kind: "linear"}, Secrets{LinearKey: "lin_api_key", GitHubToken: "gh_token"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -29,7 +29,7 @@ func TestNewSelectsGitHubAdapter(t *testing.T) {
 		Repo:            "acme/widgets",
 		ReadyLabel:      "ready-for-agent",
 		InProgressLabel: "in-progress",
-	}, "", "gh_token")
+	}, Secrets{GitHubToken: "gh_token"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -42,7 +42,7 @@ func TestNewSelectsGitHubAdapter(t *testing.T) {
 // scoped, so it must fail loud rather than build a client that can't address any
 // issue.
 func TestNewGitHubRequiresRepo(t *testing.T) {
-	_, err := New(config.TrackerConfig{Kind: "github"}, "", "gh_token")
+	_, err := New(config.TrackerConfig{Kind: "github"}, Secrets{GitHubToken: "gh_token"})
 	if err == nil {
 		t.Fatal("expected an error for github with no repo, got nil")
 	}
@@ -55,7 +55,7 @@ func TestNewGitHubRequiresRepo(t *testing.T) {
 // owner/name, so "a/b/c" would silently address a bogus path. It must fail loud
 // like the empty case rather than build a client that 404s on first use.
 func TestNewGitHubRejectsMalformedRepo(t *testing.T) {
-	_, err := New(config.TrackerConfig{Kind: "github", Repo: "acme/widgets/extra"}, "", "gh_token")
+	_, err := New(config.TrackerConfig{Kind: "github", Repo: "acme/widgets/extra"}, Secrets{GitHubToken: "gh_token"})
 	if err == nil {
 		t.Fatal("expected an error for a multi-segment repo, got nil")
 	}
@@ -64,10 +64,41 @@ func TestNewGitHubRejectsMalformedRepo(t *testing.T) {
 	}
 }
 
+// The Jira adapter is selected purely by config: kind + JQL/transitions, with the
+// base URL + email + token supplied host-side as secrets (never in the committed
+// config).
+func TestNewSelectsJiraAdapter(t *testing.T) {
+	got, err := New(config.TrackerConfig{
+		Kind:                 "jira",
+		ProjectKey:           "PROJ",
+		ReadyJQL:             "status = Ready",
+		InProgressTransition: "Start Progress",
+	}, Secrets{JiraBaseURL: "https://acme.atlassian.net", JiraEmail: "bot@acme.co", JiraToken: "tok"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got == nil {
+		t.Fatal("expected a Tracker for kind=jira, got nil")
+	}
+}
+
+// A Jira selection missing any of its host-only auth secrets is a
+// misconfiguration — the adapter can't authenticate, so it must fail loud rather
+// than build a client that 401s on first use.
+func TestNewJiraRequiresAuthSecrets(t *testing.T) {
+	_, err := New(config.TrackerConfig{Kind: "jira", ProjectKey: "PROJ"}, Secrets{JiraBaseURL: "https://acme.atlassian.net"})
+	if err == nil {
+		t.Fatal("expected an error for jira with no email/token, got nil")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "jira") {
+		t.Errorf("error should name the missing jira secrets, got: %v", err)
+	}
+}
+
 // An unknown kind must fail loud, naming the kind — the harness refuses to launch
 // against a tracker it has no adapter for rather than silently doing nothing.
 func TestNewRejectsUnknownKind(t *testing.T) {
-	_, err := New(config.TrackerConfig{Kind: "bugzilla"}, "key", "gh_token")
+	_, err := New(config.TrackerConfig{Kind: "bugzilla"}, Secrets{LinearKey: "key", GitHubToken: "gh_token"})
 	if err == nil {
 		t.Fatal("expected an error for an unsupported kind, got nil")
 	}

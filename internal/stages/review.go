@@ -110,7 +110,7 @@ func Review(cfg config.Config, log *runlog.Logger, runID string, args Args) Resu
 	}
 	log.Structured(loopstream.Record{Kind: loopstream.KindStageStart, Ticket: args.Identifier, Stage: "review", Message: fmt.Sprintf("run %s — review %s%s", runID, args.Identifier, dry)})
 
-	client, err := trackers.New(cfg.Tracker, cfg.LinearAPIKey, cfg.GitHubToken)
+	client, err := trackers.New(cfg.Tracker, trackers.Secrets{LinearKey: cfg.LinearAPIKey, GitHubToken: cfg.GitHubToken, JiraBaseURL: cfg.JiraBaseURL, JiraEmail: cfg.JiraEmail, JiraToken: cfg.JiraAPIToken})
 	if err != nil {
 		return Result{Err: err}
 	}

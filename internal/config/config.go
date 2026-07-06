@@ -19,6 +19,14 @@ type Config struct {
 	// push + `gh pr create` and, when tracker.kind=github, the GitHub Issues tracker
 	// adapter. Held host-side like LinearAPIKey; never passed into the sandbox.
 	GitHubToken string
+	// JiraBaseURL / JiraEmail / JiraAPIToken are the host-only Jira Cloud Basic-auth
+	// triple (ADR-0001), read only when tracker.kind=jira: the site URL, the account
+	// email, and its API token. Held host-side; never passed into the sandbox. They
+	// are optional at Load (a non-jira consumer sets none) — trackers.New fails loud
+	// if kind=jira but any is missing.
+	JiraBaseURL  string
+	JiraEmail    string
+	JiraAPIToken string
 	// Image is the sandbox image tag/ref the harness runs sessions in.
 	Image string
 	// Dockerfile is the checkout-relative path to the Consumer Dockerfile (FROM the
@@ -310,6 +318,9 @@ func Load(get Getenv) (Config, error) {
 	cfg := Config{
 		LinearAPIKey:         linearKey,
 		GitHubToken:          githubToken,
+		JiraBaseURL:          get("JIRA_BASE_URL"),
+		JiraEmail:            get("JIRA_EMAIL"),
+		JiraAPIToken:         get("JIRA_API_TOKEN"),
 		HerdPath:             herdPath,
 		Image:                orDefault(get("HARNESS_IMAGE"), project.Image),
 		Dockerfile:           project.Dockerfile,
