@@ -239,6 +239,44 @@ func TestResolvedAdvisoryNoFalseRecommendCloseOnBeh626Body(t *testing.T) {
 	}
 }
 
+// BEH-674, grounded in the real BEH-448 body: a decomposition/extraction refactor
+// names its intended NEW symbols after refactoring verbs ("Split … into a
+// `NewsStoryViewer`", "Collapse … into a single `advanceStage`/`retreatStage`").
+// Those destination symbols being absent from source is the precondition for the
+// work, not proof it already landed — so classification must sort them into the
+// proposed bucket, and the advisory must never read as "already resolved —
+// recommend close". The symbols the ticket refactors AWAY (`handleNext`,
+// `filteredStories`) are still present, so nothing expected is missing.
+func TestResolvedAdvisoryNoFalseRecommendCloseOnBeh448Refactor(t *testing.T) {
+	root := writeSrc(t, "function handleNext() {} function handlePrevious() {} const filteredStories = xs.map(x => x)\n")
+
+	desc := "`news-tool.tsx` (699 LOC) is a god component.\n\n**Tasks:**\n\n" +
+		"* Split the story-viewing pane (373-518) into a `NewsStoryViewer` child.\n" +
+		"* Collapse the `photo→clue→summary→next` stage machine into a single `advanceStage`/`retreatStage` pair.\n" +
+		"* `handleNext`/`handlePrevious` mirror every setter into the broadcast — centralize.\n" +
+		"* `filteredStories` mapper is a 30-line field-by-field copy — simplify."
+
+	msg := ResolvedAdvisory(root, "BEH-448", desc)
+	if strings.Contains(msg, "recommend close") || strings.Contains(msg, "already resolved") {
+		t.Fatalf("extraction-target symbols must not read as already resolved / recommend close, got: %s", msg)
+	}
+}
+
+// BEH-674 (classification): the extraction-target symbols named after refactoring
+// verbs — "split … into a `NewsStoryViewer`", "collapse … into … `advanceStage`" —
+// must land in the proposed bucket (to-be-created), never expected.
+func TestClassifyCitedSymbolsSortsRefactorTargetsAsProposed(t *testing.T) {
+	c := classifyCitedSymbols("Split the pane into a `NewsStoryViewer`; collapse the ladder into a single `advanceStage`")
+	for _, want := range []string{"NewsStoryViewer", "advanceStage"} {
+		if !contains(c.proposed, want) {
+			t.Errorf("%q follows a refactoring verb — expected in proposed bucket, got proposed=%v expected=%v", want, c.proposed, c.expected)
+		}
+		if contains(c.expected, want) {
+			t.Errorf("%q must not be in the expected bucket, got %v", want, c.expected)
+		}
+	}
+}
+
 func contains(xs []string, want string) bool {
 	for _, x := range xs {
 		if x == want {

@@ -74,9 +74,9 @@ func extractCitedSymbols(description string) []string {
 // whose absence from source means opposite things:
 //   - expected: symbols the ticket implies already exist. Their absence is the
 //     BEH-544 "likely already resolved" signal → strong "recommend close" verdict.
-//   - proposed: symbols named in an add/introduce context — the ones the ticket
-//     exists to CREATE. Their absence is expected for new work, never a resolved
-//     signal, so they get a soft "verify premise" verdict (BEH-629).
+//   - proposed: symbols named in an add/introduce/extraction context — the ones
+//     the ticket exists to CREATE. Their absence is expected for new work, never a
+//     resolved signal, so they get a soft "verify premise" verdict (BEH-629/674).
 type citedSymbols struct {
 	expected []string
 	proposed []string
@@ -84,8 +84,8 @@ type citedSymbols struct {
 
 // classifyCitedSymbols walks each backtick span, drops prose keywords and known
 // third-party package symbols (BEH-629), and sorts each surviving mixed-case
-// identifier into expected vs proposed by whether an add/introduce verb sits
-// immediately before its span. Order-preserving and de-duplicated across buckets.
+// identifier into expected vs proposed by whether an add/introduce/extraction verb
+// sits immediately before its span. Order-preserving and de-duplicated across buckets.
 func classifyCitedSymbols(description string) citedSymbols {
 	var c citedSymbols
 	seen := map[string]bool{}
@@ -141,13 +141,26 @@ func hasVendorPrefix(sym string) bool {
 }
 
 // addVerb is the set of verbs that, sitting just before a backtick span, frame
-// the symbol inside as one the ticket exists to CREATE (BEH-629) — `Add a
-// `beforeSend“, `introduce `foo“, `a new `bar“.
+// the symbol inside as one the ticket exists to CREATE — `Add a `beforeSend“,
+// `introduce `foo“, `a new `bar“ (BEH-629) — plus the extraction/decomposition
+// verbs of a refactoring ticket (BEH-674): "split the pane into a `NewsStoryViewer`",
+// "collapse the ladder into `advanceStage`", "extract `foo`". For an extraction
+// refactor the destination symbol's absence from source is the PRECONDITION for
+// the work, not proof it landed — so it must sort into the proposed bucket exactly
+// like an add-target, keeping the dangerous "recommend close" verdict off it. The
+// `into` preposition is the reliable framing word: it sits immediately before the
+// destination span in both "split … into a `X`" and "collapse … into a single `Y`",
+// where the leading verb ("Split", "Collapse") often falls outside the word window.
 var addVerb = map[string]bool{
 	"add": true, "adds": true, "added": true,
 	"introduce": true, "introduces": true, "introducing": true,
 	"create": true, "creates": true, "creating": true,
-	"new": true,
+	"new":   true,
+	"split": true, "splits": true, "splitting": true,
+	"extract": true, "extracts": true, "extracting": true,
+	"collapse": true, "collapses": true, "collapsing": true,
+	"decompose": true, "decomposes": true, "decomposing": true,
+	"into": true,
 }
 
 // addContextWindow bounds how far back inAddContext looks: an add verb only
