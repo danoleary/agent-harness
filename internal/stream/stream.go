@@ -21,7 +21,11 @@ type event struct {
 	Result     string   `json:"result"`
 	NumTurns   int      `json:"num_turns"`
 	DurationMS *float64 `json:"duration_ms"`
-	Message    struct {
+	// TotalCostUSD is the billed cost of the session. A pointer so an absent field
+	// (nil) is distinguishable from an explicit 0 — only the latter is the
+	// no-real-turns signal (BEH-691).
+	TotalCostUSD *float64 `json:"total_cost_usd"`
+	Message      struct {
 		// Model is the model that produced the turn. A spending-cap abort ships a
 		// "<synthetic>" turn the API injects rather than a real model response.
 		Model   string `json:"model"`
@@ -153,6 +157,25 @@ func SpendingCapResetTime(line string, now time.Time) (time.Time, bool) {
 		reset = reset.Add(24 * time.Hour) // the named time already passed today → next occurrence
 	}
 	return reset, true
+}
+
+// IsNoRealTurns reports whether a stream-json line is a terminal result event that
+// billed $0 (BEH-691) — the model was never invoked, so the session did zero real
+// work. This is the deterministic-crash fingerprint of a prompt-expansion no-op: a
+// mis-expanded `!`-backtick slash command runs a stray host command that errors, and
+// the whole session degenerates to a zero-turn no-op — no model call, $0 cost, yet it
+// exits cleanly (see prompt.defang). Such a crash is deterministic, so re-launching
+// the identical prompt fails identically; the harness reads this flag to fail fast
+// rather than spend BEH-543's environmental-crash retry on it. Only an explicit
+// total_cost_usd of 0 counts: a result event lacking the field (nil) is not a signal,
+// and a genuine OOM/launch crash is SIGKILLed before it can emit a clean $0 result, so
+// it never trips this and stays on the retryable path. A malformed line is never a match.
+func IsNoRealTurns(line string) bool {
+	var e event
+	if err := json.Unmarshal([]byte(line), &e); err != nil {
+		return false
+	}
+	return e.Type == "result" && e.TotalCostUSD != nil && *e.TotalCostUSD == 0
 }
 
 // reviewVerdictMarker is the stable lead of the /review-worktree report (step 5 of

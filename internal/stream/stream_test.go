@@ -336,6 +336,53 @@ func TestSpendingCapResetTimeDeclinesWithoutAParseableReset(t *testing.T) {
 	}
 }
 
+// The deterministic zero-work crash (BEH-691): a terminal result event that billed
+// $0 means the model was never invoked, so the session did no real work — the
+// signature of a prompt-expansion no-op (a mis-expanded `!`-backtick slash command
+// that degenerates the whole session, see prompt.defang). Re-launching the identical
+// prompt fails identically, so the harness must fail fast rather than spend BEH-543's
+// retry on it. Only an explicit total_cost_usd of 0 counts.
+func TestIsNoRealTurnsDetectsTheZeroCostResult(t *testing.T) {
+	line := mustJSON(t, map[string]any{
+		"type": "result", "subtype": "success", "is_error": false,
+		"num_turns": 3, "total_cost_usd": 0, "result": "",
+	})
+	if !IsNoRealTurns(line) {
+		t.Error("expected a $0-cost result (no model turn ever ran) to be detected")
+	}
+}
+
+// A result event that billed a real (positive) cost ran the model — real work, never
+// the zero-turn crash. A result event with no total_cost_usd field at all (nil, not
+// 0), a non-result event, and a malformed line are likewise not the signal: a genuine
+// OOM/launch crash is SIGKILLed before it can emit a clean $0 result, so it never
+// trips this — leaving it correctly on the retryable path.
+func TestIsNoRealTurnsRejectsNonZeroCostAndMissingField(t *testing.T) {
+	realWork := mustJSON(t, map[string]any{
+		"type": "result", "subtype": "success", "is_error": false, "total_cost_usd": 0.42, "result": "done",
+	})
+	missingCost := mustJSON(t, map[string]any{
+		"type": "result", "subtype": "success", "is_error": false, "result": "done",
+	})
+	assistant := mustJSON(t, map[string]any{
+		"type": "assistant",
+		"message": map[string]any{
+			"content": []any{map[string]any{"type": "text", "text": "working"}},
+		},
+	})
+	for name, line := range map[string]string{
+		"real work (positive cost)": realWork,
+		"missing total_cost_usd":    missingCost,
+		"assistant turn":            assistant,
+		"malformed":                 "{not json",
+		"empty":                     "",
+	} {
+		if IsNoRealTurns(line) {
+			t.Errorf("%s should not be a no-real-turns result", name)
+		}
+	}
+}
+
 // The review verdict (BEH-525): the /review-worktree session emits its seven-lens
 // report as an assistant text block led by the "## Review:" header. The harness
 // keys off that header to tell whether the qualitative review actually ran — so a

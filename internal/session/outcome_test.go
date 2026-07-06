@@ -27,6 +27,12 @@ func TestOutcomeRetryable(t *testing.T) {
 		{"125 with no reason", Outcome{ExitCode: sandbox.ExitCannotStart}, false},
 		{"success", Outcome{ExitCode: 0}, false},
 		{"real failure", Outcome{ExitCode: 1}, false},
+		// A deterministic zero-work crash (a prompt-expansion no-op that billed $0 —
+		// BEH-691) is never a transient worth retrying: re-launching the identical
+		// prompt fails identically. Defensive even against an OOM exit code — a
+		// $0-cost clean result and a 137 SIGKILL cannot co-occur, but the flag wins.
+		{"no real turns", Outcome{ExitCode: 0, NoRealTurns: true}, false},
+		{"no real turns over a 137", Outcome{ExitCode: sandbox.ExitOOMKill, NoRealTurns: true}, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

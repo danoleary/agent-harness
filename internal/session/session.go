@@ -118,6 +118,14 @@ type Outcome struct {
 	// exiting 0. The caller (retrospective) feeds it to the completion check so the
 	// masked "session success" is named as the crash it is, not a genuine skip.
 	TurnZeroNoOp bool
+	// NoRealTurns is true iff the stream carried a terminal result event that billed
+	// $0 — the model was never invoked, so the session did zero real work (BEH-691).
+	// The signature of a prompt-expansion no-op (a mis-expanded `!`-backtick slash
+	// command degenerating the whole session — see prompt.defang): deterministic, so
+	// re-launching the identical prompt fails identically. Retryable() reads it to
+	// keep such a crash off the environmental-crash retry path (BEH-543) that only
+	// helps genuine transients.
+	NoRealTurns bool
 	// DockerReason is docker's own error line on a launch failure (exit 125 —
 	// sandbox.ExitCannotStart), extracted from the stderr tail. It lets the caller
 	// tell a transient launch failure (overlay2/read-only-fs, BEH-542) from a
@@ -134,6 +142,14 @@ type Outcome struct {
 // succeeds once it recovers. A genuine 125 (daemon down, image missing, bad flag)
 // and any real non-zero code the process itself returned stay terminal.
 func (o Outcome) Retryable() bool {
+	// A deterministic zero-work crash (a prompt-expansion no-op that billed $0 —
+	// BEH-691) is never a transient: re-launching the identical prompt fails
+	// identically, so it must not consume the environmental-crash retry. Checked
+	// first so it wins even over an OOM exit code (defensive — a clean $0 result and
+	// a 137 SIGKILL cannot co-occur, but the flag is the ground truth of "did no work").
+	if o.NoRealTurns {
+		return false
+	}
 	// A watchdog cap-kill exits 137 (docker kill → SIGKILL) — indistinguishable from
 	// a genuine OOM by exit code alone — but it ran the full session doing real work,
 	// not a host wedging at launch. Retrying it re-runs the from-scratch prompt and
@@ -161,6 +177,7 @@ type streamFlags struct {
 	reviewVerdictEmitted bool
 	reviewBlocked        bool
 	turnZeroNoOp         bool
+	noRealTurns          bool
 }
 
 // realNow returns the current wall-clock time with the monotonic reading stripped
@@ -440,7 +457,7 @@ func Run(dockerArgs []string, opts Options) Outcome {
 		opts.Log.Event(sessionSummary(time.Since(monoStart), realNow().Sub(start), opts.Timeout))
 	}
 
-	return Outcome{ExitCode: exitCode, CapKilled: capKilled.Load(), UsagePolicyRefusal: flags.usagePolicyRefusal, SpendingCapAbort: flags.spendingCapAbort, SpendingCapResetTime: flags.spendingCapResetTime, ReviewVerdictEmitted: flags.reviewVerdictEmitted, ReviewBlocked: flags.reviewBlocked, TurnZeroNoOp: flags.turnZeroNoOp, DockerReason: dockerReason}
+	return Outcome{ExitCode: exitCode, CapKilled: capKilled.Load(), UsagePolicyRefusal: flags.usagePolicyRefusal, SpendingCapAbort: flags.spendingCapAbort, SpendingCapResetTime: flags.spendingCapResetTime, ReviewVerdictEmitted: flags.reviewVerdictEmitted, ReviewBlocked: flags.reviewBlocked, TurnZeroNoOp: flags.turnZeroNoOp, NoRealTurns: flags.noRealTurns, DockerReason: dockerReason}
 }
 
 // pumpStdout scans claude's stream-json stdout: it tees every line raw to the
@@ -480,6 +497,9 @@ func pumpStdout(r io.Reader, transcriptFile string, verbose bool, log Logger, ec
 		}
 		if stream.IsTurnZeroNoOp(line) {
 			flags.turnZeroNoOp = true
+		}
+		if stream.IsNoRealTurns(line) {
+			flags.noRealTurns = true
 		}
 		if verbose {
 			fmt.Fprintln(echo, line)

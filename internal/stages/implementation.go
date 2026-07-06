@@ -439,6 +439,14 @@ func Implementation(cfg config.Config, log *runlog.Logger, runID string, args Ar
 		// leaves a clean worktree).
 		if capAborted {
 			log.Event("tdd ↻ session aborted before running — spending cap reached, retry after reset (BEH-494)")
+		} else if outcome.NoRealTurns {
+			// A terminal $0 result means the model was never invoked — the session did
+			// zero real work (a deterministic prompt-expansion no-op, see prompt.defang).
+			// Re-launching the identical prompt fails identically, so this is NOT the
+			// environmental-crash retry class: fail fast with a distinct diagnostic and
+			// leave the ticket In Progress for a human rather than spinning a second
+			// sandbox launch (BEH-691). retryableEnvCrash() already returns false here.
+			log.Event("tdd ✗ session ran zero real turns ($0 cost) — a deterministic no-work crash (likely a prompt-expansion no-op); not re-attempting, needs a human (BEH-691)")
 		} else {
 			log.Event("tdd ✗ " + result.Reason)
 		}

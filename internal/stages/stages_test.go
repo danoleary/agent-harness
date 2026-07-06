@@ -243,6 +243,12 @@ func TestRetryableEnvCrash(t *testing.T) {
 	if retryableEnvCrash(session.Outcome{ExitCode: sandbox.ExitOOMKill}, true) {
 		t.Error("a spending-cap abort has its own handling — must not be reported retryable here")
 	}
+	// A deterministic zero-work crash (a prompt-expansion no-op that billed $0 —
+	// BEH-691) is NOT an environmental transient: re-launching the identical prompt
+	// fails identically, so the pipeline must not spend BEH-543's stage retry on it.
+	if retryableEnvCrash(session.Outcome{ExitCode: sandbox.ExitOOMKill, NoRealTurns: true}, false) {
+		t.Error("a deterministic no-real-turns crash must not be re-attempted (BEH-691)")
+	}
 }
 
 // disjointWorkTrapped recognises the BEH-609 recovery case: a failed tdd verdict
