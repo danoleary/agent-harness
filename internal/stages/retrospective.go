@@ -193,11 +193,13 @@ func Retrospective(cfg config.Config, log *runlog.Logger, runID string, args Arg
 		log.Event("retrospective ✗ " + result.Reason)
 	}
 
-	// File whatever the session dropped: one Linear issue per finding, `[]` files
-	// nothing. Safe to call even on failure — an absent dropbox files nothing.
-	// Dedup runs exact-match first, then a best-effort semantic pass; a match is
-	// recorded as a recurrence on the existing issue (client) instead of re-filed (BEH-573).
-	filing.File(findingsDir, t.TeamID, args.Identifier, client, client, newSemanticMatcher(cfg), client, log)
+	// Route whatever the session dropped by audience (ADR-0011): project findings
+	// file to the tracker (one issue per finding; `[]`/absent files nothing), harness
+	// findings write to the local artifact dir, nothing leaving the repo. Safe to call
+	// even on failure — an absent dropbox routes nothing. Tracker dedup runs exact-match
+	// first, then a best-effort semantic pass; a match is recorded as a recurrence on
+	// the existing issue (client) instead of re-filed (BEH-573).
+	filing.Route(findingsDir, filing.HarnessFindingsDir(cfg.HerdPath), t.TeamID, args.Identifier, client, client, newSemanticMatcher(cfg), client, log)
 
 	if !result.OK {
 		// Keep the worktree as a recoverable breadcrumb (DESIGN.md failure matrix).

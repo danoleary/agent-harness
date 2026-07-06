@@ -127,23 +127,72 @@ type OccurrenceRecorder interface {
 // match to the pre-BEH-573 silent-skip narration — so a caller can opt into
 // either half independently and a failure of either degrades, never crashes.
 func File(findingsDir, teamID, relatedIdentifier string, filer Filer, searcher Searcher, matcher SemanticMatcher, recorder OccurrenceRecorder, log EventSink) {
+	parsed, ok := readDropbox(findingsDir, log)
+	if !ok {
+		return
+	}
+	fileToTracker(parsed.Findings, teamID, relatedIdentifier, filer, searcher, matcher, recorder, log)
+}
+
+// Route reads the findings dropbox once and routes each finding by its audience
+// (ADR-0011): harness findings write to harnessDir (the local artifact — nothing
+// leaves the repo without the opt-in that lands in BEH-640), and project findings
+// file to the tracker through the same dedup pipeline File uses. It is the
+// audience-aware successor to File the stages call; File remains the plain
+// file-everything-to-the-tracker primitive. Best-effort throughout (ADR-0001):
+// every failure degrades to narration, never a crash.
+func Route(findingsDir, harnessDir, teamID, relatedIdentifier string, filer Filer, searcher Searcher, matcher SemanticMatcher, recorder OccurrenceRecorder, log EventSink) {
+	parsed, ok := readDropbox(findingsDir, log)
+	if !ok {
+		return
+	}
+	project, harness := partitionByAudience(parsed.Findings)
+	WriteHarnessFindings(harnessDir, relatedIdentifier, harness, log)
+	fileToTracker(project, teamID, relatedIdentifier, filer, searcher, matcher, recorder, log)
+}
+
+// readDropbox reads and parses the dropbox in findingsDir. ok is false — with a
+// narration only on a real parse error — when there is nothing to act on: an
+// absent file (the common, friction-free case) or a malformed one.
+func readDropbox(findingsDir string, log EventSink) (findings.Parsed, bool) {
 	text, err := os.ReadFile(filepath.Join(findingsDir, dropboxFile))
 	if err != nil {
-		return // no dropbox file → nothing to file (the common, friction-free case)
+		return findings.Parsed{}, false // no dropbox file → nothing to file
 	}
-
 	parsed := findings.Parse(string(text))
 	if parsed.Error != "" {
 		log.Event("findings ✗ dropbox unreadable: " + parsed.Error)
-		return
+		return findings.Parsed{}, false
 	}
-	if len(parsed.Findings) == 0 {
+	return parsed, true
+}
+
+// partitionByAudience splits findings into the project-audience set (→ tracker)
+// and the harness-audience set (→ local dir). An unclassified finding already
+// carries AudienceHarness from Parse, so it lands in the harness set.
+func partitionByAudience(fs []findings.Finding) (project, harness []findings.Finding) {
+	for _, f := range fs {
+		if f.Audience == findings.AudienceProject {
+			project = append(project, f)
+		} else {
+			harness = append(harness, f)
+		}
+	}
+	return project, harness
+}
+
+// fileToTracker files the given findings to the tracker with cross-run dedup. It
+// is the shared engine behind File (all findings) and Route (project findings
+// only). An empty set is a no-op; a non-empty set with no team id resolved is one
+// narration line and nothing filed.
+func fileToTracker(fs []findings.Finding, teamID, relatedIdentifier string, filer Filer, searcher Searcher, matcher SemanticMatcher, recorder OccurrenceRecorder, log EventSink) {
+	if len(fs) == 0 {
 		return
 	}
 	if teamID == "" {
 		log.Event(fmt.Sprintf(
 			"findings ✗ %d dropped but no team id resolved for %s",
-			len(parsed.Findings), relatedIdentifier,
+			len(fs), relatedIdentifier,
 		))
 		return
 	}
@@ -154,7 +203,7 @@ func File(findingsDir, teamID, relatedIdentifier string, filer Filer, searcher S
 	// the pre-dedup behaviour, never a crash.
 	tracked, open := openTracked(teamID, searcher, log)
 
-	for _, f := range parsed.Findings {
+	for _, f := range fs {
 		// 1. Exact match — the fast short-circuit, preserved ahead of the model.
 		if existing, ok := tracked[matchKey(f.Key, f.Title)]; ok {
 			recordRecurrence(existing, relatedIdentifier, recorder, log)

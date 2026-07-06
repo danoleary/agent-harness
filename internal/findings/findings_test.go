@@ -72,6 +72,45 @@ func TestParseReadsOptionalKey(t *testing.T) {
 	}
 }
 
+func TestParseReadsAudience(t *testing.T) {
+	json := mustJSON(t, []any{
+		map[string]any{"title": "flaky spec", "body": "your test retries", "audience": "project"},
+		map[string]any{"title": "sandbox missing deps", "body": "no libnss3", "audience": "harness"},
+	})
+
+	r := Parse(json)
+	if r.Error != "" {
+		t.Fatalf("unexpected error: %q", r.Error)
+	}
+	if r.Findings[0].Audience != AudienceProject {
+		t.Errorf("findings[0].Audience = %q, want %q", r.Findings[0].Audience, AudienceProject)
+	}
+	if r.Findings[1].Audience != AudienceHarness {
+		t.Errorf("findings[1].Audience = %q, want %q", r.Findings[1].Audience, AudienceHarness)
+	}
+}
+
+// An unclassified finding (no audience, or an unrecognized value) defaults to
+// harness — the safe sink that keeps the Consumer's tracker clean of harness
+// noise and never leaves the repo (ADR-0011).
+func TestParseDefaultsUnclassifiedToHarness(t *testing.T) {
+	json := mustJSON(t, []any{
+		map[string]any{"title": "no audience", "body": "legacy dropbox"},
+		map[string]any{"title": "bogus audience", "body": "typo", "audience": "elsewhere"},
+	})
+
+	r := Parse(json)
+	if r.Error != "" {
+		t.Fatalf("unexpected error: %q", r.Error)
+	}
+	if r.Findings[0].Audience != AudienceHarness {
+		t.Errorf("missing audience = %q, want default %q", r.Findings[0].Audience, AudienceHarness)
+	}
+	if r.Findings[1].Audience != AudienceHarness {
+		t.Errorf("unrecognized audience = %q, want default %q", r.Findings[1].Audience, AudienceHarness)
+	}
+}
+
 func TestParseMalformedJSON(t *testing.T) {
 	r := Parse("{not json")
 	if len(r.Findings) != 0 {

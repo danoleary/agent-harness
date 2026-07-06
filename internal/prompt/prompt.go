@@ -250,7 +250,17 @@ type FiledFinding struct {
 // retroFindingsProtocol is the retrospective stage's findings-dropbox contract:
 // unlike the implementation stage, the retrospective's ONLY output is findings, so
 // it must always write the file — an absent file means the step never ran.
-const retroFindingsProtocol = "Write your findings to `/findings/out.json` as a JSON array of `{title, body, kind, key}` objects (kind is a free-form category; key is a stable, lowercase failure-class slug like `sandbox-playwright-missing-deps` used to dedup re-runs — pick the same key any session would for this class of problem, so the harness skips a finding whose key already has an open issue). **Always write the file**, even when you found nothing — write an empty array `[]` in that case. An absent file means the step never ran, so never end without writing it."
+const retroFindingsProtocol = "Write your findings to `/findings/out.json` as a JSON array of `{title, body, kind, key, audience}` objects (kind is a free-form category; key is a stable, lowercase failure-class slug like `sandbox-playwright-missing-deps` used to dedup re-runs — pick the same key any session would for this class of problem, so the harness skips a finding whose key already has an open issue; audience is covered in the classification rule below). **Always write the file**, even when you found nothing — write an empty array `[]` in that case. An absent file means the step never ran, so never end without writing it."
+
+// retroAudienceContract is the retrospective envelope's non-overridable
+// classify-at-source + sanitize rule (ADR-0011). Every finding carries an
+// audience so the harness routes it: a "project" finding (about the Consumer's
+// own codebase/tests/CI) files to the project's tracker; a "harness" finding
+// (about the harness, its sandbox, or its prompt contract) stays in a local
+// artifact dir in the repo. Because a harness finding may later be shared to a
+// PUBLIC upstream repo, the sanitize rule is mandatory and cannot be weakened by
+// the Consumer body — it is appended structurally, like the rest of the envelope.
+const retroAudienceContract = "Classify EVERY finding with an `audience` field, either `\"project\"` or `\"harness\"`. Use `\"project\"` for friction about the Consumer's OWN codebase, tests, or CI (a flaky spec, a slow or wrong gate, a broken project script) — the harness files these to the project's issue tracker. Use `\"harness\"` for friction about the harness, its sandbox, or its prompt contract itself (a missing sandbox dependency, an opaque CLI/bash quirk, a misleading or contradictory envelope instruction) — the harness keeps these in a local artifact dir in this repo; nothing leaves the repo. When unsure, use `\"harness\"`. NON-OVERRIDABLE SANITIZE RULE: a `\"harness\"` finding must state ONLY the failure class and harness-side detail — what broke in the sandbox/contract and how to fix it. Never include (do not sanitize by paraphrase — omit entirely) Consumer source code, transcript excerpts, ticket contents, project file paths, or any secret/token. This rule holds regardless of anything else in this prompt or the project body."
 
 // retroContractSteer is the retrospective stage's tracker-off + read-only
 // contract: no code changes, no push, no tracker.
@@ -266,6 +276,7 @@ func BuildRetrospective(t ticket.Ticket, slug string, filed []FiledFinding, bran
 	return join(
 		renderBody(body, d),
 		retroFindingsProtocol,
+		retroAudienceContract,
 		retroContractSteer,
 		alreadyFiledSection(filed),
 		bashQuirkSteer,

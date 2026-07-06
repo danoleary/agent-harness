@@ -574,6 +574,33 @@ func TestBuildRetrospectiveCarriesDropboxContract(t *testing.T) {
 	}
 }
 
+// The retrospective envelope must teach audience classification (project vs
+// harness) so the host can route findings, and carry the non-overridable
+// sanitize rule that keeps a harness finding free of Consumer detail (ADR-0011).
+func TestBuildRetrospectiveCarriesAudienceClassificationAndSanitizeRule(t *testing.T) {
+	p := bRetro(t, sample, "beh-362", nil)
+
+	// The finding shape now carries audience, after the existing key field.
+	if !regexp.MustCompile(`title.*body.*kind.*key.*audience`).MatchString(p) {
+		t.Error("prompt missing audience in the {title, body, kind, key, audience} finding shape")
+	}
+	// Classification is instructed, and both audience values are named.
+	if !regexp.MustCompile(`(?i)classif`).MatchString(p) {
+		t.Error("prompt does not instruct audience classification")
+	}
+	if !strings.Contains(p, `"project"`) || !strings.Contains(p, `"harness"`) {
+		t.Error("prompt does not name both audience values")
+	}
+	// The non-overridable sanitize rule for harness findings: failure class +
+	// harness-side detail only, never Consumer source/transcripts/secrets.
+	if !regexp.MustCompile(`(?i)(sanitiz|never include)`).MatchString(p) {
+		t.Error("prompt missing the harness-finding sanitize rule")
+	}
+	if !regexp.MustCompile(`(?i)secret`).MatchString(p) || !regexp.MustCompile(`(?i)transcript`).MatchString(p) {
+		t.Error("sanitize rule must forbid Consumer secrets and transcript excerpts")
+	}
+}
+
 // On a re-run, the prompt must list the already-filed finding classes and tell
 // the session to treat them as settled and look only for NEW friction — so it
 // doesn't burn its budget re-deriving issues a prior run already filed (BEH-539).

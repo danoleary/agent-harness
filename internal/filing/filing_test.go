@@ -1,6 +1,7 @@
 package filing
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -87,6 +88,136 @@ func writeDropbox(t *testing.T, dir, contents string) {
 	}
 	if err := os.WriteFile(filepath.Join(dir, "out.json"), []byte(contents), 0o644); err != nil {
 		t.Fatalf("write out.json: %v", err)
+	}
+}
+
+// The harness-findings artifact dir is the ADR-0011 local sink: it lives under
+// the Consumer checkout's .agent-harness/, so nothing leaves the repo.
+func TestHarnessFindingsDir(t *testing.T) {
+	got := HarnessFindingsDir("/repo")
+	want := filepath.Join("/repo", ".agent-harness", "harness-findings")
+	if got != want {
+		t.Errorf("HarnessFindingsDir = %q, want %q", got, want)
+	}
+}
+
+func TestWriteHarnessFindingsWritesJSONPerFinding(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "harness-findings")
+	fs := []findings.Finding{
+		{Title: "Playwright deps missing", Body: "libnss3 absent", Key: "sandbox-playwright-deps", Kind: "sandbox", Audience: findings.AudienceHarness},
+	}
+	rec := &recorder{}
+
+	WriteHarnessFindings(dir, "BEH-639", fs, rec)
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("readdir: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("wrote %d files, want 1", len(entries))
+	}
+	if entries[0].Name() != "sandbox-playwright-deps.json" {
+		t.Errorf("file name = %q, want the key slug", entries[0].Name())
+	}
+	data, err := os.ReadFile(filepath.Join(dir, entries[0].Name()))
+	if err != nil {
+		t.Fatalf("read finding file: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("finding file is not JSON: %v", err)
+	}
+	if got["title"] != "Playwright deps missing" || got["body"] != "libnss3 absent" {
+		t.Errorf("finding file content = %+v", got)
+	}
+	if got["audience"] != "harness" {
+		t.Errorf("audience = %v, want harness", got["audience"])
+	}
+	// Provenance: the ticket whose session surfaced it (useful for BEH-640 upstreaming).
+	if got["related_key"] != "BEH-639" {
+		t.Errorf("related_key = %v, want BEH-639", got["related_key"])
+	}
+	if !strings.Contains(strings.Join(rec.events, "\n"), "sandbox-playwright-deps") {
+		t.Errorf("expected narration mentioning the finding, got %q", rec.events)
+	}
+}
+
+// A keyless finding is named by a slug of its title, and a re-run overwrites the
+// same file rather than accumulating duplicates (the slug is stable per class).
+func TestWriteHarnessFindingsSlugsTitleAndOverwrites(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "harness-findings")
+	f := findings.Finding{Title: "Opaque vitest crash!", Body: "v1", Audience: findings.AudienceHarness}
+	rec := &recorder{}
+
+	WriteHarnessFindings(dir, "BEH-639", []findings.Finding{f}, rec)
+	f.Body = "v2"
+	WriteHarnessFindings(dir, "BEH-639", []findings.Finding{f}, rec)
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("readdir: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("wrote %d files, want 1 (re-run must overwrite)", len(entries))
+	}
+	if entries[0].Name() != "opaque-vitest-crash.json" {
+		t.Errorf("file name = %q, want a slug of the title", entries[0].Name())
+	}
+	data, _ := os.ReadFile(filepath.Join(dir, entries[0].Name()))
+	var got map[string]any
+	_ = json.Unmarshal(data, &got)
+	if got["body"] != "v2" {
+		t.Errorf("body = %v, want the overwriting v2", got["body"])
+	}
+}
+
+func TestRoutePartitionsByAudience(t *testing.T) {
+	dir := t.TempDir()
+	harnessDir := filepath.Join(t.TempDir(), "harness-findings")
+	writeDropbox(t, dir, `[
+		{"title":"flaky spec","body":"retries","audience":"project"},
+		{"title":"sandbox missing deps","body":"libnss3","key":"sandbox-deps","audience":"harness"}
+	]`)
+	filer := &fakeFiler{results: []fakeResult{{issue: tracker.CreatedIssue{Identifier: "BEH-900"}}}}
+	rec := &recorder{}
+
+	Route(dir, harnessDir, "team-uuid", "BEH-639", filer, noExisting(), nil, nil, rec)
+
+	// project → tracker, and ONLY the project finding.
+	if len(filer.calls) != 1 || filer.calls[0].Title != "flaky spec" {
+		t.Fatalf("filer calls = %+v, want just the project finding", filer.calls)
+	}
+	// harness → local dir, never the tracker.
+	entries, err := os.ReadDir(harnessDir)
+	if err != nil {
+		t.Fatalf("readdir: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "sandbox-deps.json" {
+		t.Fatalf("harness dir entries = %v, want just the harness finding", entries)
+	}
+}
+
+// The default (no audience) routes to the local dir, never the tracker — the
+// "nothing leaves the repo" guarantee holds even for a legacy/unclassified dropbox.
+func TestRouteDefaultsUnclassifiedToLocalNotTracker(t *testing.T) {
+	dir := t.TempDir()
+	harnessDir := filepath.Join(t.TempDir(), "harness-findings")
+	writeDropbox(t, dir, `[{"title":"legacy finding","body":"no audience field"}]`)
+	filer := &fakeFiler{}
+	rec := &recorder{}
+
+	Route(dir, harnessDir, "team-uuid", "BEH-639", filer, noExisting(), nil, nil, rec)
+
+	if len(filer.calls) != 0 {
+		t.Errorf("unclassified finding must NOT reach the tracker, got %+v", filer.calls)
+	}
+	entries, err := os.ReadDir(harnessDir)
+	if err != nil {
+		t.Fatalf("readdir: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Errorf("unclassified finding should be written locally, got %d files", len(entries))
 	}
 }
 
