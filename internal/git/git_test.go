@@ -269,12 +269,19 @@ func TestRebaseOntoMainCherryPickConflictAbortsAndRestores(t *testing.T) {
 		if strings.Contains(joined, "cherry-pick --empty=drop origin/main..") {
 			return errors.New("exit status 1: CONFLICT (content)")
 		}
+		// A genuine content conflict halts mid-cherry-pick (CHERRY_PICK_HEAD resolves,
+		// so the default nil above reports "in progress") and — unlike an initially-empty
+		// halt — leaves UNMERGED index entries. That unmerged signal is what makes the
+		// harness abort rather than auto-skip (BEH-678).
+		if strings.Contains(joined, "diff --quiet --diff-filter=U") {
+			return errors.New("exit status 1: unmerged paths present")
+		}
 		return nil
 	})
 	if res := rebaseOntoMain("/wt", run); res != RebaseConflict {
 		t.Fatalf("res = %v, want RebaseConflict", res)
 	}
-	var sawCherryAbort, sawRestore bool
+	var sawCherryAbort, sawRestore, sawSkip bool
 	for _, c := range *calls {
 		if hasArg(c, "rebase") {
 			t.Fatalf("the conflict path must NOT invoke `git rebase` (BEH-618); saw %q", strings.Join(c, " "))
@@ -286,12 +293,117 @@ func TestRebaseOntoMainCherryPickConflictAbortsAndRestores(t *testing.T) {
 		if strings.Contains(joined, "reset --hard "+rebaseBackupRef) {
 			sawRestore = true
 		}
+		if strings.Contains(joined, "cherry-pick --skip") {
+			sawSkip = true
+		}
+	}
+	if sawSkip {
+		t.Errorf("a genuine content conflict (unmerged paths) must NOT be auto-skipped as an empty commit (BEH-678), calls: %v", *calls)
 	}
 	if !sawCherryAbort {
 		t.Errorf("a conflicting replay must `cherry-pick --abort`, calls: %v", *calls)
 	}
 	if !sawRestore {
 		t.Errorf("a conflicting replay must restore the branch to its original tip via the backup ref %q, calls: %v", rebaseBackupRef, *calls)
+	}
+}
+
+// BEH-678: --empty=drop (BEH-622) auto-drops a commit that BECOMES empty on replay,
+// but a commit that was INITIALLY empty (an `--allow-empty` handoff commit with a
+// zero net diff — the d0177234b case) still HALTS the cherry-pick with exit 1 ("the
+// previous cherry-pick is now empty"). That is a no-op to skip, NOT a content
+// conflict — escalating it to a sandboxed conflict-resolution session (BEH-581) burns
+// a whole session on an empty commit. rebaseOntoMain must recognise the halt has NO
+// unmerged paths (clean index) and `cherry-pick --skip` it inline, then report
+// RebaseClean, matching an ideal `git rebase`'s drop of an initially-empty commit.
+func TestRebaseOntoMainSkipsInitiallyEmptyCommitInline(t *testing.T) {
+	skipped := false
+	run, calls := recordingRunner(func(args []string) error {
+		joined := strings.Join(args, " ")
+		if strings.Contains(joined, "merge-base --is-ancestor") {
+			return errors.New("not an ancestor")
+		}
+		// The replay halts on the initially-empty commit.
+		if strings.Contains(joined, "cherry-pick --empty=drop origin/main..") {
+			return errors.New("exit status 1: the previous cherry-pick is now empty")
+		}
+		// A cherry-pick is in progress until the empty commit is skipped; afterwards the
+		// sequence is complete and CHERRY_PICK_HEAD no longer resolves.
+		if strings.Contains(joined, "CHERRY_PICK_HEAD") {
+			if skipped {
+				return errors.New("no CHERRY_PICK_HEAD")
+			}
+			return nil
+		}
+		// The halted commit is empty, so the index carries no unmerged paths.
+		if strings.Contains(joined, "diff --quiet --diff-filter=U") {
+			return nil
+		}
+		if strings.Contains(joined, "cherry-pick --skip") {
+			skipped = true
+			return nil
+		}
+		return nil
+	})
+	if res := rebaseOntoMain("/wt", run); res != RebaseClean {
+		t.Fatalf("res = %v, want RebaseClean — an initially-empty commit must be auto-skipped inline, not escalated as a conflict (BEH-678)", res)
+	}
+	var sawSkip, sawAbort bool
+	for _, c := range *calls {
+		joined := strings.Join(c, " ")
+		if strings.Contains(joined, "cherry-pick --skip") {
+			sawSkip = true
+		}
+		if strings.Contains(joined, "cherry-pick --abort") {
+			sawAbort = true
+		}
+	}
+	if !sawSkip {
+		t.Errorf("an initially-empty commit must be dropped via `cherry-pick --skip`, calls: %v", *calls)
+	}
+	if sawAbort {
+		t.Errorf("an initially-empty commit is not a conflict — must NOT `cherry-pick --abort`, calls: %v", *calls)
+	}
+}
+
+// BEH-678: the auto-skip path must stay fail-safe. If the replay cherry-pick errors
+// but leaves NO cherry-pick in progress (an unexpected git failure, not a halt on an
+// empty commit or a conflict), the harness must NOT fall through to RebaseClean and
+// push an incompletely-replayed branch — it aborts and reports RebaseConflict, exactly
+// as a genuine conflict would, so a push never happens on doubt.
+func TestRebaseOntoMainCherryPickErrorWithoutPickInProgressIsConflict(t *testing.T) {
+	run, calls := recordingRunner(func(args []string) error {
+		joined := strings.Join(args, " ")
+		if strings.Contains(joined, "merge-base --is-ancestor") {
+			return errors.New("not an ancestor")
+		}
+		if strings.Contains(joined, "cherry-pick --empty=drop origin/main..") {
+			return errors.New("exit status 128: bad revision")
+		}
+		// No cherry-pick is in progress after the failure — CHERRY_PICK_HEAD never resolves.
+		if strings.Contains(joined, "CHERRY_PICK_HEAD") {
+			return errors.New("no CHERRY_PICK_HEAD")
+		}
+		return nil
+	})
+	if res := rebaseOntoMain("/wt", run); res != RebaseConflict {
+		t.Fatalf("res = %v, want RebaseConflict — an unexpected cherry-pick failure must fail safe, never RebaseClean (BEH-678)", res)
+	}
+	var sawSkip, sawRestore bool
+	for _, c := range *calls {
+		joined := strings.Join(c, " ")
+		if strings.Contains(joined, "cherry-pick --skip") {
+			sawSkip = true
+		}
+		if strings.Contains(joined, "reset --hard "+rebaseBackupRef) {
+			sawRestore = true
+		}
+	}
+	if sawSkip {
+		t.Errorf("nothing to skip when no cherry-pick is in progress, calls: %v", *calls)
+	}
+	if !sawRestore {
+		t.Errorf("an unexpected failure must restore the branch to its original tip, calls: %v", *calls)
 	}
 }
 
@@ -479,6 +591,80 @@ func TestRebaseOntoMainDropsRedundantCommit(t *testing.T) {
 	}
 	if got := strings.TrimSpace(string(out)); got != "1" {
 		t.Fatalf("replayed commit count = %s, want 1 (the redundant commit must be dropped, the other kept)", got)
+	}
+}
+
+// BEH-678: the real-git companion to the scripted TestRebaseOntoMainSkipsInitially-
+// EmptyCommitInline. `--empty=drop` (BEH-622) drops only commits that BECOME empty on
+// replay; a commit that was INITIALLY empty (an `--allow-empty` handoff commit with a
+// zero net diff — the d0177234b case) still HALTS a real cherry-pick with "the
+// previous cherry-pick is now empty". rebaseOntoMain must auto-skip it inline and land
+// a clean replay, not misread it as a content conflict and burn a sandboxed session.
+// feat gets a real commit AND an --allow-empty commit so the test proves the empty one
+// is dropped while the real one is preserved — pinned against real git, not a fake, so
+// a wrong flag or a git-semantics surprise can't slip through.
+func TestRebaseOntoMainSkipsInitiallyEmptyCommitAgainstRealGit(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	repo := t.TempDir()
+	git := func(args ...string) {
+		t.Helper()
+		if err := execIn(repo, args...); err != nil {
+			t.Fatalf("git %v: %v", args, err)
+		}
+	}
+	write := func(name, contents string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(repo, name), []byte(contents), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	const slug = "beh-678-real"
+	git("init", "-q", "-b", "main")
+	git("config", "user.email", "t@example.com")
+	git("config", "user.name", "Test")
+	write("feat.txt", "base\n")
+	git("add", "-A")
+	git("commit", "-q", "-m", "base")
+	// feat branch makes a real commit, then an INITIALLY-empty --allow-empty commit
+	// (zero net diff — the shape a superseded ticket's documentation handoff leaves).
+	git("checkout", "-q", "-b", BranchName("feat", slug))
+	write("feat.txt", "feat change\n")
+	git("add", "-A")
+	git("commit", "-q", "-m", "feat keep")
+	git("commit", "-q", "--allow-empty", "-m", "docs: superseded handoff (empty)")
+	// main advances by an unrelated file; origin/main tracks that tip.
+	git("checkout", "-q", "main")
+	write("unrelated.txt", "main-only\n")
+	git("add", "-A")
+	git("commit", "-q", "-m", "main moved")
+	git("update-ref", "refs/remotes/origin/main", "main")
+	git("checkout", "-q", BranchName("feat", slug))
+
+	if res := RebaseOntoMain(repo); res != RebaseClean {
+		t.Fatalf("res = %v, want RebaseClean — an initially-empty commit must be auto-skipped inline, not misread as a conflict (BEH-678)", res)
+	}
+	if !WorktreeClean(repo) {
+		t.Fatal("worktree should be clean after the initially-empty commit was skipped")
+	}
+	// The real commit survived: feat.txt carries feat's change.
+	feat, err := os.ReadFile(filepath.Join(repo, "feat.txt"))
+	if err != nil || string(feat) != "feat change\n" {
+		t.Fatalf("feat.txt = %q (err %v), want %q — the real commit must be preserved", string(feat), err, "feat change\n")
+	}
+	// The branch sits on top of main: it carries main's unrelated file.
+	if _, err := os.Stat(filepath.Join(repo, "unrelated.txt")); err != nil {
+		t.Fatalf("rebased branch should contain main's commit (unrelated.txt), stat err = %v", err)
+	}
+	// Exactly ONE commit replayed on top of origin/main — the initially-empty one was
+	// dropped (not kept), matching an ideal rebase's drop of an empty commit.
+	out, err := exec.Command("git", "-C", repo, "rev-list", "--count", "origin/main..HEAD").Output()
+	if err != nil {
+		t.Fatalf("count replayed commits: %v", err)
+	}
+	if got := strings.TrimSpace(string(out)); got != "1" {
+		t.Fatalf("replayed commit count = %s, want 1 (the initially-empty commit must be dropped, the real one kept)", got)
 	}
 }
 

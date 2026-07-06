@@ -469,15 +469,73 @@ func rebaseOntoMain(worktreePath string, run commandRunner) RebaseResult {
 	// (May 2024); the harness runs host-side (see README prerequisites).
 	args := append([]string{"-C", worktreePath}, identityArgs()...)
 	args = append(args, "cherry-pick", "--empty=drop", "origin/main.."+rebaseBackupRef)
-	if run("git", args...) != nil {
-		// Genuine content conflict: abort the cherry-pick and restore the branch to its
-		// original tip, leaving it exactly as it was for a human (BEH-570). Both are
-		// best-effort — if the cherry-pick never started, --abort fails harmlessly.
+	if run("git", args...) == nil {
+		return RebaseClean
+	}
+
+	// The cherry-pick halted. --empty=drop drops only commits that BECOME empty on
+	// replay (their diff is already in origin/main); a commit that was INITIALLY empty
+	// — an `--allow-empty` handoff commit with a zero net diff (the BEH-678 d0177234b
+	// case) — still halts with "the previous cherry-pick is now empty" (exit 1). That
+	// is a no-op to drop, NOT a content conflict, so escalating it to a sandboxed
+	// conflict-resolution session (BEH-581) wastes a whole session on an empty commit.
+	// Auto-skip it inline instead, matching an ideal `git rebase`'s drop of an
+	// initially-empty commit. The two halt classes are told apart by unmerged paths: a
+	// genuine conflict leaves unmerged index entries; an empty halt leaves a clean
+	// index. Loop because a multi-commit replay can halt on several empty commits in
+	// turn; each `--skip` consumes one, so it always makes progress and terminates.
+	//
+	// Fail safe first: a cherry-pick error that left NO pick in progress is an
+	// unexpected failure (not a halt on an empty commit or a conflict), so restore the
+	// branch and report RebaseConflict rather than fall through to RebaseClean and push
+	// an incompletely-replayed branch — the file's "never push on doubt" convention.
+	if !cherryPickInProgress(worktreePath, run) {
 		_ = run("git", "-C", worktreePath, "cherry-pick", "--abort")
 		_ = run("git", "-C", worktreePath, "reset", "--hard", rebaseBackupRef)
 		return RebaseConflict
 	}
+	for i := 0; cherryPickInProgress(worktreePath, run); i++ {
+		if hasUnmergedPaths(worktreePath, run) || i >= maxCherryPickSkips {
+			// Genuine content conflict (or a pathological non-progressing skip loop — the
+			// bound is a pure safety backstop): abort the cherry-pick and restore the
+			// branch to its original tip, leaving it exactly as it was for a human
+			// (BEH-570). Both are best-effort — if the cherry-pick never started, --abort
+			// fails harmlessly.
+			_ = run("git", "-C", worktreePath, "cherry-pick", "--abort")
+			_ = run("git", "-C", worktreePath, "reset", "--hard", rebaseBackupRef)
+			return RebaseConflict
+		}
+		// Empty commit → drop it and continue the sequence. --skip may itself halt on the
+		// next commit (empty or conflict), so its exit code isn't trusted — the loop
+		// re-reads git state and re-classifies.
+		_ = run("git", "-C", worktreePath, "cherry-pick", "--skip")
+	}
 	return RebaseClean
+}
+
+// maxCherryPickSkips bounds the initially-empty auto-skip loop as a pure safety
+// backstop (BEH-678). Each `cherry-pick --skip` consumes one commit from the replay
+// todo, so a replay needs at most (commits-ahead) skips — a handful for any harness
+// handoff. The cap only trips in a pathological git state that stops making progress,
+// where fail-safe is to abort and hand the branch to a human rather than spin.
+const maxCherryPickSkips = 100
+
+// cherryPickInProgress reports whether a cherry-pick is currently halted awaiting
+// resolution — `git rev-parse --verify --quiet CHERRY_PICK_HEAD` exits 0 iff
+// CHERRY_PICK_HEAD resolves. Used to drive the auto-skip loop over initially-empty
+// commits (BEH-678). Run host-side against the worktree via the real-path mount.
+func cherryPickInProgress(worktreePath string, run commandRunner) bool {
+	return run("git", "-C", worktreePath, "rev-parse", "--verify", "--quiet", "CHERRY_PICK_HEAD") == nil
+}
+
+// hasUnmergedPaths reports whether the worktree's index carries unmerged (conflicted)
+// entries — `git diff --quiet --diff-filter=U` exits 0 when there are none and
+// non-zero when there are. It is what tells a genuine content conflict (unmerged
+// entries) apart from a halted-but-empty cherry-pick (clean index) so the harness
+// auto-skips the latter and only escalates the former (BEH-678). Run host-side
+// against the worktree via the real-path mount.
+func hasUnmergedPaths(worktreePath string, run commandRunner) bool {
+	return run("git", "-C", worktreePath, "diff", "--quiet", "--diff-filter=U") != nil
 }
 
 // IsRebasedOnto reports whether ref (e.g. "origin/main") is an ancestor of the
