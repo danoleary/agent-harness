@@ -71,12 +71,13 @@ type Gate struct {
 }
 
 // TrackerConfig is the non-secret tracker selection surface. The API key stays
-// env-only (LINEAR_API_KEY); only the selection names live here.
+// env-only (LINEAR_API_KEY / GH_TOKEN); only the selection names live here.
 type TrackerConfig struct {
-	// Kind selects the tracker adapter (linear today; github/jira are BEH-637/638).
+	// Kind selects the tracker adapter (linear or github today; jira is BEH-638).
 	Kind string `toml:"kind"`
-	// FindingsLabelID is the tracker label every harness finding is filed under
-	// (was linear.agentHarnessLabelID).
+	// FindingsLabelID is the tracker label every harness finding is filed under.
+	// The Linear adapter reads it as a label UUID; the GitHub adapter reads it as a
+	// label name (was linear.agentHarnessLabelID).
 	FindingsLabelID string `toml:"findings_label_id"`
 	// ReadyLabel is the human-applied blast-radius gate label the selector
 	// requires (was selection.agentReadyLabel).
@@ -84,6 +85,18 @@ type TrackerConfig struct {
 	// BlockedLabel marks a ticket a human flagged as blocked; never auto-worked
 	// (was selection.blockedLabel).
 	BlockedLabel string `toml:"blocked_label"`
+	// Repo is the GitHub "owner/name" the GitHub adapter is bound to (github kind
+	// only; ignored by Linear, which scopes by team). Findings are filed back into
+	// it and the ready queue is read from it.
+	Repo string `toml:"repo"`
+	// InProgressLabel models the claim for trackers with no workflow states
+	// (GitHub): the label added on claim / removed on release, since GitHub issues
+	// have only open/closed. Ignored by Linear, which uses real workflow states.
+	InProgressLabel string `toml:"in_progress_label"`
+	// Assignee is the optional bot login the GitHub adapter assigns on claim and
+	// clears on release (the "+ assignee" half of the claim semantics). Empty means
+	// the label transition alone claims the ticket.
+	Assignee string `toml:"assignee"`
 }
 
 // LoadProject reads and parses `<checkoutPath>/.agent-harness/config.toml`. It

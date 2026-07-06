@@ -66,7 +66,7 @@ func Retrospective(cfg config.Config, log *runlog.Logger, runID string, args Arg
 		return Result{OK: true}
 	}
 
-	client, err := trackers.New(cfg.Tracker.Kind, cfg.LinearAPIKey)
+	client, err := trackers.New(cfg.Tracker, cfg.LinearAPIKey, cfg.GitHubToken)
 	if err != nil {
 		return Result{Err: err}
 	}

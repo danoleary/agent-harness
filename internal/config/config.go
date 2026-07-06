@@ -15,6 +15,10 @@ import (
 type Config struct {
 	// LinearAPIKey is the host-only Linear key (ADR-0001) — never passed into the sandbox.
 	LinearAPIKey string
+	// GitHubToken is the host-only GH_TOKEN (ADR-0001) — used for the harness's own
+	// push + `gh pr create` and, when tracker.kind=github, the GitHub Issues tracker
+	// adapter. Held host-side like LinearAPIKey; never passed into the sandbox.
+	GitHubToken string
 	// Image is the sandbox image tag/ref the harness runs sessions in.
 	Image string
 	// Dockerfile is the checkout-relative path to the Consumer Dockerfile (FROM the
@@ -230,7 +234,8 @@ func Load(get Getenv) (Config, error) {
 				"or CLAUDE_CODE_OAUTH_TOKEN (sk-ant-oat01-… from `claude setup-token`)",
 		)
 	}
-	if _, err := requireEnv(get, "GH_TOKEN"); err != nil {
+	githubToken, err := requireEnv(get, "GH_TOKEN")
+	if err != nil {
 		return Config{}, err
 	}
 
@@ -304,6 +309,7 @@ func Load(get Getenv) (Config, error) {
 
 	cfg := Config{
 		LinearAPIKey:         linearKey,
+		GitHubToken:          githubToken,
 		HerdPath:             herdPath,
 		Image:                orDefault(get("HARNESS_IMAGE"), project.Image),
 		Dockerfile:           project.Dockerfile,

@@ -186,7 +186,7 @@ func Implementation(cfg config.Config, log *runlog.Logger, runID string, args Ar
 	}
 	log.Structured(loopstream.Record{Kind: loopstream.KindStageStart, Ticket: args.Identifier, Stage: "implementation", Message: fmt.Sprintf("run %s — implementation %s%s", runID, args.Identifier, dry)})
 
-	client, err := trackers.New(cfg.Tracker.Kind, cfg.LinearAPIKey)
+	client, err := trackers.New(cfg.Tracker, cfg.LinearAPIKey, cfg.GitHubToken)
 	if err != nil {
 		return Result{Err: err}
 	}

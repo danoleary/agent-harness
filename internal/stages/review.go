@@ -110,7 +110,7 @@ func Review(cfg config.Config, log *runlog.Logger, runID string, args Args) Resu
 	}
 	log.Structured(loopstream.Record{Kind: loopstream.KindStageStart, Ticket: args.Identifier, Stage: "review", Message: fmt.Sprintf("run %s — review %s%s", runID, args.Identifier, dry)})
 
-	client, err := trackers.New(cfg.Tracker.Kind, cfg.LinearAPIKey)
+	client, err := trackers.New(cfg.Tracker, cfg.LinearAPIKey, cfg.GitHubToken)
 	if err != nil {
 		return Result{Err: err}
 	}
