@@ -491,7 +491,7 @@ func Review(cfg config.Config, log *runlog.Logger, runID string, args Args) Resu
 			gateClause = fmt.Sprintf(" [gate %q]", gateRes.FailedGate)
 		}
 		log.Event(fmt.Sprintf("review ✗ %s (gate exit %d)%s — keeping worktree, nothing pushed", result.Reason, gateExit, gateClause))
-		return Result{OK: false, SpendingCapAbort: reviewOutcome.SpendingCapAbort}
+		return Result{OK: false, SpendingCapAbort: reviewOutcome.SpendingCapAbort, SpendingCapResetTime: reviewOutcome.SpendingCapResetTime}
 	}
 	log.Event("review ✓ " + result.Reason)
 

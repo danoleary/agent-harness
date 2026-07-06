@@ -166,6 +166,11 @@ type Result struct {
 	// before it could finish its work. The loop treats it as a retry-after-reset
 	// control signal, not a ticket failure, so the breaker stays blind to it.
 	SpendingCapAbort bool
+	// SpendingCapResetTime is the exact reset instant the cap-abort message named,
+	// resolved at detection (BEH-708). Zero unless this stage cap-aborted with a
+	// parseable reset time. The pipeline folds it onto its Outcome so the loop backs
+	// off until the cap clears rather than a fixed guess.
+	SpendingCapResetTime time.Time
 	// RecommendClose marks the BEH-603 no-op disposition: the review stage found the
 	// branch makes zero net change against origin/main and declined to open an
 	// empty-commit PR, recommending the ticket be closed as a duplicate/superseded.

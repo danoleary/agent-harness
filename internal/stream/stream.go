@@ -6,7 +6,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"regexp"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/beherd/agent-harness/internal/loopstream"
 )
@@ -72,21 +75,83 @@ const syntheticModel = "<synthetic>"
 // turn that merely quotes the cap text from counting; a malformed line is never a
 // cap abort (it just returns false).
 func IsSpendingCapAbort(line string) bool {
+	_, ok := capAbortText(line)
+	return ok
+}
+
+// capAbortText returns the spending-cap abort message text carried by a stream-json
+// line — from the terminal `is_error` result OR the `model:"<synthetic>"` assistant
+// turn (the two shapes IsSpendingCapAbort recognises) — and ok=false when the line is
+// not a cap abort. It is the single source of truth for "is this a cap abort, and what
+// did it say", so IsSpendingCapAbort and SpendingCapResetTime can't drift apart.
+func capAbortText(line string) (string, bool) {
 	var e event
 	if err := json.Unmarshal([]byte(line), &e); err != nil {
-		return false
+		return "", false
 	}
 	if e.Type == "result" && e.IsError && strings.Contains(e.Result, spendingCapAbortMarker) {
-		return true
+		return e.Result, true
 	}
 	if e.Type == "assistant" && e.Message.Model == syntheticModel {
 		for _, block := range e.Message.Content {
 			if block.Type == "text" && strings.Contains(block.Text, spendingCapAbortMarker) {
-				return true
+				return block.Text, true
 			}
 		}
 	}
-	return false
+	return "", false
+}
+
+// capResetRe matches the reset clock-time the cap message carries ("resets 8:40am",
+// "resets 11:05 PM"). The minutes are optional so a bare "resets 8am" still parses;
+// the meridiem is required (an unqualified hour is too ambiguous to trust).
+var capResetRe = regexp.MustCompile(`(?i)resets\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)`)
+
+// SpendingCapResetTime extracts the reset clock-time from a spending-cap abort line and
+// resolves it to the next occurrence of that wall-clock time strictly after now, in
+// now's location (BEH-708). The abort message names the exact reset ("Spending cap
+// reached resets 8:40am"), which the harness historically discarded — parsing it lets
+// the cap backoff wait until the cap actually clears instead of a fixed guess. ok=false
+// when the line is not a cap abort or carries no parseable reset time, in which case the
+// caller keeps its fixed fallback backoff. The timezone is assumed to be now's location
+// (the message carries none); the caller applies a margin and a sanity ceiling so a
+// timezone-skewed or wrapped-to-tomorrow resolution degrades to the fixed backoff rather
+// than an absurd wait.
+func SpendingCapResetTime(line string, now time.Time) (time.Time, bool) {
+	text, ok := capAbortText(line)
+	if !ok {
+		return time.Time{}, false
+	}
+	m := capResetRe.FindStringSubmatch(text)
+	if m == nil {
+		return time.Time{}, false
+	}
+	hour, err := strconv.Atoi(m[1])
+	if err != nil || hour < 1 || hour > 12 {
+		return time.Time{}, false
+	}
+	minute := 0
+	if m[2] != "" {
+		if minute, err = strconv.Atoi(m[2]); err != nil || minute > 59 {
+			return time.Time{}, false
+		}
+	}
+	// 12-hour → 24-hour: 12am is midnight (00:00), 12pm is noon (12:00).
+	switch strings.ToLower(m[3]) {
+	case "am":
+		if hour == 12 {
+			hour = 0
+		}
+	case "pm":
+		if hour != 12 {
+			hour += 12
+		}
+	}
+	reset := time.Date(now.Year(), now.Month(), now.Day(), hour, minute, 0, 0, now.Location())
+	if !reset.After(now) {
+		reset = reset.Add(24 * time.Hour) // the named time already passed today → next occurrence
+	}
+	return reset, true
 }
 
 // reviewVerdictMarker is the stable lead of the /review-worktree report (step 5 of

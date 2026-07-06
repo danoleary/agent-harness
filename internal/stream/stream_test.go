@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 )
 
 func mustJSON(t *testing.T, v any) string {
@@ -184,6 +185,114 @@ func TestIsSpendingCapAbortIgnoresNonSyntheticCapText(t *testing.T) {
 	})
 	if IsSpendingCapAbort(line) {
 		t.Error("a real assistant turn quoting the cap text must not be a cap abort")
+	}
+}
+
+// The abort message names the exact reset time ("resets 8:40am"); SpendingCapResetTime
+// extracts it and resolves it to the next occurrence of that wall-clock time strictly
+// after now, in now's location — so the cap backoff can wait until the cap actually
+// clears rather than a fixed guess (BEH-708). A reset time still ahead today resolves
+// to today.
+func TestSpendingCapResetTimeResolvesLaterToday(t *testing.T) {
+	line := mustJSON(t, map[string]any{
+		"type": "result", "subtype": "success", "is_error": true,
+		"result": "Spending cap reached resets 8:40am",
+	})
+	now := time.Date(2026, 7, 5, 7, 30, 0, 0, time.UTC)
+	got, ok := SpendingCapResetTime(line, now)
+	if !ok {
+		t.Fatal("expected a reset time to be parsed from the cap message")
+	}
+	want := time.Date(2026, 7, 5, 8, 40, 0, 0, time.UTC)
+	if !got.Equal(want) {
+		t.Errorf("got %s, want %s", got, want)
+	}
+}
+
+// When the named reset time already passed today (now is past it), the next occurrence
+// is that time tomorrow — the wrap-around the "resets 8:40am" wording implies at, say,
+// 9am. (The loop's sanity ceiling keeps a genuine ~24h wrap from producing an absurd
+// wait; here we just pin the resolution.)
+func TestSpendingCapResetTimeWrapsToTomorrowWhenPassed(t *testing.T) {
+	line := mustJSON(t, map[string]any{
+		"type": "result", "subtype": "success", "is_error": true,
+		"result": "Spending cap reached resets 8:40am",
+	})
+	now := time.Date(2026, 7, 5, 9, 0, 0, 0, time.UTC)
+	got, ok := SpendingCapResetTime(line, now)
+	if !ok {
+		t.Fatal("expected a reset time to be parsed")
+	}
+	want := time.Date(2026, 7, 6, 8, 40, 0, 0, time.UTC)
+	if !got.Equal(want) {
+		t.Errorf("got %s, want %s", got, want)
+	}
+}
+
+// PM times convert to 24-hour, and the parser reads the reset time out of the synthetic
+// assistant turn (the session-start cap shape) too — not just the result event.
+func TestSpendingCapResetTimeHandlesPMFromSyntheticTurn(t *testing.T) {
+	line := mustJSON(t, map[string]any{
+		"type": "assistant",
+		"message": map[string]any{
+			"model":   "<synthetic>",
+			"content": []any{map[string]any{"type": "text", "text": "Spending cap reached resets 11:05pm"}},
+		},
+	})
+	now := time.Date(2026, 7, 5, 10, 0, 0, 0, time.UTC)
+	got, ok := SpendingCapResetTime(line, now)
+	if !ok {
+		t.Fatal("expected a reset time to be parsed from the synthetic turn")
+	}
+	want := time.Date(2026, 7, 5, 23, 5, 0, 0, time.UTC)
+	if !got.Equal(want) {
+		t.Errorf("got %s, want %s", got, want)
+	}
+}
+
+// The 12-hour boundary: 12am is midnight (00:00 next day, since it's past now), 12pm is
+// noon. Off-by-twelve here would send the backoff to the wrong half of the day.
+func TestSpendingCapResetTimeHandlesNoonAndMidnight(t *testing.T) {
+	now := time.Date(2026, 7, 5, 6, 0, 0, 0, time.UTC)
+	cases := map[string]time.Time{
+		"resets 12:00pm": time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC),
+		"resets 12:00am": time.Date(2026, 7, 6, 0, 0, 0, 0, time.UTC),
+	}
+	for text, want := range cases {
+		line := mustJSON(t, map[string]any{
+			"type": "result", "subtype": "success", "is_error": true,
+			"result": "Spending cap reached " + text,
+		})
+		got, ok := SpendingCapResetTime(line, now)
+		if !ok {
+			t.Fatalf("%q: expected a reset time", text)
+		}
+		if !got.Equal(want) {
+			t.Errorf("%q: got %s, want %s", text, got, want)
+		}
+	}
+}
+
+// No reset time to extract → ok=false, so the caller keeps its fixed fallback backoff:
+// a cap abort with no parseable "resets HH:MMam", a non-cap line, and a malformed line
+// all decline rather than guessing.
+func TestSpendingCapResetTimeDeclinesWithoutAParseableReset(t *testing.T) {
+	capNoTime := mustJSON(t, map[string]any{
+		"type": "result", "subtype": "success", "is_error": true,
+		"result": "Spending cap reached",
+	})
+	nonCap := mustJSON(t, map[string]any{
+		"type": "result", "subtype": "success", "is_error": false, "result": "done at 8:40am",
+	})
+	now := time.Date(2026, 7, 5, 7, 0, 0, 0, time.UTC)
+	for name, line := range map[string]string{
+		"cap abort without a reset time": capNoTime,
+		"non-cap line mentioning a time": nonCap,
+		"malformed":                      "{not json",
+	} {
+		if _, ok := SpendingCapResetTime(line, now); ok {
+			t.Errorf("%s should not yield a reset time", name)
+		}
 	}
 }
 

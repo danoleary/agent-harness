@@ -87,6 +87,12 @@ type Outcome struct {
 	// session was killed by a billing/usage cap before doing any work — a distinct
 	// retry-after-reset class, not a real failure.
 	SpendingCapAbort bool
+	// SpendingCapResetTime is the exact reset instant the cap-abort message named
+	// ("resets 8:40am"), resolved at detection (BEH-708). Zero when there was no cap
+	// abort or its message carried no parseable reset time. The caller threads it to
+	// the loop's backoff so the daemon resumes when the cap actually clears rather than
+	// after a fixed guess.
+	SpendingCapResetTime time.Time
 	// ReviewVerdictEmitted is true iff the stream carried the /review-worktree
 	// verdict — the "## Review:" report header (BEH-525). The caller uses it to tell
 	// a completed qualitative review from one cut short before the report (e.g. an
@@ -139,8 +145,12 @@ func (o Outcome) Retryable() bool {
 // stdout transcript, surfaced onto Outcome: the retryable pre-work aborts plus
 // whether the review session reached its verdict.
 type streamFlags struct {
-	usagePolicyRefusal   bool
-	spendingCapAbort     bool
+	usagePolicyRefusal bool
+	spendingCapAbort   bool
+	// spendingCapResetTime is the exact reset instant parsed from the cap-abort
+	// message ("resets 8:40am"), resolved against detection-time now (BEH-708). Zero
+	// when there was no abort or its message carried no parseable reset time.
+	spendingCapResetTime time.Time
 	reviewVerdictEmitted bool
 	reviewBlocked        bool
 }
@@ -422,7 +432,7 @@ func Run(dockerArgs []string, opts Options) Outcome {
 		opts.Log.Event(sessionSummary(time.Since(monoStart), realNow().Sub(start), opts.Timeout))
 	}
 
-	return Outcome{ExitCode: exitCode, CapKilled: capKilled.Load(), UsagePolicyRefusal: flags.usagePolicyRefusal, SpendingCapAbort: flags.spendingCapAbort, ReviewVerdictEmitted: flags.reviewVerdictEmitted, ReviewBlocked: flags.reviewBlocked, DockerReason: dockerReason}
+	return Outcome{ExitCode: exitCode, CapKilled: capKilled.Load(), UsagePolicyRefusal: flags.usagePolicyRefusal, SpendingCapAbort: flags.spendingCapAbort, SpendingCapResetTime: flags.spendingCapResetTime, ReviewVerdictEmitted: flags.reviewVerdictEmitted, ReviewBlocked: flags.reviewBlocked, DockerReason: dockerReason}
 }
 
 // pumpStdout scans claude's stream-json stdout: it tees every line raw to the
@@ -444,6 +454,15 @@ func pumpStdout(r io.Reader, transcriptFile string, verbose bool, log Logger, ec
 		}
 		if stream.IsSpendingCapAbort(line) {
 			flags.spendingCapAbort = true
+			// Resolve the exact reset time the message named against detection-time now,
+			// so the loop can back off until the cap clears rather than a fixed guess
+			// (BEH-708). The first cap line wins — every cap line in the same window names
+			// the same reset — and a message with no parseable time leaves it zero.
+			if flags.spendingCapResetTime.IsZero() {
+				if reset, ok := stream.SpendingCapResetTime(line, realNow()); ok {
+					flags.spendingCapResetTime = reset
+				}
+			}
 		}
 		if stream.IsReviewVerdict(line) {
 			flags.reviewVerdictEmitted = true

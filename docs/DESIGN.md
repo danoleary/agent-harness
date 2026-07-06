@@ -898,10 +898,18 @@ building `Dockerfile.base` for `linux/amd64` + `linux/arm64`.
   control flow, not a verdict: the daemon **releases the ticket to Todo** (no
   progress to protect), leaves a **breadcrumb comment** on the ticket noting the
   cap-abort + auto-resume (BEH-590), leaves the breaker counter untouched, and enters
-  a **long interruptible backoff** (default ~30–60 min) before re-polling, auto-resuming
-  once the cap window resets. Parsing the exact reset time from the abort message is
-  deliberately *not* done — fragile string-parsing for minutes of saved latency; the
-  fixed backoff + re-poll is robust. The backoff is **narrated** (BEH-605): it emits a
+  an **interruptible backoff** before re-polling, auto-resuming once the cap window
+  resets. The backoff duration is derived from the **exact reset time the abort message
+  names** ("Spending cap reached resets 8:40am", BEH-708): `stream.SpendingCapResetTime`
+  parses that HH:MM(am|pm), resolves it to the next occurrence, and the loop waits until
+  reset + a small margin — resuming right when the cap clears instead of a fixed guess.
+  A sanity ceiling (`maxCapResetBackoff`, 6h) distrusts an implausibly far-off resolution
+  (timezone skew / tomorrow-wrap) and falls back to the fixed `CapBackoff` (default
+  ~30–60 min), which is also used when the message carries no parseable reset time. This
+  replaced the earlier deliberate choice *not* to parse the reset time, which — combined
+  with a `--next`/re-poll path that re-dispatched on the ~5-min `PollInterval` — churned
+  six dead pipeline launches against a cap that named its own reset (BEH-708). The
+  backoff is **narrated** (BEH-605): it emits a
   `cap-backoff` entry record naming the duration and expected wake time, a periodic
   "still capped, re-poll ~HH:MMZ" heartbeat (every `capBackoffHeartbeat`, 1 min) while
   it waits, and a wake record on re-poll — so a multi-hour backoff is never mistaken

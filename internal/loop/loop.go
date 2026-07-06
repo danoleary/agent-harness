@@ -34,6 +34,12 @@ type TicketOutcome struct {
 	// it could ship. It is neutral to the breaker (the cap runaway is the backoff's
 	// job, not the breaker's) unless a PR already shipped, in which case the PR wins.
 	SpendingCapAbort bool
+	// CapResetTime is the exact reset time the cap-abort message named ("resets 8:40am"),
+	// resolved to an absolute instant at detection (BEH-708). When set, the cap backoff
+	// waits until this time plus a margin rather than the fixed CapBackoff guess, so the
+	// daemon resumes right when the cap clears instead of churning re-dispatches. A zero
+	// value means the abort carried no parseable reset time — the fixed CapBackoff applies.
+	CapResetTime time.Time
 	// RecommendClose marks the BEH-603 no-op disposition: the review stage found the
 	// branch makes zero net change against origin/main and correctly concluded the
 	// ticket should be closed as a duplicate/superseded rather than opened as an
@@ -271,7 +277,7 @@ func Run(d Deps) int {
 				d.Log.Event("loop … warning: could not release " + identifier + " to Todo after cap abort: " + err.Error())
 			}
 			d.comment(identifier, "Autonomous run aborted by the Anthropic spending cap before it could ship — released back to Todo. The daemon backs off and auto-resumes once the cap window resets, so this should retry on its own.")
-			d.capBackoffWait(identifier)
+			d.capBackoffWait(identifier, outcome.CapResetTime)
 			continue
 		}
 
@@ -514,23 +520,25 @@ func (d Deps) clock() func() time.Time {
 // mid-backoff is honoured within one tick (the wake record is suppressed on stop —
 // the top-of-loop wind-down narration takes over). A non-positive TickInterval
 // degrades to a single silent total sleep, like interruptibleSleep.
-func (d Deps) capBackoffWait(identifier string) {
-	wake := d.clock()().Add(d.CapBackoff)
+func (d Deps) capBackoffWait(identifier string, resetTime time.Time) {
+	now := d.clock()()
+	total := d.capBackoffDuration(now, resetTime)
+	wake := now.Add(total)
 	wakeStr := wake.UTC().Format("15:04Z")
 	d.Log.Structured(loopstream.Record{
 		Kind:    loopstream.KindCapBackoff,
 		Ticket:  identifier,
-		Message: fmt.Sprintf("loop — capped; backing off %s, next re-poll ~%s", d.CapBackoff, wakeStr),
+		Message: fmt.Sprintf("loop — capped; backing off %s, next re-poll ~%s", total, wakeStr),
 	})
 
 	if d.TickInterval <= 0 {
-		d.Sleep(d.CapBackoff)
+		d.Sleep(total)
 		d.Log.Structured(loopstream.Record{Kind: loopstream.KindCapBackoff, Ticket: identifier, Message: "loop — cap backoff elapsed; re-polling for " + identifier})
 		return
 	}
 
 	var sinceBeat time.Duration
-	for waited := time.Duration(0); waited < d.CapBackoff; waited += d.TickInterval {
+	for waited := time.Duration(0); waited < total; waited += d.TickInterval {
 		if d.StopRequested() {
 			return // stop wins; the top-of-loop wind-down narrates the exit, not a wake record
 		}
@@ -538,8 +546,8 @@ func (d Deps) capBackoffWait(identifier string) {
 		sinceBeat += d.TickInterval
 		// Heartbeat only between ticks, never on the final one (it coincides with the
 		// wake record below), so the bookends never double up.
-		if d.CapBackoffHeartbeat > 0 && sinceBeat >= d.CapBackoffHeartbeat && waited+d.TickInterval < d.CapBackoff {
-			remaining := d.CapBackoff - (waited + d.TickInterval)
+		if d.CapBackoffHeartbeat > 0 && sinceBeat >= d.CapBackoffHeartbeat && waited+d.TickInterval < total {
+			remaining := total - (waited + d.TickInterval)
 			d.Log.Structured(loopstream.Record{
 				Kind:    loopstream.KindCapBackoff,
 				Ticket:  identifier,
@@ -549,6 +557,37 @@ func (d Deps) capBackoffWait(identifier string) {
 		}
 	}
 	d.Log.Structured(loopstream.Record{Kind: loopstream.KindCapBackoff, Ticket: identifier, Message: "loop — cap backoff elapsed; re-polling for " + identifier})
+}
+
+// capResetMargin is added past the parsed reset time so the daemon wakes just AFTER the
+// cap clears rather than a hair before it (which would instantly re-abort). Small: the
+// cap resets at the named minute, so a couple of minutes absorbs clock skew between the
+// account's timezone and the host without wasting the window.
+const capResetMargin = 2 * time.Minute
+
+// maxCapResetBackoff is the sanity ceiling on a reset-derived wait (BEH-708). The abort
+// message carries a bare clock time with no date or timezone, so a skewed or
+// wrapped-to-tomorrow resolution can land far in the future; cap windows reset within a
+// few hours, so anything beyond this almost certainly means the parse mis-resolved and
+// the fixed CapBackoff is the safer wait.
+const maxCapResetBackoff = 6 * time.Hour
+
+// capBackoffDuration is how long to sleep after a spending-cap abort. When the abort
+// message named an exact reset time (BEH-708, threaded in as resetTime), it waits until
+// that reset plus capResetMargin so the daemon resumes right when the cap clears —
+// replacing both the fixed-duration guess and the ~5-minute re-poll churn with a single
+// wait. It falls back to the fixed CapBackoff when no reset time was parsed (zero value),
+// when the reset already passed (non-positive wait), or when the wait is implausibly long
+// (> maxCapResetBackoff — a mis-resolved parse).
+func (d Deps) capBackoffDuration(now, resetTime time.Time) time.Duration {
+	if resetTime.IsZero() {
+		return d.CapBackoff
+	}
+	wait := resetTime.Sub(now) + capResetMargin
+	if wait <= 0 || wait > maxCapResetBackoff {
+		return d.CapBackoff
+	}
+	return wait
 }
 
 // interruptibleSleep waits out total, but breaks the wait into TickInterval chunks

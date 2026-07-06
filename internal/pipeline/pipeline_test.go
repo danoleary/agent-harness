@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/beherd/agent-harness/internal/loopstream"
 	"github.com/beherd/agent-harness/internal/stages"
@@ -290,5 +291,23 @@ func TestRunPropagatesSpendingCapAbortFromAnyStage(t *testing.T) {
 	}
 	if out.ReachedPushedPR {
 		t.Error("a cap abort before review pushed nothing — ReachedPushedPR must be false")
+	}
+}
+
+// The exact reset time a cap-aborting stage parsed from its abort message propagates to
+// the Outcome so the loop can back off until the cap clears rather than a fixed guess
+// (BEH-708). It rides alongside SpendingCapAbort from whichever stage was capped.
+func TestRunPropagatesSpendingCapResetTimeFromAbortingStage(t *testing.T) {
+	r := &recorder{}
+	reset := time.Date(2026, 7, 5, 8, 40, 0, 0, time.UTC)
+	out := Run(Deps{
+		FetchMain:      func() error { return nil },
+		Implementation: r.stage("impl", stages.Result{OK: false, SpendingCapAbort: true, SpendingCapResetTime: reset}),
+		Review:         r.stage("review", stages.Result{OK: true}),
+		Retrospective:  r.stage("retro", stages.Result{OK: true}),
+		Log:            r,
+	})
+	if !out.SpendingCapResetTime.Equal(reset) {
+		t.Errorf("Outcome.SpendingCapResetTime = %s, want %s (the aborting stage's reset time)", out.SpendingCapResetTime, reset)
 	}
 }

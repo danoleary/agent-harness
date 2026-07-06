@@ -614,6 +614,87 @@ func TestSpendingCapAbortReleasesTicketBacksOffAndLeavesBreakerNeutral(t *testin
 	}
 }
 
+// TestCapBackoffWaitsUntilParsedResetTime proves the loop honours the exact reset time
+// the abort message carried (BEH-708): when the cap outcome carries a CapResetTime, the
+// backoff waits until that reset plus the margin — resuming right when the cap clears —
+// instead of the fixed CapBackoff guess. The fixed CapBackoff is set SHORTER than the
+// reset-derived wait, so a regression that ignored the reset time would re-poll early and
+// run the pipeline more than once; asserting a single run and the exact total slept pins
+// the reset-derived wait.
+func TestCapBackoffWaitsUntilParsedResetTime(t *testing.T) {
+	r := &recorder{}
+	now := time.Date(2026, 7, 5, 7, 30, 0, 0, time.UTC)
+	reset := now.Add(30 * time.Second) // reset+margin = 30s + 2m = 2m30s = 150s = 75 ticks
+	var ran int
+	var slept []time.Duration
+	code := Run(Deps{
+		ClearStopFile: func() error { return nil },
+		FetchMain:     func() error { return nil },
+		// 1 top checkpoint + 75 backoff ticks elapse, then stop at the next top checkpoint.
+		StopRequested: stopAfter(76),
+		Now:           func() time.Time { return now },
+		ResolveNext:   func() (string, bool) { return "BEH-7", true },
+		RunPipeline: func(string) TicketOutcome {
+			ran++
+			return TicketOutcome{SpendingCapAbort: true, CapResetTime: reset}
+		},
+		ReleaseTicket: func(string) error { return nil },
+		Sleep:         func(d time.Duration) { slept = append(slept, d) },
+		PollInterval:  time.Minute,
+		TickInterval:  2 * time.Second,
+		CapBackoff:    10 * time.Second, // the fixed guess — must be ignored in favour of the reset time
+		Log:           r,
+	})
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	if ran != 1 {
+		t.Fatalf("RunPipeline ran %d times, want 1 — a reset-derived backoff should outlast the short fixed CapBackoff, not re-poll early", ran)
+	}
+	var sum time.Duration
+	for _, d := range slept {
+		sum += d
+	}
+	if want := 30*time.Second + capResetMargin; sum != want {
+		t.Errorf("backoff slept %v total, want %v (reset+margin); the fixed 10s CapBackoff must be ignored", sum, want)
+	}
+}
+
+// TestCapBackoffFallsBackToFixedWhenResetImplausible proves the sanity ceiling: a
+// CapResetTime that resolves further out than maxCapResetBackoff (a timezone-skewed or
+// wrapped-to-tomorrow parse) is not trusted, so the loop uses the fixed CapBackoff
+// instead of sleeping for an absurd stretch (BEH-708).
+func TestCapBackoffFallsBackToFixedWhenResetImplausible(t *testing.T) {
+	r := &recorder{}
+	now := time.Date(2026, 7, 5, 7, 30, 0, 0, time.UTC)
+	reset := now.Add(23 * time.Hour) // well past maxCapResetBackoff → distrust, fall back
+	var slept []time.Duration
+	code := Run(Deps{
+		ClearStopFile: func() error { return nil },
+		FetchMain:     func() error { return nil },
+		StopRequested: stopAfter(6), // 1 top + 5 fixed-backoff ticks (10s/2s), then stop
+		Now:           func() time.Time { return now },
+		ResolveNext:   func() (string, bool) { return "BEH-7", true },
+		RunPipeline:   func(string) TicketOutcome { return TicketOutcome{SpendingCapAbort: true, CapResetTime: reset} },
+		ReleaseTicket: func(string) error { return nil },
+		Sleep:         func(d time.Duration) { slept = append(slept, d) },
+		PollInterval:  time.Minute,
+		TickInterval:  2 * time.Second,
+		CapBackoff:    10 * time.Second,
+		Log:           r,
+	})
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	var sum time.Duration
+	for _, d := range slept {
+		sum += d
+	}
+	if want := 10 * time.Second; sum != want {
+		t.Errorf("backoff slept %v total, want the fixed %v — an implausible reset time must fall back", sum, want)
+	}
+}
+
 // TestCapBackoffNarratesEntryAndWake proves the cap-abort backoff is observable
 // (BEH-605): instead of one silent ~45-minute sleep, the loop narrates a structured
 // KindCapBackoff record on entry (naming the backoff duration so a watcher sees how

@@ -210,6 +210,7 @@ func runPipeline(cfg config.Config, identifier string) loop.TicketOutcome {
 	return loop.TicketOutcome{
 		ReachedPushedPR:  out.ReachedPushedPR,
 		SpendingCapAbort: out.SpendingCapAbort,
+		CapResetTime:     out.SpendingCapResetTime,
 		RecommendClose:   out.RecommendClose,
 	}
 }

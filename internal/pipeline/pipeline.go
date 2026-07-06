@@ -8,6 +8,7 @@ package pipeline
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/beherd/agent-harness/internal/loopstream"
 	"github.com/beherd/agent-harness/internal/stages"
@@ -52,6 +53,11 @@ type Outcome struct {
 	// SpendingCapAbort is true iff any stage was aborted by an external spending cap
 	// before finishing — the breaker stays blind to it (retry after the cap resets).
 	SpendingCapAbort bool
+	// SpendingCapResetTime is the exact reset instant a cap-aborting stage parsed from
+	// its abort message (BEH-708), taken from the first stage that carried one. Zero
+	// when no stage cap-aborted with a parseable reset time. The loop backs off until
+	// this instant rather than a fixed guess.
+	SpendingCapResetTime time.Time
 	// RecommendClose is true iff the review stage concluded the branch makes zero net
 	// change and the ticket should be closed as a duplicate/superseded rather than
 	// shipped (BEH-603). The loop keeps it In Progress for a human; breaker-neutral.
@@ -120,11 +126,24 @@ func Run(d Deps) Outcome {
 	// ReachedPushedPR comes from it alone; a cap abort anywhere in the chain is
 	// retry-after-reset.
 	return Outcome{
-		ExitCode:         exit,
-		ReachedPushedPR:  review.ReachedPushedPR,
-		SpendingCapAbort: impl.SpendingCapAbort || review.SpendingCapAbort || retro.SpendingCapAbort,
-		RecommendClose:   review.RecommendClose,
+		ExitCode:             exit,
+		ReachedPushedPR:      review.ReachedPushedPR,
+		SpendingCapAbort:     impl.SpendingCapAbort || review.SpendingCapAbort || retro.SpendingCapAbort,
+		SpendingCapResetTime: firstResetTime(impl, review, retro),
+		RecommendClose:       review.RecommendClose,
 	}
+}
+
+// firstResetTime returns the reset instant of the first stage (in run order) that
+// carried one, so the loop's backoff can wait until the cap actually clears (BEH-708).
+// Zero when no stage parsed a reset time — the loop then falls back to its fixed backoff.
+func firstResetTime(stagesInOrder ...stages.Result) time.Time {
+	for _, s := range stagesInOrder {
+		if !s.SpendingCapResetTime.IsZero() {
+			return s.SpendingCapResetTime
+		}
+	}
+	return time.Time{}
 }
 
 // narrateErr surfaces a stage's hard setup/IO error (Linear fetch, Docker

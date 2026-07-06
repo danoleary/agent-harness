@@ -195,7 +195,7 @@ func Retrospective(cfg config.Config, log *runlog.Logger, runID string, args Arg
 		// Surface a spending-cap abort so the loop reads retry-after-reset; a
 		// retrospective-only failure never blocks shipping (the PR already exists), so
 		// the breaker keys off review's ReachedPushedPR, not this OK.
-		return Result{OK: false, SpendingCapAbort: outcome.SpendingCapAbort}
+		return Result{OK: false, SpendingCapAbort: outcome.SpendingCapAbort, SpendingCapResetTime: outcome.SpendingCapResetTime}
 	}
 
 	// Clean ticket: retrospective filed AND the branch reached origin (review's

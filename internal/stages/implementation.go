@@ -487,5 +487,5 @@ func Implementation(cfg config.Config, log *runlog.Logger, runID string, args Ar
 	// A successful run is never retryable. Surface a spending-cap abort too so the
 	// loop classifies a capped implementation as retry-after-reset (breaker-neutral)
 	// rather than a ship failure.
-	return Result{OK: result.OK, Retryable: !result.OK && retryableEnvCrash(outcome, capAborted), SpendingCapAbort: capAborted}
+	return Result{OK: result.OK, Retryable: !result.OK && retryableEnvCrash(outcome, capAborted), SpendingCapAbort: capAborted, SpendingCapResetTime: outcome.SpendingCapResetTime}
 }

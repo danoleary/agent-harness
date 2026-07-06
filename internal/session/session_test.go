@@ -77,6 +77,23 @@ func TestPumpStdoutMirrorsStructuredKinds(t *testing.T) {
 	}
 }
 
+// A spending-cap abort carries the exact reset time in its message ("resets 8:20am");
+// pumpStdout resolves it alongside the abort flag so Run can surface it and the loop can
+// back off until the cap actually clears rather than a fixed guess (BEH-708). The hour
+// and minute are invariant regardless of what "now" the resolution ran against.
+func TestPumpStdoutCapturesSpendingCapResetTime(t *testing.T) {
+	flags := pumpStdout(strings.NewReader(lineCap+"\n"), "x.jsonl", false, &fakeLog{}, &bytes.Buffer{})
+	if !flags.spendingCapAbort {
+		t.Fatal("expected the spending-cap abort flag to be set")
+	}
+	if flags.spendingCapResetTime.IsZero() {
+		t.Fatal("expected a resolved reset time alongside the abort")
+	}
+	if h, m := flags.spendingCapResetTime.Hour(), flags.spendingCapResetTime.Minute(); h != 8 || m != 20 {
+		t.Errorf("reset time = %02d:%02d, want 08:20 (from the cap message)", h, m)
+	}
+}
+
 // pumpStdout reports whether the review session emitted its seven-lens verdict
 // (the "## Review:" report header — BEH-525), so Run can tell a completed review
 // from one cut short before the report (e.g. an OOM mid-gate). A stream that never
