@@ -158,6 +158,10 @@ type Config struct {
 	// Tracker holds the project config's non-secret tracker selection names
 	// (label ids, ready/blocked labels). The tracker credential stays env-only.
 	Tracker TrackerConfig
+	// Feedback is the opt-in upstream-feedback surface (ADR-0011/BEH-640): where
+	// harness-audience findings go (local artifact vs the public harness repo).
+	// The upstream sink reuses the host's GH_TOKEN; nothing here is a credential.
+	Feedback FeedbackConfig
 	// Prompts holds the Consumer's per-Stage prompt bodies, read from the
 	// bind-mounted checkout's `.agent-harness/prompts/` (ADR-0009). The harness
 	// composes each body inside its non-overridable contract envelope.
@@ -355,6 +359,7 @@ func Load(get Getenv) (Config, error) {
 		PostCreate:   project.PostCreate,
 		Gates:        project.Gates,
 		Tracker:      project.Tracker,
+		Feedback:     project.Feedback,
 		Prompts:      prompts,
 	}
 	if err := validateIdleBelowCaps(cfg); err != nil {

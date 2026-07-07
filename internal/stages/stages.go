@@ -18,6 +18,7 @@ import (
 
 	"github.com/beherd/agent-harness/internal/config"
 	"github.com/beherd/agent-harness/internal/filing"
+	"github.com/beherd/agent-harness/internal/github"
 	"github.com/beherd/agent-harness/internal/runlog"
 	"github.com/beherd/agent-harness/internal/sandbox"
 	"github.com/beherd/agent-harness/internal/semdedup"
@@ -37,6 +38,32 @@ func newSemanticMatcher(cfg config.Config) filing.SemanticMatcher {
 		return nil
 	}
 	return semdedup.New(semdedup.NewAnthropicComplete(cfg.AnthropicAPIKey, cfg.DedupModel))
+}
+
+// newUpstream builds the opt-in public-harness-repo sink for harness findings
+// (ADR-0011/BEH-640), or nil when feedback.upstream is off (the default) — the
+// nil case keeps harness findings in the local artifact dir. github mode binds a
+// GitHub adapter to the configured public repo using the host's GH_TOKEN (a
+// public repo needs only public_repo scope, and the token attributes the issue to
+// the reporting project as provenance). The repo shape is validated at config
+// load, so a malformed value never reaches here; a defensive split failure still
+// degrades to nil (local sink) rather than filing nowhere.
+func newUpstream(cfg config.Config) *filing.Upstream {
+	if cfg.Feedback.Upstream != "github" {
+		return nil
+	}
+	owner, repo, err := config.SplitOwnerRepo(cfg.Feedback.Repo)
+	if err != nil {
+		return nil
+	}
+	client := github.NewClient(
+		github.NewTransport(cfg.GitHubToken), owner, repo,
+		github.Options{Findings: cfg.Feedback.FindingsLabel},
+	)
+	return &filing.Upstream{
+		Filer: client, Searcher: client, Recorder: client,
+		Container: cfg.Feedback.Repo, Project: cfg.Feedback.Project,
+	}
 }
 
 // isDiskFull reports whether err is the host-disk-full ENOSPC — surfaced when a

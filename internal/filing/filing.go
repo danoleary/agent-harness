@@ -134,21 +134,65 @@ func File(findingsDir, teamID, relatedIdentifier string, filer Filer, searcher S
 	fileToTracker(parsed.Findings, teamID, relatedIdentifier, filer, searcher, matcher, recorder, log)
 }
 
+// Upstream is the opt-in public-harness-repo sink for harness-audience findings
+// (ADR-0011/BEH-640). When wired, Route files harness findings to it — a GitHub
+// adapter bound to the public repo, using the host's GH_TOKEN — instead of the
+// local artifact dir. It carries the same Filer/Searcher/OccurrenceRecorder trio
+// as the tracker path, so the shared fileToTracker dedup pipeline files them with
+// cross-project key dedup and project-tagged recurrences.
+type Upstream struct {
+	// Filer / Searcher / Recorder are the public repo's finding sink (a github
+	// adapter). Recorder may be nil — a match then degrades to a silent-skip.
+	Filer    Filer
+	Searcher Searcher
+	Recorder OccurrenceRecorder
+	// Container is the upstream repo slug ("owner/name"), passed as the sink's
+	// teamID. The github adapter is repo-bound and ignores it, but it must be
+	// non-empty for fileToTracker's team-id guard to proceed.
+	Container string
+	// Project is the reporting-project name stamped on every upstream filing and
+	// recurrence comment, so the public repo shows which project surfaced a finding
+	// (ADR-0011 provenance). Empty falls back to the worked ticket identifier.
+	Project string
+}
+
 // Route reads the findings dropbox once and routes each finding by its audience
-// (ADR-0011): harness findings write to harnessDir (the local artifact — nothing
-// leaves the repo without the opt-in that lands in BEH-640), and project findings
-// file to the tracker through the same dedup pipeline File uses. It is the
-// audience-aware successor to File the stages call; File remains the plain
-// file-everything-to-the-tracker primitive. Best-effort throughout (ADR-0001):
-// every failure degrades to narration, never a crash.
-func Route(findingsDir, harnessDir, teamID, relatedIdentifier string, filer Filer, searcher Searcher, matcher SemanticMatcher, recorder OccurrenceRecorder, log EventSink) {
+// (ADR-0011): project findings file to the Consumer's tracker through the same
+// dedup pipeline File uses. Harness findings go to the local artifact dir
+// (harnessDir) by default, or — when upstream is wired (feedback.upstream =
+// github) — to the public harness repo with cross-project key dedup and
+// project-tagged recurrences. It is the audience-aware successor to File the
+// stages call; File remains the plain file-everything-to-the-tracker primitive.
+// Best-effort throughout (ADR-0001): every failure degrades to narration, never a
+// crash.
+func Route(findingsDir, harnessDir, teamID, relatedIdentifier string, filer Filer, searcher Searcher, matcher SemanticMatcher, recorder OccurrenceRecorder, upstream *Upstream, log EventSink) {
 	parsed, ok := readDropbox(findingsDir, log)
 	if !ok {
 		return
 	}
 	project, harness := partitionByAudience(parsed.Findings)
-	WriteHarnessFindings(harnessDir, relatedIdentifier, harness, log)
+	routeHarness(harness, harnessDir, relatedIdentifier, upstream, log)
 	fileToTracker(project, teamID, relatedIdentifier, filer, searcher, matcher, recorder, log)
+}
+
+// routeHarness sends the harness-audience findings to their configured sink: the
+// public harness repo when upstream is wired (project-tagged, deduped by key), or
+// the local artifact dir otherwise (the default — nothing leaves the repo).
+func routeHarness(harness []findings.Finding, harnessDir, relatedIdentifier string, upstream *Upstream, log EventSink) {
+	if upstream == nil {
+		WriteHarnessFindings(harnessDir, relatedIdentifier, harness, log)
+		return
+	}
+	// Stamp the reporting project as the "related" tag so upstream filings read
+	// "Surfaced during <project>" and recurrences read "Recurred in <project>";
+	// fall back to the worked ticket when no project name is configured. Dedup is
+	// by key only (nil matcher): cross-project semantic dedup against a public repo
+	// is out of scope — the AC is key-based dedup.
+	tag := upstream.Project
+	if strings.TrimSpace(tag) == "" {
+		tag = relatedIdentifier
+	}
+	fileToTracker(harness, upstream.Container, tag, upstream.Filer, upstream.Searcher, nil, upstream.Recorder, log)
 }
 
 // readDropbox reads and parses the dropbox in findingsDir. ok is false — with a

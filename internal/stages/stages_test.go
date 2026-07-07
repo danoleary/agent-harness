@@ -55,6 +55,42 @@ func TestProvisionWorktreeNoOpWhenWorktreeExists(t *testing.T) {
 	}
 }
 
+// BEH-640: newUpstream builds the opt-in public-harness-repo sink from config.
+// off (the default) yields a nil sink so harness findings stay local; github
+// yields a sink bound to the configured public repo, carrying the reporting
+// project name for provenance.
+func TestNewUpstreamOffYieldsNilSink(t *testing.T) {
+	if up := newUpstream(config.Config{Feedback: config.FeedbackConfig{Upstream: "off"}}); up != nil {
+		t.Errorf("newUpstream(off) = %+v, want nil (local sink)", up)
+	}
+	if up := newUpstream(config.Config{}); up != nil {
+		t.Errorf("newUpstream(zero) = %+v, want nil", up)
+	}
+}
+
+func TestNewUpstreamGitHubBuildsRepoBoundSink(t *testing.T) {
+	cfg := config.Config{
+		GitHubToken: "gh-token",
+		Feedback: config.FeedbackConfig{
+			Upstream: "github", Repo: "beherd/agent-harness",
+			FindingsLabel: "harness-finding", Project: "herd",
+		},
+	}
+	up := newUpstream(cfg)
+	if up == nil {
+		t.Fatal("newUpstream(github) = nil, want a sink")
+	}
+	if up.Container != "beherd/agent-harness" {
+		t.Errorf("Container = %q, want the upstream repo slug", up.Container)
+	}
+	if up.Project != "herd" {
+		t.Errorf("Project = %q, want the reporting-project name", up.Project)
+	}
+	if up.Filer == nil || up.Searcher == nil || up.Recorder == nil {
+		t.Errorf("upstream sink must wire filer/searcher/recorder, got %+v", up)
+	}
+}
+
 func TestFixSessionErrorNonZeroExitIsGenericFailure(t *testing.T) {
 	err := fixSessionError(session.Outcome{ExitCode: 2}, 3)
 	if err == nil {

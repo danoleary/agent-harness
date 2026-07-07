@@ -653,6 +653,25 @@ The decision is the pure `verify.RetrospectivePreconditions`.
 - After the session returns, the harness reads `out.json`, files one Linear issue
   per finding (team BeHerd, referencing the worked ticket), and logs each.
 
+**Audience routing + opt-in upstreaming (ADR-0011, BEH-639/640).** Every finding
+now carries an `audience` — `project` (about the Consumer's own codebase/tests/CI)
+or `harness` (about the harness/sandbox/contract itself), defaulting to `harness`
+when unclassified. `filing.Route` partitions on it: **project** findings file to
+the Consumer's tracker through the same dedup pipeline; **harness** findings go to
+a **local artifact dir** (`.agent-harness/harness-findings/`) by default, so
+nothing leaves the repo. A Consumer opts into cross-project feedback with
+`[feedback] upstream = "github"` + `repo = "owner/name"` in `config.toml`: harness
+findings then file as issues on the configured **public harness repo** using the
+host's existing `GH_TOKEN` (public repos need only `public_repo` scope, and the
+token attributes provenance to the reporting project). Upstream dedup is by finding
+`key` across all projects — a recurrence from another project bumps a
+project-tagged occurrence comment on the existing issue, never a duplicate. The
+envelope's **non-overridable sanitize rule** (a harness finding states only the
+failure class + harness-side detail, never Consumer source/transcripts/secrets) is
+the backstop that keeps the public sink safe regardless of classification; only
+`harness`-audience findings ever reach it. Default stays `off` — herd flips to
+`github` only once the public repo exists.
+
 **Re-run dedup context (BEH-539).** When a ticket goes through the pipeline more
 than once, an earlier run's retrospective may have already filed findings. The
 harness already skips re-filing a finding whose `key` has an open issue, but a

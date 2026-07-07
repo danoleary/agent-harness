@@ -52,6 +52,28 @@ func TestLoadSourcesProjectConfig(t *testing.T) {
 	}
 }
 
+// The feedback surface is plumbed from the project config through Load so the
+// retrospective stage can build the upstream sink (ADR-0011/BEH-640).
+func TestLoadSurfacesFeedbackConfig(t *testing.T) {
+	orig := projectLoader
+	t.Cleanup(func() { projectLoader = orig })
+	projectLoader = func(string) (ProjectConfig, error) {
+		pc := testProjectConfig()
+		pc.Feedback = FeedbackConfig{Upstream: "github", Repo: "beherd/agent-harness", FindingsLabel: "harness-finding", Project: "herd"}
+		return pc, nil
+	}
+	cfg, err := Load(fullEnv(nil))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Feedback.Upstream != "github" || cfg.Feedback.Repo != "beherd/agent-harness" {
+		t.Errorf("Feedback = %+v, want the project-config feedback surface", cfg.Feedback)
+	}
+	if cfg.Feedback.Project != "herd" || cfg.Feedback.FindingsLabel != "harness-finding" {
+		t.Errorf("Feedback = %+v, want project + label plumbed through", cfg.Feedback)
+	}
+}
+
 func TestLoadPropagatesProjectConfigError(t *testing.T) {
 	orig := projectLoader
 	t.Cleanup(func() { projectLoader = orig })
@@ -381,5 +403,119 @@ command = "c"
 	}
 	if pc.BranchPrefix != "feat" {
 		t.Errorf("BranchPrefix = %q, want feat (default when omitted)", pc.BranchPrefix)
+	}
+}
+
+// The opt-in upstream feedback surface (ADR-0011/BEH-640): a `[feedback]` block
+// selects where harness findings go — `off` (local artifact, the default) or
+// `github` (file to the configured public harness repo).
+func TestLoadProjectReadsFeedbackSection(t *testing.T) {
+	dir := t.TempDir()
+	writeProjectConfig(t, dir, `
+image = "x"
+[feedback]
+upstream = "github"
+repo = "beherd/agent-harness"
+findings_label = "harness-finding"
+project = "herd"
+[tracker]
+kind = "linear"
+[[gates]]
+name = "check"
+command = "c"
+`)
+	pc, err := LoadProject(dir)
+	if err != nil {
+		t.Fatalf("LoadProject: %v", err)
+	}
+	if pc.Feedback.Upstream != "github" {
+		t.Errorf("Feedback.Upstream = %q, want github", pc.Feedback.Upstream)
+	}
+	if pc.Feedback.Repo != "beherd/agent-harness" {
+		t.Errorf("Feedback.Repo = %q, want the public harness repo", pc.Feedback.Repo)
+	}
+	if pc.Feedback.FindingsLabel != "harness-finding" {
+		t.Errorf("Feedback.FindingsLabel = %q", pc.Feedback.FindingsLabel)
+	}
+	if pc.Feedback.Project != "herd" {
+		t.Errorf("Feedback.Project = %q, want the reporting-project name", pc.Feedback.Project)
+	}
+}
+
+// The default is local-only: a config with no `[feedback]` block resolves
+// upstream to "off" so nothing leaves the repo without an explicit opt-in.
+func TestLoadProjectFeedbackDefaultsToOff(t *testing.T) {
+	dir := t.TempDir()
+	writeProjectConfig(t, dir, `
+image = "x"
+[tracker]
+kind = "linear"
+[[gates]]
+name = "check"
+command = "c"
+`)
+	pc, err := LoadProject(dir)
+	if err != nil {
+		t.Fatalf("LoadProject: %v", err)
+	}
+	if pc.Feedback.Upstream != "off" {
+		t.Errorf("Feedback.Upstream = %q, want off (default when omitted)", pc.Feedback.Upstream)
+	}
+}
+
+// Validation guards the two feedback misconfigurations that would otherwise
+// surface only at filing time: an unrecognized upstream mode, and github mode
+// with no (or a malformed) public repo to file into.
+func TestLoadProjectFeedbackValidation(t *testing.T) {
+	base := `
+image = "x"
+[tracker]
+kind = "linear"
+[[gates]]
+name = "check"
+command = "c"
+`
+	cases := map[string]string{
+		"unknown upstream mode": base + `
+[feedback]
+upstream = "gitlab"
+`,
+		"github without repo": base + `
+[feedback]
+upstream = "github"
+`,
+		"github with malformed repo": base + `
+[feedback]
+upstream = "github"
+repo = "not-a-slug"
+`,
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeProjectConfig(t, dir, body)
+			if _, err := LoadProject(dir); err == nil {
+				t.Errorf("want error for %s, got nil", name)
+			}
+		})
+	}
+}
+
+// off mode needs no repo — it never leaves the repo, so a bare `upstream = "off"`
+// (or the default) is valid with nothing else set.
+func TestLoadProjectFeedbackOffNeedsNoRepo(t *testing.T) {
+	dir := t.TempDir()
+	writeProjectConfig(t, dir, `
+image = "x"
+[feedback]
+upstream = "off"
+[tracker]
+kind = "linear"
+[[gates]]
+name = "check"
+command = "c"
+`)
+	if _, err := LoadProject(dir); err != nil {
+		t.Fatalf("off mode with no repo should be valid, got: %v", err)
 	}
 }

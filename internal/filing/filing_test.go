@@ -12,9 +12,11 @@ import (
 	"github.com/beherd/agent-harness/internal/tracker"
 )
 
-// fakeFiler records the findings it was asked to file and replays scripted results.
+// fakeFiler records the findings (and their filing options) it was asked to file
+// and replays scripted results.
 type fakeFiler struct {
 	calls   []findings.Finding
+	opts    []tracker.FileFindingOptions
 	results []fakeResult
 }
 
@@ -23,9 +25,10 @@ type fakeResult struct {
 	err   error
 }
 
-func (f *fakeFiler) FileFinding(fn findings.Finding, _ tracker.FileFindingOptions) (tracker.CreatedIssue, error) {
+func (f *fakeFiler) FileFinding(fn findings.Finding, opts tracker.FileFindingOptions) (tracker.CreatedIssue, error) {
 	i := len(f.calls)
 	f.calls = append(f.calls, fn)
+	f.opts = append(f.opts, opts)
 	if i < len(f.results) {
 		return f.results[i].issue, f.results[i].err
 	}
@@ -66,13 +69,15 @@ func (m *fakeMatcher) MatchFinding(_ findings.Finding, open []tracker.ExistingFi
 // fakeRecorder records which issues were bumped as recurrences and replays a
 // scripted count/error.
 type fakeRecorder struct {
-	bumped []string
-	count  int
-	err    error
+	bumped      []string
+	relatedKeys []string
+	count       int
+	err         error
 }
 
-func (r *fakeRecorder) RecordOccurrence(identifier, _ string) (int, error) {
+func (r *fakeRecorder) RecordOccurrence(identifier, relatedKey string) (int, error) {
 	r.bumped = append(r.bumped, identifier)
+	r.relatedKeys = append(r.relatedKeys, relatedKey)
 	return r.count, r.err
 }
 
@@ -182,7 +187,7 @@ func TestRoutePartitionsByAudience(t *testing.T) {
 	filer := &fakeFiler{results: []fakeResult{{issue: tracker.CreatedIssue{Identifier: "BEH-900"}}}}
 	rec := &recorder{}
 
-	Route(dir, harnessDir, "team-uuid", "BEH-639", filer, noExisting(), nil, nil, rec)
+	Route(dir, harnessDir, "team-uuid", "BEH-639", filer, noExisting(), nil, nil, nil, rec)
 
 	// project → tracker, and ONLY the project finding.
 	if len(filer.calls) != 1 || filer.calls[0].Title != "flaky spec" {
@@ -207,7 +212,7 @@ func TestRouteDefaultsUnclassifiedToLocalNotTracker(t *testing.T) {
 	filer := &fakeFiler{}
 	rec := &recorder{}
 
-	Route(dir, harnessDir, "team-uuid", "BEH-639", filer, noExisting(), nil, nil, rec)
+	Route(dir, harnessDir, "team-uuid", "BEH-639", filer, noExisting(), nil, nil, nil, rec)
 
 	if len(filer.calls) != 0 {
 		t.Errorf("unclassified finding must NOT reach the tracker, got %+v", filer.calls)
@@ -218,6 +223,79 @@ func TestRouteDefaultsUnclassifiedToLocalNotTracker(t *testing.T) {
 	}
 	if len(entries) != 1 {
 		t.Errorf("unclassified finding should be written locally, got %d files", len(entries))
+	}
+}
+
+// With an upstream sink wired (feedback.upstream = github), harness findings file
+// to the public harness repo instead of the local dir, and project findings still
+// route to the Consumer's tracker (ADR-0011/BEH-640).
+func TestRouteUpstreamsHarnessFindingsToPublicRepo(t *testing.T) {
+	dir := t.TempDir()
+	harnessDir := filepath.Join(t.TempDir(), "harness-findings")
+	writeDropbox(t, dir, `[
+		{"title":"flaky spec","body":"retries","audience":"project"},
+		{"title":"sandbox missing deps","body":"libnss3","key":"sandbox-deps","audience":"harness"}
+	]`)
+	projectFiler := &fakeFiler{results: []fakeResult{{issue: tracker.CreatedIssue{Identifier: "BEH-900"}}}}
+	upstreamFiler := &fakeFiler{results: []fakeResult{{issue: tracker.CreatedIssue{Identifier: "#12"}}}}
+	up := &Upstream{Filer: upstreamFiler, Searcher: noExisting(), Container: "beherd/agent-harness", Project: "herd"}
+	rec := &recorder{}
+
+	Route(dir, harnessDir, "team-uuid", "BEH-639", projectFiler, noExisting(), nil, nil, up, rec)
+
+	// harness finding → the upstream sink, NOT the local dir.
+	if len(upstreamFiler.calls) != 1 || upstreamFiler.calls[0].Title != "sandbox missing deps" {
+		t.Fatalf("upstream filer calls = %+v, want just the harness finding", upstreamFiler.calls)
+	}
+	if _, err := os.Stat(harnessDir); !os.IsNotExist(err) {
+		t.Errorf("harness dir should not be written when upstreaming, stat err = %v", err)
+	}
+	// project finding → the Consumer's tracker.
+	if len(projectFiler.calls) != 1 || projectFiler.calls[0].Title != "flaky spec" {
+		t.Errorf("project filer calls = %+v, want just the project finding", projectFiler.calls)
+	}
+}
+
+// The upstream filing is stamped with the reporting-project name (not the worked
+// ticket), so a maintainer reading the public repo sees which project reported it
+// (ADR-0011 provenance).
+func TestRouteUpstreamTagsFilingWithProject(t *testing.T) {
+	dir := t.TempDir()
+	writeDropbox(t, dir, `[{"title":"opaque crash","body":"x","key":"opaque-crash","audience":"harness"}]`)
+	upstreamFiler := &fakeFiler{results: []fakeResult{{issue: tracker.CreatedIssue{Identifier: "#12"}}}}
+	up := &Upstream{Filer: upstreamFiler, Searcher: noExisting(), Container: "beherd/agent-harness", Project: "herd"}
+
+	Route(dir, filepath.Join(t.TempDir(), "hf"), "team-uuid", "BEH-639", &fakeFiler{}, noExisting(), nil, nil, up, &recorder{})
+
+	if len(upstreamFiler.opts) != 1 || upstreamFiler.opts[0].RelatedKey != "herd" {
+		t.Errorf("upstream FileFinding RelatedKey = %+v, want the project name \"herd\"", upstreamFiler.opts)
+	}
+}
+
+// Cross-project dedup: a harness finding whose key already has an open upstream
+// issue is recorded as a project-tagged recurrence on that issue, never re-filed.
+func TestRouteUpstreamDedupsByKeyAsProjectTaggedRecurrence(t *testing.T) {
+	dir := t.TempDir()
+	writeDropbox(t, dir, `[{"title":"sandbox missing deps","body":"libnss3","key":"sandbox-deps","audience":"harness"}]`)
+	upstreamFiler := &fakeFiler{}
+	searcher := &fakeSearcher{existing: []tracker.ExistingFinding{
+		{Identifier: "#7", Title: "Playwright deps", Key: "sandbox-deps"},
+	}}
+	rec2 := &fakeRecorder{count: 3}
+	up := &Upstream{Filer: upstreamFiler, Searcher: searcher, Recorder: rec2, Container: "beherd/agent-harness", Project: "herd"}
+	rec := &recorder{}
+
+	Route(dir, filepath.Join(t.TempDir(), "hf"), "team-uuid", "BEH-639", &fakeFiler{}, noExisting(), nil, nil, up, rec)
+
+	if len(upstreamFiler.calls) != 0 {
+		t.Fatalf("expected the recurring key deduped, but %d filed upstream", len(upstreamFiler.calls))
+	}
+	if len(rec2.bumped) != 1 || rec2.bumped[0] != "#7" {
+		t.Errorf("expected a recurrence bump on #7, got %+v", rec2.bumped)
+	}
+	// The recurrence is tagged with the reporting project, not the ticket.
+	if rec2.relatedKeys[0] != "herd" {
+		t.Errorf("recurrence relatedKey = %q, want the project name \"herd\"", rec2.relatedKeys[0])
 	}
 }
 

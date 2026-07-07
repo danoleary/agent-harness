@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	toml "github.com/pelletier/go-toml/v2"
 )
@@ -53,7 +54,39 @@ type ProjectConfig struct {
 	// Tracker holds the non-secret tracker selection names (was the hardcoded
 	// Linear label UUIDs + ready/blocked label names).
 	Tracker TrackerConfig `toml:"tracker"`
+	// Feedback holds the opt-in upstream-feedback surface (ADR-0011/BEH-640): where
+	// harness-audience findings go. Default (empty/`off`) keeps them in the local
+	// artifact dir; `github` files them to the configured public harness repo.
+	Feedback FeedbackConfig `toml:"feedback"`
 }
+
+// FeedbackConfig selects where the harness routes harness-audience findings
+// (ADR-0011). Nothing here is a credential: upstreaming reuses the host's existing
+// GH_TOKEN (a public repo needs only `public_repo` scope), which also attributes
+// the issue to the reporting project as provenance.
+type FeedbackConfig struct {
+	// Upstream is the harness-findings sink: "off" (default) keeps them local in
+	// `.agent-harness/harness-findings/`; "github" files them as issues on Repo.
+	Upstream string `toml:"upstream"`
+	// Repo is the public harness repo ("owner/name") harness findings are filed to
+	// when Upstream is "github". Required for that mode, ignored otherwise.
+	Repo string `toml:"repo"`
+	// FindingsLabel is the label applied to upstreamed issues (and the scope
+	// SearchFindings dedups within), the upstream twin of tracker.findings_label_id.
+	// Optional — an empty label files/dedups without one.
+	FindingsLabel string `toml:"findings_label"`
+	// Project is the reporting-project name stamped on upstreamed filings and
+	// recurrence comments, so a cross-project recurrence reads "Recurred in <project>"
+	// (ADR-0011's project-tagged dedup). Optional — empty falls back to the worked
+	// ticket identifier.
+	Project string `toml:"project"`
+}
+
+// upstreamOff / upstreamGitHub are the recognized feedback.upstream modes.
+const (
+	upstreamOff    = "off"
+	upstreamGitHub = "github"
+)
 
 // CacheConfig is the optional persistent cache volume the harness mounts into
 // every sandbox + gate container (BEH-635). Volume is the Docker volume name;
@@ -157,6 +190,11 @@ func (pc *ProjectConfig) applyDefaults() {
 	if pc.BranchPrefix == "" {
 		pc.BranchPrefix = defaultBranchPrefix
 	}
+	// Default the feedback sink to local-only: nothing leaves the repo without an
+	// explicit `feedback.upstream = "github"` opt-in (ADR-0011).
+	if pc.Feedback.Upstream == "" {
+		pc.Feedback.Upstream = upstreamOff
+	}
 	// Map the deprecated herd-specific pnpm_store_volume onto the generalized
 	// cache surface, defaulting to its historical /pnpm-store mount.
 	if pc.Cache.Volume == "" && pc.PnpmStoreVolume != "" {
@@ -194,5 +232,38 @@ func (pc *ProjectConfig) validate() error {
 	if pc.Cache.Volume != "" && pc.Cache.Path == "" {
 		return fmt.Errorf("cache.path is required when cache.volume is set")
 	}
+	if err := pc.Feedback.validate(); err != nil {
+		return err
+	}
 	return nil
+}
+
+// validate rejects the two feedback misconfigurations that would otherwise
+// surface only when a finding is filed (ADR-0011): an unrecognized upstream mode,
+// and github mode with no addressable public repo. off mode needs no repo — it
+// never leaves the checkout.
+func (fc *FeedbackConfig) validate() error {
+	switch fc.Upstream {
+	case upstreamOff:
+		return nil
+	case upstreamGitHub:
+		if _, _, err := SplitOwnerRepo(fc.Repo); err != nil {
+			return fmt.Errorf("feedback.repo must be \"owner/name\" when feedback.upstream = %q, got %q", upstreamGitHub, fc.Repo)
+		}
+		return nil
+	default:
+		return fmt.Errorf("feedback.upstream must be %q or %q, got %q", upstreamOff, upstreamGitHub, fc.Upstream)
+	}
+}
+
+// SplitOwnerRepo parses a github "owner/name" into its parts, failing loud on a
+// value that isn't exactly one owner and one name. It lives in config (a leaf
+// package) so validation and the stage wiring that builds the upstream client
+// share one parser rather than diverging.
+func SplitOwnerRepo(repo string) (owner, name string, err error) {
+	owner, name, ok := strings.Cut(repo, "/")
+	if !ok || owner == "" || name == "" || strings.Contains(name, "/") {
+		return "", "", fmt.Errorf("repo must be \"owner/name\", got %q", repo)
+	}
+	return owner, name, nil
 }
