@@ -15,9 +15,21 @@ import (
 	"github.com/beherd/agent-harness/internal/runlog"
 	"github.com/beherd/agent-harness/internal/sandbox"
 	"github.com/beherd/agent-harness/internal/session"
+	"github.com/beherd/agent-harness/internal/ticket"
 	"github.com/beherd/agent-harness/internal/trackers"
 	"github.com/beherd/agent-harness/internal/verify"
 )
+
+// tddCap selects the active-time cap for a tdd session by ticket shape: a
+// multi-file extract-and-rewire refactor gets the larger TddLargeRefactorTimeout
+// (it is inherently sequential and overran the ordinary 30m cap mid-surgery —
+// BEH-441, BEH-688 Symptom 2); every other ticket gets the ordinary TddTimeout.
+func tddCap(cfg config.Config, t ticket.Ticket) time.Duration {
+	if t.IsLargeRefactor() {
+		return cfg.TddLargeRefactorTimeout
+	}
+	return cfg.TddTimeout
+}
 
 // implementationSession prefixes this stage's transcript + findings dir under
 // the ticket's log dir (DESIGN.md "Logging": logs/BEH-NNN/<session>-<run-id>.jsonl).
@@ -326,6 +338,17 @@ func Implementation(cfg config.Config, log *runlog.Logger, runID string, args Ar
 	const maxTddAttempts = 2
 
 	worktreePath := gitpkg.WorktreePath(cfg.HerdPath, slug)
+	// A multi-file extract-and-rewire refactor gets a larger active-time cap: it is
+	// inherently sequential (extract N modules, then rewire N call sites) and
+	// overran the ordinary cap mid-surgery, leaving an uncompilable checkpoint
+	// (BEH-441, BEH-688 Symptom 2).
+	sessionCap := tddCap(cfg, t)
+	if sessionCap != cfg.TddTimeout {
+		log.Event(fmt.Sprintf(
+			"large extract-and-rewire refactor detected — granting a %d min active cap (vs the ordinary %d min) (BEH-688)",
+			int(sessionCap.Minutes()), int(cfg.TddTimeout.Minutes()),
+		))
+	}
 	var (
 		truth      verify.GroundTruth
 		result     verify.Result
@@ -348,7 +371,7 @@ func Implementation(cfg config.Config, log *runlog.Logger, runID string, args Ar
 			))
 		}
 
-		log.Structured(loopstream.Record{Kind: loopstream.KindSandboxLaunch, Ticket: args.Identifier, Stage: "implementation", Message: fmt.Sprintf("launching sandbox (cap %d min active)", int(cfg.TddTimeout.Minutes()))})
+		log.Structured(loopstream.Record{Kind: loopstream.KindSandboxLaunch, Ticket: args.Identifier, Stage: "implementation", Message: fmt.Sprintf("launching sandbox (cap %d min active)", int(sessionCap.Minutes()))})
 		// Retry a transient launch failure (overlay2/read-only-fs exit 125, or a 137
 		// OOM-kill) before it becomes the verdict (BEH-542). Such a crash at the
 		// worktree-creation step — the session's very first heavy host I/O — otherwise
@@ -371,7 +394,7 @@ func Implementation(cfg config.Config, log *runlog.Logger, runID string, args Ar
 			return session.Run(buildArgs(name, attemptPrompt), session.Options{
 				ContainerName:  name,
 				TranscriptFile: attemptTranscript,
-				Timeout:        cfg.TddTimeout,
+				Timeout:        sessionCap,
 				IdleTimeout:    cfg.SessionIdleTimeout,
 				Verbose:        args.Verbose,
 				Log:            log,

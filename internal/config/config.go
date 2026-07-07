@@ -47,6 +47,13 @@ type Config struct {
 	// carries model/API latency and any host sleep, so it routinely reads a multiple
 	// of this cap without the cap ever being blown — BEH-688).
 	TddTimeout time.Duration
+	// TddLargeRefactorTimeout is the larger active-time cap granted to a tdd session
+	// whose ticket is a multi-file "extract-and-rewire" refactor (ticket.IsLargeRefactor).
+	// Such tickets are inherently sequential — extract N shared modules, then rewire N
+	// call sites to consume them — and routinely overran the 30m TddTimeout mid-surgery,
+	// leaving an uncompilable half-rewired checkpoint that had to be redone from scratch
+	// (BEH-441, BEH-688 Symptom 2). Kept strictly above TddTimeout.
+	TddLargeRefactorTimeout time.Duration
 	// ReviewTimeout is the active-time (monotonic, host-sleep-excluded — BEH-608) cap
 	// for every review-family session (the prep
 	// install, the qualitative review, the host-side gate re-run, and each CI-fix
@@ -180,6 +187,7 @@ var promptsLoader = LoadPrompts
 
 const (
 	defaultTddTimeout       = 30 * time.Minute
+	defaultTddLargeCap      = 60 * time.Minute
 	defaultReviewTimeout    = 25 * time.Minute
 	defaultRetroTimeout     = 45 * time.Minute
 	defaultSessionIdle      = 20 * time.Minute
@@ -320,21 +328,22 @@ func Load(get Getenv) (Config, error) {
 	}
 
 	cfg := Config{
-		LinearAPIKey:         linearKey,
-		GitHubToken:          githubToken,
-		JiraBaseURL:          get("JIRA_BASE_URL"),
-		JiraEmail:            get("JIRA_EMAIL"),
-		JiraAPIToken:         get("JIRA_API_TOKEN"),
-		HerdPath:             herdPath,
-		Image:                orDefault(get("HARNESS_IMAGE"), project.Image),
-		Dockerfile:           project.Dockerfile,
-		CacheVolume:          cacheVolume,
-		CacheMountPath:       cachePath,
-		TddTimeout:           parseTimeout(get("TDD_TIMEOUT_MS"), defaultTddTimeout),
-		ReviewTimeout:        parseTimeout(get("REVIEW_TIMEOUT_MS"), defaultReviewTimeout),
-		RetrospectiveTimeout: parseTimeout(get("RETROSPECTIVE_TIMEOUT_MS"), defaultRetroTimeout),
-		SessionIdleTimeout:   parseTimeout(get("SESSION_IDLE_TIMEOUT_MS"), defaultSessionIdle),
-		Model:                orDefault(get("TDD_MODEL"), defaultModel),
+		LinearAPIKey:            linearKey,
+		GitHubToken:             githubToken,
+		JiraBaseURL:             get("JIRA_BASE_URL"),
+		JiraEmail:               get("JIRA_EMAIL"),
+		JiraAPIToken:            get("JIRA_API_TOKEN"),
+		HerdPath:                herdPath,
+		Image:                   orDefault(get("HARNESS_IMAGE"), project.Image),
+		Dockerfile:              project.Dockerfile,
+		CacheVolume:             cacheVolume,
+		CacheMountPath:          cachePath,
+		TddTimeout:              parseTimeout(get("TDD_TIMEOUT_MS"), defaultTddTimeout),
+		TddLargeRefactorTimeout: parseTimeout(get("TDD_LARGE_REFACTOR_TIMEOUT_MS"), defaultTddLargeCap),
+		ReviewTimeout:           parseTimeout(get("REVIEW_TIMEOUT_MS"), defaultReviewTimeout),
+		RetrospectiveTimeout:    parseTimeout(get("RETROSPECTIVE_TIMEOUT_MS"), defaultRetroTimeout),
+		SessionIdleTimeout:      parseTimeout(get("SESSION_IDLE_TIMEOUT_MS"), defaultSessionIdle),
+		Model:                   orDefault(get("TDD_MODEL"), defaultModel),
 
 		CIMaxFixAttempts: parsePositiveInt(get("CI_MAX_FIX_ATTEMPTS"), defaultCIMaxFixAttempts),
 		CIFixBudget:      parseTimeout(get("CI_FIX_BUDGET_MS"), defaultCIFixBudget),
@@ -383,6 +392,7 @@ func validateIdleBelowCaps(cfg Config) error {
 		cap  time.Duration
 	}{
 		{"TDD_TIMEOUT_MS", cfg.TddTimeout},
+		{"TDD_LARGE_REFACTOR_TIMEOUT_MS", cfg.TddLargeRefactorTimeout},
 		{"REVIEW_TIMEOUT_MS", cfg.ReviewTimeout},
 		{"RETROSPECTIVE_TIMEOUT_MS", cfg.RetrospectiveTimeout},
 	}

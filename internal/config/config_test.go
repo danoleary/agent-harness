@@ -63,6 +63,15 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.RetrospectiveTimeout != 45*time.Minute {
 		t.Errorf("RetrospectiveTimeout = %v, want 45m", cfg.RetrospectiveTimeout)
 	}
+	// A multi-file extract-and-rewire refactor is inherently sequential and
+	// overruns the 30m tdd cap mid-surgery; it gets a larger cap of its own
+	// (BEH-688 Symptom 2).
+	if cfg.TddLargeRefactorTimeout != 60*time.Minute {
+		t.Errorf("TddLargeRefactorTimeout = %v, want 60m", cfg.TddLargeRefactorTimeout)
+	}
+	if cfg.TddLargeRefactorTimeout <= cfg.TddTimeout {
+		t.Errorf("TddLargeRefactorTimeout = %v must exceed TddTimeout = %v", cfg.TddLargeRefactorTimeout, cfg.TddTimeout)
+	}
 }
 
 // Every per-session hard cap must stay strictly above the idle/no-progress window.
@@ -123,17 +132,29 @@ func TestLoadRejectsIdleWindowAtOrAboveAnyCap(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected an error when the idle window equals a hard cap")
 	}
+
+	// The large-refactor cap is a per-session hard cap too, so the idle window
+	// must stay below it as well — a mis-set large cap under the idle window would
+	// silently disable the idle watchdog for large-refactor sessions.
+	_, err = Load(fullEnv(map[string]string{
+		"TDD_LARGE_REFACTOR_TIMEOUT_MS": "60000",  // 1m
+		"SESSION_IDLE_TIMEOUT_MS":       "120000", // 2m — above the large cap
+	}))
+	if err == nil {
+		t.Fatal("expected an error when the idle window is above the large-refactor cap")
+	}
 }
 
 func TestLoadHonoursOverrides(t *testing.T) {
 	cfg, err := Load(fullEnv(map[string]string{
-		"HARNESS_IMAGE":            "custom:tag",
-		"PNPM_STORE_VOLUME":        "my-store",
-		"TDD_TIMEOUT_MS":           "60000",
-		"REVIEW_TIMEOUT_MS":        "120000",
-		"RETROSPECTIVE_TIMEOUT_MS": "180000",
-		"SESSION_IDLE_TIMEOUT_MS":  "30000", // 30s — kept below the 1m tdd cap (idle must stay under every cap)
-		"TDD_MODEL":                "sonnet",
+		"HARNESS_IMAGE":                 "custom:tag",
+		"PNPM_STORE_VOLUME":             "my-store",
+		"TDD_TIMEOUT_MS":                "60000",
+		"TDD_LARGE_REFACTOR_TIMEOUT_MS": "120000",
+		"REVIEW_TIMEOUT_MS":             "120000",
+		"RETROSPECTIVE_TIMEOUT_MS":      "180000",
+		"SESSION_IDLE_TIMEOUT_MS":       "30000", // 30s — kept below the 1m tdd cap (idle must stay under every cap)
+		"TDD_MODEL":                     "sonnet",
 	}))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -155,6 +176,9 @@ func TestLoadHonoursOverrides(t *testing.T) {
 	}
 	if cfg.TddTimeout != time.Minute {
 		t.Errorf("TddTimeout = %v, want 1m", cfg.TddTimeout)
+	}
+	if cfg.TddLargeRefactorTimeout != 2*time.Minute {
+		t.Errorf("TddLargeRefactorTimeout = %v, want 2m (TDD_LARGE_REFACTOR_TIMEOUT_MS override)", cfg.TddLargeRefactorTimeout)
 	}
 	if cfg.Model != "sonnet" {
 		t.Errorf("Model = %q, want sonnet (TDD_MODEL override)", cfg.Model)

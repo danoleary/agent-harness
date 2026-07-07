@@ -9,12 +9,14 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/beherd/agent-harness/internal/ci"
 	"github.com/beherd/agent-harness/internal/config"
 	"github.com/beherd/agent-harness/internal/runlog"
 	"github.com/beherd/agent-harness/internal/sandbox"
 	"github.com/beherd/agent-harness/internal/session"
+	"github.com/beherd/agent-harness/internal/ticket"
 	"github.com/beherd/agent-harness/internal/verify"
 )
 
@@ -619,5 +621,25 @@ func TestParseArgsForceDefaultsOff(t *testing.T) {
 	}
 	if got.Force {
 		t.Error("Force must default to false")
+	}
+}
+
+// tddCap grants the larger active-time cap to a multi-file extract-and-rewire
+// refactor (BEH-688 Symptom 2) and the ordinary cap to everything else.
+func TestTddCap(t *testing.T) {
+	cfg := config.Config{
+		TddTimeout:              30 * time.Minute,
+		TddLargeRefactorTimeout: 60 * time.Minute,
+	}
+	large := ticket.Ticket{
+		Title:       "Extract shared admin scaffolding",
+		Description: "Extract 5 modules, then rewire 4 managers to consume them.",
+	}
+	if got := tddCap(cfg, large); got != cfg.TddLargeRefactorTimeout {
+		t.Errorf("tddCap(large refactor) = %v, want %v", got, cfg.TddLargeRefactorTimeout)
+	}
+	small := ticket.Ticket{Title: "Add a lint guard", Description: "One rule plus tests."}
+	if got := tddCap(cfg, small); got != cfg.TddTimeout {
+		t.Errorf("tddCap(ordinary ticket) = %v, want %v", got, cfg.TddTimeout)
 	}
 }
