@@ -385,6 +385,20 @@ loop:
 
   fetch + fast-forward origin/main
 
+  // COMPLETE-COMMITTED-FIX (BEH-713): a no-PR run is not always a failure. The branch may
+  // already carry a committed, gate-green fix that was never pushed — the recovered-checkpoint
+  // / verify-only state where the cold review couldn't emit its verdict, so the review stage
+  // never pushed. Releasing it just re-grabs it to the same no-verdict conclusion forever (the
+  // BEH-649 infinite Todo↔In-Progress bounce). So BEFORE the release below, try to FINISH it
+  // host-side: if the worktree is clean and the branch has a non-empty diff vs origin/main with
+  // no open PR, rebase + push (force-with-lease; the remote may hold an older checkpoint tip) +
+  // open the PR. Opening a PR is safe recovery, not a merge — CI + human review still gate it.
+  // A completion that ships folds in as ReachedPushedPR (breaker resets, no release); anything
+  // that can't complete (conflict, empty-after-rebase, push/PR failure, or nothing to recover)
+  // falls through to the normal release so a later run re-grabs — never worse than no attempt.
+  if NOT reached a pushed PR and NOT RecommendClose and there IS a committed-but-unpushed fix:
+    complete it host-side (rebase + push + PR); on success treat as reached-a-pushed-PR
+
   // RELEASE-ON-NO-PR (BEH-590): any non-cap run that did NOT reach a pushed PR — OOM,
   // sandbox crash, a review stage that died before pushing, an empty-diff verification
   // failure — left the ticket claimed In Progress with nothing to show. The dispatch

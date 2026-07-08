@@ -110,6 +110,18 @@ type Deps struct {
 	// one ticket and returns the typed outcome the breaker keys on (did it reach a
 	// pushed PR?), not the opaque exit code.
 	RunPipeline func(identifier string) TicketOutcome
+	// RecoverCommittedFix attempts to FINISH a no-PR run whose fix was already
+	// committed on its branch but never pushed/PR'd — the recovered-checkpoint /
+	// verify-only state where the review stage left a gate-green, clean commit yet
+	// never reached a PR (BEH-713, the BEH-649 infinite Todo↔In-Progress bounce). It
+	// returns the completion outcome (its ReachedPushedPR is the success signal) and
+	// attempted=true ONLY when there was such a committed-but-no-PR state to finish;
+	// attempted=false means there is nothing to recover (a genuine OOM/crash/empty-diff
+	// no-PR run), so the loop falls through to the normal release. A nil func disables
+	// recovery entirely — every no-PR run is released as before. Host-side (push + open
+	// PR), never the loop reimplementing the review machinery; a completion failure just
+	// falls through to the release, so a flaky push can't strand the ticket In Progress.
+	RecoverCommittedFix func(identifier string) (outcome TicketOutcome, attempted bool)
 	// ListInProgressClaims returns the agent-claimed In Progress tickets the reaper
 	// evaluates each pass (BEH-677). A nil func disables reaping entirely — the loop
 	// makes no reaper query at all. A list error is warned and swallowed (best-effort,
@@ -285,6 +297,32 @@ func Run(d Deps) int {
 		// merge-base honest across the loop's long run.
 		if err := d.FetchMain(); err != nil {
 			d.Log.Event("loop … warning: could not fast-forward origin/main after ticket: " + err.Error())
+		}
+
+		// A no-PR run is not always a failure to release: the branch may already carry a
+		// committed, gate-green fix that simply never got pushed — the recovered-checkpoint
+		// / verify-only state where the cold review couldn't emit its verdict, so the review
+		// stage never pushed (BEH-713). Releasing it to Todo just re-grabs it to the same
+		// no-verdict conclusion forever (the BEH-649 infinite bounce). So before treating a
+		// no-PR run as a failure, try to FINISH it host-side — push + open the PR. A
+		// successful completion is folded in as the ship it is (ReachedPushedPR), so the
+		// switch below skips the release and the breaker records a success (reset). Skipped
+		// for a cap abort (already handled + continued above) and a recommend-close (a
+		// genuine no-op, not an unshipped fix). A completion that still can't reach a PR, or
+		// nothing to recover, falls through to the normal release below.
+		if !outcome.ReachedPushedPR && !outcome.RecommendClose && d.RecoverCommittedFix != nil {
+			if completed, attempted := d.RecoverCommittedFix(identifier); attempted {
+				if completed.ReachedPushedPR {
+					d.Log.Structured(loopstream.Record{
+						Kind:    loopstream.KindPROpened,
+						Ticket:  identifier,
+						Message: "loop — " + identifier + " had a committed, gate-green fix that was never pushed; completed it (pushed + opened PR) instead of releasing (BEH-713)",
+					})
+					outcome.ReachedPushedPR = true
+				} else {
+					d.Log.Event("loop … " + identifier + " committed-fix recovery did not reach a PR; falling through to the no-PR release")
+				}
+			}
 		}
 
 		// Recommend-close (BEH-603): the run concluded the branch makes zero net change

@@ -44,7 +44,8 @@ const (
 	KindToolUse Kind = "tool-use"
 	// KindSessionResult — an agent session ended (success or error).
 	KindSessionResult Kind = "session-result"
-	// KindPROpened — the review stage pushed the branch and opened a PR.
+	// KindPROpened — the branch was pushed and a PR opened: normally the review stage,
+	// or the loop completing a committed-but-unpushed fix host-side (BEH-713).
 	KindPROpened Kind = "pr-opened"
 	// KindTicketReleased — a claimed ticket was released back to Todo (no PR).
 	KindTicketReleased Kind = "ticket-released"

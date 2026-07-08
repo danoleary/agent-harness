@@ -1456,3 +1456,152 @@ func TestBreakerTripEmitsTerminalLoopStoppedRecord(t *testing.T) {
 	// …and the terminal stopped record is the LAST thing emitted.
 	assertTerminalLoopStopped(t, r, "circuit breaker")
 }
+
+// TestCommittedFixIsCompletedNotReleased is the BEH-713 tracer bullet: a no-PR run
+// whose branch already carries a committed, gate-green fix that was never pushed (the
+// recovered-checkpoint / verify-only state) must be FINISHED — pushed + PR opened via
+// RecoverCommittedFix — not released back to Todo. Completing it means the ticket is
+// NOT released, the breaker is NOT advanced (it records a ship), and the completion is
+// narrated as a PR-opened event.
+func TestCommittedFixIsCompletedNotReleased(t *testing.T) {
+	r := &recorder{}
+	var released, recovered []string
+	code := Run(Deps{
+		ClearStopFile: func() error { return nil },
+		FetchMain:     func() error { return nil },
+		StopRequested: stopAfter(1), // one ticket, then stop at the 2nd checkpoint
+		ResolveNext:   func() (string, bool) { return "BEH-649", true },
+		RunPipeline: func(string) TicketOutcome {
+			return TicketOutcome{ReachedPushedPR: false} // ran, committed, but never pushed
+		},
+		RecoverCommittedFix: func(id string) (TicketOutcome, bool) {
+			recovered = append(recovered, id)
+			return TicketOutcome{ReachedPushedPR: true}, true // there WAS a committed fix; completing it opened a PR
+		},
+		ReleaseTicket:          func(id string) error { released = append(released, id); return nil },
+		Sleep:                  func(time.Duration) {},
+		PollInterval:           time.Minute,
+		TickInterval:           2 * time.Second,
+		MaxConsecutiveFailures: 1, // threshold 1: a single counted failure would trip — completing it must NOT
+		Log:                    r,
+	})
+	if code != 0 {
+		t.Errorf("exit code = %d, want 0 (a completed fix then a stop is a clean exit)", code)
+	}
+	if want := []string{"BEH-649"}; !reflect.DeepEqual(recovered, want) {
+		t.Errorf("RecoverCommittedFix called with %v, want %v (a no-PR run must attempt recovery before releasing)", recovered, want)
+	}
+	if len(released) != 0 {
+		t.Errorf("released = %v, want none (a completed committed-but-unpushed fix must never bounce back to Todo)", released)
+	}
+	if r.saw("circuit breaker") {
+		t.Errorf("completing a committed fix ships a PR, so the breaker must not trip (threshold 1); events = %v", r.events)
+	}
+	if k, ok := r.kindFor("completed it"); !ok || k != loopstream.KindPROpened {
+		t.Errorf("completion event kind = %q (found=%v), want %q", k, ok, loopstream.KindPROpened)
+	}
+}
+
+// TestNothingToRecoverFallsThroughToRelease pins backward compatibility: a genuine no-PR
+// failure with nothing to recover (an OOM/sandbox-crash/empty-diff run — the branch has
+// no committed-but-unpushed fix) reports attempted=false from RecoverCommittedFix and
+// must STILL be released back to Todo exactly as before (BEH-590). Recovery is a
+// targeted addition, never a blanket suppression of the no-PR release.
+func TestNothingToRecoverFallsThroughToRelease(t *testing.T) {
+	r := &recorder{}
+	var released []string
+	code := Run(Deps{
+		ClearStopFile: func() error { return nil },
+		FetchMain:     func() error { return nil },
+		StopRequested: stopAfter(1),
+		ResolveNext:   func() (string, bool) { return "BEH-42", true },
+		RunPipeline:   func(string) TicketOutcome { return TicketOutcome{ReachedPushedPR: false} },
+		// Nothing to recover: no committed-but-unpushed fix on the branch.
+		RecoverCommittedFix:    func(string) (TicketOutcome, bool) { return TicketOutcome{}, false },
+		ReleaseTicket:          func(id string) error { released = append(released, id); return nil },
+		Sleep:                  func(time.Duration) {},
+		PollInterval:           time.Minute,
+		TickInterval:           2 * time.Second,
+		MaxConsecutiveFailures: 3,
+		Log:                    r,
+	})
+	if code != 0 {
+		t.Errorf("exit code = %d, want 0", code)
+	}
+	if want := []string{"BEH-42"}; !reflect.DeepEqual(released, want) {
+		t.Errorf("released = %v, want %v (a no-PR run with nothing to recover must still release to Todo)", released, want)
+	}
+}
+
+// TestFailedCompletionFallsThroughToRelease guards the completion-failure path: recovery
+// found a committed fix (attempted=true) but the push/PR could not be completed
+// (ReachedPushedPR=false — a flaky push, gh outage). Rather than strand the ticket In
+// Progress, the loop must fall through to the normal no-PR release so a later run can
+// re-grab it. A completion attempt that fails must never be worse than no attempt.
+func TestFailedCompletionFallsThroughToRelease(t *testing.T) {
+	r := &recorder{}
+	var released []string
+	code := Run(Deps{
+		ClearStopFile: func() error { return nil },
+		FetchMain:     func() error { return nil },
+		StopRequested: stopAfter(1),
+		ResolveNext:   func() (string, bool) { return "BEH-42", true },
+		RunPipeline:   func(string) TicketOutcome { return TicketOutcome{ReachedPushedPR: false} },
+		// Found a committed fix, but completing it (push/PR) failed.
+		RecoverCommittedFix:    func(string) (TicketOutcome, bool) { return TicketOutcome{ReachedPushedPR: false}, true },
+		ReleaseTicket:          func(id string) error { released = append(released, id); return nil },
+		Sleep:                  func(time.Duration) {},
+		PollInterval:           time.Minute,
+		TickInterval:           2 * time.Second,
+		MaxConsecutiveFailures: 3,
+		Log:                    r,
+	})
+	if code != 0 {
+		t.Errorf("exit code = %d, want 0", code)
+	}
+	if want := []string{"BEH-42"}; !reflect.DeepEqual(released, want) {
+		t.Errorf("released = %v, want %v (a failed completion must fall through to the normal release, not strand the ticket)", released, want)
+	}
+}
+
+// TestRepeatedCommittedFixCompletionsNeverTripBreaker is the BEH-713 regression for the
+// exact BEH-649 loop state: a ticket that keeps arriving committed-but-unpushed with no
+// PR. Before this fix the loop released it every time and, after three consecutive no-PR
+// runs, tripped the breaker and wound the whole daemon down (BEH-649 bounced ~9× and then
+// the breaker tripped). With recovery wired, every such run is COMPLETED (push + PR), so
+// each records a ship and the breaker never advances — the daemon keeps running and no
+// ticket is stranded. No stop is ever requested: only a breaker trip could end this loop,
+// and it must not, so the arranged stop after several runs is what ends it.
+func TestRepeatedCommittedFixCompletionsNeverTripBreaker(t *testing.T) {
+	r := &recorder{}
+	var released, completed []string
+	code := Run(Deps{
+		ClearStopFile: func() error { return nil },
+		FetchMain:     func() error { return nil },
+		StopRequested: stopAfter(5), // five committed-but-unpushed runs, then stop — NOT the breaker
+		ResolveNext:   func() (string, bool) { return "BEH-649", true },
+		RunPipeline:   func(string) TicketOutcome { return TicketOutcome{ReachedPushedPR: false} },
+		RecoverCommittedFix: func(id string) (TicketOutcome, bool) {
+			completed = append(completed, id)
+			return TicketOutcome{ReachedPushedPR: true}, true
+		},
+		ReleaseTicket:          func(id string) error { released = append(released, id); return nil },
+		Sleep:                  func(time.Duration) {},
+		PollInterval:           time.Minute,
+		TickInterval:           2 * time.Second,
+		MaxConsecutiveFailures: 3, // three consecutive no-PR runs would have tripped the pre-fix loop
+		Log:                    r,
+	})
+	if code != 0 {
+		t.Errorf("exit code = %d, want 0", code)
+	}
+	if len(completed) != 5 {
+		t.Errorf("completed %d runs, want 5 (every committed-but-unpushed run must be finished)", len(completed))
+	}
+	if len(released) != 0 {
+		t.Errorf("released = %v, want none (a completed fix is never released to Todo)", released)
+	}
+	if r.saw("circuit breaker") {
+		t.Errorf("completing every committed fix must never trip the breaker; events = %v", r.events)
+	}
+}

@@ -39,6 +39,7 @@ import (
 	"github.com/beherd/agent-harness/internal/loop"
 	"github.com/beherd/agent-harness/internal/loopstream"
 	"github.com/beherd/agent-harness/internal/pipeline"
+	"github.com/beherd/agent-harness/internal/pr"
 	"github.com/beherd/agent-harness/internal/proc"
 	"github.com/beherd/agent-harness/internal/runlog"
 	"github.com/beherd/agent-harness/internal/sandbox"
@@ -128,7 +129,14 @@ func main() {
 			}
 			return sel.Identifier, true
 		},
-		RunPipeline:   func(id string) loop.TicketOutcome { return runPipeline(cfg, id) },
+		RunPipeline: func(id string) loop.TicketOutcome { return runPipeline(cfg, id) },
+		// RecoverCommittedFix finishes a no-PR run whose fix is already committed on the
+		// branch but was never pushed/PR'd — the recovered-checkpoint / verify-only state
+		// that stranded BEH-649 (BEH-713). Host-side: rebase + push + open PR via git/gh,
+		// never inside the sandbox.
+		RecoverCommittedFix: func(id string) (loop.TicketOutcome, bool) {
+			return recoverCommittedFix(cfg, client, log, id)
+		},
 		ReleaseTicket: func(id string) error { return client.ReleaseToTodo(id) },
 		// CloseTicket consumes a recommend-close verdict by moving the superseded ticket
 		// to the terminal Canceled state (BEH-682), so it exits the selection + reaper
@@ -213,6 +221,118 @@ func runPipeline(cfg config.Config, identifier string) loop.TicketOutcome {
 		CapResetTime:     out.SpendingCapResetTime,
 		RecommendClose:   out.RecommendClose,
 	}
+}
+
+// recoverGhTimeout bounds the `gh pr view`/`gh pr create` calls the committed-fix
+// recovery makes, so a stalled network or a blocking gh auth prompt can't hang the
+// between-ticket recovery (same hang class the review stage bounds with prCreateTimeout).
+const recoverGhTimeout = 2 * time.Minute
+
+// recoverCommittedFix finishes a no-PR run whose fix is already committed on the branch
+// but was never pushed/PR'd — the recovered-checkpoint / verify-only state that stranded
+// BEH-649, bouncing it Todo↔In-Progress ~9× (BEH-713). It returns attempted=true only
+// when there IS such a state to complete — a clean worktree carrying a committed,
+// non-empty diff against origin/main with no open PR — so the loop keeps releasing a
+// genuine OOM/crash/empty-diff no-PR run (attempted=false) exactly as before. On a
+// recoverable branch it rebases onto the latest main (so the PR opens on a current base),
+// pushes force-with-lease (the remote may hold an older checkpoint tip — the BEH-649
+// case, where a plain push is rejected non-fast-forward), and opens the PR, so a real fix
+// the review stage never shipped reaches a PR for CI + human review instead of looping
+// forever. Opening a PR is safe recovery, not a merge: CI and human review still gate the
+// merge. Any git/gh failure returns ReachedPushedPR=false (attempted=true), so the loop
+// falls through to the normal release and a later run re-grabs and retries — a completion
+// attempt is never worse than no attempt.
+func recoverCommittedFix(cfg config.Config, client tracker.Tracker, log loop.Narrator, identifier string) (loop.TicketOutcome, bool) {
+	slug := strings.ToLower(identifier)
+	worktreePath := gitpkg.WorktreePath(cfg.HerdPath, slug)
+
+	// A committed fix means a clean worktree: uncommitted edits are an in-progress or
+	// crashed run, not a finished-but-unpushed one, so leave those to the normal path.
+	if _, err := os.Stat(worktreePath); err != nil {
+		return loop.TicketOutcome{}, false
+	}
+	if !gitpkg.WorktreeClean(worktreePath) {
+		return loop.TicketOutcome{}, false
+	}
+	// Refresh main so the empty-diff check and the PR base are current.
+	if err := gitpkg.FetchMain(cfg.HerdPath); err != nil {
+		log.Event("loop … warning: could not fetch origin/main during committed-fix recovery: " + err.Error())
+	}
+	// Nothing committed ahead of main (already merged, or an empty branch) → not a
+	// recoverable committed fix; let the normal no-PR release handle it.
+	if gitpkg.BranchDiffEmpty(worktreePath) {
+		return loop.TicketOutcome{}, false
+	}
+	// A branch that already has an OPEN PR isn't stranded (its outcome would already
+	// carry ReachedPushedPR — belt-and-suspenders), so there is nothing to complete.
+	if openPRExists(cfg.HerdPath, gitpkg.BranchName(cfg.BranchPrefix, slug)) {
+		return loop.TicketOutcome{}, false
+	}
+
+	log.Event("loop — " + identifier + " has a committed, unpushed fix with no PR; completing it host-side (rebase + push + PR) (BEH-713)")
+
+	// Rebase onto the latest main so the PR opens on a current base. A genuine content
+	// conflict can't be auto-completed — attempted, but not shipped, so the loop releases
+	// it for a later run / human to resolve (never a worse state than before).
+	if gitpkg.RebaseOntoMain(worktreePath) == gitpkg.RebaseConflict {
+		gitpkg.AbortRebase(worktreePath)
+		log.Event("loop … " + identifier + " committed-fix recovery: rebase onto main conflicted — cannot auto-complete")
+		return loop.TicketOutcome{ReachedPushedPR: false}, true
+	}
+	// The rebase can collapse the branch to zero net change (a sibling PR landed the
+	// same fix) — nothing to open a PR for.
+	if gitpkg.BranchDiffEmpty(worktreePath) {
+		log.Event("loop … " + identifier + " committed-fix recovery: branch became empty after rebase — nothing to ship")
+		return loop.TicketOutcome{ReachedPushedPR: false}, true
+	}
+	// force-with-lease: the remote may hold an older checkpoint tip (the BEH-649 case),
+	// so a plain push would be rejected as non-fast-forward.
+	if err := gitpkg.PushForceWithLease(cfg.HerdPath, cfg.BranchPrefix, slug); err != nil {
+		log.Event("loop … " + identifier + " committed-fix recovery: push failed: " + err.Error())
+		return loop.TicketOutcome{ReachedPushedPR: false}, true
+	}
+	t, err := client.FetchTicket(identifier)
+	if err != nil {
+		log.Event("loop … " + identifier + " committed-fix recovery: could not fetch ticket for the PR body: " + err.Error())
+		return loop.TicketOutcome{ReachedPushedPR: false}, true
+	}
+	subjects := gitpkg.CommitSubjects(cfg.HerdPath, cfg.BranchPrefix, slug)
+	if err := openPR(cfg.HerdPath, cfg.BranchPrefix, slug, pr.BuildTitle(t), pr.BuildBody(t, subjects)); err != nil {
+		log.Event("loop … " + identifier + " committed-fix recovery: gh pr create failed: " + err.Error())
+		return loop.TicketOutcome{ReachedPushedPR: false}, true
+	}
+	return loop.TicketOutcome{ReachedPushedPR: true}, true
+}
+
+// openPRExists reports whether an OPEN PR already exists for the branch, via
+// `gh pr view <branch> --json state`. Any error (no PR for the branch, gh failure) is
+// treated as "no open PR": the recovery then proceeds to open one, and a duplicate
+// `gh pr create` would fail harmlessly (surfaced as a completion failure → release).
+func openPRExists(herdPath, branch string) bool {
+	out, err := proc.CombinedOutputInDir(recoverGhTimeout, herdPath, "gh", "pr", "view", branch, "--json", "state", "-q", ".state")
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(string(out)) == "OPEN"
+}
+
+// openPR opens the pull request for the recovered branch, mirroring the review stage's
+// host-side `gh pr create` (ADR-0002: the harness owns push + PR). GH_TOKEN stays
+// host-only — gh reads it from the harness env — and gh infers the origin repo from the
+// herd checkout.
+func openPR(herdPath, branchPrefix, slug, title, body string) error {
+	out, err := proc.CombinedOutputInDir(
+		recoverGhTimeout, herdPath,
+		"gh", "pr", "create",
+		"--head", gitpkg.BranchName(branchPrefix, slug),
+		"--base", "main",
+		"--title", title,
+		"--body", body,
+	)
+	if err != nil {
+		return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }
 
 // pruneMergedWorktrees shells out to the repo-root prune-merged-worktrees.sh --yes,
