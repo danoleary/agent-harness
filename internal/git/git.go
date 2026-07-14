@@ -460,30 +460,31 @@ func rebaseOntoMain(worktreePath string, run commandRunner) RebaseResult {
 	// harness identity — exactly as the old rebase did — so the pushed branch never
 	// inherits the host checkout's placeholder identity (BEH-579).
 	//
-	// --empty=drop makes a commit whose diff is already present identically in
-	// origin/main (a sibling PR merged the same change, or a hotfix was cherry-picked
-	// to main) auto-drop and the replay continue, instead of halting with "the previous
-	// cherry-pick is now empty" (exit 1) — which a bare cherry-pick does and which we'd
-	// misread as a genuine conflict, needlessly burning a sandboxed resolution session.
-	// This matches an ideal `git rebase`'s auto-drop (BEH-622). Requires git ≥ 2.45
-	// (May 2024); the harness runs host-side (see README prerequisites).
+	// A bare cherry-pick (no `--empty=drop`) is used deliberately for git-version
+	// portability: `--empty=<action>` for cherry-pick only landed in git 2.45 (May
+	// 2024), and CI runners (and older host checkouts) still ship git 2.39, where the
+	// flag is rejected with a usage error (exit 129) that fails EVERY clean replay.
+	// Both empty-commit classes are instead handled uniformly by the auto-skip loop
+	// below, which reproduces an ideal `git rebase`'s auto-drop without the flag.
 	args := append([]string{"-C", worktreePath}, identityArgs()...)
-	args = append(args, "cherry-pick", "--empty=drop", "origin/main.."+rebaseBackupRef)
+	args = append(args, "cherry-pick", "origin/main.."+rebaseBackupRef)
 	if run("git", args...) == nil {
 		return RebaseClean
 	}
 
-	// The cherry-pick halted. --empty=drop drops only commits that BECOME empty on
-	// replay (their diff is already in origin/main); a commit that was INITIALLY empty
-	// — an `--allow-empty` handoff commit with a zero net diff (the BEH-678 d0177234b
-	// case) — still halts with "the previous cherry-pick is now empty" (exit 1). That
-	// is a no-op to drop, NOT a content conflict, so escalating it to a sandboxed
-	// conflict-resolution session (BEH-581) wastes a whole session on an empty commit.
-	// Auto-skip it inline instead, matching an ideal `git rebase`'s drop of an
-	// initially-empty commit. The two halt classes are told apart by unmerged paths: a
-	// genuine conflict leaves unmerged index entries; an empty halt leaves a clean
-	// index. Loop because a multi-commit replay can halt on several empty commits in
-	// turn; each `--skip` consumes one, so it always makes progress and terminates.
+	// The cherry-pick halted. A bare cherry-pick halts on BOTH empty-commit classes
+	// with "the previous cherry-pick is now empty" (exit 1): a commit that BECOMES
+	// empty on replay because its diff is already in origin/main (a sibling PR merged
+	// the same change, or a hotfix was cherry-picked to main — the BEH-622 case), AND
+	// a commit that was INITIALLY empty — an `--allow-empty` handoff commit with a zero
+	// net diff (the BEH-678 d0177234b case). Neither is a content conflict: dropping
+	// either is a no-op, so escalating to a sandboxed conflict-resolution session
+	// (BEH-581) would waste a whole session on an empty commit. Auto-skip both inline
+	// instead, matching an ideal `git rebase`'s auto-drop. The empty-halt classes are
+	// told apart from a genuine conflict by unmerged paths: a conflict leaves unmerged
+	// index entries; an empty halt leaves a clean index. Loop because a multi-commit
+	// replay can halt on several empty commits in turn; each `--skip` consumes one, so
+	// it always makes progress and terminates.
 	//
 	// Fail safe first: a cherry-pick error that left NO pick in progress is an
 	// unexpected failure (not a halt on an empty commit or a conflict), so restore the

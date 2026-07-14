@@ -217,6 +217,9 @@ func hasArg(argv []string, s string) bool {
 // full-tree move, without the false-positive) + `cherry-pick` (a three-way merge
 // that surfaces only genuine conflicts). A clean replay reports RebaseClean, never
 // invokes `git rebase`, and carries the harness identity on the replayed commits.
+// The replay uses a bare `cherry-pick` (no `--empty=drop`, which needs git 2.45+ and
+// is rejected on the git 2.39 CI runners) — the empty-commit cases are handled by the
+// auto-skip loop instead.
 func TestRebaseOntoMainReplaysViaResetAndCherryPickNotRebase(t *testing.T) {
 	run, calls := recordingRunner(func(args []string) error {
 		// The feature tip is NOT yet contained in origin/main, so the ancestor probe
@@ -239,8 +242,12 @@ func TestRebaseOntoMainReplaysViaResetAndCherryPickNotRebase(t *testing.T) {
 		if strings.Contains(joined, "reset --hard origin/main") {
 			sawReset = true
 		}
-		if strings.Contains(joined, "cherry-pick --empty=drop origin/main..") {
+		if strings.Contains(joined, "cherry-pick origin/main..") {
 			sawCherryPick = true
+			// The replay must NOT carry `--empty=drop` (unsupported before git 2.45).
+			if strings.Contains(joined, "--empty=drop") {
+				t.Errorf("cherry-pick replay must be bare (no --empty=drop, unsupported on git < 2.45), got %q", joined)
+			}
 			// The replay carries the harness identity overrides (BEH-579) so replayed
 			// commits' committer never inherits the host's placeholder config.
 			if !strings.Contains(joined, "user.name="+HarnessAuthorName) || !strings.Contains(joined, "user.email="+HarnessAuthorEmail) {
@@ -252,7 +259,7 @@ func TestRebaseOntoMainReplaysViaResetAndCherryPickNotRebase(t *testing.T) {
 		t.Errorf("expected a `reset --hard origin/main` to move the branch onto the fresh base, calls: %v", *calls)
 	}
 	if !sawCherryPick {
-		t.Errorf("expected a `cherry-pick --empty=drop origin/main..<tip>` to replay the feature commits (the flag auto-drops a now-redundant commit, BEH-622), calls: %v", *calls)
+		t.Errorf("expected a `cherry-pick origin/main..<tip>` to replay the feature commits, calls: %v", *calls)
 	}
 }
 
@@ -266,7 +273,7 @@ func TestRebaseOntoMainCherryPickConflictAbortsAndRestores(t *testing.T) {
 		if strings.Contains(joined, "merge-base --is-ancestor") {
 			return errors.New("not an ancestor")
 		}
-		if strings.Contains(joined, "cherry-pick --empty=drop origin/main..") {
+		if strings.Contains(joined, "cherry-pick origin/main..") {
 			return errors.New("exit status 1: CONFLICT (content)")
 		}
 		// A genuine content conflict halts mid-cherry-pick (CHERRY_PICK_HEAD resolves,
@@ -308,14 +315,14 @@ func TestRebaseOntoMainCherryPickConflictAbortsAndRestores(t *testing.T) {
 	}
 }
 
-// BEH-678: --empty=drop (BEH-622) auto-drops a commit that BECOMES empty on replay,
-// but a commit that was INITIALLY empty (an `--allow-empty` handoff commit with a
-// zero net diff — the d0177234b case) still HALTS the cherry-pick with exit 1 ("the
-// previous cherry-pick is now empty"). That is a no-op to skip, NOT a content
-// conflict — escalating it to a sandboxed conflict-resolution session (BEH-581) burns
-// a whole session on an empty commit. rebaseOntoMain must recognise the halt has NO
-// unmerged paths (clean index) and `cherry-pick --skip` it inline, then report
-// RebaseClean, matching an ideal `git rebase`'s drop of an initially-empty commit.
+// BEH-678: a bare `cherry-pick` HALTS on any empty commit with exit 1 ("the previous
+// cherry-pick is now empty") — both a commit that BECOMES empty on replay (BEH-622)
+// and a commit that was INITIALLY empty (an `--allow-empty` handoff commit with a zero
+// net diff — the d0177234b case). Neither is a content conflict — escalating one to a
+// sandboxed conflict-resolution session (BEH-581) burns a whole session on an empty
+// commit. rebaseOntoMain must recognise the halt has NO unmerged paths (clean index)
+// and `cherry-pick --skip` it inline, then report RebaseClean, matching an ideal `git
+// rebase`'s drop of an empty commit.
 func TestRebaseOntoMainSkipsInitiallyEmptyCommitInline(t *testing.T) {
 	skipped := false
 	run, calls := recordingRunner(func(args []string) error {
@@ -324,7 +331,7 @@ func TestRebaseOntoMainSkipsInitiallyEmptyCommitInline(t *testing.T) {
 			return errors.New("not an ancestor")
 		}
 		// The replay halts on the initially-empty commit.
-		if strings.Contains(joined, "cherry-pick --empty=drop origin/main..") {
+		if strings.Contains(joined, "cherry-pick origin/main..") {
 			return errors.New("exit status 1: the previous cherry-pick is now empty")
 		}
 		// A cherry-pick is in progress until the empty commit is skipped; afterwards the
@@ -377,7 +384,7 @@ func TestRebaseOntoMainCherryPickErrorWithoutPickInProgressIsConflict(t *testing
 		if strings.Contains(joined, "merge-base --is-ancestor") {
 			return errors.New("not an ancestor")
 		}
-		if strings.Contains(joined, "cherry-pick --empty=drop origin/main..") {
+		if strings.Contains(joined, "cherry-pick origin/main..") {
 			return errors.New("exit status 128: bad revision")
 		}
 		// No cherry-pick is in progress after the failure — CHERRY_PICK_HEAD never resolves.
@@ -520,10 +527,12 @@ func TestRebaseOntoMainAgainstRealGit(t *testing.T) {
 // cherry-pick` HALTS with exit 1 ("use 'git cherry-pick --skip'"). rebaseOntoMain
 // would misread that as a genuine content conflict and burn a sandboxed
 // resolution session on a replay an ideal `git rebase` would auto-drop clean.
-// `cherry-pick --empty=drop` drops the redundant commit and continues, keeping the
-// non-redundant ones — so the replay reports RebaseClean. The setup gives feat TWO
-// commits (one redundant with main, one not) so the test proves the redundant one
-// is dropped AND the other is preserved.
+// rebaseOntoMain's auto-skip loop recognises the empty halt (clean index, no unmerged
+// paths) and `cherry-pick --skip`s the redundant commit, keeping the non-redundant
+// ones — so the replay reports RebaseClean. (This is why the replay uses a bare
+// cherry-pick, not `--empty=drop`, which is unsupported on the git 2.39 CI runners.)
+// The setup gives feat TWO commits (one redundant with main, one not) so the test
+// proves the redundant one is dropped AND the other is preserved.
 func TestRebaseOntoMainDropsRedundantCommit(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not on PATH")
@@ -595,11 +604,11 @@ func TestRebaseOntoMainDropsRedundantCommit(t *testing.T) {
 }
 
 // BEH-678: the real-git companion to the scripted TestRebaseOntoMainSkipsInitially-
-// EmptyCommitInline. `--empty=drop` (BEH-622) drops only commits that BECOME empty on
-// replay; a commit that was INITIALLY empty (an `--allow-empty` handoff commit with a
-// zero net diff — the d0177234b case) still HALTS a real cherry-pick with "the
-// previous cherry-pick is now empty". rebaseOntoMain must auto-skip it inline and land
-// a clean replay, not misread it as a content conflict and burn a sandboxed session.
+// EmptyCommitInline. A bare cherry-pick HALTS on a commit that was INITIALLY empty (an
+// `--allow-empty` handoff commit with a zero net diff — the d0177234b case) with "the
+// previous cherry-pick is now empty", just as it does on a becomes-empty commit
+// (BEH-622). rebaseOntoMain must auto-skip it inline and land a clean replay, not
+// misread it as a content conflict and burn a sandboxed session.
 // feat gets a real commit AND an --allow-empty commit so the test proves the empty one
 // is dropped while the real one is preserved — pinned against real git, not a fake, so
 // a wrong flag or a git-semantics surprise can't slip through.
