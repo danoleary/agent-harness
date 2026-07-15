@@ -294,6 +294,32 @@ func TestRunPropagatesSpendingCapAbortFromAnyStage(t *testing.T) {
 	}
 }
 
+// The implementation stage's PreflightAbort (the Docker sandbox couldn't launch:
+// full disk / daemon down) propagates to the Outcome so the loop reclaims disk +
+// backs off and the breaker stays blind to it. The abort is not Retryable, so the
+// pipeline does NOT re-attempt implementation, and review is skipped (impl not OK).
+func TestRunPropagatesPreflightAbortFromImplementation(t *testing.T) {
+	r := &recorder{}
+	out := Run(Deps{
+		FetchMain:      func() error { return nil },
+		Implementation: r.stage("impl", stages.Result{OK: false, PreflightAbort: true}), // preflight refused before any work
+		Review:         r.stage("review", stages.Result{OK: true}),
+		Retrospective:  r.stage("retro", stages.Result{OK: true}),
+		Log:            r,
+	})
+	if !out.PreflightAbort {
+		t.Error("Outcome.PreflightAbort must be true when the implementation stage's preflight aborted")
+	}
+	if out.ReachedPushedPR {
+		t.Error("a preflight abort pushed nothing — ReachedPushedPR must be false")
+	}
+	// A preflight abort is not Retryable, so implementation runs once (no re-attempt) and
+	// review is skipped (impl not OK); retrospective still runs.
+	if want := []string{"impl", "retro"}; !reflect.DeepEqual(r.order, want) {
+		t.Errorf("stage order = %v, want %v (preflight abort: no impl re-attempt, review skipped, retro runs)", r.order, want)
+	}
+}
+
 // The exact reset time a cap-aborting stage parsed from its abort message propagates to
 // the Outcome so the loop can back off until the cap clears rather than a fixed guess
 // (BEH-708). It rides alongside SpendingCapAbort from whichever stage was capped.

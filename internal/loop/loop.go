@@ -47,6 +47,14 @@ type TicketOutcome struct {
 	// a ship failure) — and the loop keeps the ticket In Progress for a human to close
 	// rather than releasing it to Todo, so it never re-loops into the same conclusion.
 	RecommendClose bool
+	// PreflightAbort marks a run the Docker sandbox preflight refused before any work —
+	// a full host disk or an unreachable daemon (the implementation stage already
+	// released the pre-claimed ticket back to Todo). It is environmental, not the
+	// ticket's fault, so — like a cap abort — the loop reclaims disk and backs off
+	// briefly before re-polling, and the breaker stays blind to it. Without this a
+	// poison top-of-queue ticket racks up identical ~2s preflight failures and trips
+	// the breaker in seconds, stopping the daemon until a human relaunches it.
+	PreflightAbort bool
 }
 
 // StaleClaim is one agent-claimed In Progress ticket the between-ticket reaper
@@ -181,6 +189,14 @@ type Deps struct {
 	// secondary reclaim — only when free disk is STILL below the threshold after the
 	// worktree prune. A nil StorePrune skips the secondary step; a failure is non-fatal.
 	StorePrune func() error
+	// DockerPrune reclaims Docker build cache + unreferenced images — usually the
+	// harness's biggest disk hog (it runs `docker run --rm` sandboxes, so stale build
+	// cache and dangling images accrete on the Docker volume) and the one the worktree
+	// / store prunes never touch. Run as the LAST reclaim step, only when the cheaper
+	// prunes left free disk still below the threshold. A nil DockerPrune skips it; a
+	// failure is non-fatal (ADR-0005). The removed image self-heals: Preflight rebuilds
+	// or pulls the sandbox image on the next launch (resolve-on-miss).
+	DockerPrune func() error
 	// MaxConsecutiveFailures is the circuit-breaker threshold: after this many
 	// consecutive tickets fail to reach a pushed PR, the daemon trips and winds down
 	// (DESIGN.md §Circuit breaker). A non-positive value disables the breaker.
@@ -290,6 +306,24 @@ func Run(d Deps) int {
 			}
 			d.comment(identifier, "Autonomous run aborted by the Anthropic spending cap before it could ship — released back to Todo. The daemon backs off and auto-resumes once the cap window resets, so this should retry on its own.")
 			d.capBackoffWait(identifier, outcome.CapResetTime)
+			continue
+		}
+
+		// A Docker-preflight abort is environmental, NOT a ticket verdict: the host
+		// couldn't launch a sandbox (full disk / daemon down) before any work began, so
+		// no progress was made and it is not the diff's fault. The implementation stage
+		// already released the pre-claimed ticket back to Todo (releaseIfPreClaimed,
+		// ADR-0003), so here we only reclaim disk (the usual cause — now including the
+		// Docker build-cache/image prune) and back off briefly before re-polling. The
+		// breaker stays blind to it (breaker.record), so a poison top-of-queue ticket
+		// can't rack up identical ~2s preflight failures and trip the breaker in seconds
+		// — the pattern that was stopping the daemon and forcing a manual relaunch. A
+		// shipped PR wins (impossible here, but symmetric with the cap branch): fall
+		// through to the normal fold if one somehow reached a PR.
+		if outcome.PreflightAbort && !outcome.ReachedPushedPR {
+			d.Log.Structured(loopstream.Record{Kind: loopstream.KindTicketReleased, Ticket: identifier, Message: "loop — Docker preflight abort on " + identifier + " (environmental: full disk / daemon down); reclaiming disk and backing off before re-poll — breaker-neutral"})
+			d.reclaimDisk()
+			d.interruptibleSleep(d.PollInterval)
 			continue
 		}
 
@@ -436,8 +470,13 @@ func (d Deps) closeTicket(identifier string) bool {
 //   - Never a ticket outcome: a failed statfs/prune is narrated and swallowed; the
 //     loop continues and the circuit breaker is never touched (the breaker keys only
 //     on "did the ticket reach a pushed PR?", ADR-0004).
-//   - Narrate only when it acts: a "reclaimed N worktree(s)" line is emitted only
-//     when the prune actually removed something; a healthy or no-op iteration is silent.
+//   - Narrate only when it acts: a reclaim line is emitted only when a prune actually
+//     removed a worktree or moved free disk up; a healthy or no-op iteration is silent.
+//
+// The reclaims escalate cheapest-first, each gated on free disk STILL being below the
+// threshold: merged worktrees, then `pnpm store prune`, then the Docker build-cache /
+// image prune last (usually the biggest win but the heaviest step, and the one the
+// other two never touch — ADR-0005 / the DiskReclaimHint ordering).
 func (d Deps) reclaimDisk() {
 	if d.DiskReclaimThreshold == 0 || d.FreeDisk == nil {
 		return // reclaim disabled
@@ -458,24 +497,41 @@ func (d Deps) reclaimDisk() {
 		d.Log.Event("loop … warning: pruning merged worktrees failed during disk reclaim (continuing): " + perr.Error())
 	}
 
-	// Re-statfs: only run the cheap secondary store prune if still below the threshold
-	// after the worktree prune. Track the latest reading so the narration can report
-	// the bytes freed.
+	// Re-statfs after the worktree prune, then escalate the cheaper-first secondary
+	// reclaims only while free disk stays below the threshold. Track the latest reading
+	// so the narration can report the bytes freed.
 	after := before
 	if mid, merr := d.FreeDisk(); merr == nil {
 		after = mid
-		if mid < d.DiskReclaimThreshold && d.StorePrune != nil {
-			if serr := d.StorePrune(); serr != nil {
-				d.Log.Event("loop … warning: pnpm store prune failed during disk reclaim (continuing): " + serr.Error())
-			} else if final, ferr := d.FreeDisk(); ferr == nil {
-				after = final
-			}
+	}
+	// Secondary: the cheap, non-destructive `pnpm store prune`.
+	if after < d.DiskReclaimThreshold && d.StorePrune != nil {
+		if serr := d.StorePrune(); serr != nil {
+			d.Log.Event("loop … warning: pnpm store prune failed during disk reclaim (continuing): " + serr.Error())
+		} else if final, ferr := d.FreeDisk(); ferr == nil {
+			after = final
+		}
+	}
+	// Tertiary: the Docker build-cache/image prune — usually the harness's biggest
+	// disk hog and the one the worktree/store prunes can't reach, but the heaviest
+	// step, so it runs last and only when the cheaper prunes didn't clear the floor.
+	if after < d.DiskReclaimThreshold && d.DockerPrune != nil {
+		if derr := d.DockerPrune(); derr != nil {
+			d.Log.Event("loop … warning: docker prune failed during disk reclaim (continuing): " + derr.Error())
+		} else if final, ferr := d.FreeDisk(); ferr == nil {
+			after = final
 		}
 	}
 
-	// Narrate only when the prune actually removed something (ADR-0005).
-	if removed > 0 {
-		msg := fmt.Sprintf("loop — reclaimed %d merged worktree(s) under disk pressure", removed)
+	// Narrate only when a reclaim actually acted (ADR-0005): a worktree was removed, or
+	// a store/Docker prune moved free disk up. A no-op iteration stays silent.
+	if removed > 0 || after > before {
+		var msg string
+		if removed > 0 {
+			msg = fmt.Sprintf("loop — reclaimed %d merged worktree(s) under disk pressure", removed)
+		} else {
+			msg = "loop — reclaimed host disk under pressure"
+		}
 		if after > before {
 			msg += fmt.Sprintf("; freed %d MiB", (after-before)>>20)
 		}

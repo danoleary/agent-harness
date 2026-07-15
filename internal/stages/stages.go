@@ -193,6 +193,13 @@ type Result struct {
 	// before it could finish its work. The loop treats it as a retry-after-reset
 	// control signal, not a ticket failure, so the breaker stays blind to it.
 	SpendingCapAbort bool
+	// PreflightAbort marks a stage the Docker sandbox preflight refused before any
+	// work began — a full host disk or an unreachable daemon, not the ticket's fault.
+	// Only the implementation stage sets it (it owns the preflight). Like a cap abort
+	// it is an environmental control signal: the loop reclaims disk + backs off and
+	// the breaker stays blind to it, so a poison top-of-queue ticket can't rack up
+	// identical preflight failures and trip the breaker in seconds.
+	PreflightAbort bool
 	// SpendingCapResetTime is the exact reset instant the cap-abort message named,
 	// resolved at detection (BEH-708). Zero unless this stage cap-aborted with a
 	// parseable reset time. The pipeline folds it onto its Outcome so the loop backs

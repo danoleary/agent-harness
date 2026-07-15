@@ -217,8 +217,9 @@ loop:
   if statfs(worktrees volume).free < DiskReclaimThreshold:   // cheap probe every iter; default ~8 GiB (> the 5 GiB sandbox floor)
     run: scripts/prune-merged-worktrees.sh --yes             // removes ONLY merged-PR + clean worktrees (gh-aware); never main/dirty/no-PR
     if still < threshold -> run: pnpm store prune            // cheap, non-destructive, network-free follow-up
-    narrate "reclaimed N worktree(s), freed X" only if it acted
-    # non-fatal: a failed prune (gh down / ENOSPC) is logged and the loop continues — NOT a ticket outcome, never touches the breaker
+    if still < threshold -> run: docker builder/image prune  // tertiary: the harness's usual hog (build cache + unreferenced images), which the cheaper prunes can't reach; runs last (heaviest). Removed sandbox image self-heals via Preflight resolve-on-miss
+    narrate "reclaimed …, freed X" only if it acted
+    # non-fatal: a failed prune (gh down / ENOSPC / daemon down) is logged and the loop continues — NOT a ticket outcome, never touches the breaker
 
   ticket = selectNextTicket()               // Linear GraphQL, harness-owned
   if no ticket:                             // daemon: empty queue is IDLE, not done
@@ -383,6 +384,15 @@ loop:
     long backoff sleep (interruptible by STOP, same as idle; default ~30–60 min)
     continue                          // auto-resume: re-poll after the cap window resets
 
+  // DOCKER-PREFLIGHT ABORT is likewise environmental, NOT a ticket failure: the host
+  // couldn't launch a sandbox (full disk / daemon down) BEFORE any work began.
+  if implementation PreflightAbort:
+    // ticket was already released -> Todo by the impl stage (releaseIfPreClaimed, ADR-0003)
+    reclaim disk (incl. the Docker prune) // the usual cause — clear the floor for the retry
+    short backoff sleep (interruptible by STOP; = pollInterval)   // don't spin re-selecting the same top-of-queue ticket
+    do NOT touch the breaker counter  // breaker stays blind; otherwise 3 identical ~2s preflight failures trip it in seconds
+    continue
+
   fetch + fast-forward origin/main
 
   // COMPLETE-COMMITTED-FIX (BEH-713): a no-PR run is not always a failure. The branch may
@@ -420,11 +430,12 @@ loop:
 
   // breaker signal = "did this ticket reach a PUSHED PR?", NOT the pipeline exit code
   if ticket reached a pushed PR -> reset consecutive-failure counter to 0
-  else if SpendingCapAbort or RecommendClose -> neutral (neither increment nor reset)
+  else if SpendingCapAbort or PreflightAbort or RecommendClose -> neutral (neither increment nor reset)
   else                          -> increment consecutive-failure counter
   // a retrospective-only failure (PR shipped) and a CI-red-after-budget (a reviewable PR
   // exists) do NOT count as failures; only "never produced a PR" does.
   // a recommend-close (BEH-603) is a correct terminal no-op — neutral, like a cap abort.
+  // a Docker-preflight abort (full disk / daemon down before any work) is environmental — neutral, like a cap abort.
   // an idle/empty-queue tick is neutral — it neither increments nor resets.
   if 3 consecutive ticket failures -> exit + loud report (circuit breaker)
 ```
@@ -906,8 +917,16 @@ building `Dockerfile.base` for `linux/amd64` + `linux/arm64`.
     could trip the breaker while the harness is working fine. A **recommend-close**
     (BEH-603 — a zero-net-diff branch correctly concluded to be a duplicate) is a
     correct terminal no-op, so it is **neutral** too (like a spending-cap abort):
-    a run of legitimate duplicates must never trip the breaker. An idle/empty-queue
-    tick is neutral: it neither increments nor resets.
+    a run of legitimate duplicates must never trip the breaker. A **Docker-preflight
+    abort** (a full host disk or an unreachable daemon that refused the sandbox launch
+    *before any work began*) is environmental — not the ticket's fault — so it is
+    **neutral** as well: the loop reclaims disk + backs off and the breaker stays
+    blind. Without this, the same poison top-of-queue ticket (released to Todo on the
+    preflight failure, then instantly re-selected) racked up three identical ~2s
+    preflight failures and **tripped the breaker in ~30 seconds**, stopping the daemon
+    until a human reclaimed disk and relaunched — the recurring short-circuit this
+    guard removes. An idle/empty-queue tick is neutral: it neither increments nor
+    resets.
   - **A "poison" top-of-queue ticket trips the breaker by design (v1).** Because any
     run that did not reach a pushed PR *releases the ticket back to Todo* (BEH-590,
     generalising the no-worktree-crash release of BEH-543), the loop re-selects that

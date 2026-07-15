@@ -47,10 +47,32 @@ question is whether — and how — the daemon should run it itself.
   happens *before* the sandbox preflight would refuse a launch — disk pressure
   self-heals instead of becoming a failed ticket. When disk is healthy the loop
   makes no `gh` calls at all.
-- **Worktree prune first, store prune second.** The named goal is dead worktrees, so
-  the script runs first. If still under threshold afterwards, the loop runs
-  `pnpm store prune` as a cheap, non-destructive, network-free follow-up (it
-  recovered ~945 MB in the BEH-382 incident).
+- **Worktree prune first, store prune second, Docker prune third.** The named goal is
+  dead worktrees, so the script runs first. If still under threshold afterwards, the
+  loop runs `pnpm store prune` as a cheap, non-destructive, network-free follow-up (it
+  recovered ~945 MB in the BEH-382 incident). If *still* under threshold, it runs the
+  Docker prune (`docker builder prune -f` + `docker image prune -af`) last — the
+  amendment below. Each tier is gated on free disk still being below the threshold, so
+  the heavier steps run only when the cheaper ones didn't clear the floor.
+
+### Amendment (2026-07-15): Docker prune is the tertiary reclaim
+
+The worktree + store prunes recover almost nothing when the real hog is **Docker** —
+the loop launches `docker run --rm` sandboxes, so stale **build cache** and
+**unreferenced images** accrete on the Docker volume (a real incident: 3.6 GiB free,
+where `docker builder prune -af` recovered 6.6 GB while the pnpm/worktree prunes
+recovered ~nothing — the same asymmetry `sandbox.DiskReclaimHint` already documents).
+Yet the daemon only ever pruned worktrees + the store, so under Docker-dominated
+pressure the reclaim narrated "reclaimed 0" and the disk stayed below the floor. The
+loop now escalates to a **Docker prune** (`docker builder prune -f` clears the build
+cache; `docker image prune -af` removes dangling + unreferenced images, including the
+between-run sandbox image — which self-heals, since Preflight rebuilds/pulls it on the
+next launch via resolve-on-miss) as the **last** reclaim tier. It is the heaviest
+step, so it runs only when the cheaper prunes left free disk still below the
+threshold; like every other tier it is best-effort and never a ticket outcome. This
+pairs with the breaker treating a Docker-**preflight abort** as neutral (DESIGN.md
+§Circuit breaker): the reclaim clears the floor and the breaker no longer trips on a
+poison ticket that keeps hitting a full-disk preflight.
 - **Between tickets, never mid-flight.** The check runs after the prior outcome is
   folded into the breaker and before the next ticket is selected/launched, when no
   sandbox is active. The in-progress ticket's worktree can't match "merged" anyway,
@@ -101,5 +123,8 @@ question is whether — and how — the daemon should run it itself.
   more-aggressive policy). This is called out so a future reader knows the disk can
   still slowly fill from no-PR worktrees over a very long run.
 - Because reclaim never trips the breaker, a persistently failing prune cannot stop
-  the loop — it will keep working tickets while narrating the failure, until the
-  hard floor eventually blocks launches (the existing, visible failure mode).
+  the loop — it will keep working tickets while narrating the failure. And since the
+  2026-07-15 amendment made a Docker-**preflight abort** breaker-neutral (the loop
+  reclaims disk + backs off instead of counting it), even reaching the hard floor no
+  longer trips the breaker: the daemon reclaims (now including Docker) and retries
+  rather than short-circuiting to a full stop that needs a human relaunch.

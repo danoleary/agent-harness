@@ -62,6 +62,11 @@ type Outcome struct {
 	// change and the ticket should be closed as a duplicate/superseded rather than
 	// shipped (BEH-603). The loop keeps it In Progress for a human; breaker-neutral.
 	RecommendClose bool
+	// PreflightAbort is true iff the implementation stage's Docker preflight refused to
+	// launch (full disk / daemon down) before any work — an environmental abort. The
+	// loop reclaims disk + backs off and the breaker stays blind to it (like a cap
+	// abort). Only implementation preflights, so it comes from impl alone.
+	PreflightAbort bool
 }
 
 // Run executes the pipeline and returns the process exit code: 0 iff every stage
@@ -131,6 +136,9 @@ func Run(d Deps) Outcome {
 		SpendingCapAbort:     impl.SpendingCapAbort || review.SpendingCapAbort || retro.SpendingCapAbort,
 		SpendingCapResetTime: firstResetTime(impl, review, retro),
 		RecommendClose:       review.RecommendClose,
+		// Only the implementation stage runs the Docker preflight, so a preflight abort
+		// comes from it alone — never review/retro, which run after a green preflight.
+		PreflightAbort: impl.PreflightAbort,
 	}
 }
 

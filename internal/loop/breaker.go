@@ -24,15 +24,21 @@ func newBreaker(threshold int) *breaker { return &breaker{threshold: threshold} 
 // record folds one finished ticket into the counter. ReachedPushedPR wins over
 // everything — a shipped PR is a success even if a later stage cap-aborted — and
 // resets the streak; a spending-cap abort with no PR is neutral (the breaker is
-// deliberately blind to the cap runaway, which the backoff handles); a recommend-close
-// is likewise neutral (a correct terminal no-op, neither a ship nor a failure —
-// BEH-603); anything else is a no-PR failure that extends the streak.
+// deliberately blind to the cap runaway, which the backoff handles); a Docker
+// preflight abort is likewise neutral (an environmental full-disk/daemon-down abort
+// before any work, which the loop's disk-reclaim + backoff handles — never the
+// ticket's fault); a recommend-close is likewise neutral (a correct terminal no-op,
+// neither a ship nor a failure — BEH-603); anything else is a no-PR failure that
+// extends the streak.
 func (b *breaker) record(identifier string, o TicketOutcome) {
 	switch {
 	case o.ReachedPushedPR:
 		b.streak = nil
 	case o.SpendingCapAbort:
 		// neutral — blind by design
+	case o.PreflightAbort:
+		// neutral — an environmental preflight abort (full disk / daemon down) did no
+		// ticket work; the loop reclaims disk + backs off rather than counting it
 	case o.RecommendClose:
 		// neutral — a correct terminal no-op (BEH-603), not a ship failure
 	default:

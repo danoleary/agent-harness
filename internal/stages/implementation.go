@@ -306,7 +306,11 @@ func Implementation(cfg config.Config, log *runlog.Logger, runID string, args Ar
 	// rather than strand it In Progress (a no-op on the hand-passed path).
 	if err := sandbox.Preflight(sandbox.PreflightFor(cfg.Image, cfg.HerdPath, cfg.Dockerfile)); err != nil {
 		releaseIfPreClaimed(client, args.Identifier, args.PreClaimed, log)
-		return Result{Err: err}
+		// PreflightAbort marks this as environmental (full disk / daemon down), not a
+		// ticket failure, so the loop reclaims disk + backs off and the breaker stays
+		// blind to it — otherwise the same top-of-queue ticket racks up identical
+		// preflight failures and trips the breaker in seconds (the observed pattern).
+		return Result{Err: err, PreflightAbort: true}
 	}
 
 	// Claim the ticket — unless selection already did on the --next path. On the

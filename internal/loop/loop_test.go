@@ -614,6 +614,71 @@ func TestSpendingCapAbortReleasesTicketBacksOffAndLeavesBreakerNeutral(t *testin
 	}
 }
 
+// TestPreflightAbortReclaimsBacksOffAndLeavesBreakerNeutral is the tracer bullet for
+// the Docker-preflight-abort control flow: a run the sandbox preflight refused before
+// any work (full disk / daemon down) must (1) NOT trip the circuit breaker — proven
+// with the most aggressive threshold of 1, which a single counted failure would trip;
+// (2) reclaim disk (the usual cause), running the Docker prune escalation the cheaper
+// prunes can't reach; (3) back off interruptibly before re-polling so it doesn't spin
+// re-selecting the same top-of-queue ticket into an identical failure; and (4) NOT
+// release the ticket at the loop level — the implementation stage already released the
+// pre-claimed ticket (ADR-0003), so a loop-level release would be a wrong double-move.
+func TestPreflightAbortReclaimsBacksOffAndLeavesBreakerNeutral(t *testing.T) {
+	r := &recorder{}
+	var ran, dockerPrunes int
+	var slept []time.Duration
+	// PollInterval/TickInterval = 10s/2s = 5 ticks for a full backoff; stopAfter(6) =
+	// one top checkpoint + 5 backoff-tick checks pass, then stop at the next top.
+	code := Run(Deps{
+		ClearStopFile: func() error { return nil },
+		FetchMain:     func() error { return nil },
+		StopRequested: stopAfter(6),
+		ResolveNext:   func() (string, bool) { return "BEH-7", true },
+		RunPipeline: func(string) TicketOutcome {
+			ran++
+			return TicketOutcome{PreflightAbort: true}
+		},
+		// The impl stage owns the release on a preflight abort; a loop-level release here
+		// would be a wrong double-move, so fail loudly if the loop ever calls it.
+		ReleaseTicket: func(id string) error {
+			t.Fatalf("loop must not release %s — the impl stage already did (ADR-0003)", id)
+			return nil
+		},
+		DiskReclaimThreshold: 8 * gib,
+		FreeDisk:             func() (uint64, error) { return 1 * gib, nil }, // always under pressure
+		PruneMergedWorktrees: func() (int, error) { return 0, nil },
+		StorePrune:           func() error { return nil },
+		DockerPrune:          func() error { dockerPrunes++; return nil },
+		Sleep:                func(d time.Duration) { slept = append(slept, d) },
+		PollInterval:         10 * time.Second,
+		TickInterval:         2 * time.Second,
+		// Threshold 1: a single counted failure would trip immediately. It must NOT.
+		MaxConsecutiveFailures: 1,
+		Log:                    r,
+	})
+	if code != 0 {
+		t.Errorf("exit code = %d, want 0 (a preflight abort then stop is a clean exit)", code)
+	}
+	if ran != 1 {
+		t.Errorf("RunPipeline ran %d times, want 1", ran)
+	}
+	if r.saw("circuit breaker") {
+		t.Errorf("a preflight abort must NOT trip the breaker (threshold 1); events = %v", r.events)
+	}
+	if dockerPrunes == 0 {
+		t.Errorf("a preflight abort (disk full) must run the Docker prune escalation; events = %v", r.events)
+	}
+	if len(slept) != 5 {
+		t.Errorf("backoff slept %d ticks, want 5 (PollInterval/TickInterval = 10s/2s)", len(slept))
+	}
+	if !r.saw("Docker preflight abort") {
+		t.Errorf("expected a 'Docker preflight abort … backing off' narration; events = %v", r.events)
+	}
+	if k, ok := r.kindFor("Docker preflight abort"); !ok || k != loopstream.KindTicketReleased {
+		t.Errorf("preflight-abort record kind = %q (found=%v), want %q", k, ok, loopstream.KindTicketReleased)
+	}
+}
+
 // TestCapBackoffWaitsUntilParsedResetTime proves the loop honours the exact reset time
 // the abort message carried (BEH-708): when the cap outcome carries a CapResetTime, the
 // backoff waits until that reset plus the margin — resuming right when the cap clears —
@@ -1292,6 +1357,78 @@ func TestDiskReclaimRunsStorePruneWhenStillBelowAfterWorktreePrune(t *testing.T)
 	}
 	if pruneIdx < 0 || pruneIdx > storeIdx {
 		t.Errorf("store prune must run AFTER the worktree prune; order = %v", r.order)
+	}
+}
+
+// TestDiskReclaimRunsDockerPruneWhenStillBelowAfterStorePrune proves the tertiary
+// escalation: when the worktree AND store prunes both leave free disk STILL below the
+// threshold, the loop runs the Docker build-cache/image prune last — the harness's
+// usual disk hog and the one the cheaper prunes can't reach. The freeDiskSeq stays
+// below the threshold through the worktree (2 GiB) and store (3 GiB) prunes, then the
+// Docker prune finally clears it (9 GiB).
+func TestDiskReclaimRunsDockerPruneWhenStillBelowAfterStorePrune(t *testing.T) {
+	r := &recorder{}
+	code := Run(Deps{
+		ClearStopFile:        func() error { return nil },
+		FetchMain:            func() error { return nil },
+		StopRequested:        stopAfter(1),
+		DiskReclaimThreshold: 8 * gib,
+		FreeDisk:             freeDiskSeq(1*gib, 2*gib, 3*gib, 9*gib),
+		PruneMergedWorktrees: func() (int, error) { r.order = append(r.order, "prune"); return 1, nil },
+		StorePrune:           func() error { r.order = append(r.order, "store-prune"); return nil },
+		DockerPrune:          func() error { r.order = append(r.order, "docker-prune"); return nil },
+		ResolveNext:          func() (string, bool) { return "", false },
+		RunPipeline:          func(string) TicketOutcome { return TicketOutcome{ReachedPushedPR: true} },
+		Sleep:                func(time.Duration) {},
+		PollInterval:         time.Minute,
+		TickInterval:         2 * time.Second,
+		Log:                  r,
+	})
+	if code != 0 {
+		t.Errorf("exit code = %d, want 0", code)
+	}
+	storeIdx, dockerIdx := indexOf(r.order, "store-prune"), indexOf(r.order, "docker-prune")
+	if dockerIdx < 0 {
+		t.Fatalf("DockerPrune never ran though free disk stayed below the threshold after the store prune; order = %v", r.order)
+	}
+	if storeIdx < 0 || storeIdx > dockerIdx {
+		t.Errorf("docker prune must run AFTER the cheaper store prune; order = %v", r.order)
+	}
+	if !r.saw("freed") {
+		t.Errorf("a reclaim that freed disk must narrate the bytes freed; events = %v", r.events)
+	}
+}
+
+// TestDiskReclaimSkipsDockerPruneOnceCheaperPrunesClearTheFloor proves the escalation
+// is conditional: when the worktree prune alone brings free disk back above the
+// threshold, neither the store prune NOR the heavier Docker prune runs.
+func TestDiskReclaimSkipsDockerPruneOnceCheaperPrunesClearTheFloor(t *testing.T) {
+	r := &recorder{}
+	var storePruned, dockerPruned bool
+	code := Run(Deps{
+		ClearStopFile:        func() error { return nil },
+		FetchMain:            func() error { return nil },
+		StopRequested:        stopAfter(1),
+		DiskReclaimThreshold: 8 * gib,
+		FreeDisk:             freeDiskSeq(1*gib, 9*gib), // worktree prune alone clears the floor
+		PruneMergedWorktrees: func() (int, error) { return 2, nil },
+		StorePrune:           func() error { storePruned = true; return nil },
+		DockerPrune:          func() error { dockerPruned = true; return nil },
+		ResolveNext:          func() (string, bool) { return "", false },
+		RunPipeline:          func(string) TicketOutcome { return TicketOutcome{ReachedPushedPR: true} },
+		Sleep:                func(time.Duration) {},
+		PollInterval:         time.Minute,
+		TickInterval:         2 * time.Second,
+		Log:                  r,
+	})
+	if code != 0 {
+		t.Errorf("exit code = %d, want 0", code)
+	}
+	if storePruned {
+		t.Errorf("store prune must NOT run once the worktree prune cleared the floor")
+	}
+	if dockerPruned {
+		t.Errorf("the heavy Docker prune must NOT run once the worktree prune cleared the floor")
 	}
 }
 

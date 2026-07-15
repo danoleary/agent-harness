@@ -80,6 +80,28 @@ func TestBreakerNeutralOnRecommendClose(t *testing.T) {
 	}
 }
 
+// A Docker-preflight abort is neutral: like a cap abort it did no ticket work (the
+// host couldn't launch a sandbox before any work began), so it must neither increment
+// nor reset. This is the fix for the observed pattern where the same poison
+// top-of-queue ticket racked up three ~2s preflight failures and tripped the breaker
+// in seconds — with this the breaker stays blind and the loop's disk-reclaim + backoff
+// handles the environment instead.
+func TestBreakerNeutralOnPreflightAbort(t *testing.T) {
+	b := newBreaker(3)
+	b.record("BEH-1", TicketOutcome{})
+	b.record("BEH-1", TicketOutcome{PreflightAbort: true}) // neutral
+	b.record("BEH-1", TicketOutcome{PreflightAbort: true}) // neutral
+	b.record("BEH-1", TicketOutcome{PreflightAbort: true}) // neutral
+	if b.tripped() {
+		t.Error("preflight aborts must not advance the counter; only 1 real failure recorded, must not trip")
+	}
+	b.record("BEH-2", TicketOutcome{})
+	b.record("BEH-3", TicketOutcome{})
+	if !b.tripped() {
+		t.Error("the two real failures around the neutral preflight aborts make 3 — must trip")
+	}
+}
+
 // A pushed PR that also carried a spending-cap abort (e.g. a CI auto-fix cap abort
 // after the PR shipped) still resets — the shipped PR wins over the cap signal.
 func TestBreakerPushedPRWinsOverCapAbort(t *testing.T) {

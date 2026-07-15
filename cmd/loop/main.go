@@ -72,6 +72,10 @@ const killDockerTimeout = 10 * time.Second
 const (
 	pruneTimeout      = 5 * time.Minute
 	storePruneTimeout = 2 * time.Minute
+	// dockerPruneTimeout bounds the Docker build-cache/image prune. It gets the more
+	// generous cap because a large build cache can take a while to walk and delete, and
+	// a wedged daemon must not hang the between-ticket reclaim.
+	dockerPruneTimeout = 5 * time.Minute
 )
 
 func main() {
@@ -160,12 +164,14 @@ func main() {
 		MaxRuntime:             cfg.LoopMaxRuntime,
 		// Disk reclaim (ADR-0005). The worktrees live under HERD_PATH/.claude/worktrees,
 		// so statfs HERD_PATH (always present, same volume) for the cheap gate; the prune
-		// shells out to the existing squash-merge-aware script, and `pnpm store prune` is
-		// the cheap secondary. All three run host-side, never inside the sandbox.
+		// shells out to the existing squash-merge-aware script, `pnpm store prune` is the
+		// cheap secondary, and `docker builder/image prune` is the tertiary reclaim of the
+		// harness's usual disk hog. All four run host-side, never inside the sandbox.
 		DiskReclaimThreshold: cfg.LoopDiskReclaimThreshold,
 		FreeDisk:             func() (uint64, error) { return sandbox.FreeDiskBytes(cfg.HerdPath) },
 		PruneMergedWorktrees: func() (int, error) { return pruneMergedWorktrees(cfg.HerdPath) },
 		StorePrune:           func() error { return storePrune(cfg.HerdPath) },
+		DockerPrune:          func() error { return dockerPrune(cfg.HerdPath) },
 		Log:                  log,
 	})
 	os.Exit(code)
@@ -220,6 +226,7 @@ func runPipeline(cfg config.Config, identifier string) loop.TicketOutcome {
 		SpendingCapAbort: out.SpendingCapAbort,
 		CapResetTime:     out.SpendingCapResetTime,
 		RecommendClose:   out.RecommendClose,
+		PreflightAbort:   out.PreflightAbort,
 	}
 }
 
@@ -359,6 +366,28 @@ func storePrune(herdPath string) error {
 	out, err := proc.CombinedOutputInDir(storePruneTimeout, herdPath, "pnpm", "store", "prune")
 	if err != nil {
 		return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// dockerPrune reclaims the harness's usual disk hog — Docker build cache and
+// unreferenced images — as the tertiary reclaim (ADR-0005), run only when the cheaper
+// worktree/store prunes left free disk still below the threshold. `builder prune -f`
+// clears the build cache; `image prune -af` removes all dangling AND unreferenced
+// images, including the between-run sandbox image (`docker run --rm` leaves it
+// unreferenced) — which self-heals, since Preflight rebuilds or pulls it on the next
+// launch (resolve-on-miss). Both are `-f` so they never block on a confirmation prompt,
+// and each is bounded so a wedged daemon can't hang the between-ticket reclaim. A
+// non-zero exit surfaces as an error the loop logs and swallows — reclaim is never a
+// ticket outcome. The `builder` failure is returned first; the image prune still runs.
+func dockerPrune(herdPath string) error {
+	builderOut, builderErr := proc.CombinedOutputInDir(dockerPruneTimeout, herdPath, "docker", "builder", "prune", "-f")
+	imageOut, imageErr := proc.CombinedOutputInDir(dockerPruneTimeout, herdPath, "docker", "image", "prune", "-af")
+	if builderErr != nil {
+		return fmt.Errorf("docker builder prune: %w: %s", builderErr, strings.TrimSpace(string(builderOut)))
+	}
+	if imageErr != nil {
+		return fmt.Errorf("docker image prune: %w: %s", imageErr, strings.TrimSpace(string(imageOut)))
 	}
 	return nil
 }
