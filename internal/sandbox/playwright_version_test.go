@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -40,6 +41,32 @@ func TestPlaywrightVersionMatchesWebPackage(t *testing.T) {
 		}
 		if got := depMatch[1]; got != baked {
 			t.Errorf("Playwright version drift: Dockerfile PLAYWRIGHT_VERSION=%s but web/package.json %s=%s — bump the Dockerfile ARG to match, or the sandbox bakes a browser revision the gates won't find (BEH-405)", baked, dep, got)
+		}
+	}
+}
+
+// TestPlaywrightVersionMatchesWebPackage guards the pin, but a guard only helps if
+// CI actually runs it on the change it catches. The Agent Harness workflow is
+// path-filtered to `agent-harness/**` + `.agents/skills/**`, so a lone
+// `@playwright/test` bump under `web/` triggered NO harness job and the guard stayed
+// silent — exactly how the 1.60.0→1.61.1 drift shipped and only surfaced at runtime
+// in BEH-769's sandbox (Executable doesn't exist at …headless_shell). The workflow
+// already re-triggers on `.agents/skills/**` by identical logic (its skill-contract
+// tests read those files). Since this guard reads `web/package.json`, that file must
+// likewise be a trigger path — on BOTH the pull_request and push events — so a
+// playwright bump re-runs the guard instead of merging blind (BEH-776).
+func TestHarnessCIRetriggersOnWebPackageBump(t *testing.T) {
+	root := repoRoot(t)
+	wf := mustRead(t, filepath.Join(root, ".github", "workflows", "agent-harness.yaml"))
+
+	pathsRe := regexp.MustCompile(`(?m)^\s*paths:\s*\[(.*)\]\s*$`)
+	matches := pathsRe.FindAllStringSubmatch(wf, -1)
+	if len(matches) < 2 {
+		t.Fatalf("expected >=2 `paths:` trigger lines (pull_request + push) in agent-harness.yaml, found %d", len(matches))
+	}
+	for _, m := range matches {
+		if !strings.Contains(m[1], "web/package.json") {
+			t.Errorf("agent-harness.yaml `paths:` trigger [%s] omits web/package.json — a lone @playwright/test bump under web/ would skip the TestPlaywrightVersionMatchesWebPackage guard and the browser-revision drift ships silently (BEH-776)", m[1])
 		}
 	}
 }

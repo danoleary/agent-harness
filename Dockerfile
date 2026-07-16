@@ -84,9 +84,14 @@ RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_VERSION}"
 # no privilege. `--with-deps` installs the apt libraries (root, build-time) and the
 # browser lands in PLAYWRIGHT_BROWSERS_PATH, which both the session and gate
 # containers inherit. PLAYWRIGHT_VERSION must track web's `@playwright/test`
-# (web/package.json) — bump it deliberately, like CLAUDE_VERSION above; a drift only
-# costs a one-time re-download into the node-owned browsers dir, never a failure.
-ARG PLAYWRIGHT_VERSION=1.60.0
+# (web/package.json) — bump it deliberately, like CLAUDE_VERSION above. A drift is
+# NOT self-healing: the browser lands in /ms-playwright, which is baked into the
+# image (not a mounted volume), so post_create's `playwright install chromium` runs
+# in an ephemeral `--rm` container and its download is discarded — the image bake is
+# the ONLY browser the session sees. So a stale ARG revives the exact "Executable
+# doesn't exist at …headless_shell" failure (BEH-769/BEH-776); the
+# TestPlaywrightVersionMatchesWebPackage guard fails CI on any such drift.
+ARG PLAYWRIGHT_VERSION=1.61.1
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 RUN npx -y "playwright@${PLAYWRIGHT_VERSION}" install --with-deps chromium \
 	&& chown -R node:node /ms-playwright \
