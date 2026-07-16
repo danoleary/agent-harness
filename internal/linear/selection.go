@@ -196,6 +196,14 @@ func eligible(s selectedIssue) bool {
 	if hasLabel(s, blockedLabel) {
 		return false
 	}
+	// A low-confidence perf watch item whose gating first AC is a Sentry
+	// re-measure is un-actionable by the Implementation stage — the sandbox owns
+	// no telemetry I/O, so that measurement can never happen in-session and a code
+	// stage can only recommend close/defer, wasting a full pipeline run. Skip it
+	// so a human does the measurement/triage first (BEH-757).
+	if gatedOnTelemetryRemeasure(s) {
+		return false
+	}
 	// An umbrella/tracker issue with an OPEN child defers its real work to that
 	// child; claiming it would strand it In Progress producing no branch/PR (the
 	// BEH-497 incident). Skip it while any child is still open.

@@ -14,7 +14,11 @@ type issueNode struct {
 	priority   int
 	sortOrder  float64
 	createdAt  string
-	labels     []string
+	// title and description default to a benign placeholder; set them to exercise
+	// content-based routing (the telemetry-remeasure skip).
+	title       string
+	description string
+	labels      []string
 	// blockers each model one inverse "blocks" relation: the state type of the
 	// issue that blocks this one ("started"/"completed"/…).
 	blockers []string
@@ -42,10 +46,18 @@ func (n issueNode) toMap() map[string]any {
 			"state": map[string]any{"type": stateType},
 		})
 	}
+	title := n.title
+	if title == "" {
+		title = n.identifier + " title"
+	}
+	description := n.description
+	if description == "" {
+		description = "body"
+	}
 	return map[string]any{
 		"identifier":       n.identifier,
-		"title":            n.identifier + " title",
-		"description":      "body",
+		"title":            title,
+		"description":      description,
 		"url":              "https://linear.app/beherd/issue/" + n.identifier,
 		"priorityLabel":    "Urgent",
 		"priority":         n.priority,

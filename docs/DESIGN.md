@@ -624,6 +624,17 @@ A ticket is eligible iff **all** hold:
   a person decides *what* runs unattended; the harness decides *how*),
 - **not blocked**: no still-open issue has a `blocks` relation pointing at it, and
   it has no `Blocked` label.
+- **not gated on a telemetry re-measure**: a low-confidence perf *watch/confirm*
+  ticket whose first acceptance criterion is to re-pull the metric over a wider
+  Sentry window before any fix is excluded — the Implementation stage owns no
+  telemetry I/O, so that measurement is impossible in-sandbox and a code stage can
+  only recommend close/defer, wasting a full pipeline run. Detected from content
+  (a conservative conjunction of the low-confidence/watch framing *and* a
+  re-measure-before-fix gate), not a label, since a confirmed regression with a
+  concrete fix carries the same `Performance`/`Sentry` labels but must stay
+  workable. A human does the measurement/triage first; reframing the ticket to a
+  confirmed regression (dropping the re-measure gate) makes it eligible again
+  ([BEH-757](https://linear.app/beherd/issue/BEH-757)).
 
 Ordering: **priority** (Urgent → High → Medium → Low → No-priority), tie-broken by
 **board sort order** then `createdAt` ascending. Take the top one.
