@@ -91,7 +91,7 @@ RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_VERSION}"
 # the ONLY browser the session sees. So a stale ARG revives the exact "Executable
 # doesn't exist at …headless_shell" failure (BEH-769/BEH-776); the
 # TestPlaywrightVersionMatchesWebPackage guard fails CI on any such drift.
-ARG PLAYWRIGHT_VERSION=1.61.1
+ARG PLAYWRIGHT_VERSION=1.62.1
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 RUN npx -y "playwright@${PLAYWRIGHT_VERSION}" install --with-deps chromium \
 	&& chown -R node:node /ms-playwright \
