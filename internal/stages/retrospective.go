@@ -9,6 +9,7 @@ import (
 	"github.com/beherd/agent-harness/internal/filing"
 	gitpkg "github.com/beherd/agent-harness/internal/git"
 	"github.com/beherd/agent-harness/internal/loopstream"
+	"github.com/beherd/agent-harness/internal/pr"
 	"github.com/beherd/agent-harness/internal/prompt"
 	"github.com/beherd/agent-harness/internal/runlog"
 	"github.com/beherd/agent-harness/internal/sandbox"
@@ -211,19 +212,23 @@ func Retrospective(cfg config.Config, log *runlog.Logger, runID string, args Arg
 		return Result{OK: false, SpendingCapAbort: outcome.SpendingCapAbort, SpendingCapResetTime: outcome.SpendingCapResetTime}
 	}
 
-	// Clean ticket: retrospective filed AND the branch reached origin (review's
-	// host-side push gate). Only then is the worktree pure disk cost — the PR
-	// captures everything — so tear it down host-side (the real-path mount makes
-	// its .git pointer resolve from the main checkout). If the branch was never
-	// pushed, keep the worktree so unpushed work is never lost.
-	if gitpkg.BranchPushed(cfg.HerdPath, cfg.BranchPrefix, slug) {
-		if err := gitpkg.RemoveWorktree(cfg.HerdPath, slug); err != nil {
-			log.Event("worktree kept — removal failed: " + err.Error())
-		} else {
-			log.Event("worktree removed — ticket clean (branch pushed + retrospective filed)")
-		}
+	// Reap the worktree only once the work has escaped it — retrospective filed AND
+	// the branch has reached a PR (verify.WorktreeReap owns the rule and the why).
+	// The worktree tears down host-side; the real-path mount makes its .git pointer
+	// resolve from the main checkout.
+	branch := gitpkg.BranchName(cfg.BranchPrefix, slug)
+	pushed := gitpkg.BranchPushed(cfg.HerdPath, cfg.BranchPrefix, slug)
+	// && short-circuits, so an unpushed branch never spends the gh round-trip.
+	reap := verify.WorktreeReap(verify.WorktreeReapOutcome{
+		BranchPushed: pushed,
+		PRExists:     pushed && pr.Exists(cfg.HerdPath, branch),
+	})
+	if !reap.Reap {
+		log.Event("worktree kept — " + reap.Reason)
+	} else if err := gitpkg.RemoveWorktree(cfg.HerdPath, slug); err != nil {
+		log.Event("worktree kept — removal failed: " + err.Error())
 	} else {
-		log.Event("worktree kept — branch not pushed to origin yet")
+		log.Event("worktree removed — " + reap.Reason)
 	}
 
 	return Result{OK: true}

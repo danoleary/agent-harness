@@ -415,3 +415,45 @@ func RebaseResolution(o RebaseResolutionOutcome) RebaseResolutionResult {
 	}
 	return RebaseResolutionResult{OK: true, Reason: "conflict resolved and branch rebased onto origin/main — re-gating before push"}
 }
+
+// WorktreeReapOutcome is the host-side git/gh ground truth the retrospective reads
+// before deciding whether the ticket's worktree is still needed.
+type WorktreeReapOutcome struct {
+	// BranchPushed reports whether `feat/<slug>` reached origin.
+	BranchPushed bool
+	// PRExists reports whether the branch has reached a PR in ANY state (open,
+	// merged, or closed) — i.e. whether the work escaped the worktree.
+	PRExists bool
+}
+
+// WorktreeReapResult is the reap disposition. Reap is the only actionable bit;
+// Reason is logged either way so a kept worktree always says why it was kept.
+type WorktreeReapResult struct {
+	Reap   bool
+	Reason string
+}
+
+// WorktreeReap decides whether the finished ticket's worktree is pure disk cost.
+//
+// Both conditions must hold. A pushed branch alone is NOT enough, and that gap is
+// what stranded BEH-783: a run pushed the branch, its `gh pr create` timed out, and
+// the retrospective reaped the worktree anyway on BranchPushed alone. The loop's
+// committed-fix recovery — the one mechanism that completes a pushed-but-PR-less
+// branch — reads that worktree and bails immediately when it is missing, so the
+// ticket had no route out. It was released to Todo, re-selected, re-implemented,
+// re-reviewed, and re-rejected at the push every cycle until the circuit breaker
+// tripped. Keeping the worktree until a PR actually exists preserves the breadcrumb
+// the recovery needs.
+//
+// Only a PR makes reaping safe, because only a PR captures the branch somewhere a
+// human can see it. Any PR state counts: merged and closed are both terminal
+// dispositions a human owns, whereas "no PR" means the work is still invisible.
+func WorktreeReap(o WorktreeReapOutcome) WorktreeReapResult {
+	if !o.BranchPushed {
+		return WorktreeReapResult{Reap: false, Reason: "branch not pushed to origin yet"}
+	}
+	if !o.PRExists {
+		return WorktreeReapResult{Reap: false, Reason: "branch is pushed but has no PR; the committed-fix recovery needs the worktree to complete it"}
+	}
+	return WorktreeReapResult{Reap: true, Reason: "ticket clean (PR open + retrospective filed)"}
+}

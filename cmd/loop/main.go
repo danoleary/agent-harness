@@ -272,7 +272,7 @@ func recoverCommittedFix(cfg config.Config, client tracker.Tracker, log loop.Nar
 	}
 	// A branch that already has an OPEN PR isn't stranded (its outcome would already
 	// carry ReachedPushedPR — belt-and-suspenders), so there is nothing to complete.
-	if openPRExists(cfg.HerdPath, gitpkg.BranchName(cfg.BranchPrefix, slug)) {
+	if pr.OpenExists(cfg.HerdPath, gitpkg.BranchName(cfg.BranchPrefix, slug)) {
 		return loop.TicketOutcome{}, false
 	}
 
@@ -309,18 +309,6 @@ func recoverCommittedFix(cfg config.Config, client tracker.Tracker, log loop.Nar
 		return loop.TicketOutcome{ReachedPushedPR: false}, true
 	}
 	return loop.TicketOutcome{ReachedPushedPR: true}, true
-}
-
-// openPRExists reports whether an OPEN PR already exists for the branch, via
-// `gh pr view <branch> --json state`. Any error (no PR for the branch, gh failure) is
-// treated as "no open PR": the recovery then proceeds to open one, and a duplicate
-// `gh pr create` would fail harmlessly (surfaced as a completion failure → release).
-func openPRExists(herdPath, branch string) bool {
-	out, err := proc.CombinedOutputInDir(recoverGhTimeout, herdPath, "gh", "pr", "view", branch, "--json", "state", "-q", ".state")
-	if err != nil {
-		return false
-	}
-	return strings.TrimSpace(string(out)) == "OPEN"
 }
 
 // openPR opens the pull request for the recovered branch, mirroring the review stage's

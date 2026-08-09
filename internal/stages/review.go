@@ -559,7 +559,14 @@ func Review(cfg config.Config, log *runlog.Logger, runID string, args Args) Resu
 		return Result{OK: false, RecommendClose: true}
 	}
 
-	if err := gitpkg.Push(cfg.HerdPath, cfg.BranchPrefix, slug); err != nil {
+	// force-with-lease, not a plain push: the rebase above is unconditional, so on any
+	// branch already on the remote it has just rewritten every SHA and a plain push is
+	// rejected non-fast-forward. That is not a rare state — a run whose `gh pr create`
+	// timed out after a successful push leaves exactly it, and because the ticket then
+	// has no PR the loop re-selects it, rebases again, and is rejected again, forever.
+	// The lease keeps the force safe: it refuses to clobber remote commits the harness
+	// hasn't observed, and the harness owns this branch outright.
+	if err := gitpkg.PushForceWithLease(cfg.HerdPath, cfg.BranchPrefix, slug); err != nil {
 		log.Event("review ✗ push failed: " + err.Error() + " — keeping worktree")
 		return Result{OK: false}
 	}
