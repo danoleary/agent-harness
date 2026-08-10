@@ -116,27 +116,58 @@ func disjointWorkTrapped(truth verify.GroundTruth) bool {
 // provisionWorktree creates the feature worktree + canonical branch host-side and
 // runs the Consumer's post_create toolchain hook in it (ADR-0008/BEH-636), retiring
 // the coupling where the sandboxed agent ran new-worktree.sh and the host depended
-// on its output. It is a no-op when the worktree already exists on disk — a
-// usage-policy retry (BEH-389) or a resumed worktree a prior session kept is already
-// provisioned. A CreateWorktree failure is fatal (there is nothing to run the
+// on its output. A CreateWorktree failure is fatal (there is nothing to run the
 // session against); a post_create failure is warn-only, mirroring review's install
 // degradation (BEH-490): the session can still install toolchain deps itself.
 func provisionWorktree(cfg config.Config, slug, runID string, args Args, log *runlog.Logger) error {
-	worktreePath := gitpkg.WorktreePath(cfg.HerdPath, slug)
-	if _, err := os.Stat(worktreePath); err == nil {
-		return nil
-	}
-	if err := gitpkg.CreateWorktree(cfg.HerdPath, cfg.BranchPrefix, slug); err != nil {
-		return fmt.Errorf("creating worktree %s: %w", worktreePath, err)
-	}
-	log.Event("created worktree " + worktreePath + " on " + gitpkg.BranchName(cfg.BranchPrefix, slug) + " (host-side)")
-	if cfg.PostCreate != "" {
+	return provisionWorktreeWith(cfg, slug, log, gitpkg.CreateWorktree, func(worktreePath string) {
 		runPostCreate(cfg, worktreePath, runID, args, log)
+	})
+}
+
+// provisionWorktreeWith is provisionWorktree with its two side-effecting halves
+// injected, so the create/post_create split is testable without a git repo or a
+// docker daemon.
+//
+// Only the git creation is conditional on the worktree's absence; post_create runs
+// on EVERY provisioning pass, including for a worktree that already exists. That
+// existing-worktree path is not the already-provisioned state it looks like: a
+// successful handoff strips web/node_modules so the (possibly non-Linux) reviewer
+// installs for their own platform (BEH-412), and an OOM-killed install (BEH-523)
+// never wrote it at all — yet a tree created by new-worktree.sh keeps its
+// .worktree-ready sentinel, which by design means "the run finished", not "the
+// install succeeded" (BEH-549). Skipping post_create there handed the session a tree
+// that advertised readiness it did not have, and it only surfaced on the first failed
+// test (BEH-796). Re-running is cheap and safe because a Consumer's post_create is
+// required to be idempotent — herd's is `ln -sf` + a frozen install + an already-
+// installed browser check, all near-no-ops on a provisioned tree.
+func provisionWorktreeWith(
+	cfg config.Config,
+	slug string,
+	log *runlog.Logger,
+	createWorktree func(herdPath, branchPrefix, slug string) error,
+	postCreate func(worktreePath string),
+) error {
+	worktreePath := gitpkg.WorktreePath(cfg.HerdPath, slug)
+	if _, err := os.Stat(worktreePath); err != nil {
+		if cErr := createWorktree(cfg.HerdPath, cfg.BranchPrefix, slug); cErr != nil {
+			return fmt.Errorf("creating worktree %s: %w", worktreePath, cErr)
+		}
+		log.Event("created worktree " + worktreePath + " on " + gitpkg.BranchName(cfg.BranchPrefix, slug) + " (host-side)")
+	} else {
+		reused := "reusing existing worktree " + worktreePath
+		if cfg.PostCreate != "" {
+			reused += " — re-running post_create so a resumed tree opens with its toolchain deps present"
+		}
+		log.Event(reused)
+	}
+	if cfg.PostCreate != "" {
+		postCreate(worktreePath)
 	}
 	return nil
 }
 
-// runPostCreate runs the Consumer's post_create command in the freshly-created
+// runPostCreate runs the Consumer's post_create command in the provisioned
 // worktree via a secret-free container (BuildPostCreateRunArgs). It retries an
 // OOM-kill (exit 137) — the same transient host-memory-pressure class the review
 // prep-install rides out (BEH-524) — and degrades to a warning on a persistent

@@ -33,27 +33,113 @@ func TestFixSessionErrorSpendingCapTakesPrecedence(t *testing.T) {
 	}
 }
 
-// BEH-636: provisionWorktree creates the worktree host-side and runs post_create
-// before the session — but it must be a no-op when the worktree already exists on
-// disk (a usage-policy retry, or a resumed worktree a prior session kept). The
-// guard matters: without it, provisioning would re-run `git worktree add` and the
-// post_create container against an already-provisioned tree. Here HerdPath is a
-// bare temp dir (NOT a git repo), so if the guard were removed, CreateWorktree's
-// real `git worktree add` would fail and provisionWorktree would error — the guard
-// short-circuits before any git/docker call, so it returns nil.
-func TestProvisionWorktreeNoOpWhenWorktreeExists(t *testing.T) {
-	herdPath := t.TempDir()
-	slug := "beh-636-x"
-	if err := os.MkdirAll(filepath.Join(herdPath, ".claude", "worktrees", slug), 0o755); err != nil {
-		t.Fatalf("seed worktree dir: %v", err)
-	}
-	log, err := runlog.New(t.TempDir(), "BEH-636")
+// provisionSpy records which halves of provisioning ran, so the tests below can
+// assert the create/post_create split without a real git repo or docker daemon.
+type provisionSpy struct {
+	created     bool
+	postCreated bool
+	createErr   error
+}
+
+func (s *provisionSpy) create(_, _, _ string) error {
+	s.created = true
+	return s.createErr
+}
+
+func (s *provisionSpy) postCreate(_ string) { s.postCreated = true }
+
+func newProvisionLog(t *testing.T, identifier string) *runlog.Logger {
+	t.Helper()
+	log, err := runlog.New(t.TempDir(), identifier)
 	if err != nil {
 		t.Fatalf("runlog.New: %v", err)
 	}
+	return log
+}
+
+// BEH-636/BEH-796: provisionWorktree creates the worktree host-side only when it is
+// absent, but it runs post_create EVERY time — including on a worktree that already
+// exists. Skipping post_create on the existing path (the original BEH-636 shape) hands
+// the session a tree whose deps are absent: the successful-handoff strip (BEH-412)
+// removes web/node_modules, and an OOM-killed install (BEH-523) never wrote it. Worse,
+// a worktree created by new-worktree.sh still carries its .worktree-ready sentinel,
+// which asserts readiness the tree no longer has (BEH-549 defines it as "the run
+// finished", not "the install succeeded"), so the session only discovers the gap on its
+// first failed test. Re-running post_create is safe because a Consumer's toolchain hook
+// is required to be idempotent (herd's is `ln -sf` + a frozen install + a no-op browser
+// install).
+func TestProvisionWorktreeReprovisionsExistingWorktree(t *testing.T) {
+	herdPath := t.TempDir()
+	slug := "beh-796-x"
+	if err := os.MkdirAll(filepath.Join(herdPath, ".claude", "worktrees", slug), 0o755); err != nil {
+		t.Fatalf("seed worktree dir: %v", err)
+	}
+	spy := &provisionSpy{}
 	cfg := config.Config{HerdPath: herdPath, BranchPrefix: "feat", PostCreate: "cd web && pnpm install"}
-	if err := provisionWorktree(cfg, slug, "run-1", Args{}, log); err != nil {
-		t.Fatalf("provisionWorktree must be a no-op when the worktree exists, got: %v", err)
+
+	if err := provisionWorktreeWith(cfg, slug, newProvisionLog(t, "BEH-796"), spy.create, spy.postCreate); err != nil {
+		t.Fatalf("provisionWorktree on an existing worktree: %v", err)
+	}
+	if spy.created {
+		t.Error("an existing worktree must not be re-created")
+	}
+	if !spy.postCreated {
+		t.Error("post_create must re-run on an existing worktree — a resumed tree can be stripped of its deps (BEH-796)")
+	}
+}
+
+// The fresh-ticket path is unchanged by BEH-796: an absent worktree is created
+// host-side and then provisioned, in that order.
+func TestProvisionWorktreeCreatesThenProvisionsFreshWorktree(t *testing.T) {
+	spy := &provisionSpy{}
+	cfg := config.Config{HerdPath: t.TempDir(), BranchPrefix: "feat", PostCreate: "cd web && pnpm install"}
+
+	if err := provisionWorktreeWith(cfg, "beh-796-fresh", newProvisionLog(t, "BEH-796"), spy.create, spy.postCreate); err != nil {
+		t.Fatalf("provisionWorktree on a fresh worktree: %v", err)
+	}
+	if !spy.created {
+		t.Error("an absent worktree must be created host-side")
+	}
+	if !spy.postCreated {
+		t.Error("a freshly-created worktree must run post_create")
+	}
+}
+
+// A failed creation is fatal and must short-circuit: there is no tree to provision,
+// so running post_create against a path that does not exist would only bury the real
+// error under a container failure. This is the edge the BEH-796 restructure could
+// regress — post_create is no longer nested under the creation branch.
+func TestProvisionWorktreeSkipsPostCreateWhenCreationFails(t *testing.T) {
+	spy := &provisionSpy{createErr: errors.New("git worktree add: boom")}
+	cfg := config.Config{HerdPath: t.TempDir(), BranchPrefix: "feat", PostCreate: "cd web && pnpm install"}
+
+	err := provisionWorktreeWith(cfg, "beh-796-broken", newProvisionLog(t, "BEH-796"), spy.create, spy.postCreate)
+	if err == nil {
+		t.Fatal("a failed worktree creation must be fatal")
+	}
+	if !strings.Contains(err.Error(), "git worktree add: boom") {
+		t.Errorf("err = %v, want it to wrap the underlying creation failure", err)
+	}
+	if spy.postCreated {
+		t.Error("post_create must not run when there is no worktree to provision")
+	}
+}
+
+// An empty post_create is a supported Consumer config ("no setup step"), and the
+// BEH-796 restructure lifted that guard out from under the creation branch — so pin
+// it: an unconfigured hook must still be skipped on both provisioning paths.
+func TestProvisionWorktreeSkipsUnconfiguredPostCreate(t *testing.T) {
+	spy := &provisionSpy{}
+	cfg := config.Config{HerdPath: t.TempDir(), BranchPrefix: "feat"}
+
+	if err := provisionWorktreeWith(cfg, "beh-796-nohook", newProvisionLog(t, "BEH-796"), spy.create, spy.postCreate); err != nil {
+		t.Fatalf("provisionWorktree with no post_create: %v", err)
+	}
+	if !spy.created {
+		t.Error("an absent worktree must still be created when there is no post_create hook")
+	}
+	if spy.postCreated {
+		t.Error("an empty post_create must not be run")
 	}
 }
 

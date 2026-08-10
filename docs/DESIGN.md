@@ -230,9 +230,11 @@ loop:
   Linear: move ticket -> In Progress         // harness owns ALL Linear I/O
 
   --- host-side worktree provisioning (BEH-636) ---
-  git worktree add -b <branch_prefix>/beh-nnn <worktrees_dir>/beh-nnn (based on origin/main)  // harness owns creation
+  git worktree add -b <branch_prefix>/beh-nnn <worktrees_dir>/beh-nnn (based on origin/main)  // harness owns creation; skipped when the worktree already exists
   post_create hook: throwaway container runs the Consumer's toolchain setup in the worktree  // herd: env links + pnpm install + Playwright. warn-only.
   # retires the sandbox-runs-new-worktree.sh coupling: git creation is host-side, toolchain is a declared config hook
+  # post_create runs on EVERY pass, not just a fresh worktree: a resumed tree is routinely stripped of deps
+  # (handoff strip BEH-412 / OOM-killed install BEH-523) while still looking ready, so it must be idempotent (BEH-796)
 
   --- implementation: /tdd (sandbox, 30 min cap) ---
   run: claude -p "/tdd Work on BEH-NNN. The worktree at <worktrees_dir>/beh-nnn on <branch_prefix>/beh-nnn already exists — cd in; do NOT run new-worktree.sh. <injected ticket context>"

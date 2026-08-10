@@ -156,8 +156,10 @@ type Config struct {
 	// dispatch-guards off `<BranchPrefix>/<slug>` (ADR-0008).
 	BranchPrefix string
 	// PostCreate is the Consumer's per-worktree toolchain-setup command the harness
-	// runs in the freshly-created worktree after host-side branch creation
-	// (BEH-636). Empty means no setup step.
+	// runs in the worktree after host-side branch creation (BEH-636). It runs on
+	// every provisioning pass, not only on a freshly-created worktree, so it MUST be
+	// idempotent — see ProjectConfig.PostCreate for why (BEH-796). Empty means no
+	// setup step.
 	PostCreate string
 	// Gates is the ordered, named host-side gate list from the project config.
 	// BEH-631 only sources it; the runner that iterates it is BEH-634.

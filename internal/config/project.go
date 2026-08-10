@@ -41,11 +41,17 @@ type ProjectConfig struct {
 	// `<branch_prefix>/<slug>`.
 	BranchPrefix string `toml:"branch_prefix"`
 	// PostCreate is the Consumer's per-worktree toolchain-setup command, run by the
-	// harness in the freshly-created worktree after it creates the branch host-side
+	// harness in the worktree after it creates the branch host-side
 	// (ADR-0008/BEH-636). It replaces the old coupling where the sandbox agent ran
 	// herd's `scripts/new-worktree.sh`: herd's env links + `pnpm install` +
 	// Playwright install now live here as a declared, language-agnostic command
 	// (`$HERD_PATH` is available in the run). Empty means no setup step.
+	//
+	// It MUST be idempotent. The harness runs it on every provisioning pass, not only
+	// on a freshly-created worktree, because a resumed worktree routinely has its deps
+	// missing — the successful-handoff strip removes them (BEH-412) and an OOM-killed
+	// install never wrote them (BEH-523) — while still looking ready from the outside
+	// (BEH-796). Prefer lockfile-frozen, already-satisfied-is-a-no-op commands.
 	PostCreate string `toml:"post_create"`
 	// Gates is the ordered, named host-side gate list (was the hardcoded
 	// `pnpm check && pnpm typecheck`). BEH-631 only sources the list from
