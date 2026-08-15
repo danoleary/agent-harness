@@ -49,6 +49,17 @@ func retrospectiveSkill(t *testing.T) string {
 	return string(b)
 }
 
+// tddSkill reads the /tdd SKILL.md or fails the test.
+func tddSkill(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(repoRoot(t), ".claude", "skills", "tdd", "SKILL.md")
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading %s: %v", path, err)
+	}
+	return string(b)
+}
+
 // reviewWorktreeFile reads a named file from the /review-worktree skill dir or
 // fails the test. The review skill is split across SKILL.md (workflow + lens
 // table) and DIMENSIONS.md (per-lens checklists), so callers name the part.
@@ -60,6 +71,40 @@ func reviewWorktreeFile(t *testing.T, name string) string {
 		t.Fatalf("reading %s: %v", path, err)
 	}
 	return string(b)
+}
+
+// blockMatching returns the blank-line-delimited markdown block (paragraph or
+// bullet run) of src that matches pattern, failing with notFound if none does.
+// Contract assertions about a *single rule* should be scoped this way: skill
+// files are long, so a file-wide substring check is routinely satisfied by
+// unrelated prose and pins nothing.
+func blockMatching(t *testing.T, src, pattern, notFound string) string {
+	t.Helper()
+	re := regexp.MustCompile(pattern)
+	for _, block := range regexp.MustCompile(`\n\s*\n`).Split(src, -1) {
+		if re.MatchString(block) {
+			return block
+		}
+	}
+	t.Fatal(notFound)
+	return ""
+}
+
+// section returns the body of the `## <heading>` section of a markdown doc —
+// everything up to the next `##` heading — or fails the test. Lens assertions
+// use it so a checklist entry is pinned to the lens that owns it, rather than
+// passing because some other lens mentions the same words.
+func section(t *testing.T, src, heading string) string {
+	t.Helper()
+	start := regexp.MustCompile(`(?im)^##\s+` + regexp.QuoteMeta(heading) + `\s*$`).FindStringIndex(src)
+	if start == nil {
+		t.Fatalf("no `## %s` section found", heading)
+	}
+	body := src[start[1]:]
+	if end := regexp.MustCompile(`(?m)^##\s`).FindStringIndex(body); end != nil {
+		body = body[:end[0]]
+	}
+	return body
 }
 
 // frontmatter extracts the YAML frontmatter block (between the opening `---\n`
@@ -76,6 +121,78 @@ func frontmatter(t *testing.T, src string) string {
 		t.Fatal("SKILL.md frontmatter block is not closed with `---`")
 	}
 	return src[4 : 4+end]
+}
+
+// TestTddSkillRequiresProbeForUnverifiedFrameworkClaims pins BEH-798: an
+// implementation session must not justify a config decision with framework
+// behaviour it never ran. The failure class is un-gateable — a comment's truth
+// is not lintable and the suite is green either way, because the claim is a
+// *counterfactual* ("omitting this key would inherit X") that the diff never
+// exercises. The only available mechanism is this instruction in the skill
+// text, so its removal must fail a test rather than silently restore the
+// habit. Concretely: BEH-797 shipped `setupFiles: []` commented as an opt-out
+// of the root's setup file; a throwaway probe showed the root setup still runs,
+// so the comment encoded a false constraint at the exact line explaining it.
+func TestTddSkillRequiresProbeForUnverifiedFrameworkClaims(t *testing.T) {
+	// Assert against the rule's own block, not the whole file: words like
+	// "merge" appear incidentally elsewhere in the skill
+	// (`prune-merged-worktrees.sh`, "when the PR merges"), so a file-wide
+	// substring check would pass on unrelated prose and pin nothing.
+	rule := blockMatching(t, tddSkill(t), `(?i)\bprobe\b`,
+		"tdd SKILL.md must instruct verifying an unexercised framework claim with a throwaway probe")
+
+	// The rule must name the claim shapes it governs — framework/config
+	// resolution semantics — so a reader can recognise one, not merely agree
+	// with the abstract principle.
+	if !regexp.MustCompile(`(?i)merge|override|inherit|precedence|load order`).MatchString(rule) {
+		t.Errorf("probe rule must name the claim shapes it covers (merge vs override, inheritance, precedence, load order); got:\n%s", rule)
+	}
+	// And it must give the cheaper alternative, so "probing is disproportionate
+	// for a one-liner" resolves to *dropping the claim*, not asserting it
+	// unverified.
+	if !regexp.MustCompile(`(?is)(don'?t|do not|never) (assert|state|claim)|not worth (verifying|stating)`).MatchString(rule) {
+		t.Errorf("probe rule must state the alternative: if it isn't worth verifying, don't assert it; got:\n%s", rule)
+	}
+}
+
+// TestTddChecklistPinsFrameworkClaimVerification pins the probe rule into the
+// per-cycle checklist, not just the prose. The checklist is the part a session
+// actually walks at the end of a cycle; a rule that lives only in a paragraph
+// several screens up is read once at skill load and gone by the time the
+// comment gets written — which is when it has to fire.
+func TestTddChecklistPinsFrameworkClaimVerification(t *testing.T) {
+	checklist := blockMatching(t, tddSkill(t), `\[ \] Test describes behavior`,
+		"tdd SKILL.md must keep its per-cycle checklist")
+
+	// A checklist line (`[ ] …`) about verifying an asserted framework claim.
+	if !regexp.MustCompile(`(?i)\[ \][^\n]*\b(probe|counterfactual)\b`).MatchString(checklist) {
+		t.Errorf("per-cycle checklist must carry a line on probing/dropping an unverified framework claim; got:\n%s", checklist)
+	}
+}
+
+// TestReviewWorktreeCorrectnessLensChecksUnverifiedFrameworkClaims pins the
+// review-side half of BEH-798. The implementation-side probe rule (above) only
+// helps the session that remembers it; the reason BEH-797's false comment
+// reached review intact is that a comment asserting framework behaviour reads
+// as *context* rather than as a claim under review. So the correctness lens
+// must name it as a review target — a counterfactual the diff does not exercise
+// is something the reviewer probes or has removed, not something they read past.
+func TestReviewWorktreeCorrectnessLensChecksUnverifiedFrameworkClaims(t *testing.T) {
+	// Scope to the Correctness section: the lens that owns "is this claim true"
+	// must carry it, not some other lens that happens to mention comments.
+	lens := section(t, reviewWorktreeFile(t, "DIMENSIONS.md"), "Correctness")
+
+	if !regexp.MustCompile(`(?i)\bprobe\b`).MatchString(lens) {
+		t.Errorf("Correctness lens must tell the reviewer to probe an unverified framework claim; got:\n%s", lens)
+	}
+	if !regexp.MustCompile(`(?i)counterfactual|(does|did) not exercise|never (runs|exercised)`).MatchString(lens) {
+		t.Errorf("Correctness lens must identify the claim shape: a counterfactual the diff does not exercise; got:\n%s", lens)
+	}
+	// The lens is a findings checklist, so the entry has to resolve to an
+	// action — flag it — or a reviewer reads it as background and moves on.
+	if !regexp.MustCompile(`(?i)\bflag\b`).MatchString(lens) {
+		t.Errorf("Correctness lens entry must resolve to a finding (flag it), not sit as background; got:\n%s", lens)
+	}
 }
 
 // TestReviewWorktreeSkillDocumentsSimplificationLens pins BEH-454: the review
