@@ -190,6 +190,15 @@ func TestHerdCommittedConfigLoads(t *testing.T) {
 	if pc.Cache.Volume == "" || pc.Cache.Path == "" {
 		t.Errorf("herd committed config must resolve a cache volume + path, got %+v", pc.Cache)
 	}
+	// Asserted through the LOADER, not by reading the file: `docs_only_excluded_roots`
+	// is a bare key, so writing it below a `[table]` header silently makes it a member
+	// of that table and the loader sees nothing — which reads exactly like a Consumer
+	// that opted out, quietly disabling the docs-only short-circuit. A text-level check
+	// cannot tell the two apart.
+	if len(pc.DocsOnlyExcludedRoots) == 0 {
+		t.Error("herd committed config must declare docs_only_excluded_roots ABOVE the first " +
+			"[table] header, or the short-circuit is silently disabled")
+	}
 }
 
 func TestLoadProjectMissingFileErrors(t *testing.T) {
