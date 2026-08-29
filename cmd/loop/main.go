@@ -116,7 +116,7 @@ func main() {
 	// STOP sentinel into one StopRequested predicate. An atomic.Bool is the seam
 	// between the async signal goroutine and the synchronous loop check.
 	var sigStop atomic.Bool
-	installSignalHandler(&sigStop, log)
+	installSignalHandler(&sigStop, log, cfg.ProjectPath)
 
 	code := loop.Run(loop.Deps{
 		ClearStopFile: func() error { return removeIfPresent(stopFile) },
@@ -404,7 +404,7 @@ func parsePrunedCount(output string) int {
 // control"): the first Ctrl-C flips the stop flag and narrates the graceful
 // wind-down; a second is a hard abort that kills any running harness container and
 // exits now. Subsequent signals after the first are handled by the same goroutine.
-func installSignalHandler(sigStop *atomic.Bool, log loop.Narrator) {
+func installSignalHandler(sigStop *atomic.Bool, log loop.Narrator, projectPath string) {
 	ch := make(chan os.Signal, 2)
 	signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
@@ -413,18 +413,23 @@ func installSignalHandler(sigStop *atomic.Bool, log loop.Narrator) {
 		log.Event("loop — stop requested (Ctrl-C); will stop after current ticket")
 		<-ch
 		log.Event("loop — second interrupt; hard abort, killing running container")
-		killHarnessContainers()
+		killHarnessContainers(projectPath)
 		os.Exit(130) // 128 + SIGINT(2): conventional "terminated by Ctrl-C".
 	}()
 }
 
-// killHarnessContainers best-effort kills any container whose name carries the
-// harness prefix, so a hard abort tears down the in-flight session rather than
-// orphaning it. The active session container is detached in its own process group
-// (so the parent's SIGINT didn't reach it); naming the kill by prefix is how the
-// host reaches across that boundary. Failures are ignored — the process is exiting.
-func killHarnessContainers() {
-	out, _, err := proc.Output(killDockerTimeout, "docker", "ps", "-q", "--filter", "name=herd-harness-")
+// killHarnessContainers best-effort kills any container whose name carries THIS
+// Consumer's harness prefix, so a hard abort tears down the in-flight session
+// rather than orphaning it. The active session container is detached in its own
+// process group (so the parent's SIGINT didn't reach it); naming the kill by
+// prefix is how the host reaches across that boundary.
+//
+// The prefix is Consumer-scoped (sandbox.ContainerPrefix), not a constant: one
+// host can run the harness against several projects at once, and a shared prefix
+// would make Ctrl-C here kill another project's in-flight session. Failures are
+// ignored — the process is exiting.
+func killHarnessContainers(projectPath string) {
+	out, _, err := proc.Output(killDockerTimeout, "docker", "ps", "-q", "--filter", "name="+sandbox.ContainerPrefix(projectPath))
 	if err != nil || len(out) == 0 {
 		return
 	}

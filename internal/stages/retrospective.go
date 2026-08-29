@@ -114,7 +114,7 @@ func Retrospective(cfg config.Config, log *runlog.Logger, runID string, args Arg
 
 	// runID is second-resolution; include the pid so two runs started in the same
 	// second still get distinct container names (and distinct `docker kill` targets).
-	containerName := fmt.Sprintf("herd-harness-%s-%d-%s", runID, os.Getpid(), retrospectiveSession)
+	containerName := fmt.Sprintf("%s%s-%d-%s", sandbox.ContainerPrefix(cfg.ProjectPath), runID, os.Getpid(), retrospectiveSession)
 	dockerArgs := sandbox.BuildDockerRunArgs(sandbox.Config{
 		Image:          cfg.Image,
 		ProjectPath:    cfg.ProjectPath,

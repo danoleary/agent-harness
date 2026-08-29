@@ -126,7 +126,7 @@ func Review(cfg config.Config, log *runlog.Logger, runID string, args Args) Resu
 
 	p := prompt.BuildReview(t, slug, worktreePath, cfg.BranchPrefix, cfg.Prompts.Review)
 	// Review emits no findings (retrospective owns them) → no findings mount.
-	containerName := fmt.Sprintf("herd-harness-%s-%d-%s", runID, os.Getpid(), reviewSession)
+	containerName := fmt.Sprintf("%s%s-%d-%s", sandbox.ContainerPrefix(cfg.ProjectPath), runID, os.Getpid(), reviewSession)
 	// Closure so the BEH-624 in-stage re-launch can run the same review prompt under a
 	// distinct --name (the timeout `docker kill` targets Options.ContainerName, and a
 	// retry must not collide with the first attempt's container).
@@ -165,13 +165,13 @@ func Review(cfg config.Config, log *runlog.Logger, runID string, args Args) Resu
 		return sandbox.BuildInstallRunArgs(c)
 	}
 
-	gateName := fmt.Sprintf("herd-harness-%s-%d-gate", runID, os.Getpid())
+	gateName := fmt.Sprintf("%s%s-%d-gate", sandbox.ContainerPrefix(cfg.ProjectPath), runID, os.Getpid())
 
 	// The implementation tool strips web/node_modules on handoff (BEH-412), so the
 	// cold review session would otherwise discover it missing and pay a full
 	// `pnpm install` mid-gate (BEH-490). Pre-populate it with a throwaway install
 	// container before the session, mirroring new-worktree.sh.
-	installName := fmt.Sprintf("herd-harness-%s-%d-install", runID, os.Getpid())
+	installName := fmt.Sprintf("%s%s-%d-install", sandbox.ContainerPrefix(cfg.ProjectPath), runID, os.Getpid())
 	installArgs := buildInstallArgs(installName)
 
 	if args.DryRun {
@@ -659,7 +659,7 @@ func ciFixRunner(cfg config.Config, args Args, slug, worktreePath, runID string,
 		// "treat any HEAD as a real commit" — never a spurious empty commit.
 		headBefore, _ := gitpkg.HeadSHA(worktreePath)
 		fixPrompt := prompt.BuildCIFix(t, slug, cfg.BranchPrefix, worktreePath, ciLogs, logAvailable)
-		containerName := fmt.Sprintf("herd-harness-%s-%d-cifix-%d", runID, os.Getpid(), attempt)
+		containerName := fmt.Sprintf("%s%s-%d-cifix-%d", sandbox.ContainerPrefix(cfg.ProjectPath), runID, os.Getpid(), attempt)
 		fixArgs := sandbox.BuildDockerRunArgs(sandbox.Config{
 			Image:          cfg.Image,
 			ProjectPath:    cfg.ProjectPath,
@@ -718,7 +718,7 @@ func resolvePrePushConflict(
 ) bool {
 	log.Event("review ↻ pre-push rebase hit a content conflict — launching a sandboxed conflict-resolution session (BEH-581)")
 	fixPrompt := prompt.BuildRebaseFix(t, slug, cfg.BranchPrefix, worktreePath)
-	containerName := fmt.Sprintf("herd-harness-%s-%d-rebasefix", runID, os.Getpid())
+	containerName := fmt.Sprintf("%s%s-%d-rebasefix", sandbox.ContainerPrefix(cfg.ProjectPath), runID, os.Getpid())
 	fixArgs := sandbox.BuildDockerRunArgs(sandbox.Config{
 		Image:          cfg.Image,
 		ProjectPath:    cfg.ProjectPath,

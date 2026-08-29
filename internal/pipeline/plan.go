@@ -32,7 +32,7 @@ func Plan(cfg config.Config, identifier string) string {
 	logsRoot := filepath.Join(config.ProjectDir(cfg.ProjectPath), "logs")
 
 	name := func(session string) string {
-		return fmt.Sprintf("herd-harness-<run-id>-<pid>-%s", session)
+		return fmt.Sprintf("%s<run-id>-<pid>-%s", sandbox.ContainerPrefix(cfg.ProjectPath), session)
 	}
 	findingsDir := func(session string) string {
 		return filepath.Join(logsRoot, id, "findings", session)

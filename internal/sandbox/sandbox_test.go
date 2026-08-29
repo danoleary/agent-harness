@@ -132,7 +132,7 @@ func TestGateRunArgsCarryNoSecretsAndRunGateCommandInWorktree(t *testing.T) {
 		WorktreePath:   "/Users/dan/herd/.claude/worktrees/beh-371",
 		CacheVolume:    "herd-pnpm-store",
 		CacheMountPath: "/pnpm-store",
-		ContainerName:  "herd-harness-gate-1",
+		ContainerName:  "example-harness-gate-1",
 	}, "pnpm run check")
 	joined := strings.Join(args, " ")
 
@@ -193,8 +193,8 @@ func TestGateRunArgsMountCheckoutAndPnpmStore(t *testing.T) {
 }
 
 func TestGateRunArgsNameContainerForKill(t *testing.T) {
-	args := BuildGateRunArgs(GateConfig{ContainerName: "herd-harness-gate-1"}, "pnpm run check")
-	if !slices.Contains(valuesForFlag(args, "--name"), "herd-harness-gate-1") {
+	args := BuildGateRunArgs(GateConfig{ContainerName: "example-harness-gate-1"}, "pnpm run check")
+	if !slices.Contains(valuesForFlag(args, "--name"), "example-harness-gate-1") {
 		t.Error("gate container must be nameable so the harness can kill it on timeout")
 	}
 }
@@ -212,7 +212,7 @@ func TestInstallRunArgsRunsFrozenInstallOnlyInWorktree(t *testing.T) {
 		WorktreePath:   "/Users/dan/herd/.claude/worktrees/beh-490",
 		CacheVolume:    "herd-pnpm-store",
 		CacheMountPath: "/pnpm-store",
-		ContainerName:  "herd-harness-install-1",
+		ContainerName:  "example-harness-install-1",
 	})
 	joined := strings.Join(args, " ")
 
@@ -248,7 +248,7 @@ func TestInstallRunArgsRunsFrozenInstallOnlyInWorktree(t *testing.T) {
 		}
 	}
 	// Nameable so the harness can kill it on timeout.
-	if !slices.Contains(valuesForFlag(args, "--name"), "herd-harness-install-1") {
+	if !slices.Contains(valuesForFlag(args, "--name"), "example-harness-install-1") {
 		t.Error("install container must be nameable so the harness can kill it on timeout")
 	}
 }
@@ -266,7 +266,7 @@ func TestPostCreateRunArgsRunCommandInWorktreeWithProjectPathNoSecrets(t *testin
 		WorktreePath:   "/Users/dan/herd/.claude/worktrees/beh-636",
 		CacheVolume:    "herd-pnpm-store",
 		CacheMountPath: "/pnpm-store",
-		ContainerName:  "herd-harness-postcreate-1",
+		ContainerName:  "example-harness-postcreate-1",
 	}, postCreate)
 	joined := strings.Join(args, " ")
 
@@ -290,7 +290,7 @@ func TestPostCreateRunArgsRunCommandInWorktreeWithProjectPathNoSecrets(t *testin
 		t.Errorf("post_create must run in the worktree, got -w %v", workdirs)
 	}
 	// Nameable so the harness can kill it on timeout.
-	if !slices.Contains(valuesForFlag(args, "--name"), "herd-harness-postcreate-1") {
+	if !slices.Contains(valuesForFlag(args, "--name"), "example-harness-postcreate-1") {
 		t.Error("post_create container must be nameable so the harness can kill it on timeout")
 	}
 }
@@ -396,10 +396,10 @@ func TestStampsHarnessGitIdentityForAgentCommits(t *testing.T) {
 
 func TestNamesContainerWhenGiven(t *testing.T) {
 	c := baseConfig()
-	c.ContainerName = "herd-harness-run1-tdd"
+	c.ContainerName = "example-harness-run1-tdd"
 	names := valuesForFlag(BuildDockerRunArgs(c), "--name")
 
-	if !slices.Contains(names, "herd-harness-run1-tdd") {
+	if !slices.Contains(names, "example-harness-run1-tdd") {
 		t.Error("container not named")
 	}
 }

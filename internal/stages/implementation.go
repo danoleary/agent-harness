@@ -174,7 +174,7 @@ func provisionWorktreeWith(
 // non-zero exit rather than failing the run, so a flaky toolchain install doesn't
 // strand an otherwise-workable ticket.
 func runPostCreate(cfg config.Config, worktreePath, runID string, args Args, log *runlog.Logger) {
-	base := fmt.Sprintf("herd-harness-%s-%d-postcreate", runID, os.Getpid())
+	base := fmt.Sprintf("%s%s-%d-postcreate", sandbox.ContainerPrefix(cfg.ProjectPath), runID, os.Getpid())
 	gc := sandbox.GateConfig{
 		Image:          cfg.Image,
 		ProjectPath:    cfg.ProjectPath,
@@ -286,7 +286,7 @@ func Implementation(cfg config.Config, log *runlog.Logger, runID string, args Ar
 
 	// runID is second-resolution; include the pid so two runs started in the same
 	// second still get distinct container names (and distinct `docker kill` targets).
-	containerName := fmt.Sprintf("herd-harness-%s-%d-%s", runID, os.Getpid(), implementationSession)
+	containerName := fmt.Sprintf("%s%s-%d-%s", sandbox.ContainerPrefix(cfg.ProjectPath), runID, os.Getpid(), implementationSession)
 	// A closure so a retry (BEH-389) can re-launch under a distinct --name and a
 	// resume prompt: the name must match Options.ContainerName for the timeout
 	// `docker kill` to hit the right container, and the retry prompt differs from

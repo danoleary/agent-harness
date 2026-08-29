@@ -123,6 +123,38 @@ func FreeDiskBytes(path string) (uint64, error) {
 // FindingsMountPath is the fixed container path the findings dropbox is mounted at.
 const FindingsMountPath = "/findings"
 
+// ContainerPrefix is the name prefix every container this harness launches for a
+// given Consumer carries. It is derived from the Consumer's checkout rather than
+// being a constant, because one host can run the harness against SEVERAL projects
+// at once and `cmd/loop`'s abort path kills containers by
+// `docker ps --filter name=<prefix>`. A shared prefix would make one project's
+// Ctrl-C kill another project's in-flight session.
+//
+// Non-alphanumerics are folded to `-` because Docker only accepts
+// [a-zA-Z0-9][a-zA-Z0-9_.-]* as a container name, and a checkout directory can
+// hold anything. An empty or fully-folded name falls back to "project" so the
+// prefix is never a bare "-harness-".
+func ContainerPrefix(projectPath string) string {
+	base := filepath.Base(strings.TrimRight(projectPath, string(filepath.Separator)))
+
+	var b strings.Builder
+	for _, r := range base {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case r == '_' || r == '.' || r == '-':
+			b.WriteRune('-')
+		default:
+			b.WriteRune('-')
+		}
+	}
+	name := strings.Trim(b.String(), "-")
+	if name == "" {
+		name = "project"
+	}
+	return name + "-harness-"
+}
+
 // PnpmStoreMountPath is the container path herd's pnpm store mounts at — retained
 // as the herd-toolchain invariant tests' reference and the back-compat default for
 // the deprecated pnpm_store_volume key. The actual mount path is now Consumer-

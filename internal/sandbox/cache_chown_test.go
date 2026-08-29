@@ -155,3 +155,48 @@ func mustRead(t *testing.T, path string) string {
 	}
 	return string(b)
 }
+
+// One host can run the harness against several projects at once, and cmd/loop's
+// hard-abort path kills containers by `docker ps --filter name=<prefix>`. So the
+// prefix must be Consumer-scoped: with a shared constant (it was "herd-harness-"),
+// Ctrl-C on one project would kill another project's in-flight session — the
+// session is detached in its own process group precisely so a signal cannot reach
+// it, which is what makes the name the only handle.
+func TestContainerPrefixIsScopedToTheConsumer(t *testing.T) {
+	a := ContainerPrefix("/Users/dan/src/alpha")
+	b := ContainerPrefix("/Users/dan/src/beta")
+
+	if a == b {
+		t.Fatalf("two Consumers share the container prefix %q; one project's abort would kill the other's session", a)
+	}
+	if !strings.HasPrefix(a, "alpha") || !strings.HasPrefix(b, "beta") {
+		t.Errorf("prefixes should name their Consumer, got %q and %q", a, b)
+	}
+	// A `docker ps --filter name=` match is a substring match, so one prefix must
+	// not be a prefix of another, or the shorter name's abort reaps the longer's.
+	if strings.HasPrefix(ContainerPrefix("/x/app"), ContainerPrefix("/x/app2")) ||
+		strings.HasPrefix(ContainerPrefix("/x/app2"), ContainerPrefix("/x/app")) {
+		t.Error("one Consumer's prefix is a prefix of another's; the kill filter would over-match")
+	}
+}
+
+// Docker accepts only [a-zA-Z0-9][a-zA-Z0-9_.-]* as a container name, and a
+// checkout directory can be called anything. A name Docker rejects fails the run
+// at `docker run`, long after the harness has claimed the ticket.
+func TestContainerPrefixIsAlwaysAValidDockerName(t *testing.T) {
+	valid := regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]*$`)
+
+	for _, path := range []string{
+		"/Users/dan/src/my project", // a space
+		"/Users/dan/src/my.project", // a dot
+		"/Users/dan/src/Ölprojekt",  // non-ASCII
+		"/Users/dan/src/proj/",      // a trailing separator
+		"/Users/dan/src/---",        // folds away entirely
+		"/",                         // no basename at all
+	} {
+		got := ContainerPrefix(path)
+		if !valid.MatchString(got) {
+			t.Errorf("ContainerPrefix(%q) = %q, which Docker will reject as a container name", path, got)
+		}
+	}
+}
