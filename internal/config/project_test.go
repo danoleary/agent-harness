@@ -8,13 +8,13 @@ import (
 	"testing"
 )
 
-// testProjectConfig mirrors herd's committed .agent-harness/config.toml so the
+// testProjectConfig mirrors a Consumer's committed .agent-harness/config.toml so the
 // env-config tests (which don't lay down a real checkout) resolve stable values;
 // the real file read is covered by the LoadProject tests in this file.
 func testProjectConfig() ProjectConfig {
 	return ProjectConfig{
-		Image:        "herd-agent-harness:latest",
-		Cache:        CacheConfig{Volume: "herd-pnpm-store", Path: "/pnpm-store"},
+		Image:        "myproject-agent-harness:latest",
+		Cache:        CacheConfig{Volume: "myproject-cache", Path: "/pnpm-store"},
 		BranchPrefix: "feat",
 		PostCreate:   "cd web && pnpm install --frozen-lockfile",
 		Gates: []Gate{
@@ -59,7 +59,7 @@ func TestLoadSurfacesFeedbackConfig(t *testing.T) {
 	t.Cleanup(func() { projectLoader = orig })
 	projectLoader = func(string) (ProjectConfig, error) {
 		pc := testProjectConfig()
-		pc.Feedback = FeedbackConfig{Upstream: "github", Repo: "example-org/agent-harness", FindingsLabel: "harness-finding", Project: "herd"}
+		pc.Feedback = FeedbackConfig{Upstream: "github", Repo: "example-org/agent-harness", FindingsLabel: "harness-finding", Project: "myproject"}
 		return pc, nil
 	}
 	cfg, err := Load(fullEnv(nil))
@@ -69,7 +69,7 @@ func TestLoadSurfacesFeedbackConfig(t *testing.T) {
 	if cfg.Feedback.Upstream != "github" || cfg.Feedback.Repo != "example-org/agent-harness" {
 		t.Errorf("Feedback = %+v, want the project-config feedback surface", cfg.Feedback)
 	}
-	if cfg.Feedback.Project != "herd" || cfg.Feedback.FindingsLabel != "harness-finding" {
+	if cfg.Feedback.Project != "myproject" || cfg.Feedback.FindingsLabel != "harness-finding" {
 		t.Errorf("Feedback = %+v, want project + label plumbed through", cfg.Feedback)
 	}
 }
@@ -98,10 +98,10 @@ func writeProjectConfig(t *testing.T, dir, body string) {
 	}
 }
 
-// herdConfigTOML mirrors the values herd commits, exercising every field.
-const herdConfigTOML = `
-image = "herd-agent-harness:latest"
-pnpm_store_volume = "herd-pnpm-store"
+// consumerConfigTOML mirrors a full Consumer config, exercising every field.
+const consumerConfigTOML = `
+image = "myproject-agent-harness:latest"
+pnpm_store_volume = "myproject-cache"
 branch_prefix = "feat"
 post_create = "cd web && pnpm install --frozen-lockfile"
 
@@ -122,13 +122,13 @@ command = "pnpm run typecheck"
 
 func TestLoadProjectReadsAllFields(t *testing.T) {
 	dir := t.TempDir()
-	writeProjectConfig(t, dir, herdConfigTOML)
+	writeProjectConfig(t, dir, consumerConfigTOML)
 
 	pc, err := LoadProject(dir)
 	if err != nil {
 		t.Fatalf("LoadProject: %v", err)
 	}
-	if pc.PnpmStoreVolume != "herd-pnpm-store" {
+	if pc.PnpmStoreVolume != "myproject-cache" {
 		t.Errorf("PnpmStoreVolume = %q", pc.PnpmStoreVolume)
 	}
 	if pc.BranchPrefix != "feat" {
@@ -298,7 +298,7 @@ func TestLoadProjectCacheBackCompatFromPnpmStoreVolume(t *testing.T) {
 	dir := t.TempDir()
 	writeProjectConfig(t, dir, `
 image = "x"
-pnpm_store_volume = "herd-pnpm-store"
+pnpm_store_volume = "myproject-cache"
 [tracker]
 kind = "linear"
 [[gates]]
@@ -309,7 +309,7 @@ command = "c"
 	if err != nil {
 		t.Fatalf("LoadProject: %v", err)
 	}
-	if pc.Cache.Volume != "herd-pnpm-store" || pc.Cache.Path != "/pnpm-store" {
+	if pc.Cache.Volume != "myproject-cache" || pc.Cache.Path != "/pnpm-store" {
 		t.Errorf("Cache = %+v, want the legacy pnpm store mapped to /pnpm-store", pc.Cache)
 	}
 }
@@ -385,7 +385,7 @@ image = "x"
 upstream = "github"
 repo = "example-org/agent-harness"
 findings_label = "harness-finding"
-project = "herd"
+project = "myproject"
 [tracker]
 kind = "linear"
 [[gates]]
@@ -405,7 +405,7 @@ command = "c"
 	if pc.Feedback.FindingsLabel != "harness-finding" {
 		t.Errorf("Feedback.FindingsLabel = %q", pc.Feedback.FindingsLabel)
 	}
-	if pc.Feedback.Project != "herd" {
+	if pc.Feedback.Project != "myproject" {
 		t.Errorf("Feedback.Project = %q, want the reporting-project name", pc.Feedback.Project)
 	}
 }

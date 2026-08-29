@@ -15,7 +15,7 @@ func fullEnv(overrides map[string]string) Getenv {
 		"ANTHROPIC_API_KEY": "sk-ant-x",
 		"GH_TOKEN":          "ghp_x",
 		"LINEAR_API_KEY":    "lin_x",
-		"PROJECT_PATH":      "/Users/dan/herd",
+		"PROJECT_PATH":      "/Users/dan/myproject",
 	}
 	for k, v := range overrides {
 		base[k] = v
@@ -31,13 +31,13 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.LinearAPIKey != "lin_x" {
 		t.Errorf("LinearAPIKey = %q, want lin_x", cfg.LinearAPIKey)
 	}
-	if cfg.ProjectPath != "/Users/dan/herd" {
+	if cfg.ProjectPath != "/Users/dan/myproject" {
 		t.Errorf("ProjectPath = %q", cfg.ProjectPath)
 	}
-	if cfg.Image != "herd-agent-harness:latest" {
+	if cfg.Image != "myproject-agent-harness:latest" {
 		t.Errorf("Image = %q", cfg.Image)
 	}
-	if cfg.CacheVolume != "herd-pnpm-store" {
+	if cfg.CacheVolume != "myproject-cache" {
 		t.Errorf("CacheVolume = %q", cfg.CacheVolume)
 	}
 	if cfg.CacheMountPath != "/pnpm-store" {

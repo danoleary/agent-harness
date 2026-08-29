@@ -57,9 +57,9 @@ if [ "$(id -u)" = "0" ]; then
 	fi
 
 	# Image-internal paths a Consumer layer bakes and needs writable, declared as a
-	# colon-separated HARNESS_CHOWN_PATHS in its own Dockerfile (herd uses it for
-	# the baked Playwright browsers, so an in-session `playwright install` can heal
-	# a version drift — BEH-405). These are baked owned by the image's node uid
+	# colon-separated HARNESS_CHOWN_PATHS in its own Dockerfile — a baked browser
+	# tree, say, so an in-session reinstall can heal a version drift. These are
+	# baked owned by the image's node uid
 	# 1000 and are only unwritable when the target uid differs, so the guard keeps
 	# the macOS/uid-1000 path from paying a recursive walk of a ~GB tree.
 	if [ "$target_uid" != "1000" ] && [ -n "${HARNESS_CHOWN_PATHS:-}" ]; then
