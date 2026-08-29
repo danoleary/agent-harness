@@ -145,3 +145,13 @@ func TestEntrypointCarriesNoProjectSpecificPaths(t *testing.T) {
 		}
 	}
 }
+
+// mustRead reads a repo file into a string or fails the test.
+func mustRead(t *testing.T, path string) string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return string(b)
+}

@@ -1,0 +1,69 @@
+# A complete, working example Consumer config (ADR-0008).
+#
+# This is the file docs/CONSUMER.md walks through, and it is LOADED BY THE TEST
+# SUITE — an example that stopped parsing, or that drifted from the loader's
+# validation, fails CI rather than misleading the next person who copies it.
+#
+# It describes a hypothetical .NET project. Nothing here is a credential; secrets
+# and host paths are environment-only (see .env.example).
+
+# The sandbox image. Declare EXACTLY ONE of these two shapes: a `dockerfile` the
+# harness BUILDS on a local miss, or a prebuilt `image` ref it PULLS. Declaring
+# neither is a hard error at load — there is no sane cross-language default.
+image = "example-agent-harness:latest"
+dockerfile = ".agent-harness/Dockerfile"
+
+# Canonical worktree branch prefix; the harness keys verify/push/PR off
+# `<branch_prefix>/<slug>`. Defaults to "feat" when omitted.
+branch_prefix = "feat"
+
+# Per-worktree toolchain setup, run in a secret-free container against the freshly
+# created worktree (cwd = the worktree, $PROJECT_PATH = the main checkout).
+#
+# It MUST be idempotent: the harness runs it on every provisioning pass, including
+# a resumed worktree, which routinely has its dependencies missing while still
+# looking ready from the outside. Prefer lockfile-frozen, already-satisfied-is-a-
+# no-op commands.
+post_create = '''
+dotnet restore
+'''
+
+# Directory prefixes whose contents can feed a gate or a CI job whatever they look
+# like. The harness skips the review gate re-run and the CI poll when a branch's
+# whole diff is inert prose OUTSIDE these roots.
+#
+# Omitting this DISABLES that short-circuit rather than widening it — the safe
+# direction, since excluding too much only costs a CI poll nobody needed, while
+# excluding too little means merging past a job that could go red. Keep it a
+# superset of every root your workflows' `on.pull_request.paths` trigger on.
+docs_only_excluded_roots = ["src/", "tests/", ".github/", "scripts/"]
+
+# Optional persistent toolchain cache, mounted into every sandbox and gate
+# container so the per-worktree restore is a local copy rather than a network
+# fetch. Omit the section entirely if your toolchain has no useful cache.
+[cache]
+volume = "example-nuget"
+path = "/root/.nuget/packages"
+
+# Tracker selection plus its NON-SECRET names. The API credential is env-only.
+[tracker]
+kind = "github"
+repo = "example-org/example-repo"
+# The label every harness finding is filed under.
+findings_label_id = "agent-harness"
+# The human-applied blast-radius gate: only labelled tickets are worked unattended.
+ready_label = "ready-for-agent"
+# A human-flagged block; never auto-worked.
+blocked_label = "blocked"
+# GitHub issues have only open/closed, so the claim is modelled as a label.
+in_progress_label = "in-progress"
+
+# Ordered, named host-side gates. ALL must pass before the harness pushes and
+# opens the PR. Language-agnostic — these are just shell commands.
+[[gates]]
+name = "test"
+command = "dotnet test"
+
+[[gates]]
+name = "format"
+command = "dotnet format --verify-no-changes"

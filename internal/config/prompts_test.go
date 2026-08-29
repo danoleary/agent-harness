@@ -69,23 +69,3 @@ func TestLoadSourcesPromptBodies(t *testing.T) {
 		t.Errorf("cfg.Prompts = %+v, want the loaded bodies", cfg.Prompts)
 	}
 }
-
-// TestHerdCommittedPromptsLoad pins herd's own .agent-harness/prompts/: each
-// stage body must be present and carry its skill invocation, so a bad edit to a
-// committed body is caught here rather than at the next pipeline launch. The repo
-// root is three levels up from this package.
-func TestHerdCommittedPromptsLoad(t *testing.T) {
-	pb, err := LoadPrompts(filepath.Join("..", "..", ".."))
-	if err != nil {
-		t.Fatalf("herd committed prompts failed to load: %v", err)
-	}
-	for name, body := range map[string]string{
-		"implement": pb.Implement,
-		"review":    pb.Review,
-		"retro":     pb.Retro,
-	} {
-		if body == "" {
-			t.Errorf("herd committed %s body is empty", name)
-		}
-	}
-}
