@@ -6,19 +6,19 @@ import (
 	"strings"
 	"time"
 
-	"github.com/beherd/agent-harness/internal/ci"
-	"github.com/beherd/agent-harness/internal/config"
-	gitpkg "github.com/beherd/agent-harness/internal/git"
-	"github.com/beherd/agent-harness/internal/loopstream"
-	"github.com/beherd/agent-harness/internal/pr"
-	"github.com/beherd/agent-harness/internal/proc"
-	"github.com/beherd/agent-harness/internal/prompt"
-	"github.com/beherd/agent-harness/internal/runlog"
-	"github.com/beherd/agent-harness/internal/sandbox"
-	"github.com/beherd/agent-harness/internal/session"
-	"github.com/beherd/agent-harness/internal/ticket"
-	"github.com/beherd/agent-harness/internal/trackers"
-	"github.com/beherd/agent-harness/internal/verify"
+	"github.com/danoleary/agent-harness/internal/ci"
+	"github.com/danoleary/agent-harness/internal/config"
+	gitpkg "github.com/danoleary/agent-harness/internal/git"
+	"github.com/danoleary/agent-harness/internal/loopstream"
+	"github.com/danoleary/agent-harness/internal/pr"
+	"github.com/danoleary/agent-harness/internal/proc"
+	"github.com/danoleary/agent-harness/internal/prompt"
+	"github.com/danoleary/agent-harness/internal/runlog"
+	"github.com/danoleary/agent-harness/internal/sandbox"
+	"github.com/danoleary/agent-harness/internal/session"
+	"github.com/danoleary/agent-harness/internal/ticket"
+	"github.com/danoleary/agent-harness/internal/trackers"
+	"github.com/danoleary/agent-harness/internal/verify"
 )
 
 // reviewSession prefixes this stage's transcript under the ticket's log dir.
@@ -102,7 +102,7 @@ const (
 // Ground truth is the harness's own gate run, never the agent's self-report.
 func Review(cfg config.Config, log *runlog.Logger, runID string, args Args) Result {
 	slug := strings.ToLower(args.Identifier)
-	worktreePath := gitpkg.WorktreePath(cfg.HerdPath, slug)
+	worktreePath := gitpkg.WorktreePath(cfg.ProjectPath, slug)
 
 	dry := ""
 	if args.DryRun {
@@ -133,7 +133,7 @@ func Review(cfg config.Config, log *runlog.Logger, runID string, args Args) Resu
 	buildReviewArgs := func(name string) []string {
 		return sandbox.BuildDockerRunArgs(sandbox.Config{
 			Image:          cfg.Image,
-			HerdPath:       cfg.HerdPath,
+			ProjectPath:    cfg.ProjectPath,
 			FindingsDir:    "",
 			CacheVolume:    cfg.CacheVolume,
 			CacheMountPath: cfg.CacheMountPath,
@@ -149,7 +149,7 @@ func Review(cfg config.Config, log *runlog.Logger, runID string, args Args) Resu
 	// the right container, and a retry must not collide with the killed attempt's.
 	gateConfig := sandbox.GateConfig{
 		Image:          cfg.Image,
-		HerdPath:       cfg.HerdPath,
+		ProjectPath:    cfg.ProjectPath,
 		WorktreePath:   worktreePath,
 		CacheVolume:    cfg.CacheVolume,
 		CacheMountPath: cfg.CacheMountPath,
@@ -197,7 +197,7 @@ func Review(cfg config.Config, log *runlog.Logger, runID string, args Args) Resu
 	}
 
 	// Fail fast if Docker can't run the container before we burn the session.
-	if err := sandbox.Preflight(sandbox.PreflightFor(cfg.Image, cfg.HerdPath, cfg.Dockerfile)); err != nil {
+	if err := sandbox.Preflight(sandbox.PreflightFor(cfg.Image, cfg.ProjectPath, cfg.Dockerfile)); err != nil {
 		return Result{Err: err}
 	}
 
@@ -206,7 +206,7 @@ func Review(cfg config.Config, log *runlog.Logger, runID string, args Args) Resu
 	// fatal — the PR still ships and the watch degrades gracefully (BEH-476); this
 	// just warns at the start instead of only surfacing after the PR is open.
 	if ok, detail := ci.ChecksReadable(func(name string, args ...string) ([]byte, error) {
-		return proc.CombinedOutputInDir(ciGhTimeout, cfg.HerdPath, name, args...)
+		return proc.CombinedOutputInDir(ciGhTimeout, cfg.ProjectPath, name, args...)
 	}); !ok {
 		log.Event("review … warning: " + detail)
 		fmt.Fprintln(os.Stderr, detail)
@@ -364,7 +364,7 @@ func Review(cfg config.Config, log *runlog.Logger, runID string, args Args) Resu
 
 	// --- ground truth + push gate (harness, host-side) ---
 	// Refresh origin/main so the commit range + PR base are current.
-	if err := gitpkg.FetchMain(cfg.HerdPath); err != nil {
+	if err := gitpkg.FetchMain(cfg.ProjectPath); err != nil {
 		log.Event("review … warning: could not fetch origin/main: " + err.Error())
 	}
 
@@ -503,7 +503,7 @@ func Review(cfg config.Config, log *runlog.Logger, runID string, args Args) Resu
 	// rebase. A fresh fetch here makes the proactive rebase replay onto the truly-latest
 	// base. Non-fatal like the earlier fetch: on failure we rebase onto the ref we have
 	// and the reactive path remains the backstop.
-	if err := gitpkg.FetchMain(cfg.HerdPath); err != nil {
+	if err := gitpkg.FetchMain(cfg.ProjectPath); err != nil {
 		log.Event("review … warning: could not re-fetch origin/main before rebase: " + err.Error())
 	}
 
@@ -566,14 +566,14 @@ func Review(cfg config.Config, log *runlog.Logger, runID string, args Args) Resu
 	// has no PR the loop re-selects it, rebases again, and is rejected again, forever.
 	// The lease keeps the force safe: it refuses to clobber remote commits the harness
 	// hasn't observed, and the harness owns this branch outright.
-	if err := gitpkg.PushForceWithLease(cfg.HerdPath, cfg.BranchPrefix, slug); err != nil {
+	if err := gitpkg.PushForceWithLease(cfg.ProjectPath, cfg.BranchPrefix, slug); err != nil {
 		log.Event("review ✗ push failed: " + err.Error() + " — keeping worktree")
 		return Result{OK: false}
 	}
 	log.Event("pushed " + gitpkg.BranchName(cfg.BranchPrefix, slug) + " to origin")
 
-	subjects := gitpkg.CommitSubjects(cfg.HerdPath, cfg.BranchPrefix, slug)
-	url, err := createPR(cfg.HerdPath, cfg.BranchPrefix, slug, pr.BuildTitle(t), pr.BuildBody(t, subjects))
+	subjects := gitpkg.CommitSubjects(cfg.ProjectPath, cfg.BranchPrefix, slug)
+	url, err := createPR(cfg.ProjectPath, cfg.BranchPrefix, slug, pr.BuildTitle(t), pr.BuildBody(t, subjects))
 	if err != nil {
 		log.Event("review ✗ gh pr create failed: " + err.Error() + " — branch pushed, open the PR manually")
 		return Result{OK: false}
@@ -600,11 +600,11 @@ func Review(cfg config.Config, log *runlog.Logger, runID string, args Args) Resu
 		PollMaxBudget:  cfg.CIPollMaxBudget,
 	}
 	driver := ci.NewGhDriver(
-		cfg.HerdPath, gitpkg.BranchName(cfg.BranchPrefix, slug), ciCfg, ciGhTimeout,
+		cfg.ProjectPath, gitpkg.BranchName(cfg.BranchPrefix, slug), ciCfg, ciGhTimeout,
 		ciFixRunner(cfg, args, slug, worktreePath, runID, t, log),
-		func() error { return gitpkg.Push(cfg.HerdPath, cfg.BranchPrefix, slug) },
+		func() error { return gitpkg.Push(cfg.ProjectPath, cfg.BranchPrefix, slug) },
 		func() (ci.RebaseVerdict, error) {
-			return rebaseOntoBase(cfg.HerdPath, cfg.BranchPrefix, worktreePath, slug)
+			return rebaseOntoBase(cfg.ProjectPath, cfg.BranchPrefix, worktreePath, slug)
 		},
 		func() bool { return gitpkg.BranchDiffEmpty(worktreePath) },
 		func() bool { return gitpkg.BranchDocsOnly(worktreePath) },
@@ -662,7 +662,7 @@ func ciFixRunner(cfg config.Config, args Args, slug, worktreePath, runID string,
 		containerName := fmt.Sprintf("herd-harness-%s-%d-cifix-%d", runID, os.Getpid(), attempt)
 		fixArgs := sandbox.BuildDockerRunArgs(sandbox.Config{
 			Image:          cfg.Image,
-			HerdPath:       cfg.HerdPath,
+			ProjectPath:    cfg.ProjectPath,
 			FindingsDir:    "",
 			CacheVolume:    cfg.CacheVolume,
 			CacheMountPath: cfg.CacheMountPath,
@@ -721,7 +721,7 @@ func resolvePrePushConflict(
 	containerName := fmt.Sprintf("herd-harness-%s-%d-rebasefix", runID, os.Getpid())
 	fixArgs := sandbox.BuildDockerRunArgs(sandbox.Config{
 		Image:          cfg.Image,
-		HerdPath:       cfg.HerdPath,
+		ProjectPath:    cfg.ProjectPath,
 		FindingsDir:    "",
 		CacheVolume:    cfg.CacheVolume,
 		CacheMountPath: cfg.CacheMountPath,

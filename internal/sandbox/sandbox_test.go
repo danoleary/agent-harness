@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/beherd/agent-harness/internal/git"
+	"github.com/danoleary/agent-harness/internal/git"
 )
 
 // errFake stands in for the non-nil error `exec` returns on a failed command.
@@ -29,7 +29,7 @@ func valuesForFlag(args []string, flag string) []string {
 func baseConfig() Config {
 	return Config{
 		Image:          "herd-agent-harness:latest",
-		HerdPath:       "/Users/dan/herd",
+		ProjectPath:    "/Users/dan/herd",
 		FindingsDir:    "/Users/dan/herd/agent-harness/logs/run-1/findings/BEH-362-tdd",
 		CacheVolume:    "herd-pnpm-store",
 		CacheMountPath: "/pnpm-store",
@@ -128,7 +128,7 @@ func TestMountsFindingsWhenFindingsDirGiven(t *testing.T) {
 func TestGateRunArgsCarryNoSecretsAndRunGateCommandInWorktree(t *testing.T) {
 	args := BuildGateRunArgs(GateConfig{
 		Image:          "herd-agent-harness:latest",
-		HerdPath:       "/Users/dan/herd",
+		ProjectPath:    "/Users/dan/herd",
 		WorktreePath:   "/Users/dan/herd/.claude/worktrees/beh-371",
 		CacheVolume:    "herd-pnpm-store",
 		CacheMountPath: "/pnpm-store",
@@ -173,7 +173,7 @@ func TestGateRunArgsCarryNoSecretsAndRunGateCommandInWorktree(t *testing.T) {
 func TestGateRunArgsMountCheckoutAndPnpmStore(t *testing.T) {
 	c := GateConfig{
 		Image:          "herd-agent-harness:latest",
-		HerdPath:       "/Users/dan/herd",
+		ProjectPath:    "/Users/dan/herd",
 		WorktreePath:   "/Users/dan/herd/.claude/worktrees/beh-371",
 		CacheVolume:    "herd-pnpm-store",
 		CacheMountPath: "/pnpm-store",
@@ -183,7 +183,7 @@ func TestGateRunArgsMountCheckoutAndPnpmStore(t *testing.T) {
 	// The whole checkout is bind-mounted at its real path so the worktree's
 	// absolute .git pointer resolves; the pnpm store keeps install near-instant.
 	for _, want := range []string{
-		c.HerdPath + ":" + c.HerdPath,
+		c.ProjectPath + ":" + c.ProjectPath,
 		c.CacheVolume + ":" + c.CacheMountPath,
 	} {
 		if !slices.Contains(mounts, want) {
@@ -208,7 +208,7 @@ func TestGateRunArgsNameContainerForKill(t *testing.T) {
 func TestInstallRunArgsRunsFrozenInstallOnlyInWorktree(t *testing.T) {
 	args := BuildInstallRunArgs(GateConfig{
 		Image:          "herd-agent-harness:latest",
-		HerdPath:       "/Users/dan/herd",
+		ProjectPath:    "/Users/dan/herd",
 		WorktreePath:   "/Users/dan/herd/.claude/worktrees/beh-490",
 		CacheVolume:    "herd-pnpm-store",
 		CacheMountPath: "/pnpm-store",
@@ -256,13 +256,13 @@ func TestInstallRunArgsRunsFrozenInstallOnlyInWorktree(t *testing.T) {
 // BEH-636: after the harness creates the worktree host-side, it runs the
 // Consumer's `post_create` toolchain-setup command in that worktree. Like the
 // install/gate containers it is secret-free (it runs no model), runs in the
-// worktree, and carries HERD_PATH so a Consumer's env-symlink step can reference
-// the main checkout (herd's post_create symlinks web/.env.local from $HERD_PATH).
-func TestPostCreateRunArgsRunCommandInWorktreeWithHerdPathNoSecrets(t *testing.T) {
-	postCreate := `for f in .env.local; do ln -sf "$HERD_PATH/web/$f" "web/$f"; done; cd web && pnpm install --frozen-lockfile`
+// worktree, and carries PROJECT_PATH so a Consumer's env-symlink step can reference
+// the main checkout (herd's post_create symlinks web/.env.local from $PROJECT_PATH).
+func TestPostCreateRunArgsRunCommandInWorktreeWithProjectPathNoSecrets(t *testing.T) {
+	postCreate := `for f in .env.local; do ln -sf "$PROJECT_PATH/web/$f" "web/$f"; done; cd web && pnpm install --frozen-lockfile`
 	args := BuildPostCreateRunArgs(GateConfig{
 		Image:          "herd-agent-harness:latest",
-		HerdPath:       "/Users/dan/herd",
+		ProjectPath:    "/Users/dan/herd",
 		WorktreePath:   "/Users/dan/herd/.claude/worktrees/beh-636",
 		CacheVolume:    "herd-pnpm-store",
 		CacheMountPath: "/pnpm-store",
@@ -274,9 +274,9 @@ func TestPostCreateRunArgsRunCommandInWorktreeWithHerdPathNoSecrets(t *testing.T
 	if !strings.Contains(joined, "pnpm install --frozen-lockfile") {
 		t.Errorf("post_create args must run the supplied command, got: %v", args)
 	}
-	// Carries HERD_PATH so the env-symlink step can reach the main checkout.
-	if !slices.Contains(valuesForFlag(args, "-e"), "HERD_PATH=/Users/dan/herd") {
-		t.Errorf("post_create must pass HERD_PATH so env-symlink steps resolve, got: %v", args)
+	// Carries PROJECT_PATH so the env-symlink step can reach the main checkout.
+	if !slices.Contains(valuesForFlag(args, "-e"), "PROJECT_PATH=/Users/dan/herd") {
+		t.Errorf("post_create must pass PROJECT_PATH so env-symlink steps resolve, got: %v", args)
 	}
 	// No credential of any kind crosses into the post_create container.
 	for _, secret := range []string{"ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "GH_TOKEN", "LINEAR"} {
@@ -320,7 +320,7 @@ func TestBindMountsCheckoutAtRealHostPath(t *testing.T) {
 	mounts := valuesForFlag(args, "-v")
 
 	for _, want := range []string{
-		c.HerdPath + ":" + c.HerdPath,
+		c.ProjectPath + ":" + c.ProjectPath,
 		c.CacheVolume + ":/pnpm-store",
 		c.FindingsDir + ":" + FindingsMountPath,
 	} {
@@ -329,8 +329,8 @@ func TestBindMountsCheckoutAtRealHostPath(t *testing.T) {
 		}
 	}
 
-	if workdirs := valuesForFlag(args, "-w"); !slices.Contains(workdirs, c.HerdPath) {
-		t.Errorf("workdir should be the real host path %q, got -w %v", c.HerdPath, workdirs)
+	if workdirs := valuesForFlag(args, "-w"); !slices.Contains(workdirs, c.ProjectPath) {
+		t.Errorf("workdir should be the real host path %q, got -w %v", c.ProjectPath, workdirs)
 	}
 }
 
@@ -362,13 +362,13 @@ func TestPassesSandboxSecretsByNameButNeverLinear(t *testing.T) {
 
 // The entrypoint matches the runtime uid to the checkout's owner by stat-ing the
 // mount, so it must know where the checkout landed. With the mount now at the
-// real host path, that path is passed in by value as HERD_PATH (not a secret).
+// real host path, that path is passed in by value as PROJECT_PATH (not a secret).
 func TestPassesMountPathToEntrypoint(t *testing.T) {
 	c := baseConfig()
 	envs := valuesForFlag(BuildDockerRunArgs(c), "-e")
 
-	if !slices.Contains(envs, "HERD_PATH="+c.HerdPath) {
-		t.Errorf("entrypoint needs the mount path: expected -e HERD_PATH=%s, got %v", c.HerdPath, envs)
+	if !slices.Contains(envs, "PROJECT_PATH="+c.ProjectPath) {
+		t.Errorf("entrypoint needs the mount path: expected -e PROJECT_PATH=%s, got %v", c.ProjectPath, envs)
 	}
 }
 

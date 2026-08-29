@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/beherd/agent-harness/internal/findings"
+	"github.com/danoleary/agent-harness/internal/findings"
 )
 
 // harnessFindingRecord is the on-disk shape of a harness-audience finding: the

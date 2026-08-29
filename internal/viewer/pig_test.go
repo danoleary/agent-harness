@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/beherd/agent-harness/internal/loopstream"
+	"github.com/danoleary/agent-harness/internal/loopstream"
 )
 
 // Tracer: the pig's state is selected from an event's kind — a tool-use means the

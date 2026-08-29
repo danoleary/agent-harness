@@ -11,8 +11,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/beherd/agent-harness/internal/git"
-	"github.com/beherd/agent-harness/internal/proc"
+	"github.com/danoleary/agent-harness/internal/git"
+	"github.com/danoleary/agent-harness/internal/proc"
 )
 
 // PreflightTimeout bounds each Preflight docker probe. A wedged daemon (e.g. its
@@ -161,8 +161,8 @@ var SecretEnv = []string{"ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"}
 type Config struct {
 	// Image is the sandbox image tag.
 	Image string
-	// HerdPath is the host path to the herd checkout to bind-mount.
-	HerdPath string
+	// ProjectPath is the host path to the herd checkout to bind-mount.
+	ProjectPath string
 	// FindingsDir is the host path to this session's findings dropbox dir,
 	// mounted at /findings.
 	FindingsDir string
@@ -203,7 +203,7 @@ func BuildDockerRunArgs(c Config) []string {
 	// The mount path is the real host path, which the entrypoint stat-s to match
 	// the runtime uid to the checkout's owner. It is not a secret, so pass it by
 	// value (unlike the `-e NAME` secrets read from the harness env).
-	args = append(args, "-e", "HERD_PATH="+c.HerdPath)
+	args = append(args, "-e", "PROJECT_PATH="+c.ProjectPath)
 
 	// Give the agent's Bash tool a generous per-command deadline so the first-run
 	// `new-worktree.sh` (multi-minute checkout + install on slow I/O) completes in
@@ -227,13 +227,18 @@ func BuildDockerRunArgs(c Config) []string {
 		"-e", "GIT_COMMITTER_EMAIL="+git.HarnessAuthorEmail,
 	)
 
-	args = append(args, "-v", c.HerdPath+":"+c.HerdPath)
+	args = append(args, "-v", c.ProjectPath+":"+c.ProjectPath)
 
 	// The toolchain cache is mounted only when a Consumer declares one (BEH-635):
 	// a language with no persistent cache (or a Consumer that opts out) mounts
 	// nothing rather than a dead volume.
 	if c.CacheVolume != "" {
 		args = append(args, "-v", c.CacheVolume+":"+c.CacheMountPath)
+		// The entrypoint must chown the volume to the runtime uid: a named volume
+		// mounts root-owned on its first use on Linux, and the unprivileged session
+		// could not otherwise write it. The base image cannot know the path — it is
+		// the Consumer's `[cache].path` — so it is passed by value here.
+		args = append(args, "-e", "HARNESS_CACHE_PATH="+c.CacheMountPath)
 	}
 
 	// The findings dropbox is mounted only when the tool produces findings.
@@ -245,7 +250,7 @@ func BuildDockerRunArgs(c Config) []string {
 	}
 
 	args = append(args,
-		"-w", c.HerdPath,
+		"-w", c.ProjectPath,
 		c.Image,
 		"claude",
 		"-p", c.Prompt,
@@ -267,8 +272,8 @@ type GateConfig struct {
 	// Image is the sandbox image tag (reused — its entrypoint matches the runtime
 	// uid to the checkout owner and trusts the repo, which the gate run also needs).
 	Image string
-	// HerdPath is the host path to the herd checkout to bind-mount at its real path.
-	HerdPath string
+	// ProjectPath is the host path to the herd checkout to bind-mount at its real path.
+	ProjectPath string
 	// WorktreePath is the host path of the feature worktree the gates run against
 	// (the branch under review). It resolves into the mounted checkout.
 	WorktreePath string
@@ -330,7 +335,7 @@ func BuildInstallRunArgs(c GateConfig) []string {
 // sandbox agent ran `new-worktree.sh`: herd's env-file symlinks + `pnpm install` +
 // Playwright install now arrive as a config-declared command run here. Like the
 // gate/install containers it carries NO secrets (it runs no model) and runs in the
-// worktree; buildWorktreeBashArgs passes HERD_PATH so a Consumer's env-symlink step
+// worktree; buildWorktreeBashArgs passes PROJECT_PATH so a Consumer's env-symlink step
 // can reference the main checkout. The command runs verbatim, so a Go/.NET Consumer
 // differs only in config.
 func BuildPostCreateRunArgs(c GateConfig, command string) []string {
@@ -347,13 +352,14 @@ func buildWorktreeBashArgs(c GateConfig, command string) []string {
 		args = append(args, "--name", c.ContainerName)
 	}
 
-	// HERD_PATH lets the shared entrypoint stat the mount to match the runtime uid
+	// PROJECT_PATH lets the shared entrypoint stat the mount to match the runtime uid
 	// to the checkout owner. It is the mount path, not a secret — passed by value.
-	args = append(args, "-e", "HERD_PATH="+c.HerdPath)
+	args = append(args, "-e", "PROJECT_PATH="+c.ProjectPath)
 
-	args = append(args, "-v", c.HerdPath+":"+c.HerdPath)
+	args = append(args, "-v", c.ProjectPath+":"+c.ProjectPath)
 	if c.CacheVolume != "" {
 		args = append(args, "-v", c.CacheVolume+":"+c.CacheMountPath)
+		args = append(args, "-e", "HARNESS_CACHE_PATH="+c.CacheMountPath)
 	}
 	args = append(args,
 		"-w", c.WorktreePath,

@@ -22,8 +22,8 @@ import (
 	"encoding/json"
 	"net/url"
 
-	"github.com/beherd/agent-harness/internal/ticket"
-	"github.com/beherd/agent-harness/internal/tracker"
+	"github.com/danoleary/agent-harness/internal/ticket"
+	"github.com/danoleary/agent-harness/internal/tracker"
 )
 
 // Client is the Jira adapter behind the host-side tracker port (ADR-0010).

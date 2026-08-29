@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/beherd/agent-harness/internal/loopstream"
-	"github.com/beherd/agent-harness/internal/stages"
+	"github.com/danoleary/agent-harness/internal/loopstream"
+	"github.com/danoleary/agent-harness/internal/stages"
 )
 
 // recorder captures the order stages ran in and the narration emitted.

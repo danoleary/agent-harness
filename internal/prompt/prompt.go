@@ -16,7 +16,7 @@ import (
 	"strings"
 	"text/template"
 
-	"github.com/beherd/agent-harness/internal/ticket"
+	"github.com/danoleary/agent-harness/internal/ticket"
 )
 
 // bashQuirkSteer warns the sandboxed agent off four opaque-error surfaces in the

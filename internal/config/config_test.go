@@ -15,7 +15,7 @@ func fullEnv(overrides map[string]string) Getenv {
 		"ANTHROPIC_API_KEY": "sk-ant-x",
 		"GH_TOKEN":          "ghp_x",
 		"LINEAR_API_KEY":    "lin_x",
-		"HERD_PATH":         "/Users/dan/herd",
+		"PROJECT_PATH":      "/Users/dan/herd",
 	}
 	for k, v := range overrides {
 		base[k] = v
@@ -31,8 +31,8 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.LinearAPIKey != "lin_x" {
 		t.Errorf("LinearAPIKey = %q, want lin_x", cfg.LinearAPIKey)
 	}
-	if cfg.HerdPath != "/Users/dan/herd" {
-		t.Errorf("HerdPath = %q", cfg.HerdPath)
+	if cfg.ProjectPath != "/Users/dan/herd" {
+		t.Errorf("ProjectPath = %q", cfg.ProjectPath)
 	}
 	if cfg.Image != "herd-agent-harness:latest" {
 		t.Errorf("Image = %q", cfg.Image)
@@ -211,7 +211,7 @@ func TestLoadEnvCacheVolumeWithoutPathDefaultsMount(t *testing.T) {
 }
 
 func TestLoadMissingRequired(t *testing.T) {
-	for _, key := range []string{"GH_TOKEN", "LINEAR_API_KEY", "HERD_PATH"} {
+	for _, key := range []string{"GH_TOKEN", "LINEAR_API_KEY", "PROJECT_PATH"} {
 		_, err := Load(fullEnv(map[string]string{key: ""}))
 		if err == nil {
 			t.Errorf("expected error when %s missing", key)

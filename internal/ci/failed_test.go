@@ -30,8 +30,8 @@ func TestFailedChecksEmptyWhenAllGreen(t *testing.T) {
 
 func TestSummarizeListsFailingChecksAndLinks(t *testing.T) {
 	failed := []Check{
-		{Name: "lint", Bucket: BucketFail, Link: "https://github.com/beherd/herd/actions/runs/100/job/2"},
-		{Name: "e2e", Bucket: BucketCancel, Link: "https://github.com/beherd/herd/actions/runs/101/job/3"},
+		{Name: "lint", Bucket: BucketFail, Link: "https://github.com/example-org/example-repo/actions/runs/100/job/2"},
+		{Name: "e2e", Bucket: BucketCancel, Link: "https://github.com/example-org/example-repo/actions/runs/101/job/3"},
 	}
 	s := Summarize(failed)
 	for _, want := range []string{"lint", "e2e", "fail", "cancel", "runs/100", "runs/101"} {

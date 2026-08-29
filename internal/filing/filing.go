@@ -13,8 +13,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/beherd/agent-harness/internal/findings"
-	"github.com/beherd/agent-harness/internal/tracker"
+	"github.com/danoleary/agent-harness/internal/findings"
+	"github.com/danoleary/agent-harness/internal/tracker"
 )
 
 // dropboxFile is the fixed filename the agent drops findings into, under the

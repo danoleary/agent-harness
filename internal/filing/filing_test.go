@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/beherd/agent-harness/internal/findings"
-	"github.com/beherd/agent-harness/internal/tracker"
+	"github.com/danoleary/agent-harness/internal/findings"
+	"github.com/danoleary/agent-harness/internal/tracker"
 )
 
 // fakeFiler records the findings (and their filing options) it was asked to file
@@ -238,7 +238,7 @@ func TestRouteUpstreamsHarnessFindingsToPublicRepo(t *testing.T) {
 	]`)
 	projectFiler := &fakeFiler{results: []fakeResult{{issue: tracker.CreatedIssue{Identifier: "BEH-900"}}}}
 	upstreamFiler := &fakeFiler{results: []fakeResult{{issue: tracker.CreatedIssue{Identifier: "#12"}}}}
-	up := &Upstream{Filer: upstreamFiler, Searcher: noExisting(), Container: "beherd/agent-harness", Project: "herd"}
+	up := &Upstream{Filer: upstreamFiler, Searcher: noExisting(), Container: "example-org/agent-harness", Project: "herd"}
 	rec := &recorder{}
 
 	Route(dir, harnessDir, "team-uuid", "BEH-639", projectFiler, noExisting(), nil, nil, up, rec)
@@ -263,7 +263,7 @@ func TestRouteUpstreamTagsFilingWithProject(t *testing.T) {
 	dir := t.TempDir()
 	writeDropbox(t, dir, `[{"title":"opaque crash","body":"x","key":"opaque-crash","audience":"harness"}]`)
 	upstreamFiler := &fakeFiler{results: []fakeResult{{issue: tracker.CreatedIssue{Identifier: "#12"}}}}
-	up := &Upstream{Filer: upstreamFiler, Searcher: noExisting(), Container: "beherd/agent-harness", Project: "herd"}
+	up := &Upstream{Filer: upstreamFiler, Searcher: noExisting(), Container: "example-org/agent-harness", Project: "herd"}
 
 	Route(dir, filepath.Join(t.TempDir(), "hf"), "team-uuid", "BEH-639", &fakeFiler{}, noExisting(), nil, nil, up, &recorder{})
 
@@ -282,7 +282,7 @@ func TestRouteUpstreamDedupsByKeyAsProjectTaggedRecurrence(t *testing.T) {
 		{Identifier: "#7", Title: "Playwright deps", Key: "sandbox-deps"},
 	}}
 	rec2 := &fakeRecorder{count: 3}
-	up := &Upstream{Filer: upstreamFiler, Searcher: searcher, Recorder: rec2, Container: "beherd/agent-harness", Project: "herd"}
+	up := &Upstream{Filer: upstreamFiler, Searcher: searcher, Recorder: rec2, Container: "example-org/agent-harness", Project: "herd"}
 	rec := &recorder{}
 
 	Route(dir, filepath.Join(t.TempDir(), "hf"), "team-uuid", "BEH-639", &fakeFiler{}, noExisting(), nil, nil, up, rec)

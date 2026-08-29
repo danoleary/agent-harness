@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/beherd/agent-harness/internal/sandbox"
+	"github.com/danoleary/agent-harness/internal/sandbox"
 )
 
 // A 137 (OOM-kill) on the first attempt is transient (BEH-524): the helper must

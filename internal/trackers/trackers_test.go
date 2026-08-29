@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/beherd/agent-harness/internal/config"
-	"github.com/beherd/agent-harness/internal/tracker"
+	"github.com/danoleary/agent-harness/internal/config"
+	"github.com/danoleary/agent-harness/internal/tracker"
 )
 
 // New selects the tracker adapter by the config's kind (ADR-0010: "selected by

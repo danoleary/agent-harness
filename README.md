@@ -35,7 +35,7 @@ build happens, pre-build it: `make image`.
 | `LINEAR_API_KEY` | host-only: select, claim, and move tickets; file findings |
 | `CLAUDE_CODE_OAUTH_TOKEN` *or* `ANTHROPIC_API_KEY` | the Claude credential passed into the sandbox (set exactly one) |
 | `GH_TOKEN` | host-only: `git push`, `gh pr create`, and the post-PR CI watch |
-| `HERD_PATH` | absolute path to the herd checkout to bind-mount |
+| `PROJECT_PATH` | absolute path to the herd checkout to bind-mount |
 
 `LINEAR_API_KEY` and `GH_TOKEN` never enter the sandbox (ADR-0002).
 

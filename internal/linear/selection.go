@@ -3,7 +3,7 @@ package linear
 import (
 	"encoding/json"
 
-	"github.com/beherd/agent-harness/internal/ticket"
+	"github.com/danoleary/agent-harness/internal/ticket"
 )
 
 // harnessTeamKey scopes ticket selection to the BeHerd backlog. The harness is

@@ -15,7 +15,7 @@ import (
 // reverse), so only an in-image resolve can tell which one actually wins.
 //
 // The entrypoint is bypassed (`--entrypoint pnpm`) because it hard-requires
-// HERD_PATH (the checkout mount) and re-execs under gosu; the store-dir is set
+// PROJECT_PATH (the checkout mount) and re-execs under gosu; the store-dir is set
 // as a uid/HOME-independent ENV, so resolving it as the image's default user is
 // faithful. run is injected so the resolve/compare logic is unit-testable
 // without Docker.

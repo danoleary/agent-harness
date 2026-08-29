@@ -12,8 +12,8 @@ package tracker
 import (
 	"time"
 
-	"github.com/beherd/agent-harness/internal/findings"
-	"github.com/beherd/agent-harness/internal/ticket"
+	"github.com/danoleary/agent-harness/internal/findings"
+	"github.com/danoleary/agent-harness/internal/ticket"
 )
 
 // Key is the tracker-agnostic ticket identifier (`BEH-123`, `PROJ-123`, `#123`)

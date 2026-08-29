@@ -4,8 +4,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/beherd/agent-harness/internal/loopstream"
-	"github.com/beherd/agent-harness/internal/ticket"
+	"github.com/danoleary/agent-harness/internal/loopstream"
+	"github.com/danoleary/agent-harness/internal/ticket"
 )
 
 // fakeResolver fakes the Linear surface ResolveNext composes: a pure read

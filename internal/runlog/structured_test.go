@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/beherd/agent-harness/internal/loopstream"
+	"github.com/danoleary/agent-harness/internal/loopstream"
 )
 
 // Structured mirrors the console line + run.jsonl exactly like Event, and ALSO

@@ -59,14 +59,14 @@ func TestLoadSurfacesFeedbackConfig(t *testing.T) {
 	t.Cleanup(func() { projectLoader = orig })
 	projectLoader = func(string) (ProjectConfig, error) {
 		pc := testProjectConfig()
-		pc.Feedback = FeedbackConfig{Upstream: "github", Repo: "beherd/agent-harness", FindingsLabel: "harness-finding", Project: "herd"}
+		pc.Feedback = FeedbackConfig{Upstream: "github", Repo: "example-org/agent-harness", FindingsLabel: "harness-finding", Project: "herd"}
 		return pc, nil
 	}
 	cfg, err := Load(fullEnv(nil))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if cfg.Feedback.Upstream != "github" || cfg.Feedback.Repo != "beherd/agent-harness" {
+	if cfg.Feedback.Upstream != "github" || cfg.Feedback.Repo != "example-org/agent-harness" {
 		t.Errorf("Feedback = %+v, want the project-config feedback surface", cfg.Feedback)
 	}
 	if cfg.Feedback.Project != "herd" || cfg.Feedback.FindingsLabel != "harness-finding" {
@@ -415,7 +415,7 @@ func TestLoadProjectReadsFeedbackSection(t *testing.T) {
 image = "x"
 [feedback]
 upstream = "github"
-repo = "beherd/agent-harness"
+repo = "example-org/agent-harness"
 findings_label = "harness-finding"
 project = "herd"
 [tracker]
@@ -431,7 +431,7 @@ command = "c"
 	if pc.Feedback.Upstream != "github" {
 		t.Errorf("Feedback.Upstream = %q, want github", pc.Feedback.Upstream)
 	}
-	if pc.Feedback.Repo != "beherd/agent-harness" {
+	if pc.Feedback.Repo != "example-org/agent-harness" {
 		t.Errorf("Feedback.Repo = %q, want the public harness repo", pc.Feedback.Repo)
 	}
 	if pc.Feedback.FindingsLabel != "harness-finding" {

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/beherd/agent-harness/internal/proc"
+	"github.com/danoleary/agent-harness/internal/proc"
 )
 
 // errNoChecksYet marks the transient window right after a PR opens when Actions

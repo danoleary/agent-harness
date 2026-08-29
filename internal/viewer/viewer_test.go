@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/beherd/agent-harness/internal/loopstream"
+	"github.com/danoleary/agent-harness/internal/loopstream"
 )
 
 func TestRenderSurfacesCurrentTicketAndStage(t *testing.T) {

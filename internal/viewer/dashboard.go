@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/beherd/agent-harness/internal/loopstream"
+	"github.com/danoleary/agent-harness/internal/loopstream"
 )
 
 // pipelineStages is the fixed three-stage pipeline, in order, that the stage

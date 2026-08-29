@@ -4,13 +4,13 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/beherd/agent-harness/internal/ticket"
+	"github.com/danoleary/agent-harness/internal/ticket"
 )
 
 var sample = ticket.Ticket{
 	Identifier: "BEH-371",
 	Title:      "Harness: review tool — cold review + push + PR",
-	URL:        "https://linear.app/beherd/issue/BEH-371",
+	URL:        "https://linear.app/example-workspace/issue/BEH-371",
 }
 
 func TestBuildTitleCarriesTicketIDAndTitle(t *testing.T) {

@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/beherd/agent-harness/internal/loopstream"
+	"github.com/danoleary/agent-harness/internal/loopstream"
 )
 
 // Console is the loop-level narration sink used by cmd/loop and cmd/pipeline for

@@ -17,7 +17,7 @@ feedback policy. That configuration can either travel *with the harness invocati
 **Project configuration lives in the Consumer repo, in a committed
 `.agent-harness/` directory, read by the harness from the bind-mounted checkout.
 Only secrets and host paths stay as env vars on the harness side** (the existing
-`LINEAR_API_KEY`/`GH_TOKEN`/Claude-credential/`HERD_PATH` model is unchanged). The
+`LINEAR_API_KEY`/`GH_TOKEN`/Claude-credential/`PROJECT_PATH` model is unchanged). The
 adapter surface a Consumer declares:
 
 - `.agent-harness/config.*` — tracker selection + non-secret tracker fields

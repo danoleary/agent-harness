@@ -13,8 +13,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/beherd/agent-harness/internal/proc"
-	"github.com/beherd/agent-harness/internal/verify"
+	"github.com/danoleary/agent-harness/internal/proc"
+	"github.com/danoleary/agent-harness/internal/verify"
 )
 
 // commandRunner runs a command to completion, returning only its error.
@@ -43,8 +43,8 @@ func execOutput(name string, args ...string) ([]byte, error) {
 // PR (BEH-579). The values match the entrypoint's global identity so an
 // in-container `git config user.name` read stays consistent.
 const (
-	HarnessAuthorName  = "Herd Agent Harness"
-	HarnessAuthorEmail = "agent-harness@beherd.co"
+	HarnessAuthorName  = "Agent Harness"
+	HarnessAuthorEmail = "agent-harness@users.noreply.github.com"
 )
 
 // WorktreeReadySentinel is the readiness marker scripts/new-worktree.sh touches at

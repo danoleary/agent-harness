@@ -3,7 +3,7 @@ package viewer
 import (
 	"strings"
 
-	"github.com/beherd/agent-harness/internal/loopstream"
+	"github.com/danoleary/agent-harness/internal/loopstream"
 )
 
 // pigState is the mascot's mood, selected from the most recent event kind

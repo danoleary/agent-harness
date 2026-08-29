@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/beherd/agent-harness/internal/findings"
-	"github.com/beherd/agent-harness/internal/ticket"
-	"github.com/beherd/agent-harness/internal/tracker"
+	"github.com/danoleary/agent-harness/internal/findings"
+	"github.com/danoleary/agent-harness/internal/ticket"
+	"github.com/danoleary/agent-harness/internal/tracker"
 )
 
 // fakeTransport returns the given data payload (marshalled) for every call,
@@ -38,7 +38,7 @@ func TestFetchTicketParsesIssue(t *testing.T) {
 			"identifier":    "BEH-362",
 			"title":         "Agent harness Phase 1",
 			"description":   "## What to build\n\nA CLI.",
-			"url":           "https://linear.app/beherd/issue/BEH-362",
+			"url":           "https://linear.app/example-workspace/issue/BEH-362",
 			"priorityLabel": "Urgent",
 			"team":          map[string]any{"id": "team-uuid"},
 		},
@@ -52,7 +52,7 @@ func TestFetchTicketParsesIssue(t *testing.T) {
 		Identifier:  "BEH-362",
 		Title:       "Agent harness Phase 1",
 		Description: "## What to build\n\nA CLI.",
-		URL:         "https://linear.app/beherd/issue/BEH-362",
+		URL:         "https://linear.app/example-workspace/issue/BEH-362",
 		Priority:    "Urgent",
 		TeamID:      "team-uuid",
 	}

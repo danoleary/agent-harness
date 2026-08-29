@@ -45,7 +45,7 @@ type ProjectConfig struct {
 	// (ADR-0008/BEH-636). It replaces the old coupling where the sandbox agent ran
 	// herd's `scripts/new-worktree.sh`: herd's env links + `pnpm install` +
 	// Playwright install now live here as a declared, language-agnostic command
-	// (`$HERD_PATH` is available in the run). Empty means no setup step.
+	// (`$PROJECT_PATH` is available in the run). Empty means no setup step.
 	//
 	// It MUST be idempotent. The harness runs it on every provisioning pass, not only
 	// on a freshly-created worktree, because a resumed worktree routinely has its deps

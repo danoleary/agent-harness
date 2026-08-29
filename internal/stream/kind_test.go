@@ -3,7 +3,7 @@ package stream
 import (
 	"testing"
 
-	"github.com/beherd/agent-harness/internal/loopstream"
+	"github.com/danoleary/agent-harness/internal/loopstream"
 )
 
 func TestNarrateRecordClassifiesToolUse(t *testing.T) {

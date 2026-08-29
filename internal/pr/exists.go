@@ -4,7 +4,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/beherd/agent-harness/internal/proc"
+	"github.com/danoleary/agent-harness/internal/proc"
 )
 
 // ghTimeout bounds the `gh pr view` lookup so a stalled network or a blocking gh

@@ -3,7 +3,7 @@ package session
 import (
 	"testing"
 
-	"github.com/beherd/agent-harness/internal/sandbox"
+	"github.com/danoleary/agent-harness/internal/sandbox"
 )
 
 // Retryable folds the two environmental, transient session failures into one

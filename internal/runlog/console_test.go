@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/beherd/agent-harness/internal/loopstream"
+	"github.com/danoleary/agent-harness/internal/loopstream"
 )
 
 // Console is the loop-level narrator used before any ticket-keyed Logger exists

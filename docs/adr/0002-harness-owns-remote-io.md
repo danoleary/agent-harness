@@ -42,15 +42,15 @@ only Anthropic.** Concretely:
 - **The harness pushes and opens the PR, host-side.** After the `review` container
   exits, the harness re-runs the quality gates (`pnpm check && pnpm typecheck`) on the
   branch in a throwaway container. **Only if they pass** does it
-  `git -C $HERD_PATH push origin feat/beh-nnn` and `gh pr create`. The gate re-run
+  `git -C $PROJECT_PATH push origin feat/beh-nnn` and `gh pr create`. The gate re-run
   is therefore both review's ground truth *and* the push gate — no branch reaches
   a PR on the agent's say-so. PR title/body are templated for now (ticket id +
   commit subjects); a Haiku PR-author session is deferred.
 - **Push works from the main checkout, not the worktree.** The branch ref and
   objects live in the shared `.git`, which the host reads directly; the harness
   never needs to enter the worktree to push.
-- **The checkout is bind-mounted at its real host path** (`-v $HERD_PATH:$HERD_PATH
-  -w $HERD_PATH`) instead of `/workspace/herd`. Container-path == host-path, so the
+- **The checkout is bind-mounted at its real host path** (`-v $PROJECT_PATH:$PROJECT_PATH
+  -w $PROJECT_PATH`) instead of `/workspace/herd`. Container-path == host-path, so the
   worktree's absolute `.git` pointer resolves identically in every container *and*
   on the host. A human can `cd .claude/worktrees/beh-nnn && git diff`; worktree
   removal runs host-side. The path is still fixed per machine, preserving the
@@ -71,7 +71,7 @@ remote I/O — Linear and git — and the sandbox holds only the Claude credenti
   broke the build would sail to a PR. Rejected — "never self-report" is the
   harness's core invariant.
 - **Keep the synthetic `/workspace/herd` mount and inspect via the main checkout.**
-  A human could still `git -C $HERD_PATH diff main...feat/beh-nnn`, but not work
+  A human could still `git -C $PROJECT_PATH diff main...feat/beh-nnn`, but not work
   inside the live worktree, and removal still needed a container. The synthetic
   path bought nothing the real path doesn't also give (both are fixed per machine).
   Rejected.

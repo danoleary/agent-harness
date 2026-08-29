@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/beherd/agent-harness/internal/loopstream"
+	"github.com/danoleary/agent-harness/internal/loopstream"
 )
 
 // Host-sleep time must NOT count against the cap or the idle window (BEH-608).

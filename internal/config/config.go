@@ -33,8 +33,8 @@ type Config struct {
 	// base) to build the sandbox image from on a local miss (ADR-0008). Empty means
 	// the Image is a prebuilt ref the harness pulls instead of building.
 	Dockerfile string
-	// HerdPath is the absolute host path to the herd checkout to bind-mount.
-	HerdPath string
+	// ProjectPath is the absolute host path to the herd checkout to bind-mount.
+	ProjectPath string
 	// CacheVolume is the Docker volume name for the optional persistent toolchain
 	// cache (pnpm store / GOMODCACHE / NuGet). Empty means no cache mount.
 	CacheVolume string
@@ -143,7 +143,7 @@ type Config struct {
 	// agent mid-work is never mistaken for a dead one. Defaults to 30m.
 	LoopClaimTTL time.Duration
 	// StopFile is the STOP sentinel path used by startup-clear and the stop check. A
-	// relative path is resolved against HerdPath by cmd/loop.
+	// relative path is resolved against ProjectPath by cmd/loop.
 	StopFile string
 	// LoopDiskReclaimThreshold is the soft free-disk floor (bytes) below which the
 	// daemon proactively reclaims host disk between tickets — pruning merged worktrees
@@ -265,7 +265,7 @@ func Load(get Getenv) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	herdPath, err := requireEnv(get, "HERD_PATH")
+	herdPath, err := requireEnv(get, "PROJECT_PATH")
 	if err != nil {
 		return Config{}, err
 	}
@@ -335,7 +335,7 @@ func Load(get Getenv) (Config, error) {
 		JiraBaseURL:             get("JIRA_BASE_URL"),
 		JiraEmail:               get("JIRA_EMAIL"),
 		JiraAPIToken:            get("JIRA_API_TOKEN"),
-		HerdPath:                herdPath,
+		ProjectPath:             herdPath,
 		Image:                   orDefault(get("HARNESS_IMAGE"), project.Image),
 		Dockerfile:              project.Dockerfile,
 		CacheVolume:             cacheVolume,

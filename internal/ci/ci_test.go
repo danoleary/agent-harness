@@ -5,8 +5,8 @@ import "testing"
 func TestParseChecksReadsGhJSON(t *testing.T) {
 	// The shape `gh pr checks <branch> --json name,bucket,state,link` emits.
 	raw := []byte(`[
-		{"name":"build","bucket":"pass","state":"SUCCESS","link":"https://github.com/beherd/herd/actions/runs/100/job/1"},
-		{"name":"lint","bucket":"fail","state":"FAILURE","link":"https://github.com/beherd/herd/actions/runs/100/job/2"}
+		{"name":"build","bucket":"pass","state":"SUCCESS","link":"https://github.com/example-org/example-repo/actions/runs/100/job/1"},
+		{"name":"lint","bucket":"fail","state":"FAILURE","link":"https://github.com/example-org/example-repo/actions/runs/100/job/2"}
 	]`)
 	checks, err := ParseChecks(raw)
 	if err != nil {

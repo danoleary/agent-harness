@@ -14,7 +14,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/beherd/agent-harness/internal/stages"
+	"github.com/danoleary/agent-harness/internal/stages"
 )
 
 func main() {

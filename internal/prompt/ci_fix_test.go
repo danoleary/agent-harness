@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/beherd/agent-harness/internal/ci"
+	"github.com/danoleary/agent-harness/internal/ci"
 )
 
 const sampleCILogs = "FAIL src/foo.test.ts\n  Expected 1, received 2\n##[error]Process completed with exit code 1"

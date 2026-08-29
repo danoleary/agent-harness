@@ -34,18 +34,18 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/beherd/agent-harness/internal/config"
-	gitpkg "github.com/beherd/agent-harness/internal/git"
-	"github.com/beherd/agent-harness/internal/loop"
-	"github.com/beherd/agent-harness/internal/loopstream"
-	"github.com/beherd/agent-harness/internal/pipeline"
-	"github.com/beherd/agent-harness/internal/pr"
-	"github.com/beherd/agent-harness/internal/proc"
-	"github.com/beherd/agent-harness/internal/runlog"
-	"github.com/beherd/agent-harness/internal/sandbox"
-	"github.com/beherd/agent-harness/internal/stages"
-	"github.com/beherd/agent-harness/internal/tracker"
-	"github.com/beherd/agent-harness/internal/trackers"
+	"github.com/danoleary/agent-harness/internal/config"
+	gitpkg "github.com/danoleary/agent-harness/internal/git"
+	"github.com/danoleary/agent-harness/internal/loop"
+	"github.com/danoleary/agent-harness/internal/loopstream"
+	"github.com/danoleary/agent-harness/internal/pipeline"
+	"github.com/danoleary/agent-harness/internal/pr"
+	"github.com/danoleary/agent-harness/internal/proc"
+	"github.com/danoleary/agent-harness/internal/runlog"
+	"github.com/danoleary/agent-harness/internal/sandbox"
+	"github.com/danoleary/agent-harness/internal/stages"
+	"github.com/danoleary/agent-harness/internal/tracker"
+	"github.com/danoleary/agent-harness/internal/trackers"
 )
 
 // tickInterval is the granularity the idle/backoff waits are broken into so a stop
@@ -79,7 +79,7 @@ const (
 )
 
 func main() {
-	// Config is loaded once for the whole daemon: HERD_PATH locates the STOP
+	// Config is loaded once for the whole daemon: PROJECT_PATH locates the STOP
 	// sentinel and the primary checkout to fast-forward; LINEAR_API_KEY backs
 	// selection. A bad config must fail loud before the loop starts.
 	cfg, err := stages.LoadConfig()
@@ -100,11 +100,11 @@ func main() {
 	log := runlog.NewConsole(stream)
 
 	// STOP_FILE locates the sentinel used by startup-clear and the stop check. A
-	// relative override is resolved against HERD_PATH (the default "agent-harness/STOP"
+	// relative override is resolved against PROJECT_PATH (the default "agent-harness/STOP"
 	// gives the same path as before); an absolute override is used as-is.
 	stopFile := cfg.StopFile
 	if !filepath.IsAbs(stopFile) {
-		stopFile = filepath.Join(cfg.HerdPath, stopFile)
+		stopFile = filepath.Join(cfg.ProjectPath, stopFile)
 	}
 	client, err := trackers.New(cfg.Tracker, trackers.Secrets{LinearKey: cfg.LinearAPIKey, GitHubToken: cfg.GitHubToken, JiraBaseURL: cfg.JiraBaseURL, JiraEmail: cfg.JiraEmail, JiraToken: cfg.JiraAPIToken})
 	if err != nil {
@@ -120,7 +120,7 @@ func main() {
 
 	code := loop.Run(loop.Deps{
 		ClearStopFile: func() error { return removeIfPresent(stopFile) },
-		FetchMain:     func() error { return gitpkg.FetchMain(cfg.HerdPath) },
+		FetchMain:     func() error { return gitpkg.FetchMain(cfg.ProjectPath) },
 		StopRequested: func() bool { return sigStop.Load() || fileExists(stopFile) },
 		ResolveNext: func() (string, bool) {
 			// A real run, never a dry-run: the loop claims-on-select (ADR-0003) so a
@@ -151,7 +151,7 @@ func main() {
 		// tracker, map it onto the loop's StaleClaim shape, and check for a pushed branch
 		// host-side via git. All three run on the host, never inside the sandbox.
 		ListInProgressClaims:   func() ([]loop.StaleClaim, error) { return listStaleClaims(client) },
-		TicketHasRemoteBranch:  func(id string) bool { return gitpkg.TicketHasRemoteBranch(cfg.HerdPath, id) },
+		TicketHasRemoteBranch:  func(id string) bool { return gitpkg.TicketHasRemoteBranch(cfg.ProjectPath, id) },
 		ClaimTTL:               cfg.LoopClaimTTL,
 		Sleep:                  time.Sleep,
 		Now:                    time.Now,
@@ -162,16 +162,16 @@ func main() {
 		MaxConsecutiveFailures: cfg.LoopMaxConsecutiveFailures,
 		MaxTickets:             cfg.LoopMaxTickets,
 		MaxRuntime:             cfg.LoopMaxRuntime,
-		// Disk reclaim (ADR-0005). The worktrees live under HERD_PATH/.claude/worktrees,
-		// so statfs HERD_PATH (always present, same volume) for the cheap gate; the prune
+		// Disk reclaim (ADR-0005). The worktrees live under PROJECT_PATH/.claude/worktrees,
+		// so statfs PROJECT_PATH (always present, same volume) for the cheap gate; the prune
 		// shells out to the existing squash-merge-aware script, `pnpm store prune` is the
 		// cheap secondary, and `docker builder/image prune` is the tertiary reclaim of the
 		// harness's usual disk hog. All four run host-side, never inside the sandbox.
 		DiskReclaimThreshold: cfg.LoopDiskReclaimThreshold,
-		FreeDisk:             func() (uint64, error) { return sandbox.FreeDiskBytes(cfg.HerdPath) },
-		PruneMergedWorktrees: func() (int, error) { return pruneMergedWorktrees(cfg.HerdPath) },
-		StorePrune:           func() error { return storePrune(cfg.HerdPath) },
-		DockerPrune:          func() error { return dockerPrune(cfg.HerdPath) },
+		FreeDisk:             func() (uint64, error) { return sandbox.FreeDiskBytes(cfg.ProjectPath) },
+		PruneMergedWorktrees: func() (int, error) { return pruneMergedWorktrees(cfg.ProjectPath) },
+		StorePrune:           func() error { return storePrune(cfg.ProjectPath) },
+		DockerPrune:          func() error { return dockerPrune(cfg.ProjectPath) },
 		Log:                  log,
 	})
 	os.Exit(code)
@@ -213,7 +213,7 @@ func runPipeline(cfg config.Config, identifier string) loop.TicketOutcome {
 	}
 	args := stages.Args{Identifier: identifier, PreClaimed: true}
 	out := pipeline.Run(pipeline.Deps{
-		FetchMain:      func() error { return gitpkg.FetchMain(cfg.HerdPath) },
+		FetchMain:      func() error { return gitpkg.FetchMain(cfg.ProjectPath) },
 		Implementation: func() stages.Result { return stages.Implementation(cfg, log, runID, args) },
 		Review:         func() stages.Result { return stages.Review(cfg, log, runID, args) },
 		Retrospective:  func() stages.Result { return stages.Retrospective(cfg, log, runID, args) },
@@ -251,7 +251,7 @@ const recoverGhTimeout = 2 * time.Minute
 // attempt is never worse than no attempt.
 func recoverCommittedFix(cfg config.Config, client tracker.Tracker, log loop.Narrator, identifier string) (loop.TicketOutcome, bool) {
 	slug := strings.ToLower(identifier)
-	worktreePath := gitpkg.WorktreePath(cfg.HerdPath, slug)
+	worktreePath := gitpkg.WorktreePath(cfg.ProjectPath, slug)
 
 	// A committed fix means a clean worktree: uncommitted edits are an in-progress or
 	// crashed run, not a finished-but-unpushed one, so leave those to the normal path.
@@ -262,7 +262,7 @@ func recoverCommittedFix(cfg config.Config, client tracker.Tracker, log loop.Nar
 		return loop.TicketOutcome{}, false
 	}
 	// Refresh main so the empty-diff check and the PR base are current.
-	if err := gitpkg.FetchMain(cfg.HerdPath); err != nil {
+	if err := gitpkg.FetchMain(cfg.ProjectPath); err != nil {
 		log.Event("loop … warning: could not fetch origin/main during committed-fix recovery: " + err.Error())
 	}
 	// Nothing committed ahead of main (already merged, or an empty branch) → not a
@@ -272,7 +272,7 @@ func recoverCommittedFix(cfg config.Config, client tracker.Tracker, log loop.Nar
 	}
 	// A branch that already has an OPEN PR isn't stranded (its outcome would already
 	// carry ReachedPushedPR — belt-and-suspenders), so there is nothing to complete.
-	if pr.OpenExists(cfg.HerdPath, gitpkg.BranchName(cfg.BranchPrefix, slug)) {
+	if pr.OpenExists(cfg.ProjectPath, gitpkg.BranchName(cfg.BranchPrefix, slug)) {
 		return loop.TicketOutcome{}, false
 	}
 
@@ -294,7 +294,7 @@ func recoverCommittedFix(cfg config.Config, client tracker.Tracker, log loop.Nar
 	}
 	// force-with-lease: the remote may hold an older checkpoint tip (the BEH-649 case),
 	// so a plain push would be rejected as non-fast-forward.
-	if err := gitpkg.PushForceWithLease(cfg.HerdPath, cfg.BranchPrefix, slug); err != nil {
+	if err := gitpkg.PushForceWithLease(cfg.ProjectPath, cfg.BranchPrefix, slug); err != nil {
 		log.Event("loop … " + identifier + " committed-fix recovery: push failed: " + err.Error())
 		return loop.TicketOutcome{ReachedPushedPR: false}, true
 	}
@@ -303,8 +303,8 @@ func recoverCommittedFix(cfg config.Config, client tracker.Tracker, log loop.Nar
 		log.Event("loop … " + identifier + " committed-fix recovery: could not fetch ticket for the PR body: " + err.Error())
 		return loop.TicketOutcome{ReachedPushedPR: false}, true
 	}
-	subjects := gitpkg.CommitSubjects(cfg.HerdPath, cfg.BranchPrefix, slug)
-	if err := openPR(cfg.HerdPath, cfg.BranchPrefix, slug, pr.BuildTitle(t), pr.BuildBody(t, subjects)); err != nil {
+	subjects := gitpkg.CommitSubjects(cfg.ProjectPath, cfg.BranchPrefix, slug)
+	if err := openPR(cfg.ProjectPath, cfg.BranchPrefix, slug, pr.BuildTitle(t), pr.BuildBody(t, subjects)); err != nil {
 		log.Event("loop … " + identifier + " committed-fix recovery: gh pr create failed: " + err.Error())
 		return loop.TicketOutcome{ReachedPushedPR: false}, true
 	}

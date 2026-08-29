@@ -8,8 +8,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/beherd/agent-harness/internal/findings"
-	"github.com/beherd/agent-harness/internal/tracker"
+	"github.com/danoleary/agent-harness/internal/findings"
+	"github.com/danoleary/agent-harness/internal/tracker"
 )
 
 // The finding-key and occurrence markers are the harness's cross-adapter dedup

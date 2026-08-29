@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"net/url"
 
-	"github.com/beherd/agent-harness/internal/ticket"
+	"github.com/danoleary/agent-harness/internal/ticket"
 )
 
 // selectQuery builds the list-issues query for the ready queue: the human-gated

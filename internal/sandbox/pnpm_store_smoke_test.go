@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/beherd/agent-harness/internal/proc"
+	"github.com/danoleary/agent-harness/internal/proc"
 )
 
 // smokeRunner bounds each docker call generously: the resolve itself is instant,
@@ -68,7 +68,7 @@ func TestStorePathUnderMount(t *testing.T) {
 // behavioral check passes — and it asks pnpm to *resolve* the path (`store
 // path`) rather than echo config, so it measures the effect, not the text. The
 // runner is invoked with `pnpm store path` past the entrypoint (which requires
-// HERD_PATH), and the trailing newline docker emits is tolerated.
+// PROJECT_PATH), and the trailing newline docker emits is tolerated.
 func TestVerifyPnpmStoreInImagePassesWhenResolvedUnderMount(t *testing.T) {
 	var cmd string
 	run := fakeStoreRunner([]byte("/pnpm-store/v11\n"), nil, &cmd)
@@ -76,7 +76,7 @@ func TestVerifyPnpmStoreInImagePassesWhenResolvedUnderMount(t *testing.T) {
 		t.Fatalf("expected pass when pnpm resolves under the mount, got: %v", err)
 	}
 	if !strings.Contains(cmd, "--entrypoint pnpm") {
-		t.Errorf("check must bypass the entrypoint (it needs HERD_PATH) via `--entrypoint pnpm`, got: %s", cmd)
+		t.Errorf("check must bypass the entrypoint (it needs PROJECT_PATH) via `--entrypoint pnpm`, got: %s", cmd)
 	}
 	if !strings.Contains(cmd, "store path") {
 		t.Errorf("check must resolve the effective store via `pnpm store path`, not echo config, got: %s", cmd)

@@ -5,11 +5,11 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/beherd/agent-harness/internal/config"
-	gitpkg "github.com/beherd/agent-harness/internal/git"
-	"github.com/beherd/agent-harness/internal/prompt"
-	"github.com/beherd/agent-harness/internal/sandbox"
-	"github.com/beherd/agent-harness/internal/ticket"
+	"github.com/danoleary/agent-harness/internal/config"
+	gitpkg "github.com/danoleary/agent-harness/internal/git"
+	"github.com/danoleary/agent-harness/internal/prompt"
+	"github.com/danoleary/agent-harness/internal/sandbox"
+	"github.com/danoleary/agent-harness/internal/ticket"
 )
 
 // Plan renders the pipeline's dry-run plan for identifier: the ordered stages
@@ -28,8 +28,8 @@ func Plan(cfg config.Config, identifier string) string {
 	// Stub ticket: Linear is deliberately not fetched under dry-run, so the prompt
 	// bodies show structure with an empty title/description ("best computable").
 	t := ticket.Ticket{Identifier: id}
-	worktreePath := gitpkg.WorktreePath(cfg.HerdPath, slug)
-	logsRoot := filepath.Join(cfg.HerdPath, "agent-harness", "logs")
+	worktreePath := gitpkg.WorktreePath(cfg.ProjectPath, slug)
+	logsRoot := filepath.Join(cfg.ProjectPath, "agent-harness", "logs")
 
 	name := func(session string) string {
 		return fmt.Sprintf("herd-harness-<run-id>-<pid>-%s", session)
@@ -53,7 +53,7 @@ func Plan(cfg config.Config, identifier string) string {
 	implPrompt := prompt.BuildTdd(t, slug, cfg.BranchPrefix, cfg.Prompts.Implement)
 	implDocker := sandbox.BuildDockerRunArgs(sandbox.Config{
 		Image:          cfg.Image,
-		HerdPath:       cfg.HerdPath,
+		ProjectPath:    cfg.ProjectPath,
 		FindingsDir:    findingsDir("implementation"),
 		CacheVolume:    cfg.CacheVolume,
 		CacheMountPath: cfg.CacheMountPath,
@@ -69,7 +69,7 @@ func Plan(cfg config.Config, identifier string) string {
 	if cfg.PostCreate != "" {
 		postCreateLine = dockerLine(sandbox.BuildPostCreateRunArgs(sandbox.GateConfig{
 			Image:          cfg.Image,
-			HerdPath:       cfg.HerdPath,
+			ProjectPath:    cfg.ProjectPath,
 			WorktreePath:   worktreePath,
 			CacheVolume:    cfg.CacheVolume,
 			CacheMountPath: cfg.CacheMountPath,
@@ -80,7 +80,7 @@ func Plan(cfg config.Config, identifier string) string {
 
 	gateConfig := sandbox.GateConfig{
 		Image:          cfg.Image,
-		HerdPath:       cfg.HerdPath,
+		ProjectPath:    cfg.ProjectPath,
 		WorktreePath:   worktreePath,
 		CacheVolume:    cfg.CacheVolume,
 		CacheMountPath: cfg.CacheMountPath,
@@ -95,7 +95,7 @@ func Plan(cfg config.Config, identifier string) string {
 	reviewPrompt := prompt.BuildReview(t, slug, worktreePath, cfg.BranchPrefix, cfg.Prompts.Review)
 	reviewDocker := sandbox.BuildDockerRunArgs(sandbox.Config{
 		Image:          cfg.Image,
-		HerdPath:       cfg.HerdPath,
+		ProjectPath:    cfg.ProjectPath,
 		FindingsDir:    "",
 		CacheVolume:    cfg.CacheVolume,
 		CacheMountPath: cfg.CacheMountPath,
@@ -120,7 +120,7 @@ func Plan(cfg config.Config, identifier string) string {
 	retroPrompt := prompt.BuildRetrospective(t, slug, nil, cfg.BranchPrefix, cfg.Prompts.Retro)
 	retroDocker := sandbox.BuildDockerRunArgs(sandbox.Config{
 		Image:          cfg.Image,
-		HerdPath:       cfg.HerdPath,
+		ProjectPath:    cfg.ProjectPath,
 		FindingsDir:    findingsDir("retrospective"),
 		CacheVolume:    cfg.CacheVolume,
 		CacheMountPath: cfg.CacheMountPath,

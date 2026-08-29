@@ -58,7 +58,7 @@ func (n issueNode) toMap() map[string]any {
 		"identifier":       n.identifier,
 		"title":            title,
 		"description":      description,
-		"url":              "https://linear.app/beherd/issue/" + n.identifier,
+		"url":              "https://linear.app/example-workspace/issue/" + n.identifier,
 		"priorityLabel":    "Urgent",
 		"priority":         n.priority,
 		"sortOrder":        n.sortOrder,

@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/beherd/agent-harness/internal/tracker"
+	"github.com/danoleary/agent-harness/internal/tracker"
 )
 
 // claimsQuery builds the list-issues query for the reaper read: the repo's open,

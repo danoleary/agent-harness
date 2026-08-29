@@ -16,12 +16,12 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/beherd/agent-harness/internal/config"
-	"github.com/beherd/agent-harness/internal/filing"
-	"github.com/beherd/agent-harness/internal/github"
-	"github.com/beherd/agent-harness/internal/runlog"
-	"github.com/beherd/agent-harness/internal/sandbox"
-	"github.com/beherd/agent-harness/internal/semdedup"
+	"github.com/danoleary/agent-harness/internal/config"
+	"github.com/danoleary/agent-harness/internal/filing"
+	"github.com/danoleary/agent-harness/internal/github"
+	"github.com/danoleary/agent-harness/internal/runlog"
+	"github.com/danoleary/agent-harness/internal/sandbox"
+	"github.com/danoleary/agent-harness/internal/semdedup"
 )
 
 var ticketRE = regexp.MustCompile(`^[A-Z]+-\d+$`)
@@ -229,7 +229,7 @@ func LoadConfig() (config.Config, error) {
 // per-ticket log dirs and the global loop.jsonl live. Exposed so the cmd
 // entrypoints can wire the same global stream the per-ticket loggers feed.
 func LogsRoot(cfg config.Config) string {
-	return filepath.Join(cfg.HerdPath, "agent-harness", "logs")
+	return filepath.Join(cfg.ProjectPath, "agent-harness", "logs")
 }
 
 func Setup(identifier string) (config.Config, *runlog.Logger, string, error) {

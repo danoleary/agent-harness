@@ -16,7 +16,7 @@ import (
 	"io"
 	"strings"
 
-	"github.com/beherd/agent-harness/internal/loopstream"
+	"github.com/danoleary/agent-harness/internal/loopstream"
 )
 
 // NotRunningMessage is shown when the stream file is absent — no daemon or

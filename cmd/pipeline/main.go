@@ -19,12 +19,12 @@ import (
 	"fmt"
 	"os"
 
-	gitpkg "github.com/beherd/agent-harness/internal/git"
-	"github.com/beherd/agent-harness/internal/loopstream"
-	"github.com/beherd/agent-harness/internal/pipeline"
-	"github.com/beherd/agent-harness/internal/runlog"
-	"github.com/beherd/agent-harness/internal/stages"
-	"github.com/beherd/agent-harness/internal/trackers"
+	gitpkg "github.com/danoleary/agent-harness/internal/git"
+	"github.com/danoleary/agent-harness/internal/loopstream"
+	"github.com/danoleary/agent-harness/internal/pipeline"
+	"github.com/danoleary/agent-harness/internal/runlog"
+	"github.com/danoleary/agent-harness/internal/stages"
+	"github.com/danoleary/agent-harness/internal/trackers"
 )
 
 func main() {
@@ -86,7 +86,7 @@ func main() {
 	// Bind each stage to the shared cfg/log/runID/args (--verbose and PreClaimed
 	// forward through args). The pipeline decides ordering; the stages do the work.
 	outcome := pipeline.Run(pipeline.Deps{
-		FetchMain:      func() error { return gitpkg.FetchMain(cfg.HerdPath) },
+		FetchMain:      func() error { return gitpkg.FetchMain(cfg.ProjectPath) },
 		Implementation: func() stages.Result { return stages.Implementation(cfg, log, runID, args) },
 		Review:         func() stages.Result { return stages.Review(cfg, log, runID, args) },
 		Retrospective:  func() stages.Result { return stages.Retrospective(cfg, log, runID, args) },

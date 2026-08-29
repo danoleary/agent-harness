@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/beherd/agent-harness/internal/findings"
-	"github.com/beherd/agent-harness/internal/tracker"
+	"github.com/danoleary/agent-harness/internal/findings"
+	"github.com/danoleary/agent-harness/internal/tracker"
 )
 
 func openSet() []tracker.ExistingFinding {

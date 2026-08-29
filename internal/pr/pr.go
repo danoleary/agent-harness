@@ -8,7 +8,7 @@ package pr
 import (
 	"strings"
 
-	"github.com/beherd/agent-harness/internal/ticket"
+	"github.com/danoleary/agent-harness/internal/ticket"
 )
 
 // trailer marks the PR as harness-generated so a human reading it knows it was

@@ -20,8 +20,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/beherd/agent-harness/internal/findings"
-	"github.com/beherd/agent-harness/internal/tracker"
+	"github.com/danoleary/agent-harness/internal/findings"
+	"github.com/danoleary/agent-harness/internal/tracker"
 )
 
 // noMatch is the sentinel the model returns when a finding matches no open issue.

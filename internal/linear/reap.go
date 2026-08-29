@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/beherd/agent-harness/internal/tracker"
+	"github.com/danoleary/agent-harness/internal/tracker"
 )
 
 // inProgressClaimsQuery lists the team's agent-claimed In Progress tickets with the

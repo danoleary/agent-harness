@@ -4,13 +4,13 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/beherd/agent-harness/internal/config"
+	"github.com/danoleary/agent-harness/internal/config"
 )
 
 func planCfg() config.Config {
 	return config.Config{
 		Image:          "herd-agent-harness:latest",
-		HerdPath:       "/herd",
+		ProjectPath:    "/herd",
 		CacheVolume:    "herd-pnpm-store",
 		CacheMountPath: "/pnpm-store",
 		Model:          "claude-opus-4-8",

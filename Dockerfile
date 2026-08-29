@@ -93,6 +93,14 @@ RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_VERSION}"
 # TestPlaywrightVersionMatchesWebPackage guard fails CI on any such drift.
 ARG PLAYWRIGHT_VERSION=1.62.1
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+
+# Declare the baked browser tree as a surface the entrypoint must chown to the
+# runtime uid, so an in-session `playwright install` can heal a version drift
+# (BEH-405). It replaces the entrypoint's old hardcoded /ms-playwright chown,
+# which could not survive a base image shared with non-Playwright Consumers
+# (ADR-0007). Colon-separated; the entrypoint only walks it when the runtime uid
+# differs from the baked 1000, so the macOS path still pays nothing.
+ENV HARNESS_CHOWN_PATHS=/ms-playwright
 RUN npx -y "playwright@${PLAYWRIGHT_VERSION}" install --with-deps chromium \
 	&& chown -R node:node /ms-playwright \
 	&& rm -rf /var/lib/apt/lists/*

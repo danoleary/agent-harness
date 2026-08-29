@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/beherd/agent-harness/internal/loopstream"
+	"github.com/danoleary/agent-harness/internal/loopstream"
 )
 
 // fixedNow is a stable clock for reaper tests so a claim's age is deterministic.

@@ -3,7 +3,7 @@ package linear
 import (
 	"testing"
 
-	"github.com/beherd/agent-harness/internal/tracker"
+	"github.com/danoleary/agent-harness/internal/tracker"
 )
 
 // TestClientSatisfiesTrackerPort pins the ADR-0010 refactor: the Linear client is

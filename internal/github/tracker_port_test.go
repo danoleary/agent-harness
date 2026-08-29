@@ -3,7 +3,7 @@ package github
 import (
 	"testing"
 
-	"github.com/beherd/agent-harness/internal/tracker"
+	"github.com/danoleary/agent-harness/internal/tracker"
 )
 
 // TestClientSatisfiesTrackerPort pins that the GitHub adapter is a drop-in behind

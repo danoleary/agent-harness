@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/beherd/agent-harness/internal/loopstream"
+	"github.com/danoleary/agent-harness/internal/loopstream"
 )
 
 // The tracer: after a ticket is selected and the implementation stage starts, the

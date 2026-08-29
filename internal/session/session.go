@@ -18,9 +18,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/beherd/agent-harness/internal/loopstream"
-	"github.com/beherd/agent-harness/internal/sandbox"
-	"github.com/beherd/agent-harness/internal/stream"
+	"github.com/danoleary/agent-harness/internal/loopstream"
+	"github.com/danoleary/agent-harness/internal/sandbox"
+	"github.com/danoleary/agent-harness/internal/stream"
 )
 
 // Logger is the narration + transcript sink a session writes through

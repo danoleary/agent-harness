@@ -18,7 +18,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/beherd/agent-harness/internal/loopstream"
+	"github.com/danoleary/agent-harness/internal/loopstream"
 )
 
 // TicketOutcome is what the loop learns from running one ticket through the

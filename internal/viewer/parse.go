@@ -3,7 +3,7 @@ package viewer
 import (
 	"encoding/json"
 
-	"github.com/beherd/agent-harness/internal/loopstream"
+	"github.com/danoleary/agent-harness/internal/loopstream"
 )
 
 // parse decodes one JSONL line into a Record. ok=false on a malformed line.

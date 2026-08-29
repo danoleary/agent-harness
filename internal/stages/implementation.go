@@ -7,17 +7,17 @@ import (
 	"strings"
 	"time"
 
-	"github.com/beherd/agent-harness/internal/config"
-	"github.com/beherd/agent-harness/internal/filing"
-	gitpkg "github.com/beherd/agent-harness/internal/git"
-	"github.com/beherd/agent-harness/internal/loopstream"
-	"github.com/beherd/agent-harness/internal/prompt"
-	"github.com/beherd/agent-harness/internal/runlog"
-	"github.com/beherd/agent-harness/internal/sandbox"
-	"github.com/beherd/agent-harness/internal/session"
-	"github.com/beherd/agent-harness/internal/ticket"
-	"github.com/beherd/agent-harness/internal/trackers"
-	"github.com/beherd/agent-harness/internal/verify"
+	"github.com/danoleary/agent-harness/internal/config"
+	"github.com/danoleary/agent-harness/internal/filing"
+	gitpkg "github.com/danoleary/agent-harness/internal/git"
+	"github.com/danoleary/agent-harness/internal/loopstream"
+	"github.com/danoleary/agent-harness/internal/prompt"
+	"github.com/danoleary/agent-harness/internal/runlog"
+	"github.com/danoleary/agent-harness/internal/sandbox"
+	"github.com/danoleary/agent-harness/internal/session"
+	"github.com/danoleary/agent-harness/internal/ticket"
+	"github.com/danoleary/agent-harness/internal/trackers"
+	"github.com/danoleary/agent-harness/internal/verify"
 )
 
 // tddCap selects the active-time cap for a tdd session by ticket shape: a
@@ -148,9 +148,9 @@ func provisionWorktreeWith(
 	createWorktree func(herdPath, branchPrefix, slug string) error,
 	postCreate func(worktreePath string),
 ) error {
-	worktreePath := gitpkg.WorktreePath(cfg.HerdPath, slug)
+	worktreePath := gitpkg.WorktreePath(cfg.ProjectPath, slug)
 	if _, err := os.Stat(worktreePath); err != nil {
-		if cErr := createWorktree(cfg.HerdPath, cfg.BranchPrefix, slug); cErr != nil {
+		if cErr := createWorktree(cfg.ProjectPath, cfg.BranchPrefix, slug); cErr != nil {
 			return fmt.Errorf("creating worktree %s: %w", worktreePath, cErr)
 		}
 		log.Event("created worktree " + worktreePath + " on " + gitpkg.BranchName(cfg.BranchPrefix, slug) + " (host-side)")
@@ -177,7 +177,7 @@ func runPostCreate(cfg config.Config, worktreePath, runID string, args Args, log
 	base := fmt.Sprintf("herd-harness-%s-%d-postcreate", runID, os.Getpid())
 	gc := sandbox.GateConfig{
 		Image:          cfg.Image,
-		HerdPath:       cfg.HerdPath,
+		ProjectPath:    cfg.ProjectPath,
 		WorktreePath:   worktreePath,
 		CacheVolume:    cfg.CacheVolume,
 		CacheMountPath: cfg.CacheMountPath,
@@ -251,7 +251,7 @@ func Implementation(cfg config.Config, log *runlog.Logger, runID string, args Ar
 	// signal is heuristic (a cited symbol can be absent because the ticket asks to
 	// *create* it), so it only surfaces for the human + the in-session agent
 	// (steered by premiseCheckSteer) to act on — never drops the dispatch itself.
-	if adv := gitpkg.ResolvedAdvisory(filepath.Join(cfg.HerdPath, "web", "src"), t.Identifier, t.Description); adv != "" {
+	if adv := gitpkg.ResolvedAdvisory(filepath.Join(cfg.ProjectPath, "web", "src"), t.Identifier, t.Description); adv != "" {
 		log.Event(adv)
 	}
 
@@ -264,7 +264,7 @@ func Implementation(cfg config.Config, log *runlog.Logger, runID string, args Ar
 	// incomplete work) — instead we steer the session to verify-and-handoff over
 	// re-implementing by swapping in BuildTddResumedBranch.
 	p := prompt.BuildTdd(t, slug, cfg.BranchPrefix, cfg.Prompts.Implement)
-	if adv := gitpkg.ResumedBranchAdvisory(cfg.HerdPath, cfg.BranchPrefix, slug, t.Identifier); adv != "" {
+	if adv := gitpkg.ResumedBranchAdvisory(cfg.ProjectPath, cfg.BranchPrefix, slug, t.Identifier); adv != "" {
 		log.Event(adv)
 		p = prompt.BuildTddResumedBranch(t, slug, cfg.BranchPrefix, cfg.Prompts.Implement)
 	}
@@ -294,7 +294,7 @@ func Implementation(cfg config.Config, log *runlog.Logger, runID string, args Ar
 	buildArgs := func(name, prmpt string) []string {
 		return sandbox.BuildDockerRunArgs(sandbox.Config{
 			Image:          cfg.Image,
-			HerdPath:       cfg.HerdPath,
+			ProjectPath:    cfg.ProjectPath,
 			FindingsDir:    findingsDir,
 			CacheVolume:    cfg.CacheVolume,
 			CacheMountPath: cfg.CacheMountPath,
@@ -321,7 +321,7 @@ func Implementation(cfg config.Config, log *runlog.Logger, runID string, args Ar
 	// --force overrides for the rare false positive — a key that only coincidentally
 	// appears in an unrelated downstream commit. (Deliberately after the dry-run
 	// branch above: --dry-run stays a pure prompt/command inspector.)
-	if !args.Force && gitpkg.TicketAlreadyOnMain(cfg.HerdPath, args.Identifier) {
+	if !args.Force && gitpkg.TicketAlreadyOnMain(cfg.ProjectPath, args.Identifier) {
 		log.Event(fmt.Sprintf(
 			"skipped %s — already merged on main (a recent commit references it); re-run with --force to dispatch anyway",
 			args.Identifier,
@@ -335,7 +335,7 @@ func Implementation(cfg config.Config, log *runlog.Logger, runID string, args Ar
 	// the ticket was already claimed during selection (ADR-0003), so a preflight
 	// failure means we dequeued a ticket we can't work: release it back to Todo
 	// rather than strand it In Progress (a no-op on the hand-passed path).
-	if err := sandbox.Preflight(sandbox.PreflightFor(cfg.Image, cfg.HerdPath, cfg.Dockerfile)); err != nil {
+	if err := sandbox.Preflight(sandbox.PreflightFor(cfg.Image, cfg.ProjectPath, cfg.Dockerfile)); err != nil {
 		releaseIfPreClaimed(client, args.Identifier, args.PreClaimed, log)
 		// PreflightAbort marks this as environmental (full disk / daemon down), not a
 		// ticket failure, so the loop reclaims disk + backs off and the breaker stays
@@ -372,7 +372,7 @@ func Implementation(cfg config.Config, log *runlog.Logger, runID string, args Ar
 	// failure, a non-refusal error — is final on the first attempt.
 	const maxTddAttempts = 2
 
-	worktreePath := gitpkg.WorktreePath(cfg.HerdPath, slug)
+	worktreePath := gitpkg.WorktreePath(cfg.ProjectPath, slug)
 	// A multi-file extract-and-rewire refactor gets a larger active-time cap: it is
 	// inherently sequential (extract N modules, then rewire N call sites) and
 	// overran the ordinary cap mid-surgery, leaving an uncompilable checkpoint
@@ -440,7 +440,7 @@ func Implementation(cfg config.Config, log *runlog.Logger, runID string, args Ar
 		))
 
 		// Ground truth, never self-report.
-		truth = gitpkg.GatherTddGroundTruth(cfg.HerdPath, cfg.BranchPrefix, slug)
+		truth = gitpkg.GatherTddGroundTruth(cfg.ProjectPath, cfg.BranchPrefix, slug)
 		result = verify.Tdd(truth)
 		capAborted = outcome.SpendingCapAbort
 
@@ -468,7 +468,7 @@ func Implementation(cfg config.Config, log *runlog.Logger, runID string, args Ar
 			log.Event("⚠ disjoint branch detected but the regraft failed (" + rErr.Error() + ") — keeping the worktree for manual recovery (BEH-609)")
 		} else {
 			log.Event("↻ verified work was trapped on a disjoint branch — re-grafted its content diff onto a fresh base off origin/main (BEH-609)")
-			truth = gitpkg.GatherTddGroundTruth(cfg.HerdPath, cfg.BranchPrefix, slug)
+			truth = gitpkg.GatherTddGroundTruth(cfg.ProjectPath, cfg.BranchPrefix, slug)
 			result = verify.Tdd(truth)
 		}
 	}

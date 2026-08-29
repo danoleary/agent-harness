@@ -1,4 +1,4 @@
-module github.com/beherd/agent-harness
+module github.com/danoleary/agent-harness
 
 go 1.26
 

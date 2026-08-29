@@ -10,8 +10,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/beherd/agent-harness/internal/loopstream"
-	"github.com/beherd/agent-harness/internal/stages"
+	"github.com/danoleary/agent-harness/internal/loopstream"
+	"github.com/danoleary/agent-harness/internal/stages"
 )
 
 // Narrator is the slice of *runlog.Logger the orchestration needs: one-line

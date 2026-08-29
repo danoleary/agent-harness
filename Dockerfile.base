@@ -1,0 +1,66 @@
+# The agent-harness SANDBOX BASE IMAGE — the harness↔sandbox contract surface,
+# and nothing project-specific (ADR-0007/ADR-0008, DESIGN.md §Sandbox image).
+#
+# A Consumer adopts the harness by writing its own Dockerfile that `FROM`s a
+# PINNED tag of this image and adds its toolchain — never by forking the harness.
+# See docs/CONSUMER.md for the composition contract.
+#
+# Published to GHCR on a tagged release, for linux/amd64 + linux/arm64.
+#
+# What belongs here: only what the harness itself requires of every sandbox — the
+# claude CLI, git, the uid-re-exec entrypoint, and the bind-mount layout. A
+# language toolchain (node deps, pnpm, .NET, Playwright, a database CLI) belongs
+# in the Consumer layer. Anything added here is paid for by every Consumer.
+#
+# node is the base because the claude CLI ships as an npm package; it is a
+# transport detail, NOT an invitation to treat this as a Node image.
+FROM node:24-bookworm
+
+# The claude CLI is PINNED, never floated to latest: the harness's steering, its
+# stream parsing, and its exit-code contract are all written against a known CLI.
+# Bump it deliberately as part of a base release.
+ARG CLAUDE_VERSION=2.0.14
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# git: the harness's whole ground truth is git state the session produces.
+# gosu: the entrypoint's privilege drop (see below).
+# bash/jq/less/curl/ca-certificates: the session's own shell surface.
+#
+# `gh` is deliberately ABSENT. The container never pushes and never talks to
+# GitHub — the harness owns all remote I/O host-side (ADR-0002) — so GH_TOKEN
+# never enters the image and there is nothing here for it to authenticate.
+RUN apt-get update \
+	&& apt-get install -y --no-install-recommends \
+		ca-certificates curl gnupg git bash less jq gosu \
+	&& rm -rf /var/lib/apt/lists/*
+
+RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_VERSION}"
+
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
+# Claude must run as a non-root user: `claude --dangerously-skip-permissions`
+# refuses to start under root/sudo ("cannot be used with root/sudo privileges for
+# security reasons"), which would exit the session 1 before it ever created a
+# worktree (BEH-316). The node image ships an unprivileged `node` user (uid 1000)
+# — pre-create the findings dropbox owned by it so a fresh named volume
+# initialises node-owned (Docker copies the image dir's ownership into an empty
+# named volume on first mount). The Consumer checkout's mount target is the real
+# host path and is created by Docker at runtime, so it is not pre-created here.
+#
+# We do NOT pin `USER node`: on Linux the bind-mounted checkout is owned by the
+# host uid (often != 1000), which a fixed uid could not write. The container
+# instead enters as root and entrypoint.sh re-homes `node` onto the checkout's
+# owner uid/gid and drops to it with gosu before exec'ing claude.
+RUN mkdir -p /findings \
+	&& chown -R node:node /findings
+
+# A Consumer layer sets HARNESS_CHOWN_PATHS to a colon-separated list of
+# image-internal paths its toolchain needs writable at runtime (the entrypoint
+# chowns each when the runtime uid differs from the baked 1000). The cache volume
+# is NOT declared here — the harness passes its path as HARNESS_CACHE_PATH,
+# because it is the Consumer's `[cache].path` in .agent-harness/config.toml.
+ENV HARNESS_CHOWN_PATHS=""
+
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

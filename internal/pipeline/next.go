@@ -3,8 +3,8 @@ package pipeline
 import (
 	"fmt"
 
-	"github.com/beherd/agent-harness/internal/loopstream"
-	"github.com/beherd/agent-harness/internal/ticket"
+	"github.com/danoleary/agent-harness/internal/loopstream"
+	"github.com/danoleary/agent-harness/internal/ticket"
 )
 
 // NextResolver is the Linear surface `pipeline --next` needs: a pure read to

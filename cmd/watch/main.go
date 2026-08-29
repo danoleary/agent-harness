@@ -15,7 +15,7 @@
 // a signal-0 liveness probe that cannot affect the process), so it does not load
 // the harness config.
 //
-// Path resolution, in order: a positional argument; else $HERD_PATH's
+// Path resolution, in order: a positional argument; else $PROJECT_PATH's
 // agent-harness/logs/loop.jsonl; else logs/loop.jsonl relative to the cwd (the
 // harness dir, where `make watch` runs). When the file is absent it surfaces a
 // clear "loop not running" / daemon-down state and keeps polling, so starting the
@@ -32,8 +32,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/beherd/agent-harness/internal/loopstream"
-	"github.com/beherd/agent-harness/internal/viewer"
+	"github.com/danoleary/agent-harness/internal/loopstream"
+	"github.com/danoleary/agent-harness/internal/viewer"
 )
 
 // pollInterval is how often the viewer re-reads the stream for new lines (and, in
@@ -210,7 +210,7 @@ func resolvePath(argv []string) string {
 	if len(argv) > 0 && argv[0] != "" {
 		return argv[0]
 	}
-	if herd := os.Getenv("HERD_PATH"); herd != "" {
+	if herd := os.Getenv("PROJECT_PATH"); herd != "" {
 		return loopstream.PathUnder(filepath.Join(herd, "agent-harness", "logs"))
 	}
 	return loopstream.PathUnder("logs")

@@ -295,7 +295,7 @@ loop:
                      re-run the host gate on the resolved tree; only then push. If it can't land a
                      clean, re-gated rebase -> abort + KEEP worktree + Linear breadcrumb (a spending-cap
                      abort defers quietly). A genuine unresolvable conflict still ends with a human.
-               git -C $HERD_PATH push origin feat/beh-nnn
+               git -C $PROJECT_PATH push origin feat/beh-nnn
                gh pr create --repo <origin> --head feat/beh-nnn --base main \
                             --title <templated> --body <templated: ticket id + commit subjects>
   if not OK -> log + Linear breadcrumb comment + KEEP worktree + record failure + continue
@@ -451,8 +451,8 @@ loop:
   out of scope.
 - **Real-path bind mount — see [ADR-0002](adr/0002-harness-owns-remote-io.md).**
   The whole herd checkout (incl. `.git` and `.claude/worktrees/`) is bind-mounted
-  into every container at **its own real host path** (`$HERD_PATH:$HERD_PATH`,
-  `-w $HERD_PATH`), not a synthetic `/workspace/herd`. A worktree's `.git` pointer
+  into every container at **its own real host path** (`$PROJECT_PATH:$PROJECT_PATH`,
+  `-w $PROJECT_PATH`), not a synthetic `/workspace/herd`. A worktree's `.git` pointer
   is an absolute path, so mounting at the real path makes it resolve **identically
   in every container and on the host** — a human can `cd .claude/worktrees/beh-nnn
   && git diff` to inspect live work. (The path is still fixed *per machine*, so
@@ -660,7 +660,7 @@ into its transcript, which retrospective reads.
 **Input — the prior transcripts are a first-class input.** Retrospective reviews
 the *sessions*, not just the code, so it needs what happened during them. With the
 real-path mount, the ticket-keyed transcripts at
-`$HERD_PATH/agent-harness/logs/BEH-NNN/` are already visible inside the container
+`$PROJECT_PATH/agent-harness/logs/BEH-NNN/` are already visible inside the container
 at their natural path — no extra mount. Retrospective reads **every** prior
 transcript for the ticket (implementation *and* review) plus the diff.
 
@@ -816,7 +816,7 @@ Consumer that declares none mounts no cache volume. The deprecated
 `pnpm_store_volume` key still maps onto `[cache]` with the historical `/pnpm-store`
 mount for back-compat.
 
-- **Commit identity:** `Herd Agent Harness <agent-harness@beherd.co>`. The
+- **Commit identity:** `Agent Harness <agent-harness@users.noreply.github.com>`. The
   skills' existing `Co-Authored-By: Claude` trailer stays.
 
 ### Base-image registry, publishing & versioning (HITL)
@@ -1069,7 +1069,7 @@ reader over a structured stream rather than a `--tui` flag on the daemon.
   Built with `go build`; the binary is self-contained (no runtime needed on the
   host beyond `docker`).
 - Config: `agent-harness/.env` (`LINEAR_API_KEY`, `ANTHROPIC_API_KEY`,
-  `GH_TOKEN`, `HERD_PATH`, bot identity, timeouts) + CLI flags (`--verbose`,
+  `GH_TOKEN`, `PROJECT_PATH`, bot identity, timeouts) + CLI flags (`--verbose`,
   `--once` for a single ticket then exit, label/timeout overrides).
 - **`cmd/loop` config knobs** (host-side, following the existing `*_MS` env
   convention; all optional with the defaults below):

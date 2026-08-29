@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/beherd/agent-harness/internal/loopstream"
+	"github.com/danoleary/agent-harness/internal/loopstream"
 )
 
 // recorder captures the order of injected calls and the narration emitted, so a

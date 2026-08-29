@@ -5,17 +5,17 @@ import (
 	"os"
 	"strings"
 
-	"github.com/beherd/agent-harness/internal/config"
-	"github.com/beherd/agent-harness/internal/filing"
-	gitpkg "github.com/beherd/agent-harness/internal/git"
-	"github.com/beherd/agent-harness/internal/loopstream"
-	"github.com/beherd/agent-harness/internal/pr"
-	"github.com/beherd/agent-harness/internal/prompt"
-	"github.com/beherd/agent-harness/internal/runlog"
-	"github.com/beherd/agent-harness/internal/sandbox"
-	"github.com/beherd/agent-harness/internal/session"
-	"github.com/beherd/agent-harness/internal/trackers"
-	"github.com/beherd/agent-harness/internal/verify"
+	"github.com/danoleary/agent-harness/internal/config"
+	"github.com/danoleary/agent-harness/internal/filing"
+	gitpkg "github.com/danoleary/agent-harness/internal/git"
+	"github.com/danoleary/agent-harness/internal/loopstream"
+	"github.com/danoleary/agent-harness/internal/pr"
+	"github.com/danoleary/agent-harness/internal/prompt"
+	"github.com/danoleary/agent-harness/internal/runlog"
+	"github.com/danoleary/agent-harness/internal/sandbox"
+	"github.com/danoleary/agent-harness/internal/session"
+	"github.com/danoleary/agent-harness/internal/trackers"
+	"github.com/danoleary/agent-harness/internal/verify"
 )
 
 // retrospectiveSession prefixes this stage's transcript + findings dir under the
@@ -60,7 +60,7 @@ func Retrospective(cfg config.Config, log *runlog.Logger, runID string, args Arg
 	// transcripts but no branch — one real input is enough to proceed. A skip is a
 	// clean no-op, not a failure — return OK so it never reds the pipeline.
 	if pre := verify.RetrospectivePreconditions(verify.RetrospectiveInputs{
-		BranchExists:     gitpkg.BranchExists(cfg.HerdPath, cfg.BranchPrefix, slug),
+		BranchExists:     gitpkg.BranchExists(cfg.ProjectPath, cfg.BranchPrefix, slug),
 		PriorTranscripts: hasUpstreamTranscripts(log.Dir),
 	}); !pre.OK {
 		log.Event(fmt.Sprintf("retrospective ⊘ skipped %s — %s", args.Identifier, pre.Reason))
@@ -117,7 +117,7 @@ func Retrospective(cfg config.Config, log *runlog.Logger, runID string, args Arg
 	containerName := fmt.Sprintf("herd-harness-%s-%d-%s", runID, os.Getpid(), retrospectiveSession)
 	dockerArgs := sandbox.BuildDockerRunArgs(sandbox.Config{
 		Image:          cfg.Image,
-		HerdPath:       cfg.HerdPath,
+		ProjectPath:    cfg.ProjectPath,
 		FindingsDir:    findingsDir,
 		CacheVolume:    cfg.CacheVolume,
 		CacheMountPath: cfg.CacheMountPath,
@@ -136,7 +136,7 @@ func Retrospective(cfg config.Config, log *runlog.Logger, runID string, args Arg
 	}
 
 	// Fail fast if Docker can't run the container before launching the session.
-	if err := sandbox.Preflight(sandbox.PreflightFor(cfg.Image, cfg.HerdPath, cfg.Dockerfile)); err != nil {
+	if err := sandbox.Preflight(sandbox.PreflightFor(cfg.Image, cfg.ProjectPath, cfg.Dockerfile)); err != nil {
 		return Result{Err: err}
 	}
 
@@ -202,7 +202,7 @@ func Retrospective(cfg config.Config, log *runlog.Logger, runID string, args Arg
 	// call even on failure — an absent dropbox routes nothing. Tracker dedup runs
 	// exact-match first, then a best-effort semantic pass; a match is recorded as a
 	// recurrence on the existing issue (client) instead of re-filed (BEH-573).
-	filing.Route(findingsDir, filing.HarnessFindingsDir(cfg.HerdPath), t.TeamID, args.Identifier, client, client, newSemanticMatcher(cfg), client, newUpstream(cfg), log)
+	filing.Route(findingsDir, filing.HarnessFindingsDir(cfg.ProjectPath), t.TeamID, args.Identifier, client, client, newSemanticMatcher(cfg), client, newUpstream(cfg), log)
 
 	if !result.OK {
 		// Keep the worktree as a recoverable breadcrumb (DESIGN.md failure matrix).
@@ -217,15 +217,15 @@ func Retrospective(cfg config.Config, log *runlog.Logger, runID string, args Arg
 	// The worktree tears down host-side; the real-path mount makes its .git pointer
 	// resolve from the main checkout.
 	branch := gitpkg.BranchName(cfg.BranchPrefix, slug)
-	pushed := gitpkg.BranchPushed(cfg.HerdPath, cfg.BranchPrefix, slug)
+	pushed := gitpkg.BranchPushed(cfg.ProjectPath, cfg.BranchPrefix, slug)
 	// && short-circuits, so an unpushed branch never spends the gh round-trip.
 	reap := verify.WorktreeReap(verify.WorktreeReapOutcome{
 		BranchPushed: pushed,
-		PRExists:     pushed && pr.Exists(cfg.HerdPath, branch),
+		PRExists:     pushed && pr.Exists(cfg.ProjectPath, branch),
 	})
 	if !reap.Reap {
 		log.Event("worktree kept — " + reap.Reason)
-	} else if err := gitpkg.RemoveWorktree(cfg.HerdPath, slug); err != nil {
+	} else if err := gitpkg.RemoveWorktree(cfg.ProjectPath, slug); err != nil {
 		log.Event("worktree kept — removal failed: " + err.Error())
 	} else {
 		log.Event("worktree removed — " + reap.Reason)

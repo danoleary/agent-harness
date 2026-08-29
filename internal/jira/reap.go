@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/beherd/agent-harness/internal/tracker"
+	"github.com/danoleary/agent-harness/internal/tracker"
 )
 
 // jiraTimeLayout is Jira Cloud's timestamp format (milliseconds + a numeric zone

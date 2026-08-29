@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/beherd/agent-harness/internal/loopstream"
+	"github.com/danoleary/agent-harness/internal/loopstream"
 )
 
 type event struct {

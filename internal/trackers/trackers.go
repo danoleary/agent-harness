@@ -15,11 +15,11 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/beherd/agent-harness/internal/config"
-	"github.com/beherd/agent-harness/internal/github"
-	"github.com/beherd/agent-harness/internal/jira"
-	"github.com/beherd/agent-harness/internal/linear"
-	"github.com/beherd/agent-harness/internal/tracker"
+	"github.com/danoleary/agent-harness/internal/config"
+	"github.com/danoleary/agent-harness/internal/github"
+	"github.com/danoleary/agent-harness/internal/jira"
+	"github.com/danoleary/agent-harness/internal/linear"
+	"github.com/danoleary/agent-harness/internal/tracker"
 )
 
 // Secrets carries the host-only tracker credentials (ADR-0001: they stay on the

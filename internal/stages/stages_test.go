@@ -11,13 +11,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/beherd/agent-harness/internal/ci"
-	"github.com/beherd/agent-harness/internal/config"
-	"github.com/beherd/agent-harness/internal/runlog"
-	"github.com/beherd/agent-harness/internal/sandbox"
-	"github.com/beherd/agent-harness/internal/session"
-	"github.com/beherd/agent-harness/internal/ticket"
-	"github.com/beherd/agent-harness/internal/verify"
+	"github.com/danoleary/agent-harness/internal/ci"
+	"github.com/danoleary/agent-harness/internal/config"
+	"github.com/danoleary/agent-harness/internal/runlog"
+	"github.com/danoleary/agent-harness/internal/sandbox"
+	"github.com/danoleary/agent-harness/internal/session"
+	"github.com/danoleary/agent-harness/internal/ticket"
+	"github.com/danoleary/agent-harness/internal/verify"
 )
 
 // BEH-571: fixSessionError maps a finished auto-fix session's outcome to the
@@ -75,7 +75,7 @@ func TestProvisionWorktreeReprovisionsExistingWorktree(t *testing.T) {
 		t.Fatalf("seed worktree dir: %v", err)
 	}
 	spy := &provisionSpy{}
-	cfg := config.Config{HerdPath: herdPath, BranchPrefix: "feat", PostCreate: "cd web && pnpm install"}
+	cfg := config.Config{ProjectPath: herdPath, BranchPrefix: "feat", PostCreate: "cd web && pnpm install"}
 
 	if err := provisionWorktreeWith(cfg, slug, newProvisionLog(t, "BEH-796"), spy.create, spy.postCreate); err != nil {
 		t.Fatalf("provisionWorktree on an existing worktree: %v", err)
@@ -92,7 +92,7 @@ func TestProvisionWorktreeReprovisionsExistingWorktree(t *testing.T) {
 // host-side and then provisioned, in that order.
 func TestProvisionWorktreeCreatesThenProvisionsFreshWorktree(t *testing.T) {
 	spy := &provisionSpy{}
-	cfg := config.Config{HerdPath: t.TempDir(), BranchPrefix: "feat", PostCreate: "cd web && pnpm install"}
+	cfg := config.Config{ProjectPath: t.TempDir(), BranchPrefix: "feat", PostCreate: "cd web && pnpm install"}
 
 	if err := provisionWorktreeWith(cfg, "beh-796-fresh", newProvisionLog(t, "BEH-796"), spy.create, spy.postCreate); err != nil {
 		t.Fatalf("provisionWorktree on a fresh worktree: %v", err)
@@ -111,7 +111,7 @@ func TestProvisionWorktreeCreatesThenProvisionsFreshWorktree(t *testing.T) {
 // regress — post_create is no longer nested under the creation branch.
 func TestProvisionWorktreeSkipsPostCreateWhenCreationFails(t *testing.T) {
 	spy := &provisionSpy{createErr: errors.New("git worktree add: boom")}
-	cfg := config.Config{HerdPath: t.TempDir(), BranchPrefix: "feat", PostCreate: "cd web && pnpm install"}
+	cfg := config.Config{ProjectPath: t.TempDir(), BranchPrefix: "feat", PostCreate: "cd web && pnpm install"}
 
 	err := provisionWorktreeWith(cfg, "beh-796-broken", newProvisionLog(t, "BEH-796"), spy.create, spy.postCreate)
 	if err == nil {
@@ -130,7 +130,7 @@ func TestProvisionWorktreeSkipsPostCreateWhenCreationFails(t *testing.T) {
 // it: an unconfigured hook must still be skipped on both provisioning paths.
 func TestProvisionWorktreeSkipsUnconfiguredPostCreate(t *testing.T) {
 	spy := &provisionSpy{}
-	cfg := config.Config{HerdPath: t.TempDir(), BranchPrefix: "feat"}
+	cfg := config.Config{ProjectPath: t.TempDir(), BranchPrefix: "feat"}
 
 	if err := provisionWorktreeWith(cfg, "beh-796-nohook", newProvisionLog(t, "BEH-796"), spy.create, spy.postCreate); err != nil {
 		t.Fatalf("provisionWorktree with no post_create: %v", err)
@@ -160,7 +160,7 @@ func TestNewUpstreamGitHubBuildsRepoBoundSink(t *testing.T) {
 	cfg := config.Config{
 		GitHubToken: "gh-token",
 		Feedback: config.FeedbackConfig{
-			Upstream: "github", Repo: "beherd/agent-harness",
+			Upstream: "github", Repo: "example-org/agent-harness",
 			FindingsLabel: "harness-finding", Project: "herd",
 		},
 	}
@@ -168,7 +168,7 @@ func TestNewUpstreamGitHubBuildsRepoBoundSink(t *testing.T) {
 	if up == nil {
 		t.Fatal("newUpstream(github) = nil, want a sink")
 	}
-	if up.Container != "beherd/agent-harness" {
+	if up.Container != "example-org/agent-harness" {
 		t.Errorf("Container = %q, want the upstream repo slug", up.Container)
 	}
 	if up.Project != "herd" {
@@ -564,7 +564,7 @@ func TestParseArgsForceFlag(t *testing.T) {
 // burn a full sandbox to conclude "nothing to read". It is a clean no-op skip
 // (OK, never a pipeline failure), recorded as a diagnostic in run.jsonl. The test
 // is hermetic precisely because the precondition returns before any network/Docker
-// work: the HerdPath is a git repo with no feat/ branch and the log dir is empty.
+// work: the ProjectPath is a git repo with no feat/ branch and the log dir is empty.
 func TestRetrospectiveSkipsWhenNoPipelineInputs(t *testing.T) {
 	herd := t.TempDir()
 	runGitForTest(t, herd, "init", "-q", "-b", "main")
@@ -576,7 +576,7 @@ func TestRetrospectiveSkipsWhenNoPipelineInputs(t *testing.T) {
 	log := &runlog.Logger{Dir: logDir}
 
 	res := Retrospective(
-		config.Config{HerdPath: herd},
+		config.Config{ProjectPath: herd},
 		log,
 		"20260625-195129",
 		Args{Identifier: "BEH-318"},
