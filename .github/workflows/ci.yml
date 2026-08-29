@@ -1,0 +1,70 @@
+# Gates for the standalone harness repo.
+#
+# `make check` is the single source of truth for the gate (format, vet, the
+# script guards, the full test suite), so a guard added to that target runs here
+# with no edit to this file. The check-ci guard — itself a prerequisite of
+# `check` — fails the build if this step list ever drifts back to re-enumerating
+# `check`'s sub-targets, which is how a guard once stayed CI-invisible.
+#
+# NOTE: inside a Consumer's subtree this file is INERT — GitHub reads only the
+# repo-root `.github`. It goes live when scripts/extract-standalone.sh lifts this
+# subtree to the root of the standalone repo (ADR-0007).
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  gates:
+    runs-on: ubuntu-latest
+    name: Check, build
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.26'
+          cache: true
+      - name: Check
+        run: make check
+      - name: Script test coverage
+        # Fail if a changed scripts/<name>.sh with a sibling test-<name>.sh ships
+        # without touching that test. `make check` only RUNS the tests that
+        # exist, so an uncovered behavioral change otherwise sails through green.
+        # Diff-based, so it is kept out of `make check` to keep that target
+        # offline-runnable; the checkout is shallow with no origin/main ref, so
+        # fetch main's tip and compare against that.
+        run: |
+          git fetch --no-tags --depth=1 origin main
+          ./scripts/require-script-test-coverage.sh FETCH_HEAD
+      - name: Build
+        run: make build
+
+  base-image:
+    runs-on: ubuntu-latest
+    name: Base image builds
+    # The base image is the harness<->sandbox contract every Consumer FROMs
+    # (ADR-0008), so a Dockerfile.base that no longer builds must fail here, not
+    # at release time. Build only — publishing is release.yml's job.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+      - name: Build (amd64 only, not pushed)
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        with:
+          context: .
+          file: ./Dockerfile.base
+          platforms: linux/amd64
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

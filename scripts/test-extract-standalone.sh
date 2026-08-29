@@ -103,8 +103,36 @@ if [ -n "$leaked" ]; then
 fi
 echo -e "${GREEN}PASS${NC}"
 
+# --- the Makefile's consumer-only sentinels are intact ------------------------
+#
+# The Makefile is shared, so its Consumer-only targets cannot be removed by
+# deleting a file; the extraction strips the block between two sentinels. A
+# renamed or dropped sentinel makes the extraction abort (it refuses to guess),
+# so catch it here rather than mid-extraction.
+echo -n "Test 4: the Makefile's consumer-only sentinels are present and ordered... "
+mk="$HARNESS_DIR/Makefile"
+open_line="$(grep -n '^# >>> consumer-only' "$mk" | head -n 1 | cut -d: -f1 || true)"
+close_line="$(grep -n '^# <<< consumer-only' "$mk" | head -n 1 | cut -d: -f1 || true)"
+if [ -z "$open_line" ] || [ -z "$close_line" ]; then
+    echo -e "${RED}FAIL${NC} - missing sentinel (open='$open_line' close='$close_line')"
+    exit 1
+elif [ "$open_line" -ge "$close_line" ]; then
+    echo -e "${RED}FAIL${NC} - sentinels out of order (open=$open_line close=$close_line)"
+    exit 1
+fi
+# The block must actually contain the Consumer-only targets, or the extraction
+# strips nothing and ships a Makefile pointing at a deleted Dockerfile.
+block="$(sed -n "${open_line},${close_line}p" "$mk")"
+for target in 'image:' 'smoke:'; do
+    if ! printf '%s\n' "$block" | grep -q "^$target"; then
+        echo -e "${RED}FAIL${NC} - '$target' is outside the consumer-only block; it would survive extraction"
+        exit 1
+    fi
+done
+echo -e "${GREEN}PASS${NC}"
+
 # --- refuses to overwrite an existing output path ----------------------------
-echo -n "Test 4: refuses to overwrite an existing output dir... "
+echo -n "Test 5: refuses to overwrite an existing output dir... "
 EXISTING="$TEST_DIR/already-here"
 mkdir -p "$EXISTING"
 if "$SCRIPT_PATH" "$EXISTING" > /dev/null 2>&1; then
@@ -114,7 +142,7 @@ fi
 echo -e "${GREEN}PASS${NC}"
 
 # --- fails loud with no arguments --------------------------------------------
-echo -n "Test 5: usage error with no output dir... "
+echo -n "Test 6: usage error with no output dir... "
 if "$SCRIPT_PATH" > /dev/null 2>&1; then
     echo -e "${RED}FAIL${NC} - exited 0 with no arguments"
     exit 1

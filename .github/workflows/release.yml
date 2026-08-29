@@ -1,0 +1,133 @@
+# Publish a harness release: cross-platform binaries on GitHub Releases, and the
+# sandbox base image on GHCR (ADR-0007).
+#
+# Binaries are the PRIMARY distribution path. Target Consumers are not all Go
+# shops and must not need a Go toolchain to run the harness; `go install` stays a
+# convenience for those that have one.
+#
+# Both artifacts carry the SAME tag, so `agent-harness v0.1.0` and
+# `agent-harness-base:0.1.0` are always a matched pair — a Consumer that pins the
+# base can look up the harness build that shares its contract.
+#
+# NOTE: inside a Consumer's subtree this file is INERT — GitHub reads only the
+# repo-root `.github`. It goes live when scripts/extract-standalone.sh lifts this
+# subtree to the root of the standalone repo (ADR-0007).
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to release (e.g. v0.1.0). Must already exist.'
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  # The base image is named for the repo it ships from, so a fork publishes to
+  # its own namespace with no edit here.
+  BASE_IMAGE: ghcr.io/${{ github.repository }}-base
+
+jobs:
+  binaries:
+    runs-on: ubuntu-latest
+    name: Cross-platform binaries
+    permissions:
+      contents: write # create the release and upload assets
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.26'
+          cache: true
+
+      - name: Build every tool for every supported host
+        # The harness host needs docker, git and gh, which rules out a pure-Windows
+        # host; darwin and linux on both architectures cover the real targets.
+        # CGO_ENABLED=0 keeps each binary statically linked so it runs on any libc.
+        run: |
+          set -euo pipefail
+          version="${{ github.event.inputs.tag || github.ref_name }}"
+          mkdir -p dist
+          for platform in darwin/amd64 darwin/arm64 linux/amd64 linux/arm64; do
+            goos="${platform%/*}"
+            goarch="${platform#*/}"
+            stage="dist/agent-harness_${version}_${goos}_${goarch}"
+            mkdir -p "$stage"
+            for tool in implementation review retrospective pipeline loop watch; do
+              CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
+                go build -buildvcs=false -trimpath \
+                -ldflags "-s -w" \
+                -o "$stage/$tool" "./cmd/$tool"
+            done
+            # Ship the Consumer-facing docs beside the binaries so an operator who
+            # only ever downloads a tarball still has the adoption contract.
+            cp README.md docs/CONSUMER.md LICENSE "$stage/"
+            tar -czf "${stage}.tar.gz" -C dist "$(basename "$stage")"
+            rm -rf "$stage"
+          done
+          (cd dist && sha256sum ./*.tar.gz > checksums.txt)
+          ls -la dist
+
+      - name: Publish to GitHub Releases
+        # `gh release` rather than a third-party action: one less trusted
+        # dependency in the path that produces the artifact Consumers execute.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          version="${{ github.event.inputs.tag || github.ref_name }}"
+          if ! gh release view "$version" >/dev/null 2>&1; then
+            gh release create "$version" --title "$version" --generate-notes
+          fi
+          gh release upload "$version" dist/*.tar.gz dist/checksums.txt --clobber
+
+  base-image:
+    runs-on: ubuntu-latest
+    name: Sandbox base image
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      # arm64 matters: an Apple Silicon operator running an amd64-only base pays
+      # emulation for every session, and some toolchains simply fail under it.
+      - uses: docker/setup-qemu-action@29109295f81e9208d7d86ff1c6c12d2833863392 # v3.6.0
+      - uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+
+      - uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # v3.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Derive the image tags
+        # An IMMUTABLE semver tag is the one a Consumer Dockerfile pins, so that a
+        # base bump is a deliberate, reviewable edit and never a silent floating
+        # pull. `latest` moves, and exists only for a first-look `docker run`.
+        id: tags
+        run: |
+          set -euo pipefail
+          version="${{ github.event.inputs.tag || github.ref_name }}"
+          echo "semver=${version#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        with:
+          context: .
+          file: ./Dockerfile.base
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ env.BASE_IMAGE }}:${{ steps.tags.outputs.semver }}
+            ${{ env.BASE_IMAGE }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

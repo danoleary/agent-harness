@@ -15,14 +15,16 @@
 # to `check:` is covered with no extra wiring. Wired into `make check` itself, it
 # runs in CI for free. It must stay bash-3.2-safe.
 #
+# The workflow is DISCOVERED, not hardcoded: it is whichever workflow invokes a
+# `make` target, so the guard works both while the harness is a subtree of a
+# Consumer (the workflow sits two levels up) and once it is extracted to its own
+# repo (one level up), with no per-repo edit. A hardcoded filename silently
+# vanished on extraction and took the guard with it.
+#
 # Usage:  check-ci-runs-check.sh [WORKFLOW_YAML] [MAKEFILE]
 # Exit 0 = clean, exit 1 = drift found.
 
 set -euo pipefail
-
-SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
-WORKFLOW="${1:-$SELF_DIR/../../.github/workflows/agent-harness.yaml}"
-MAKEFILE="${2:-$SELF_DIR/../Makefile}"
 
 if [ -t 1 ]; then
     RED='\033[0;31m'
@@ -36,10 +38,58 @@ else
     NC=''
 fi
 
-if [ ! -f "$WORKFLOW" ]; then
-    echo -e "${RED}✗${NC} workflow not found: $WORKFLOW" >&2
-    exit 1
-fi
+SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
+MAKEFILE="${2:-$SELF_DIR/../Makefile}"
+
+# discover_workflow prints the GATE workflow: the one running `make check`, or —
+# when the drift this guard exists for has happened — the one running a `check`
+# prerequisite as its own step. Other workflows that merely invoke some `make`
+# target (an image build, a smoke check) are not the gate and must not be judged
+# as one.
+#
+# It looks in the GIT ROOT's .github/workflows, because that is the only one
+# GitHub actually reads. Walking up to the first `.github` found would, inside a
+# Consumer subtree, settle on the harness's own inert copy — the standalone
+# repo's workflows, which GitHub never runs there — and quietly stop guarding the
+# Consumer's real gate. Anchoring on the git root is correct in both layouts: the
+# subtree resolves to the Consumer, the extracted repo to itself.
+discover_workflow() {
+    prereq_pattern="$1"
+
+    root="$(git -C "$SELF_DIR" rev-parse --show-toplevel 2>/dev/null || true)"
+    if [ -z "$root" ]; then
+        # Not a git checkout (a test fixture, an exported tree): fall back to the
+        # nearest ancestor that has a .github/workflows, starting at the harness
+        # root rather than assuming a subtree depth.
+        probe="$(cd "$SELF_DIR/.." && pwd)"
+        while :; do
+            [ -d "$probe/.github/workflows" ] && break
+            parent="$(dirname "$probe")"
+            [ "$parent" = "$probe" ] && return 1
+            probe="$parent"
+        done
+        root="$probe"
+    fi
+
+    dir="$root/.github/workflows"
+    [ -d "$dir" ] || return 1
+
+    fallback=""
+    for wf in "$dir"/*.yml "$dir"/*.yaml; do
+        [ -f "$wf" ] || continue
+        if grep -qE '(^|[^A-Za-z0-9_-])make[[:space:]]+check([[:space:]]|$)' "$wf"; then
+            printf '%s\n' "$wf"
+            return 0
+        fi
+        if [ -z "$fallback" ] && grep -qE "$prereq_pattern" "$wf"; then
+            fallback="$wf"
+        fi
+    done
+
+    [ -n "$fallback" ] || return 1
+    printf '%s\n' "$fallback"
+}
+
 if [ ! -f "$MAKEFILE" ]; then
     echo -e "${RED}✗${NC} Makefile not found: $MAKEFILE" >&2
     exit 1
@@ -53,6 +103,28 @@ if [ -z "$prereq_line" ]; then
     exit 1
 fi
 PREREQS="${prereq_line#check:}"
+
+# A pattern matching any `make <prereq>` step, for discovery's drift-case fallback.
+prereq_alt="$(printf '%s' "$PREREQS" | tr -s '[:space:]' '|' | sed -e 's/^|//' -e 's/|$//')"
+PREREQ_PATTERN="(^|[^A-Za-z0-9_-])make[[:space:]]+($prereq_alt)([[:space:]]|$)"
+
+WORKFLOW="${1:-$(discover_workflow "$PREREQ_PATTERN" || true)}"
+
+if [ -z "$WORKFLOW" ]; then
+    echo -e "${RED}✗${NC} no workflow runs 'make check' or any of its prerequisites — the harness gate would be CI-invisible" >&2
+    exit 1
+fi
+
+
+if [ ! -f "$WORKFLOW" ]; then
+    echo -e "${RED}✗${NC} workflow not found: $WORKFLOW" >&2
+    exit 1
+fi
+if [ ! -f "$MAKEFILE" ]; then
+    echo -e "${RED}✗${NC} Makefile not found: $MAKEFILE" >&2
+    exit 1
+fi
+
 
 # Every `make <target>` invocation in the workflow, skipping comment-only lines
 # so prose mentioning a target is never flagged. The target token stops at

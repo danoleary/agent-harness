@@ -285,6 +285,11 @@ func TestDocsOnlyClassifierNeverMatchesCITriggerPath(t *testing.T) {
 // workflowsDir walks up from the test's working directory to the repo root (the
 // directory holding .github/workflows) so the check does not hard-code the depth of
 // this package under agent-harness/.
+// It skips the HARNESS's own .github, which is inert inside a Consumer subtree
+// (GitHub reads only the repo-root one) and carries the standalone repo's
+// workflows, not this Consumer's. Those have no path triggers, so matching them
+// would make this cross-check vacuously green while herd's real triggers went
+// unchecked. The harness's directory is the one holding go.mod.
 func workflowsDir(t *testing.T) string {
 	t.Helper()
 	dir, err := os.Getwd()
@@ -294,11 +299,13 @@ func workflowsDir(t *testing.T) string {
 	for {
 		candidate := filepath.Join(dir, ".github", "workflows")
 		if info, err := os.Stat(candidate); err == nil && info.IsDir() {
-			return candidate
+			if _, err := os.Stat(filepath.Join(dir, "go.mod")); err != nil {
+				return candidate
+			}
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
-			t.Fatalf(".github/workflows not found walking up from test working directory")
+			t.Fatalf("the Consumer's .github/workflows not found walking up from the test working directory")
 		}
 		dir = parent
 	}

@@ -164,5 +164,60 @@ else
     exit 1
 fi
 
+# --- discovery picks the GATE workflow, not just any make-invoking one --------
+#
+# The workflow path used to be hardcoded to the Consumer's
+# `.github/workflows/agent-harness.yaml`. On extraction that file does not exist,
+# so the guard died with "workflow not found" and stopped guarding anything
+# (BEH-641). Discovery must find the gate wherever it lives — and must not be
+# fooled by a sibling workflow that merely runs some other `make` target.
+echo -n "Test 7: discovery finds the gate, ignoring other make-invoking workflows... "
+DISC="$TEST_DIR/discovery"
+mkdir -p "$DISC/scripts" "$DISC/.github/workflows"
+cp "$SCRIPT_PATH" "$DISC/scripts/"
+cp "$(dirname "$SCRIPT_PATH")/../Makefile" "$DISC/Makefile"
+# An image-build workflow, alphabetically first, that runs `make` but is NOT the gate.
+cat > "$DISC/.github/workflows/aaa-image.yaml" <<'EOF'
+name: Image
+jobs:
+  image:
+    steps:
+      - run: make base-image
+EOF
+cat > "$DISC/.github/workflows/ci.yml" <<'EOF'
+name: CI
+jobs:
+  gates:
+    steps:
+      - run: make check
+      - run: make build
+EOF
+if out=$("$DISC/scripts/$(basename "$SCRIPT_PATH")" 2>&1); then
+    echo -e "${GREEN}PASS${NC}"
+else
+    echo -e "${RED}FAIL${NC} - discovery did not settle on the gate workflow:"
+    echo "$out"
+    exit 1
+fi
+
+# --- no gate workflow at all is a failure, not a silent pass -----------------
+echo -n "Test 8: a repo with no gate workflow fails loud... "
+NOGATE="$TEST_DIR/nogate"
+mkdir -p "$NOGATE/scripts" "$NOGATE/.github/workflows"
+cp "$SCRIPT_PATH" "$NOGATE/scripts/"
+cp "$(dirname "$SCRIPT_PATH")/../Makefile" "$NOGATE/Makefile"
+cat > "$NOGATE/.github/workflows/unrelated.yml" <<'EOF'
+name: Unrelated
+jobs:
+  hello:
+    steps:
+      - run: echo hi
+EOF
+if "$NOGATE/scripts/$(basename "$SCRIPT_PATH")" > /dev/null 2>&1; then
+    echo -e "${RED}FAIL${NC} - passed with no workflow running the gate at all"
+    exit 1
+fi
+echo -e "${GREEN}PASS${NC}"
+
 echo
 echo -e "${GREEN}All tests passed!${NC}"

@@ -89,16 +89,33 @@ for f in $CONSUMER_COUPLED; do
 	fi
 done
 
-# This script describes herd's subtree; it is meaningless once extracted.
-git rm --quiet "scripts/$(basename "$0")"
+# This script describes the Consumer's subtree; it is meaningless once extracted.
+git rm --quiet "scripts/$(basename "$0")" "scripts/test-$(basename "$0")"
 
-echo "==> verifying the extracted repo"
-gofmt -l . | grep . && {
-	echo "extracted repo is not gofmt-clean" >&2
+# The Makefile is SHARED, so its Consumer-only targets cannot be removed by
+# deleting a file. They are fenced by sentinels instead, so this stays a
+# delete-between-two-markers edit rather than a pattern match on target names.
+echo "==> stripping the Makefile's consumer-only block"
+grep -q '^# >>> consumer-only' Makefile || {
+	echo "Makefile has no '# >>> consumer-only' sentinel — refusing to guess what to strip" >&2
 	exit 1
 }
-go build -buildvcs=false ./... >/dev/null
-go test -buildvcs=false ./... >/dev/null
+grep -q '^# <<< consumer-only' Makefile || {
+	echo "Makefile has no '# <<< consumer-only' sentinel — refusing to guess what to strip" >&2
+	exit 1
+}
+sed -i.bak '/^# >>> consumer-only/,/^# <<< consumer-only/d' Makefile
+rm -f Makefile.bak
+sed -i.bak 's/^\.PHONY: build base-image image smoke test/.PHONY: build base-image test/' Makefile
+rm -f Makefile.bak
+
+echo "==> verifying the extracted repo"
+# The FULL gate, not just build+test: the guards are where a Consumer coupling
+# hides (a hardcoded workflow path, a Makefile target pointing at a deleted
+# Dockerfile), and those pass a bare `go test` while being broken here.
+make check
+make build >/dev/null
+rm -rf bin
 
 echo "==> committing the de-herd"
 git add -A

@@ -1,5 +1,5 @@
 # Agent harness — Go toolchain shortcuts. Requires Go 1.26+.
-.PHONY: build image smoke test implementation review retrospective pipeline loop watch vet fmt fmt-check check-exec check-bash3 check-buildvcs check-ci check-scripts check tidy
+.PHONY: build base-image image smoke test implementation review retrospective pipeline loop watch vet fmt fmt-check check-exec check-bash3 check-buildvcs check-ci check-scripts check tidy
 
 # Build the tool binaries into ./bin.
 #
@@ -16,8 +16,24 @@ build:
 	go build -buildvcs=false -o bin/loop ./cmd/loop
 	go build -buildvcs=false -o bin/watch ./cmd/watch
 
-# Build the sandbox image the tools launch. Override the tag with IMAGE=...
-# (must match HARNESS_IMAGE if you set it).
+# Build the sandbox BASE image — the harness<->sandbox contract every Consumer
+# FROMs (ADR-0008), and what the release workflow publishes to GHCR. It carries no
+# project toolchain, so it is not a runnable session image on its own: a Consumer
+# builds ITS image from its own Dockerfile, and the harness does that for it on a
+# local image miss. Override the tag with BASE_IMAGE=...
+BASE_IMAGE ?= agent-harness-base:dev
+base-image:
+	docker build -f Dockerfile.base -t $(BASE_IMAGE) .
+
+# >>> consumer-only: removed by scripts/extract-standalone.sh
+# Everything between these sentinels belongs to the CONSUMER whose subtree the
+# harness currently lives in, not to the harness. It targets that Consumer's own
+# Dockerfile and its toolchain-specific smoke test, neither of which exists in the
+# extracted repo. The extraction deletes the block; the guard in
+# test-extract-standalone.sh fails if the sentinels ever go missing.
+
+# Build herd's sandbox image (its Dockerfile, its toolchain). Override the tag
+# with IMAGE=... (must match HARNESS_IMAGE if you set it).
 IMAGE ?= herd-agent-harness:latest
 image:
 	docker build -t $(IMAGE) .
@@ -31,6 +47,7 @@ image:
 # with IMAGE=... (exported as HARNESS_IMAGE so the test sees it).
 smoke:
 	HARNESS_DOCKER_SMOKE=1 HARNESS_IMAGE=$(IMAGE) go test -buildvcs=false -count=1 -run TestPnpmStoreResolvesUnderMountedVolumeInImage ./internal/sandbox
+# <<< consumer-only
 
 # Run the full test suite. -buildvcs=false: see the build target (BEH-459).
 test:
