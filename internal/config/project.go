@@ -161,11 +161,29 @@ type TrackerConfig struct {
 	CanceledTransition   string `toml:"cancel_transition"`
 }
 
+// ProjectDirName is the single directory the harness owns inside a Consumer
+// checkout (ADR-0008): the committed surface (config.toml, prompts/) and the
+// runtime artifacts it writes per project (logs/, the STOP sentinel,
+// harness-findings/). It is one name so a Consumer has exactly one path to
+// gitignore the runtime half of, and so nothing the harness writes lands
+// outside a directory the Consumer opted into by creating.
+//
+// The runtime artifacts used to live under `<checkout>/agent-harness/`, the
+// harness's own in-tree source dir. That only worked while the harness WAS a
+// subdirectory of its one Consumer; once extracted (ADR-0007) it would have
+// recreated a phantom source-looking directory inside every Consumer repo.
+const ProjectDirName = ".agent-harness"
+
+// ProjectDir is the harness directory inside a Consumer checkout.
+func ProjectDir(checkoutPath string) string {
+	return filepath.Join(checkoutPath, ProjectDirName)
+}
+
 // LoadProject reads and parses `<checkoutPath>/.agent-harness/config.toml`. It
 // fails loud on a missing or malformed file — a Consumer with no committed
 // config is a misconfiguration, not a defaultable state (ADR-0008).
 func LoadProject(checkoutPath string) (ProjectConfig, error) {
-	path := filepath.Join(checkoutPath, ".agent-harness", "config.toml")
+	path := filepath.Join(ProjectDir(checkoutPath), "config.toml")
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return ProjectConfig{}, fmt.Errorf("reading project config %s: %w", path, err)

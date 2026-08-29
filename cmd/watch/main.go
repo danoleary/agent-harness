@@ -1,5 +1,5 @@
 // Command watch is the read-only loop viewer (ADR-0005): it tails the global
-// structured event stream (agent-harness/logs/loop.jsonl) the daemon and the
+// structured event stream (.agent-harness/logs/loop.jsonl) the daemon and the
 // single-shot pipeline write. On an interactive TTY it renders a live, redraw-on-a-
 // ticker dashboard — a stateful ASCII mascot, a current-ticket panel, a stage
 // indicator (n of 3), the current step plus a tool-call counter, daemon health, and
@@ -9,14 +9,14 @@
 // lines (one per event, no mascot), so piping or redirecting stays clean and no ANSI
 // escapes leak into a pipe.
 //
-// It NEVER controls the loop — `touch agent-harness/STOP` remains the only control
+// It NEVER controls the loop — `touch .agent-harness/STOP` remains the only control
 // path, and quitting the viewer (Ctrl-C) does not touch the daemon. It holds no
 // credentials: it only reads a log file (and, for health, the daemon's pidfile via
 // a signal-0 liveness probe that cannot affect the process), so it does not load
 // the harness config.
 //
 // Path resolution, in order: a positional argument; else $PROJECT_PATH's
-// agent-harness/logs/loop.jsonl; else logs/loop.jsonl relative to the cwd (the
+// .agent-harness/logs/loop.jsonl; else logs/loop.jsonl relative to the cwd (the
 // harness dir, where `make watch` runs). When the file is absent it surfaces a
 // clear "loop not running" / daemon-down state and keeps polling, so starting the
 // daemon later just works without restarting the viewer.
@@ -32,6 +32,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/danoleary/agent-harness/internal/config"
 	"github.com/danoleary/agent-harness/internal/loopstream"
 	"github.com/danoleary/agent-harness/internal/viewer"
 )
@@ -210,8 +211,8 @@ func resolvePath(argv []string) string {
 	if len(argv) > 0 && argv[0] != "" {
 		return argv[0]
 	}
-	if herd := os.Getenv("PROJECT_PATH"); herd != "" {
-		return loopstream.PathUnder(filepath.Join(herd, "agent-harness", "logs"))
+	if checkout := os.Getenv("PROJECT_PATH"); checkout != "" {
+		return loopstream.PathUnder(filepath.Join(config.ProjectDir(checkout), "logs"))
 	}
 	return loopstream.PathUnder("logs")
 }
@@ -224,7 +225,7 @@ func resolvePidPath(streamPath string) string {
 	return filepath.Join(filepath.Dir(filepath.Dir(streamPath)), "loop.pid")
 }
 
-// resolveStopPath locates the STOP sentinel (agent-harness/STOP, the loop's only
+// resolveStopPath locates the STOP sentinel (.agent-harness/STOP, the loop's only
 // control path) for the stop-requested probe. Like the pidfile it lives at the
 // harness root — the grandparent of the stream file — so the viewer can surface
 // "winding down" without reading the harness config.

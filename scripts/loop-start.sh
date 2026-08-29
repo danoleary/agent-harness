@@ -4,7 +4,7 @@
 # §Run model). It nohup's bin/loop into the background, appends all output to a
 # logfile, and records the PID in a pidfile for a hard `kill` if ever needed.
 #
-# Graceful stop stays `touch agent-harness/STOP` (DESIGN.md §Stop control); the
+# Graceful stop stays `touch .agent-harness/STOP` (DESIGN.md §Stop control); the
 # pidfile is the hard-kill escape hatch, not the normal stop. No supervisor means
 # no auto-restart: a crash or a circuit-breaker trip stays down until the operator
 # relaunches (the breaker wants a human to look first). The loop's exit-code
@@ -23,8 +23,37 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 HARNESS_DIR="$(dirname "$SCRIPT_DIR")"
 
 LOOP_BIN="${LOOP_BIN:-$HARNESS_DIR/bin/loop}"
-LOOP_PIDFILE="${LOOP_PIDFILE:-$HARNESS_DIR/loop.pid}"
-LOOP_LOGFILE="${LOOP_LOGFILE:-$HARNESS_DIR/loop.log}"
+
+# The pidfile and the daemon log are PER-CONSUMER runtime state, so they default
+# beside that Consumer's logs, in its `.agent-harness/` directory — not beside the
+# harness binary, which one operator may point at several projects.
+#
+# The viewer depends on this placement: it derives the pidfile (and the STOP
+# sentinel) as the sibling of the `logs/` dir it is tailing, so that it can report
+# daemon liveness without re-reading the harness config. Writing the pidfile
+# anywhere else makes a running daemon look stopped.
+#
+# PROJECT_PATH comes from the environment, else from the .env beside the binary
+# (the same file the daemon itself reads). If neither resolves it, fall back to
+# the harness dir so a bare `loop-start.sh` still launches something inspectable
+# rather than failing on an unset variable.
+if [ -z "${PROJECT_PATH:-}" ] && [ -f "$HARNESS_DIR/.env" ]; then
+    # A single grepped assignment, not `source`: the .env holds live credentials
+    # and must not be evaluated by this shell.
+    PROJECT_PATH="$(grep -E '^PROJECT_PATH=' "$HARNESS_DIR/.env" | tail -n 1 | cut -d= -f2- | sed -e 's/^["'"'"']//' -e 's/["'"'"']$//' || true)"
+fi
+
+if [ -n "${PROJECT_PATH:-}" ]; then
+    RUNTIME_DIR="$PROJECT_PATH/.agent-harness"
+else
+    RUNTIME_DIR="$HARNESS_DIR"
+fi
+
+LOOP_PIDFILE="${LOOP_PIDFILE:-$RUNTIME_DIR/loop.pid}"
+LOOP_LOGFILE="${LOOP_LOGFILE:-$RUNTIME_DIR/loop.log}"
+
+# The runtime dir must exist before nohup redirects into it.
+mkdir -p "$(dirname "$LOOP_LOGFILE")" "$(dirname "$LOOP_PIDFILE")"
 
 # Refuse to start a second daemon over a live one: a running pid in the pidfile
 # means a loop is already up, and two would race the same ready-for-agent queue.
@@ -33,7 +62,7 @@ LOOP_LOGFILE="${LOOP_LOGFILE:-$HARNESS_DIR/loop.log}"
 if [ -f "$LOOP_PIDFILE" ]; then
     existing="$(cat "$LOOP_PIDFILE" 2>/dev/null || true)"
     if [ -n "$existing" ] && kill -0 "$existing" 2>/dev/null; then
-        echo "loop already running (pid $existing, pidfile $LOOP_PIDFILE); touch ${HARNESS_DIR}/STOP to stop it first" >&2
+        echo "loop already running (pid $existing, pidfile $LOOP_PIDFILE); touch ${RUNTIME_DIR}/STOP to stop it first" >&2
         exit 1
     fi
     rm -f "$LOOP_PIDFILE"
@@ -54,5 +83,5 @@ loop_pid=$!
 echo "$loop_pid" > "$LOOP_PIDFILE"
 
 echo "loop started (pid $loop_pid); logging to $LOOP_LOGFILE"
-echo "  stop gracefully:  touch ${HARNESS_DIR}/STOP"
+echo "  stop gracefully:  touch ${RUNTIME_DIR}/STOP"
 echo "  hard kill:        kill $loop_pid"

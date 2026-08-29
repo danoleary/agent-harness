@@ -30,7 +30,7 @@ func baseConfig() Config {
 	return Config{
 		Image:          "herd-agent-harness:latest",
 		ProjectPath:    "/Users/dan/herd",
-		FindingsDir:    "/Users/dan/herd/agent-harness/logs/run-1/findings/BEH-362-tdd",
+		FindingsDir:    "/Users/dan/herd/.agent-harness/logs/run-1/findings/BEH-362-tdd",
 		CacheVolume:    "herd-pnpm-store",
 		CacheMountPath: "/pnpm-store",
 		Prompt:         "/tdd Work on BEH-362.",

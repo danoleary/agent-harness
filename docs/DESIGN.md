@@ -660,7 +660,7 @@ into its transcript, which retrospective reads.
 **Input — the prior transcripts are a first-class input.** Retrospective reviews
 the *sessions*, not just the code, so it needs what happened during them. With the
 real-path mount, the ticket-keyed transcripts at
-`$PROJECT_PATH/agent-harness/logs/BEH-NNN/` are already visible inside the container
+`$PROJECT_PATH/.agent-harness/logs/BEH-NNN/` are already visible inside the container
 at their natural path — no extra mount. Retrospective reads **every** prior
 transcript for the ticket (implementation *and* review) plus the diff.
 
@@ -819,24 +819,22 @@ mount for back-compat.
 - **Commit identity:** `Agent Harness <agent-harness@users.noreply.github.com>`. The
   skills' existing `Co-Authored-By: Claude` trailer stays.
 
-### Base-image registry, publishing & versioning (HITL)
+### Base-image registry, publishing & versioning
 
-**Recommendation (to confirm):** publish the base to **GHCR** at
-`ghcr.io/herd-video-call-limited/agent-harness-base`, tagged with an **immutable
-semver** (`:0.1.0`, …) plus a moving `:latest`. A Consumer Dockerfile pins the
-immutable tag (`FROM ghcr.io/.../agent-harness-base:0.1.0`) so a base bump is a
-deliberate, reviewable edit — never a silent floating pull. Publish from a CI
-workflow in the (future) standalone harness repo (ADR-0007) on a tagged release,
-building `Dockerfile.base` for `linux/amd64` + `linux/arm64`.
+The base publishes to **GHCR** at `ghcr.io/danoleary/agent-harness-base`, tagged
+with an **immutable semver** (`:0.1.0`, …) plus a moving `:latest`. A Consumer
+Dockerfile pins the immutable tag (`FROM ghcr.io/.../agent-harness-base:0.1.0`)
+so a base bump is a deliberate, reviewable edit — never a silent floating pull.
+`:latest` exists only for a first-look `docker run`.
 
-> **Deferred to the publish decision (this ADR's HITL):** creating the standalone
-> `Dockerfile.base` artifact and rebasing herd's `agent-harness/Dockerfile` to
-> `FROM` the published base. A genuine `FROM <published-base>` cannot build until
-> the base is actually published (or local base-build orchestration is added,
-> which is out of scope), so the split lands with the publish, keeping herd's
-> single-Dockerfile build working unchanged in the meantime. The harness code
-> contract above (build-or-pull, image-or-dockerfile, generalized cache) is in
-> place and ready for it.
+Publishing is `.github/workflows/release.yml` in the standalone repo (ADR-0007),
+on a `v*` tag: it builds `Dockerfile.base` for `linux/amd64` + `linux/arm64` and
+pushes both tags. The same workflow publishes the cross-platform harness binaries
+under the same tag, so `agent-harness v0.1.0` and `agent-harness-base:0.1.0` are
+always a matched pair.
+
+The image name is derived from `github.repository`, so a fork publishes to its
+own namespace with no edit to the workflow.
 
 ## Stop control
 
@@ -847,14 +845,14 @@ building `Dockerfile.base` for `linux/amd64` + `linux/arm64`.
   between-ticket checkpoint **and on every idle-sleep tick**):
   - `SIGINT` (Ctrl-C) — flips the flag, logs `will stop after current ticket`,
     leaves the running session alone.
-  - sentinel file `agent-harness/STOP` — the one that matters for AFK runs:
+  - sentinel file `.agent-harness/STOP` — the one that matters for AFK runs:
     `touch` it from anywhere and the harness winds down after the current ticket.
 - **Idle is also a stop point (daemon).** Because the loop is long-running and
   sleeps on an empty queue (§The loop), the idle re-poll sleep is broken into
   short ticks that re-check the stop condition, so a stop requested while idle is
   honoured within a few seconds rather than after a full poll interval.
 - **The sentinel is cleared at clean startup.** The loop deletes a pre-existing
-  `agent-harness/STOP` when it starts, so a stale sentinel from a prior run can't
+  `.agent-harness/STOP` when it starts, so a stale sentinel from a prior run can't
   instantly kill a fresh launch; thereafter only a *new* `touch` stops it.
 - **Double Ctrl-C = hard abort** — kills the running container and exits now,
   leaving the worktree behind (harmless; `review-worktree` can pick it up later).
@@ -1008,14 +1006,14 @@ building `Dockerfile.base` for `linux/amd64` + `linux/arm64`.
   `stop requested — finishing current ticket`, `queue empty — idle, re-poll 60s`).
 - **Disk = full forensic detail, keyed by ticket** (not by run id) so any later
   tool finds a ticket's whole arc by globbing one dir:
-  - `agent-harness/logs/BEH-NNN/<session>-<run-id>.jsonl` — the complete
+  - `.agent-harness/logs/BEH-NNN/<session>-<run-id>.jsonl` — the complete
     `claude … --output-format stream-json` transcript per session
     (`implementation-…`, `review-…`, `retrospective-…`). The ticket id is the
     stable key all three tools share; the run-id is a filename suffix for ordering
     and uniqueness when a ticket is worked more than once. This is what lets
     `retrospective BEH-NNN`, invoked separately, locate the implementation and
     review transcripts.
-  - `agent-harness/logs/BEH-NNN/<step>-<run-id>.log` — a **raw-stdout step log**
+  - `.agent-harness/logs/BEH-NNN/<step>-<run-id>.log` — a **raw-stdout step log**
     for the non-agent commands the review tool runs around the session: the
     `install-…` worktree prep and the host-side `gate-…` re-run. These are piped
     `pnpm` output (NOT a stream-json event stream), hence `.log`, never `.jsonl`,
@@ -1023,10 +1021,10 @@ building `Dockerfile.base` for `linux/amd64` + `linux/arm64`.
     `-- step exited <code> … --` footer (`runlog.StepFooter`) so an OOM-kill is
     visible at the tail rather than an opaque truncation needing a `run.jsonl`
     cross-reference (BEH-537).
-  - `agent-harness/logs/BEH-NNN/findings/retrospective/out.json` — the dropbox.
-  - `agent-harness/logs/BEH-NNN/run.jsonl` — the per-ticket structured event
+  - `.agent-harness/logs/BEH-NNN/findings/retrospective/out.json` — the dropbox.
+  - `.agent-harness/logs/BEH-NNN/run.jsonl` — the per-ticket structured event
     stream (machine-readable mirror of the console, scoped to one ticket's arc).
-  - `agent-harness/logs/loop.jsonl` — a **global** structured event stream across
+  - `.agent-harness/logs/loop.jsonl` — a **global** structured event stream across
     all tickets and stages, written by the shared narration sink and truncated at
     daemon startup (bounded to one daemon run). Each record is `{ts, kind, ticket,
     stage, message, detail}`: `message` is the console line verbatim (a strict
@@ -1055,7 +1053,7 @@ yet"). It is **stdlib-only** (a redraw-on-a-ticker dashboard needs no TUI framew
 and degrades to plain scrollback when stdout is not a TTY, `NO_COLOR` is set, or
 `--no-animation` is passed; `--no-bell` suppresses the transition bell (as does
 `NO_COLOR`). It never
-controls the loop — `touch agent-harness/STOP` remains the only control path (the
+controls the loop — `touch .agent-harness/STOP` remains the only control path (the
 viewer only *reads* the sentinel), and quitting the viewer does not touch the daemon.
 "Progress" is honest about being indeterminate: a stage indicator and a tool-call
 activity counter, never a percent-complete bar. See ADR-0005 for why a separate
@@ -1083,7 +1081,7 @@ reader over a structured stream rather than a `--tui` flag on the daemon.
   | `LOOP_MAX_RUNTIME_MS` | `0` (unlimited) | optional ceiling: stop after T wall-clock |
   | `LOOP_DISK_RECLAIM_THRESHOLD_BYTES` | `8589934592` (8 GiB) | soft free-disk floor below which the loop prunes merged worktrees between tickets (ADR-0005); `0` disables reclaim |
   | `LOOP_CLAIM_TTL_MS` | `1800000` (30 min) | grace period after which an In Progress claim with no branch/PR is reaped back to Todo (§Stale-claim reaper) |
-  | `STOP_FILE` | `agent-harness/STOP` | sentinel path; cleared at clean startup, `touch` to wind down |
+  | `STOP_FILE` | `.agent-harness/STOP` | sentinel path; cleared at clean startup, `touch` to wind down |
 
   `LOOP_MAX_TICKETS`/`LOOP_MAX_RUNTIME_MS` default to **unlimited** because the loop
   is deliberately long-running (§The loop) — they exist as opt-in insurance for an
@@ -1094,7 +1092,7 @@ reader over a structured stream rather than a `--tui` flag on the daemon.
   is started as a plain background process the operator walks away from (a thin
   `scripts/loop-start.sh` does `nohup bin/loop >> … & echo $! > agent-harness/loop.pid`),
   not under tmux, launchd, or systemd. Lifecycle is the stop model in §Stop control:
-  `touch agent-harness/STOP` to wind down gracefully (the PID file is for a hard
+  `touch .agent-harness/STOP` to wind down gracefully (the PID file is for a hard
   `kill` only if needed). No supervisor means no auto-restart — a crash or a breaker
   trip stays down until the operator relaunches, which is the intended behaviour for
   the breaker (a human must look first). launchd/systemd is explicitly **deferred**;

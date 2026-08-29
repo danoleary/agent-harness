@@ -174,7 +174,7 @@ func TestResolvePidPathIsSiblingOfLogsDir(t *testing.T) {
 	}
 }
 
-// The STOP sentinel lives at the harness root (agent-harness/STOP) — beside loop.pid
+// The STOP sentinel lives at the harness root (.agent-harness/STOP) — beside loop.pid
 // and the logs/ dir the stream is under — so the viewer resolves it from the stream
 // path exactly as it resolves the pidfile.
 func TestResolveStopPathIsSiblingOfLogsDir(t *testing.T) {

@@ -15,7 +15,7 @@
 //   - SIGINT (Ctrl-C) flips a flag and logs "will stop after current ticket"; the
 //     running session is left alone, and the loop winds down at the next
 //     between-ticket checkpoint.
-//   - the agent-harness/STOP sentinel does the same — `touch` it from anywhere to
+//   - the .agent-harness/STOP sentinel does the same — `touch` it from anywhere to
 //     wind an AFK run down gracefully. It is cleared at startup so a stale file
 //     from a prior run can't stop a fresh daemon.
 //   - a second SIGINT is a hard abort: it kills any running harness container and
@@ -100,7 +100,7 @@ func main() {
 	log := runlog.NewConsole(stream)
 
 	// STOP_FILE locates the sentinel used by startup-clear and the stop check. A
-	// relative override is resolved against PROJECT_PATH (the default "agent-harness/STOP"
+	// relative override is resolved against PROJECT_PATH (the default ".agent-harness/STOP"
 	// gives the same path as before); an absolute override is used as-is.
 	stopFile := cfg.StopFile
 	if !filepath.IsAbs(stopFile) {

@@ -4,7 +4,7 @@
 // harness imports — so every narration surface (runlog, the loop's own narrator)
 // and the viewer can depend on it without a cycle.
 //
-// The stream lives at agent-harness/logs/loop.jsonl, one JSON Record per line. It
+// The stream lives at .agent-harness/logs/loop.jsonl, one JSON Record per line. It
 // is GLOBAL (across every ticket and stage, unlike the per-ticket run.jsonl) and
 // bounded to one daemon run: the daemon truncates it at clean startup, like
 // loop.log. Each record's Message is the console line verbatim, so a record is a

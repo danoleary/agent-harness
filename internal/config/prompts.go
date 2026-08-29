@@ -27,7 +27,7 @@ type PromptBodies struct {
 // fails loud, since it signals a real filesystem problem rather than an
 // intentionally-absent body.
 func LoadPrompts(checkoutPath string) (PromptBodies, error) {
-	dir := filepath.Join(checkoutPath, ".agent-harness", "prompts")
+	dir := filepath.Join(ProjectDir(checkoutPath), "prompts")
 	implement, err := readBody(dir, "implement")
 	if err != nil {
 		return PromptBodies{}, err

@@ -89,7 +89,7 @@ type Deps struct {
 	// after every ticket ("pull main after every session").
 	FetchMain func() error
 	// StopRequested folds the two stop signals — the SIGINT flag and the
-	// agent-harness/STOP sentinel — into one predicate, checked at every
+	// .agent-harness/STOP sentinel — into one predicate, checked at every
 	// between-ticket checkpoint and between idle ticks (DESIGN.md "Two signals,
 	// one check").
 	StopRequested func() bool

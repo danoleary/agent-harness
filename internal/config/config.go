@@ -222,7 +222,7 @@ const (
 	defaultLoopMaxTickets             = 0 // unlimited
 	defaultLoopMaxRuntime             = time.Duration(0)
 	defaultLoopClaimTTL               = 30 * time.Minute
-	defaultStopFile                   = "agent-harness/STOP"
+	defaultStopFile                   = ProjectDirName + "/STOP"
 	// 8 GiB: the 5 GiB MinFreeDiskBytes sandbox floor plus headroom, so reclaim fires
 	// before a launch would ever be refused (ADR-0005).
 	defaultLoopDiskReclaimThreshold uint64 = 8 << 30

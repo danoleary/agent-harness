@@ -11,7 +11,7 @@ The loop's intended run model is a plain detached process the operator walks awa
 from (DESIGN.md §Run model). This thin launcher `nohup`s `bin/loop` into the
 background so it survives the operator logging out, appends its output to a
 logfile, and records the PID in a pidfile for a hard `kill` if ever needed.
-Graceful stop stays `touch agent-harness/STOP`; the pidfile is the escape hatch,
+Graceful stop stays `touch .agent-harness/STOP`; the pidfile is the escape hatch,
 not the normal stop. No supervisor means no auto-restart — a crash or a
 circuit-breaker trip stays down until the operator relaunches, which the loop's
 exit-code contract (0 = deliberate stop, non-zero = crash) keeps safe for a
@@ -36,7 +36,7 @@ is bash-3.2-safe.
 ```bash
 cd agent-harness
 make build               # build bin/loop first
-./scripts/loop-start.sh  # detached launch; touch agent-harness/STOP to stop
+./scripts/loop-start.sh  # detached launch; touch .agent-harness/STOP to stop
 ```
 
 ### Testing

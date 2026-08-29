@@ -29,7 +29,7 @@ func Plan(cfg config.Config, identifier string) string {
 	// bodies show structure with an empty title/description ("best computable").
 	t := ticket.Ticket{Identifier: id}
 	worktreePath := gitpkg.WorktreePath(cfg.ProjectPath, slug)
-	logsRoot := filepath.Join(cfg.ProjectPath, "agent-harness", "logs")
+	logsRoot := filepath.Join(config.ProjectDir(cfg.ProjectPath), "logs")
 
 	name := func(session string) string {
 		return fmt.Sprintf("herd-harness-<run-id>-<pid>-%s", session)

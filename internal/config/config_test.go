@@ -367,8 +367,8 @@ func TestLoadLoopDefaults(t *testing.T) {
 	if cfg.LoopMaxRuntime != 0 {
 		t.Errorf("LoopMaxRuntime = %v, want 0 (unlimited)", cfg.LoopMaxRuntime)
 	}
-	if cfg.StopFile != "agent-harness/STOP" {
-		t.Errorf("StopFile = %q, want agent-harness/STOP", cfg.StopFile)
+	if cfg.StopFile != ".agent-harness/STOP" {
+		t.Errorf("StopFile = %q, want .agent-harness/STOP", cfg.StopFile)
 	}
 	if cfg.LoopDiskReclaimThreshold != 8<<30 {
 		t.Errorf("LoopDiskReclaimThreshold = %d, want %d (8 GiB — above the 5 GiB sandbox floor)", cfg.LoopDiskReclaimThreshold, 8<<30)

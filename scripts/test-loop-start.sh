@@ -157,5 +157,62 @@ else
     echo -e "${GREEN}PASS${NC}"
 fi
 
+# --- default runtime paths land in the Consumer's .agent-harness/ dir ---------
+#
+# The viewer derives the pidfile and the STOP sentinel as siblings of the logs/
+# dir it tails, so a pidfile written anywhere else makes a running daemon read as
+# stopped. With PROJECT_PATH set and no explicit overrides, both defaults must
+# land under $PROJECT_PATH/.agent-harness/ (BEH-641).
+echo -n "loop-start.sh defaults pidfile + log under \$PROJECT_PATH/.agent-harness ... "
+PROJ_DIR="$TEST_DIR/consumer"
+mkdir -p "$PROJ_DIR"
+PROJECT_PATH="$PROJ_DIR" LOOP_BIN="$FAKE_BIN" "$SCRIPT_PATH" > /dev/null 2>&1
+default_pidfile="$PROJ_DIR/.agent-harness/loop.pid"
+default_logfile="$PROJ_DIR/.agent-harness/loop.log"
+default_pid="$(cat "$default_pidfile" 2>/dev/null || true)"
+STARTED_PIDS="$STARTED_PIDS $default_pid"
+if [ ! -f "$default_pidfile" ]; then
+    echo -e "${RED}FAIL${NC} - no pidfile at $default_pidfile"
+    exit 1
+elif [ ! -f "$default_logfile" ]; then
+    echo -e "${RED}FAIL${NC} - no logfile at $default_logfile"
+    exit 1
+elif [ -z "$default_pid" ] || ! kill -0 "$default_pid" 2>/dev/null; then
+    echo -e "${RED}FAIL${NC} - pidfile at $default_pidfile does not name a live process"
+    exit 1
+else
+    echo -e "${GREEN}PASS${NC}"
+fi
+
+# --- PROJECT_PATH is read from the sibling .env when unset in the environment --
+#
+# The operator's normal path: `./scripts/loop-start.sh` with no exported env, the
+# same .env the daemon itself reads. The .env must be GREPPED, never sourced — it
+# holds live credentials.
+echo -n "loop-start.sh reads PROJECT_PATH from the sibling .env ... "
+ENV_HARNESS="$TEST_DIR/harness-with-env"
+mkdir -p "$ENV_HARNESS/scripts" "$ENV_HARNESS/bin"
+cp "$SCRIPT_PATH" "$ENV_HARNESS/scripts/loop-start.sh"
+cp "$FAKE_BIN" "$ENV_HARNESS/bin/loop"
+ENV_PROJ="$TEST_DIR/consumer-from-env"
+mkdir -p "$ENV_PROJ"
+# A quoted value, plus a line that would execute if the file were sourced.
+{
+    echo "GH_TOKEN=\$(touch $TEST_DIR/SOURCED_THE_ENV)"
+    echo "PROJECT_PATH=\"$ENV_PROJ\""
+} > "$ENV_HARNESS/.env"
+( cd "$ENV_HARNESS" && env -u PROJECT_PATH ./scripts/loop-start.sh > /dev/null 2>&1 )
+env_pid="$(cat "$ENV_PROJ/.agent-harness/loop.pid" 2>/dev/null || true)"
+STARTED_PIDS="$STARTED_PIDS $env_pid"
+if [ -f "$TEST_DIR/SOURCED_THE_ENV" ]; then
+    echo -e "${RED}FAIL${NC} - the .env was evaluated, not grepped; a credential line executed"
+    exit 1
+elif [ -z "$env_pid" ] || ! kill -0 "$env_pid" 2>/dev/null; then
+    echo -e "${RED}FAIL${NC} - no live pidfile at $ENV_PROJ/.agent-harness/loop.pid (PROJECT_PATH not read from .env)"
+    exit 1
+else
+    echo -e "${GREEN}PASS${NC}"
+fi
+
 echo
 echo -e "${GREEN}All tests passed!${NC}"

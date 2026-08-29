@@ -1,47 +1,72 @@
 # Agent Harness
 
-Autonomously works the BeHerd Linear backlog, one ticket at a time. For each
-ticket it runs three Claude Code sessions — `/tdd` → `/review-worktree` →
-`/retrospective` — each inside its own Docker sandbox, then opens a PR.
+Works a backlog autonomously, one ticket at a time. For each ticket it runs three
+Claude Code sessions — implementation → review → retrospective — each in its own
+Docker sandbox, then opens a PR.
 
-A Go program (stdlib only, no module dependencies). The host does all remote I/O
-(Linear, git, GitHub); the sandbox only runs `claude` and herd's `pnpm` build.
+It is **project-agnostic**. A project adopts it by committing an
+`.agent-harness/` directory: its gates, its sandbox image, its prompts, its
+tracker. Go, .NET, Node — the harness never learns the difference.
 
-> Lives at `herd/agent-harness/`. Full design, invariants, and failure matrix are
-> in [`docs/DESIGN.md`](docs/DESIGN.md); decisions in [`docs/adr/`](docs/adr/).
+A Go program on the host, which owns every remote operation (tracker, git,
+GitHub). The sandbox only ever runs `claude`.
+
+> **Adopting it in your project? Read [`docs/CONSUMER.md`](docs/CONSUMER.md).**
+> Full design, invariants and failure matrix are in
+> [`docs/DESIGN.md`](docs/DESIGN.md); decisions in [`docs/adr/`](docs/adr/).
 
 ## Prerequisites
 
-- Go **1.26+**
-- `git` **2.45+** (host-side) — the pre-push rebase replays with `git cherry-pick --empty=drop`, which auto-drops a now-redundant feature commit (the flag landed in git 2.45, May 2024; BEH-622)
-- A working local `docker` daemon
-- A checkout of herd (this repo) — bind-mounted into every sandbox
+On the host that runs the harness:
 
-## Setup
+- A working local `docker` daemon
+- `git` **2.45+** — the pre-push rebase replays with `git cherry-pick --empty=drop`, which auto-drops a now-redundant feature commit (the flag landed in git 2.45, May 2024)
+- `gh`
+- Go **1.26+** — only if you build from source
+
+## Install
+
+Download the archive for your platform from
+[Releases](../../releases) and put the binaries on your `PATH`. No Go toolchain
+needed.
+
+With a Go toolchain, either of:
 
 ```bash
-cd agent-harness
-cp .env.example .env     # fill in the four required secrets (see below)
-make build               # compile the binaries into bin/
+go install github.com/danoleary/agent-harness/cmd/loop@latest   # and pipeline, watch, …
+make build                                                       # from a checkout, into bin/
 ```
 
-The sandbox image builds itself on first run. To control when that ~minutes-long
-build happens, pre-build it: `make image`.
+## Point it at a project
+
+The project needs an `.agent-harness/` directory — see
+[`docs/CONSUMER.md`](docs/CONSUMER.md) for the config, the prompt bodies, and how
+to build a sandbox image `FROM` the published base.
+
+Then set the host environment:
+
+```bash
+cp .env.example .env     # fill in the required secrets (see below)
+```
+
+The sandbox image builds (or pulls) itself on first run. To control when that
+~minutes-long build happens, pre-build it: `make image`.
 
 ### Required secrets (`.env`)
 
 | Var | Purpose |
 |---|---|
-| `LINEAR_API_KEY` | host-only: select, claim, and move tickets; file findings |
+| `PROJECT_PATH` | absolute path to the Consumer checkout to bind-mount |
 | `CLAUDE_CODE_OAUTH_TOKEN` *or* `ANTHROPIC_API_KEY` | the Claude credential passed into the sandbox (set exactly one) |
 | `GH_TOKEN` | host-only: `git push`, `gh pr create`, and the post-PR CI watch |
-| `PROJECT_PATH` | absolute path to the herd checkout to bind-mount |
+| `LINEAR_API_KEY` | host-only, Linear tracker: select, claim and move tickets; file findings |
 
-`LINEAR_API_KEY` and `GH_TOKEN` never enter the sandbox (ADR-0002).
+The tracker credential and `GH_TOKEN` never enter the sandbox (ADR-0002), so a
+compromised session cannot move your backlog or touch your remote.
 
-> `GH_TOKEN` **must be a classic PAT with `repo` scope**, SSO-authorized for the
-> `Herd-Video-Call-Limited` org. A fine-grained PAT can push and open the PR but
-> **cannot read check runs**, so the post-PR CI watch can't observe CI (BEH-476).
+> `GH_TOKEN` **must be a classic PAT with `repo` scope** (SSO-authorized for the
+> org, if it uses SSO). A fine-grained PAT can push and open the PR but **cannot
+> read check runs**, so the post-PR CI watch can't observe CI.
 > See `.env.example` for every optional knob (timeouts, models, loop ceilings).
 
 ## Run it
@@ -93,13 +118,14 @@ The compiled binaries (`bin/implementation`, `bin/pipeline`, …) and `go run
 
 ### How a ticket is picked
 
-The next **Todo**, **unassigned**, **`agent-ready`-labelled**, **unblocked**
-ticket, ordered by priority then board rank. The `agent-ready` label is the human
-gate: a person decides *what* runs unattended; the harness decides *how*.
+The next **unstarted**, **unassigned**, **ready-labelled**, **unblocked** ticket,
+ordered by priority then board rank. The ready label (`tracker.ready_label` in the
+Consumer's config) is the human gate: a person decides *what* runs unattended; the
+harness decides *how*.
 
 ## Stopping the loop
 
-- **`touch agent-harness/STOP`** — graceful: finishes the current ticket, then
+- **`touch .agent-harness/STOP`** — graceful: finishes the current ticket, then
   exits. The way to wind down a detached `loop-start.sh` daemon.
 - **Ctrl-C** once — same graceful stop for a foreground run; twice — hard abort
   (kills the container now, keeps the worktree for review).
@@ -144,8 +170,9 @@ cmd/
   retrospective/   /retrospective, files findings, tears down a clean worktree
   pipeline/        chains the three over one ticket, then exits
   loop/            autonomous daemon over the agent-ready queue
-internal/          config, linear, prompt, sandbox, session, verify, filing, git, …
-Dockerfile         the node-based sandbox image (runs claude + herd's pnpm build)
+internal/          config, tracker adapters, prompt, sandbox, session, verify, filing, git, …
+Dockerfile.base    the published sandbox base image — the harness<->sandbox contract
+docs/CONSUMER.md   how a project adopts the harness
 ```
 
 ## Known gotcha: opaque bash errors in the sandbox (BEH-401, BEH-598, BEH-601, BEH-645)
@@ -192,4 +219,4 @@ bash wrapper, so the harness can't patch it; instead every prompt carries a stee
 intra-call shell variables (inline the absolute path, `&&`-chain instead of `;`,
 or use the Grep/Glob tools with literal absolute paths), and run each verification
 gate as its own Bash call with nothing appended. Bump the pinned
-`CLAUDE_VERSION` (Dockerfile) if a newer release fixes it upstream.
+`CLAUDE_VERSION` (`Dockerfile.base`) if a newer release fixes it upstream.

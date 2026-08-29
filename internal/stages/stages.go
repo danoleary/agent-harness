@@ -228,8 +228,10 @@ func LoadConfig() (config.Config, error) {
 // LogsRoot is the harness logs directory under the primary checkout — where the
 // per-ticket log dirs and the global loop.jsonl live. Exposed so the cmd
 // entrypoints can wire the same global stream the per-ticket loggers feed.
+// Logs are per-Consumer, not per-harness-install, so they live in the Consumer's
+// own harness directory (config.ProjectDirName) rather than beside the binary.
 func LogsRoot(cfg config.Config) string {
-	return filepath.Join(cfg.ProjectPath, "agent-harness", "logs")
+	return filepath.Join(config.ProjectDir(cfg.ProjectPath), "logs")
 }
 
 func Setup(identifier string) (config.Config, *runlog.Logger, string, error) {

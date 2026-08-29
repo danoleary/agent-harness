@@ -324,7 +324,7 @@ func TestRetrospectiveSkillWritesDropboxIncrementally(t *testing.T) {
 // TestRetrospectiveSkillDocumentsInputs pins the input contract: the skill
 // studies the *sessions*, so it must read every prior transcript for the
 // ticket (implementation + review) plus the diff. The transcripts live at the
-// ticket-keyed log path the harness writes (`agent-harness/logs/BEH-NNN/`),
+// ticket-keyed log path the harness writes (`.agent-harness/logs/BEH-NNN/`),
 // visible in the container via the real-path mount (ADR-0002).
 func TestRetrospectiveSkillDocumentsInputs(t *testing.T) {
 	src := retrospectiveSkill(t)
