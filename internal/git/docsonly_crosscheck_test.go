@@ -3,6 +3,7 @@ package git
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -243,6 +244,12 @@ func TestRepresentativeChangedPathsExtensionPinnedGlobNoMarkdown(t *testing.T) {
 // means a newly-added prose-ish trigger (a scripts/*.md gate, an infra/** doc job)
 // fails this test until the classifier's exclusion list is brought back in sync.
 func TestDocsOnlyClassifierNeverMatchesCITriggerPath(t *testing.T) {
+	// The roots are read from the Consumer's OWN committed config, not from a
+	// constant in this package, so the cross-check measures what herd actually
+	// declares. A root dropped from that file fails here, which is the point:
+	// the declaration and the workflow triggers must stay in step.
+	roots := declaredDocsOnlyRoots(t)
+
 	dir := workflowsDir(t)
 	files, err := filepath.Glob(filepath.Join(dir, "*.y*ml"))
 	if err != nil {
@@ -262,10 +269,10 @@ func TestDocsOnlyClassifierNeverMatchesCITriggerPath(t *testing.T) {
 		for _, glob := range pullRequestPathTriggers(string(src)) {
 			for _, p := range representativeChangedPaths(glob) {
 				checked++
-				if DocsOnlyPaths([]string{p}) {
+				if DocsOnlyPaths([]string{p}, roots) {
 					t.Errorf("%s triggers CI on %q; a changed path %q it matches classifies as docs-only, "+
 						"so the harness would skip the CI watch for a job this workflow runs. "+
-						"Add the trigger's root to docsOnlyPath's excluded prefixes.", name, glob, p)
+						"Add the trigger's root to docs_only_excluded_roots in .agent-harness/config.toml.", name, glob, p)
 				}
 			}
 		}
@@ -345,4 +352,33 @@ func openDirPrefix(glob string) (string, bool) {
 		return glob[:len(glob)-len("**")], true
 	}
 	return "", false
+}
+
+// declaredDocsOnlyRoots reads `docs_only_excluded_roots` out of the Consumer's
+// committed .agent-harness/config.toml. It is parsed with a small scanner rather
+// than the config loader so this test stays in the git package with no dependency
+// on config, matching how the workflow triggers above are parsed.
+func declaredDocsOnlyRoots(t *testing.T) []string {
+	t.Helper()
+	dir := filepath.Dir(workflowsDir(t)) // .github -> repo root's parent of .github
+	path := filepath.Join(filepath.Dir(dir), ".agent-harness", "config.toml")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+
+	m := regexp.MustCompile(`(?s)docs_only_excluded_roots\s*=\s*\[(.*?)\]`).FindStringSubmatch(string(raw))
+	if m == nil {
+		t.Fatalf("no docs_only_excluded_roots in %s — the Consumer must declare its roots or the "+
+			"docs-only short-circuit is disabled entirely", path)
+	}
+
+	var roots []string
+	for _, q := range regexp.MustCompile(`"([^"]+)"`).FindAllStringSubmatch(m[1], -1) {
+		roots = append(roots, q[1])
+	}
+	if len(roots) == 0 {
+		t.Fatalf("docs_only_excluded_roots in %s is empty — the cross-check would be vacuous", path)
+	}
+	return roots
 }

@@ -164,6 +164,9 @@ type Config struct {
 	// Gates is the ordered, named host-side gate list from the project config.
 	// BEH-631 only sources it; the runner that iterates it is BEH-634.
 	Gates []Gate
+	// DocsOnlyExcludedRoots are the Consumer's directory prefixes whose contents
+	// are never inert prose. Empty disables the docs-only short-circuit entirely.
+	DocsOnlyExcludedRoots []string
 	// Tracker holds the project config's non-secret tracker selection names
 	// (label ids, ready/blocked labels). The tracker credential stays env-only.
 	Tracker TrackerConfig
@@ -366,12 +369,13 @@ func Load(get Getenv) (Config, error) {
 		StopFile:                   orDefault(get("STOP_FILE"), defaultStopFile),
 		LoopDiskReclaimThreshold:   diskReclaim,
 
-		BranchPrefix: project.BranchPrefix,
-		PostCreate:   project.PostCreate,
-		Gates:        project.Gates,
-		Tracker:      project.Tracker,
-		Feedback:     project.Feedback,
-		Prompts:      prompts,
+		BranchPrefix:          project.BranchPrefix,
+		PostCreate:            project.PostCreate,
+		Gates:                 project.Gates,
+		DocsOnlyExcludedRoots: project.DocsOnlyExcludedRoots,
+		Tracker:               project.Tracker,
+		Feedback:              project.Feedback,
+		Prompts:               prompts,
 	}
 	if err := validateIdleBelowCaps(cfg); err != nil {
 		return Config{}, err

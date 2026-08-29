@@ -661,11 +661,14 @@ func branchDiffEmpty(worktreePath string, run commandRunner) bool {
 // an empty diff (the zero-net-diff case, BEH-602) reports false, so the normal gate +
 // watch still run — the harness would rather validate than wrongly skip. Read
 // host-side via the real-path mount, the same seam BranchDiffEmpty uses.
-func BranchDocsOnly(worktreePath string) bool {
-	return branchDocsOnly(worktreePath, execOutput)
+// excludedRoots is the Consumer's declared list of directories whose contents are
+// never inert (ADR-0008). An empty list disables the short-circuit entirely — see
+// DocsOnlyPaths for why that is the safe default.
+func BranchDocsOnly(worktreePath string, excludedRoots []string) bool {
+	return branchDocsOnly(worktreePath, excludedRoots, execOutput)
 }
 
-func branchDocsOnly(worktreePath string, run outputRunner) bool {
+func branchDocsOnly(worktreePath string, excludedRoots []string, run outputRunner) bool {
 	out, err := run("git", "-C", worktreePath, "diff", "--name-only", "origin/main")
 	if err != nil {
 		return false
@@ -676,7 +679,7 @@ func branchDocsOnly(worktreePath string, run outputRunner) bool {
 			paths = append(paths, p)
 		}
 	}
-	return DocsOnlyPaths(paths)
+	return DocsOnlyPaths(paths, excludedRoots)
 }
 
 // DocsOnlyPaths reports whether EVERY given repo-relative changed path is
@@ -688,12 +691,25 @@ func branchDocsOnly(worktreePath string, run outputRunner) bool {
 // whole set non-docs-only, so the short-circuit never fires on a change that could
 // affect a gate. An empty set is NOT docs-only — a branch with nothing to ship is
 // the zero-net-diff case (BranchDiffEmpty / BEH-602), handled separately.
-func DocsOnlyPaths(paths []string) bool {
-	if len(paths) == 0 {
+//
+// excludedRoots comes from the Consumer's `docs_only_excluded_roots` config: the
+// directories whose contents can feed a gate whatever they look like. It cannot
+// be a harness constant, because the answer is a fact about the Consumer's own
+// layout — `web/` and `supabase/` mean nothing to a .NET project, and a harness
+// that guessed would classify that project's `src/Foo/README.md` as inert and
+// skip a CI watch that its `src/**` trigger actually runs.
+//
+// An EMPTY list therefore disables the short-circuit rather than enabling it for
+// everything: excluding more roots can only make the classifier more conservative
+// (run a gate that would have run anyway), while excluding fewer risks the one
+// failure that matters — silently merging past a job that could go red. A
+// Consumer opts in by declaring its roots.
+func DocsOnlyPaths(paths []string, excludedRoots []string) bool {
+	if len(paths) == 0 || len(excludedRoots) == 0 {
 		return false
 	}
 	for _, p := range paths {
-		if !docsOnlyPath(p) {
+		if !docsOnlyPath(p, excludedRoots) {
 			return false
 		}
 	}
@@ -710,27 +726,18 @@ func DocsOnlyPaths(paths []string) bool {
 // Harness CI job (agent-harness.yaml keys on `.agents/skills/**`) and can turn it
 // red — treating it as docs-only would short-circuit a watch that could fail.
 //
-// docsOnlyExcludedRoots must stay a superset of every non-web/-supabase directory a
-// workflow's `on.pull_request.paths` triggers on, so a markdown edit UNDER such a
-// root (scripts/README.md, .github/workflows/notes.md, infra/cloudflare/DESIGN.md)
-// is never treated as inert while the workflow it triggers goes unwatched. This is
-// enforced against the real workflow files by TestDocsOnlyClassifierNeverMatchesCI-
-// TriggerPath (BEH-705) — add a new trigger root here and that cross-check goes
-// green; forget to, and it fails. Excluding a root can only make the classifier more
-// conservative (run a gate that would have run anyway), never wrongly skip one.
-// Outside these trees, markdown anywhere (AGENTS.md, CLAUDE.md, docs/adr/*.md, …)
-// and the repo-root docs/ tree feed no gate or CI job.
-var docsOnlyExcludedRoots = []string{
-	"web/", "agent-harness/", ".agents/", ".claude/",
-	".github/", "scripts/", "supabase/", "infra/",
-}
-
-func docsOnlyPath(p string) bool {
+// A Consumer's excluded roots must stay a superset of every directory a workflow's
+// `on.pull_request.paths` triggers on, so a markdown edit UNDER such a root
+// (scripts/README.md, .github/workflows/notes.md) is never treated as inert while
+// the workflow it triggers goes unwatched. A Consumer is expected to cross-check
+// its declared roots against its own workflow triggers. Outside those trees,
+// markdown anywhere and the repo-root docs/ tree feed no gate or CI job.
+func docsOnlyPath(p string, excludedRoots []string) bool {
 	p = strings.TrimSpace(p)
 	if p == "" {
 		return false
 	}
-	for _, codeRoot := range docsOnlyExcludedRoots {
+	for _, codeRoot := range excludedRoots {
 		if strings.HasPrefix(p, codeRoot) {
 			return false
 		}

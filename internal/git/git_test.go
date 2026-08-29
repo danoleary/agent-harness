@@ -1605,12 +1605,21 @@ func TestWithRetryNoSleepOnFirstSuccess(t *testing.T) {
 	}
 }
 
+// consumerRoots is the excluded-root list a Consumer declares in its config — here,
+// herd's. The classifier used to hardcode exactly this list; making it a fixture is
+// the point of the change, so a Consumer with a different layout is a different
+// argument rather than a fork of the harness.
+var consumerRoots = []string{
+	"web/", "agent-harness/", ".agents/", ".claude/",
+	".github/", "scripts/", "supabase/", "infra/",
+}
+
 // BEH-687: DocsOnlyPaths recognises a diff that touches ONLY documentation/prose
 // paths no build gate or CI job reads — the condition under which the host gate
 // re-run and the CI poll can be skipped. The concrete case is a root-markdown edit
 // (AGENTS.md, which CLAUDE.md symlinks to) plus an ADR under docs/.
 func TestDocsOnlyPathsTrueForRootMarkdownAndDocs(t *testing.T) {
-	if !DocsOnlyPaths([]string{"AGENTS.md", "docs/adr/0026-comments.md"}) {
+	if !DocsOnlyPaths([]string{"AGENTS.md", "docs/adr/0026-comments.md"}, consumerRoots) {
 		t.Fatal("a diff of only root markdown + a docs/ ADR must be docs-only")
 	}
 }
@@ -1618,7 +1627,7 @@ func TestDocsOnlyPathsTrueForRootMarkdownAndDocs(t *testing.T) {
 // A single code path anywhere in the diff disqualifies the whole set: the change
 // can affect a gate, so it must NOT short-circuit.
 func TestDocsOnlyPathsFalseWhenAnyCodePathPresent(t *testing.T) {
-	if DocsOnlyPaths([]string{"AGENTS.md", "web/src/routes/call/index.tsx"}) {
+	if DocsOnlyPaths([]string{"AGENTS.md", "web/src/routes/call/index.tsx"}, consumerRoots) {
 		t.Fatal("a diff that also touches web/src is not docs-only")
 	}
 }
@@ -1626,7 +1635,7 @@ func TestDocsOnlyPathsFalseWhenAnyCodePathPresent(t *testing.T) {
 // An empty change set is not docs-only — a branch with nothing to ship is the
 // zero-net-diff case (BEH-602), classified elsewhere.
 func TestDocsOnlyPathsFalseWhenEmpty(t *testing.T) {
-	if DocsOnlyPaths(nil) {
+	if DocsOnlyPaths(nil, consumerRoots) {
 		t.Fatal("an empty diff must not classify as docs-only")
 	}
 }
@@ -1636,7 +1645,7 @@ func TestDocsOnlyPathsFalseWhenEmpty(t *testing.T) {
 // prose. Only prose OUTSIDE the source trees short-circuits.
 func TestDocsOnlyPathsFalseForMarkdownUnderSourceTree(t *testing.T) {
 	for _, p := range []string{"web/test/integration/README.md", "agent-harness/docs/DESIGN.md"} {
-		if DocsOnlyPaths([]string{p}) {
+		if DocsOnlyPaths([]string{p}, consumerRoots) {
 			t.Fatalf("%q lives under a module source tree — must not classify as docs-only", p)
 		}
 	}
@@ -1651,7 +1660,7 @@ func TestDocsOnlyPathsFalseForSkillMarkdown(t *testing.T) {
 		".agents/skills/review-worktree/SKILL.md",
 		".claude/skills/retrospective/SKILL.md",
 	} {
-		if DocsOnlyPaths([]string{p}) {
+		if DocsOnlyPaths([]string{p}, consumerRoots) {
 			t.Fatalf("%q feeds the agent-harness skill-contract CI tests — must not classify as docs-only", p)
 		}
 	}
@@ -1666,7 +1675,7 @@ func TestDocsOnlyPathsFalseForGateInputs(t *testing.T) {
 		"web/package.json",
 		"supabase/migrations/20260101000000_x.sql",
 	} {
-		if DocsOnlyPaths([]string{p}) {
+		if DocsOnlyPaths([]string{p}, consumerRoots) {
 			t.Fatalf("%q is a gate/CI input — must not classify as docs-only", p)
 		}
 	}
@@ -1675,7 +1684,7 @@ func TestDocsOnlyPathsFalseForGateInputs(t *testing.T) {
 // A non-markdown file under the repo-root docs/ tree (a diagram, an image) still
 // feeds no gate, so a docs/-only diff is inert.
 func TestDocsOnlyPathsTrueForNonMarkdownUnderDocs(t *testing.T) {
-	if !DocsOnlyPaths([]string{"docs/adr/assets/flow.png"}) {
+	if !DocsOnlyPaths([]string{"docs/adr/assets/flow.png"}, consumerRoots) {
 		t.Fatal("a non-md asset under docs/ feeds no gate — must be docs-only")
 	}
 }
@@ -1695,7 +1704,7 @@ func scriptedOutput(stdout string, err error) (outputRunner, *[][]string) {
 // an all-docs diff is docs-only.
 func TestBranchDocsOnlyTrueForAllDocsDiff(t *testing.T) {
 	run, calls := scriptedOutput("AGENTS.md\ndocs/adr/0026.md\n", nil)
-	if !branchDocsOnly("/wt", run) {
+	if !branchDocsOnly("/wt", consumerRoots, run) {
 		t.Fatal("a name-only diff of pure docs must classify as docs-only")
 	}
 	got := strings.Join((*calls)[0], " ")
@@ -1707,7 +1716,7 @@ func TestBranchDocsOnlyTrueForAllDocsDiff(t *testing.T) {
 
 func TestBranchDocsOnlyFalseWhenCodeChanged(t *testing.T) {
 	run, _ := scriptedOutput("AGENTS.md\nweb/src/app.tsx\n", nil)
-	if branchDocsOnly("/wt", run) {
+	if branchDocsOnly("/wt", consumerRoots, run) {
 		t.Fatal("a diff that touches web/src must not classify as docs-only")
 	}
 }
@@ -1716,7 +1725,7 @@ func TestBranchDocsOnlyFalseWhenCodeChanged(t *testing.T) {
 // not a docs-only ship — falling back to false keeps the normal gate + watch.
 func TestBranchDocsOnlyFalseWhenDiffEmpty(t *testing.T) {
 	run, _ := scriptedOutput("\n", nil)
-	if branchDocsOnly("/wt", run) {
+	if branchDocsOnly("/wt", consumerRoots, run) {
 		t.Fatal("an empty name-only diff must not classify as docs-only")
 	}
 }
@@ -1725,7 +1734,7 @@ func TestBranchDocsOnlyFalseWhenDiffEmpty(t *testing.T) {
 // so the harness never skips the gate + watch on doubt.
 func TestBranchDocsOnlyFalseOnError(t *testing.T) {
 	run, _ := scriptedOutput("", errors.New("fatal: bad revision 'origin/main'"))
-	if branchDocsOnly("/wt", run) {
+	if branchDocsOnly("/wt", consumerRoots, run) {
 		t.Fatal("a git error must read as not-docs-only (fail-safe)")
 	}
 }
@@ -1764,14 +1773,45 @@ func TestBranchDocsOnlyAgainstRealGit(t *testing.T) {
 	write("AGENTS.md", "base\nnew guidance line\n")
 	git("add", "-A")
 	git("commit", "-q", "-m", "docs: add guidance")
-	if !BranchDocsOnly(repo) {
+	if !BranchDocsOnly(repo, consumerRoots) {
 		t.Fatal("a branch whose only change is a root-markdown edit must be docs-only")
 	}
 
 	write("web/src/app.tsx", "export const x = 1\n")
 	git("add", "-A")
 	git("commit", "-q", "-m", "feat: add code")
-	if BranchDocsOnly(repo) {
+	if BranchDocsOnly(repo, consumerRoots) {
 		t.Fatal("adding a web/src file must flip the branch off docs-only")
+	}
+}
+
+// A Consumer that declares no excluded roots gets NO short-circuit, not a
+// short-circuit over everything. This is the direction that matters: the roots
+// list is what stops the classifier calling a Consumer's own source-tree prose
+// inert, so an absent list must fail closed. Reading it the other way — empty
+// means exclude nothing, so every .md is inert — would make a fresh Consumer skip
+// the CI watch on a README its own workflow triggers a job for, silently merging
+// past a job that could go red (BEH-641).
+func TestDocsOnlyPathsFalseWhenConsumerDeclaresNoRoots(t *testing.T) {
+	for _, roots := range [][]string{nil, {}} {
+		if DocsOnlyPaths([]string{"AGENTS.md", "docs/adr/0026.md"}, roots) {
+			t.Errorf("with roots=%v a pure-docs diff must NOT be docs-only: an undeclared "+
+				"root list disables the short-circuit rather than widening it", roots)
+		}
+	}
+}
+
+// The roots are the Consumer's, so the same path classifies differently for
+// different Consumers — which is the whole reason the list stopped being a harness
+// constant. A .NET Consumer excluding src/ must not have its src/ prose called
+// inert, while the same path IS inert for a Consumer that never declared src/.
+func TestDocsOnlyPathsHonoursTheConsumersOwnRoots(t *testing.T) {
+	dotnet := []string{"src/", ".github/"}
+	if DocsOnlyPaths([]string{"src/Api/README.md"}, dotnet) {
+		t.Error("src/Api/README.md is under a declared root — must not be docs-only for this Consumer")
+	}
+	if !DocsOnlyPaths([]string{"src/Api/README.md"}, consumerRoots) {
+		t.Error("herd declares no src/ root, so the same path is inert prose for herd — " +
+			"the classifier must read the Consumer's list, not a harness constant")
 	}
 }

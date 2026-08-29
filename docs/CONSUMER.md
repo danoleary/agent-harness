@@ -64,6 +64,16 @@ ready_label = "ready-for-agent"
 blocked_label = "blocked"
 in_progress_label = "in-progress"
 
+# Directory prefixes whose contents can feed a gate or a CI job whatever they look
+# like. The harness skips the review gate re-run and the CI poll when a branch's
+# whole diff is inert prose OUTSIDE these roots.
+#
+# OMITTING this disables that short-circuit rather than widening it. That is the
+# safe direction: excluding too much only costs a CI poll you did not need, while
+# excluding too little means silently merging past a job that could go red. Keep it
+# a superset of every root your workflows' `on.pull_request.paths` trigger on.
+docs_only_excluded_roots = ["src/", "tests/", ".github/", "scripts/"]
+
 # Ordered, named gates. ALL must pass host-side before the harness pushes and
 # opens the PR. Language-agnostic — these are just shell commands.
 [[gates]]

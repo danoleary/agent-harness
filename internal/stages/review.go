@@ -324,7 +324,7 @@ func Review(cfg config.Config, log *runlog.Logger, runID string, args Args) Resu
 		// may have committed a code edit, and BranchDocsOnly over the current tree (which
 		// `git diff origin/main` reads including uncommitted work) reflects that — fail-safe
 		// to running the full gate on any doubt.
-		if gitpkg.BranchDocsOnly(worktreePath) {
+		if gitpkg.BranchDocsOnly(worktreePath, cfg.DocsOnlyExcludedRoots) {
 			log.Event("review · host gate skipped — diff touches only docs/prose paths no gate depends on (BEH-687)")
 			return gateResult{}
 		}
@@ -607,7 +607,7 @@ func Review(cfg config.Config, log *runlog.Logger, runID string, args Args) Resu
 			return rebaseOntoBase(cfg.ProjectPath, cfg.BranchPrefix, worktreePath, slug)
 		},
 		func() bool { return gitpkg.BranchDiffEmpty(worktreePath) },
-		func() bool { return gitpkg.BranchDocsOnly(worktreePath) },
+		func() bool { return gitpkg.BranchDocsOnly(worktreePath, cfg.DocsOnlyExcludedRoots) },
 	)
 	log.Event("watching CI for " + gitpkg.BranchName(cfg.BranchPrefix, slug) + " …")
 	ciResult := ci.WatchAndFix(driver, ciCfg, time.Now)

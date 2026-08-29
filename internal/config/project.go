@@ -57,6 +57,17 @@ type ProjectConfig struct {
 	// `pnpm check && pnpm typecheck`). BEH-631 only sources the list from
 	// config; iterating it in the runner is BEH-634.
 	Gates []Gate `toml:"gates"`
+	// DocsOnlyExcludedRoots lists the directory prefixes whose contents can feed a
+	// gate or a CI job whatever they look like — the Consumer's source trees, its
+	// scripts, its workflows. The harness skips the review gate re-run and the CI
+	// poll for a branch whose whole diff is inert prose OUTSIDE these roots.
+	//
+	// It was a hardcoded herd list (`web/`, `supabase/`, …), which is a fact about
+	// one Consumer's layout, not about the harness. Leaving it EMPTY disables the
+	// short-circuit — the safe direction, since the cost of a wrong skip is
+	// merging past a job that could go red (see git.DocsOnlyPaths). Keep it a
+	// superset of every root your workflows' `on.pull_request.paths` trigger on.
+	DocsOnlyExcludedRoots []string `toml:"docs_only_excluded_roots"`
 	// Tracker holds the non-secret tracker selection names (was the hardcoded
 	// Linear label UUIDs + ready/blocked label names).
 	Tracker TrackerConfig `toml:"tracker"`
