@@ -19,6 +19,7 @@ import (
 	"os"
 
 	"github.com/danoleary/agent-harness/internal/stages"
+	"github.com/danoleary/agent-harness/internal/version"
 )
 
 func main() {
@@ -27,6 +28,10 @@ func main() {
 		// Asked-for usage is a success: print it on stdout and exit 0, so `--help`
 		// works before any credential is set and can be piped.
 		fmt.Println(stages.Usage("retrospective", false))
+		os.Exit(0)
+	}
+	if errors.Is(err, stages.ErrVersion) {
+		fmt.Println(version.Version)
 		os.Exit(0)
 	}
 	if err != nil {

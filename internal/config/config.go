@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/danoleary/agent-harness/internal/version"
 )
 
 // Config is the resolved harness configuration.
@@ -249,7 +251,26 @@ func requireEnv(get Getenv, key string) (string, error) {
 // `-e NAME` reading the harness's own inherited environment, so it never sits in
 // our argv. GH_TOKEN is validated host-side too but stays host-only (the
 // harness's own push + `gh pr create`); it never enters the container.
-func Load(get Getenv) (Config, error) {
+// Option adjusts how Load resolves configuration. It exists so a test can pin the
+// harness version the Consumer's `min_harness_version` is checked against, rather
+// than depending on the linker flags of the binary under test.
+type Option func(*loadOptions)
+
+type loadOptions struct {
+	harnessVersion string
+}
+
+// WithHarnessVersion overrides the harness version used for the compatibility
+// check. Production passes nothing and gets version.Version.
+func WithHarnessVersion(v string) Option {
+	return func(o *loadOptions) { o.harnessVersion = v }
+}
+
+func Load(get Getenv, opts ...Option) (Config, error) {
+	options := loadOptions{harnessVersion: version.Version}
+	for _, opt := range opts {
+		opt(&options)
+	}
 	// Exactly one Claude credential is required: a long-lived API key
 	// (ANTHROPIC_API_KEY) or a subscription OAuth token (CLAUDE_CODE_OAUTH_TOKEN,
 	// from `claude setup-token`). The latter must NOT be set as ANTHROPIC_API_KEY
@@ -282,9 +303,16 @@ func Load(get Getenv) (Config, error) {
 		return Config{}, err
 	}
 
+	// The Consumer's version pin is checked before anything else reads the config,
+	// so an incompatible harness says so instead of acting on keys it half
+	// understands.
+	if err := checkHarnessVersion(options.harnessVersion, project.MinHarnessVersion); err != nil {
+		return Config{}, err
+	}
+
 	// Per-Stage prompt bodies live alongside the project config in the checkout
-	// (ADR-0009). A missing body is tolerated (the Stage runs under the envelope),
-	// so this only fails loud on a real filesystem error.
+	// (ADR-0009). Each one is required: the harness declares no skill of its own,
+	// so a missing body would leave that Stage with nothing to invoke.
 	prompts, err := promptsLoader(herdPath)
 	if err != nil {
 		return Config{}, err
@@ -414,6 +442,35 @@ func validateIdleBelowCaps(cfg Config) error {
 	return nil
 }
 
+// checkHarnessVersion enforces a Consumer's `min_harness_version` pin against the
+// running harness. An empty pin is no constraint, and a from-source build (no
+// ldflags, so version.DevVersion) cannot be compared — the maintainer working on
+// the harness itself must not be blocked by a Consumer's floor.
+func checkHarnessVersion(harnessVersion, pin string) error {
+	if pin == "" {
+		return nil
+	}
+	if version.IsDev(harnessVersion) {
+		fmt.Fprintf(os.Stderr,
+			"note: this project requires agent-harness >= %s (min_harness_version); "+
+				"skipping the check because this is an unversioned build\n", pin)
+		return nil
+	}
+	ok, err := version.AtLeast(harnessVersion, pin)
+	if err != nil {
+		return fmt.Errorf("reading min_harness_version from the project config: %w", err)
+	}
+	if !ok {
+		return fmt.Errorf(
+			"this project requires agent-harness >= %s (min_harness_version in %s/config.toml), "+
+				"but this binary is %s — a harness older than the config it reads ignores the keys it "+
+				"does not know. Download a newer release: https://github.com/danoleary/agent-harness/releases",
+			pin, ProjectDirName, harnessVersion,
+		)
+	}
+	return nil
+}
+
 // EnvFileName is the basename of the operator's credential file, and
 // EnvConfigDirName the directory it sits in under the operator's config dir.
 const (
@@ -435,10 +492,16 @@ const (
 //  2. <workingDir>/.env — how every from-source operator already runs. Local beats
 //     global, the usual precedence, so adding a config-dir file later cannot
 //     silently repoint an existing setup at another project.
-//  3. $XDG_CONFIG_HOME/agent-harness/.env, else ~/.config/agent-harness/.env —
-//     the home for an operator who installed from a release archive and has no
-//     checkout to keep a file beside. XDG_CONFIG_HOME is usually unset on macOS,
-//     so the ~/.config form is what most operators get.
+//  3. <workingDir>/.agent-harness/.env, then $PROJECT_PATH/.agent-harness/.env —
+//     the in-repo location, beside the config and prompts the Consumer already
+//     commits. The sandbox cannot read it: every container masks that exact path
+//     (sandbox.maskArgs), which is what makes keeping it in the repo safe. The
+//     cwd form covers running the harness from the project; the PROJECT_PATH form
+//     covers running it from anywhere with PROJECT_PATH already exported.
+//  4. $XDG_CONFIG_HOME/agent-harness/.env, else ~/.config/agent-harness/.env —
+//     the operator-scoped home, for someone driving several projects from one
+//     install. XDG_CONFIG_HOME is usually unset on macOS, so the ~/.config form
+//     is what most operators get.
 //
 // scripts/loop-start.sh resolves PROJECT_PATH in this same order. The two must
 // agree: if the script read one file and the daemon another, the pidfile and log
@@ -461,12 +524,33 @@ func ResolveEnvFile(getenv Getenv, workingDir string) string {
 		}
 	}
 
+	// The in-repo location, from cwd and then from an exported PROJECT_PATH.
+	for _, root := range []string{workingDir, getenv("PROJECT_PATH")} {
+		if root == "" {
+			continue
+		}
+		candidate := InRepoEnvFile(root)
+		if fileExists(candidate) {
+			return candidate
+		}
+	}
+
 	if candidate := EnvFileHint(getenv); candidate != "" {
 		if fileExists(candidate) {
 			return candidate
 		}
 	}
 	return ""
+}
+
+// InRepoEnvFile is the credential file a Consumer may commit-adjacent inside its
+// own checkout: `<checkout>/.agent-harness/.env`. It is the one path inside the
+// mount that every container masks, so it is the only in-repo location the harness
+// vouches for. It must stay in step with sandbox.ProjectDirName /
+// sandbox.CredentialFileName, which build the mask — the two are the same contract
+// seen from the host and from the container.
+func InRepoEnvFile(checkoutPath string) string {
+	return filepath.Join(checkoutPath, ProjectDirName, EnvFileName)
 }
 
 // EnvFileHint is the path the operator SHOULD keep credentials in: the config-dir
@@ -497,6 +581,12 @@ func EnvFileHint(getenv Getenv) string {
 // nothing wrong.
 func EnvFileInsideProject(envFile, projectPath string) bool {
 	if envFile == "" || projectPath == "" {
+		return false
+	}
+	// The blessed in-repo path is masked in every container, so it is not an
+	// exposure. Warning about the documented location would train an operator to
+	// ignore the warning that matters.
+	if filepath.Clean(envFile) == InRepoEnvFile(filepath.Clean(projectPath)) {
 		return false
 	}
 	rel, err := filepath.Rel(filepath.Clean(projectPath), filepath.Clean(envFile))

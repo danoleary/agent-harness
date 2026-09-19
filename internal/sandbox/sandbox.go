@@ -261,6 +261,12 @@ func BuildDockerRunArgs(c Config) []string {
 
 	args = append(args, "-v", c.ProjectPath+":"+c.ProjectPath)
 
+	// Hide the Consumer's credential file, if it keeps one in the repo. The whole
+	// checkout is mounted, so `.agent-harness/.env` would otherwise be a readable
+	// file holding the tracker and GitHub tokens that ADR-0001/0002 keep host-side.
+	// It must come after the checkout mount, which would otherwise replace it.
+	args = append(args, maskArgs(c.ProjectPath)...)
+
 	// The toolchain cache is mounted only when a Consumer declares one (BEH-635):
 	// a language with no persistent cache (or a Consumer that opts out) mounts
 	// nothing rather than a dead volume.
@@ -389,6 +395,9 @@ func buildWorktreeBashArgs(c GateConfig, command string) []string {
 	args = append(args, "-e", "PROJECT_PATH="+c.ProjectPath)
 
 	args = append(args, "-v", c.ProjectPath+":"+c.ProjectPath)
+	// These containers carry no secrets of their own, but the credential file is in
+	// the tree rather than the environment, so they need the same mask.
+	args = append(args, maskArgs(c.ProjectPath)...)
 	if c.CacheVolume != "" {
 		args = append(args, "-v", c.CacheVolume+":"+c.CacheMountPath)
 		args = append(args, "-e", "HARNESS_CACHE_PATH="+c.CacheMountPath)

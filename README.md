@@ -53,23 +53,28 @@ of these that exists, so an operator with no checkout has a home for them:
 | Order | Path | Who it is for |
 |---|---|---|
 | 1 | `$HARNESS_ENV_FILE` | driving several projects, one credential set each |
-| 2 | `./.env` | running from a checkout (local beats global) |
-| 3 | `${XDG_CONFIG_HOME:-~/.config}/agent-harness/.env` | installed from a release archive |
+| 2 | `./.env` | running from a harness checkout (local beats global) |
+| 3 | `<project>/.agent-harness/.env` | **keeping credentials with the project** |
+| 4 | `${XDG_CONFIG_HOME:-~/.config}/agent-harness/.env` | one install, several projects |
 
 ```bash
-# From a checkout:
-cp .env.example .env
+# With the project (found when you run the harness from it, or with
+# PROJECT_PATH exported). Gitignore it.
+cp .env.example /path/to/project/.agent-harness/.env
 
-# From a release archive (no checkout):
+# Operator-scoped, for an install that drives several projects:
 mkdir -p ~/.config/agent-harness
 cp .env.example ~/.config/agent-harness/.env   # the archive ships this file
 ```
 
-**Never keep that file inside the project checkout.** Every stage bind-mounts the
-checkout into its sandbox at its real path, so a credential file under it is one
-the agent session can read — handing over the tracker and GitHub tokens the
-harness deliberately keeps host-side (ADR-0002). The harness warns if it finds
-one there.
+`<project>/.agent-harness/.env` sits **inside** the checkout that every stage
+bind-mounts into its sandbox, which would normally make it readable by the agent
+session — handing over the tracker and GitHub tokens the harness keeps host-side
+(ADR-0002). So the harness masks that exact path in every container it launches:
+the session, the gate, the install and the `post_create` container each mount an
+empty file over it. That mask is what makes the in-repo location safe, and it
+covers only that path — a credential file anywhere else in the checkout is
+readable, and the harness warns when it loads one.
 
 Exported variables win over the file, so `LINEAR_API_KEY=… loop` also works.
 
@@ -102,7 +107,7 @@ compromised session cannot move your backlog or touch your remote.
 ./scripts/loop-start.sh
 ```
 
-Every command also takes `--help`, which prints its grammar and exits without
+Every command also takes `--help` and `--version`, both of which answer without
 needing a credential.
 
 **Watch it run** — a read-only live view of the current ticket and stage, tailing
