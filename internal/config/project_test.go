@@ -494,3 +494,80 @@ command = "c"
 		t.Fatalf("off mode with no repo should be valid, got: %v", err)
 	}
 }
+
+// A Consumer pins the harness version its config is written for, and an older
+// binary must refuse rather than silently ignore the keys it does not know.
+func TestLoadRejectsAHarnessOlderThanTheConsumerPin(t *testing.T) {
+	orig := projectLoader
+	t.Cleanup(func() { projectLoader = orig })
+	projectLoader = func(string) (ProjectConfig, error) {
+		pc := testProjectConfig()
+		pc.MinHarnessVersion = "9.9"
+		return pc, nil
+	}
+
+	_, err := Load(fullEnv(nil), WithHarnessVersion("0.2.0"))
+	if err == nil {
+		t.Fatal("Load must fail when the harness is older than min_harness_version")
+	}
+	// The error has to carry both numbers and the key's name, or an operator cannot
+	// tell which side to change.
+	for _, want := range []string{"9.9", "0.2.0", "min_harness_version"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error must mention %q; got: %v", want, err)
+		}
+	}
+}
+
+func TestLoadAcceptsAHarnessNewerThanTheConsumerPin(t *testing.T) {
+	orig := projectLoader
+	t.Cleanup(func() { projectLoader = orig })
+	projectLoader = func(string) (ProjectConfig, error) {
+		pc := testProjectConfig()
+		pc.MinHarnessVersion = "0.2"
+		return pc, nil
+	}
+
+	if _, err := Load(fullEnv(nil), WithHarnessVersion("0.3.1")); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+}
+
+// A from-source build reports no version, so there is nothing to compare. The
+// maintainer working on the harness must not be blocked by a Consumer's pin.
+func TestLoadSkipsThePinForADevBuild(t *testing.T) {
+	orig := projectLoader
+	t.Cleanup(func() { projectLoader = orig })
+	projectLoader = func(string) (ProjectConfig, error) {
+		pc := testProjectConfig()
+		pc.MinHarnessVersion = "9.9"
+		return pc, nil
+	}
+
+	if _, err := Load(fullEnv(nil), WithHarnessVersion("dev")); err != nil {
+		t.Fatalf("a dev build must not be blocked by a pin: %v", err)
+	}
+}
+
+// An unparseable pin fails loud: a typo must not quietly disable the check.
+func TestLoadRejectsAMalformedPin(t *testing.T) {
+	orig := projectLoader
+	t.Cleanup(func() { projectLoader = orig })
+	projectLoader = func(string) (ProjectConfig, error) {
+		pc := testProjectConfig()
+		pc.MinHarnessVersion = "latest"
+		return pc, nil
+	}
+
+	if _, err := Load(fullEnv(nil), WithHarnessVersion("0.2.0")); err == nil {
+		t.Fatal("Load must reject a malformed min_harness_version")
+	}
+}
+
+// No pin at all stays valid: the key is optional, and most Consumers will not set
+// it until a compatibility break gives them a reason to.
+func TestLoadAcceptsNoPin(t *testing.T) {
+	if _, err := Load(fullEnv(nil), WithHarnessVersion("0.2.0")); err != nil {
+		t.Fatalf("Load without a pin: %v", err)
+	}
+}

@@ -763,3 +763,20 @@ func TestUsageNamesToolAndNext(t *testing.T) {
 		t.Errorf("usage must not offer --next to a tool that rejects it: %q", u)
 	}
 }
+
+// `--version` answers before any credential too, because the first thing an
+// operator does when a run misbehaves is check which binary they are on — and a
+// Consumer's min_harness_version pin is meaningless if you cannot read it.
+func TestParseArgsVersionRequestsVersion(t *testing.T) {
+	if _, err := ParseArgs("pipeline", []string{"--version"}, true); !errors.Is(err, ErrVersion) {
+		t.Errorf("error = %v, want ErrVersion", err)
+	}
+}
+
+// Help outranks version, so `--help --version` explains the tool rather than
+// printing a number and exiting.
+func TestParseArgsHelpOutranksVersion(t *testing.T) {
+	if _, err := ParseArgs("pipeline", []string{"--version", "--help"}, true); !errors.Is(err, ErrHelp) {
+		t.Errorf("error = %v, want ErrHelp", err)
+	}
+}

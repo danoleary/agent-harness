@@ -46,6 +46,7 @@ import (
 	"github.com/danoleary/agent-harness/internal/stages"
 	"github.com/danoleary/agent-harness/internal/tracker"
 	"github.com/danoleary/agent-harness/internal/trackers"
+	"github.com/danoleary/agent-harness/internal/version"
 )
 
 // tickInterval is the granularity the idle/backoff waits are broken into so a stop
@@ -80,7 +81,7 @@ const (
 
 // usage is the daemon's own grammar. The loop takes no ticket — the queue is the
 // input — so it shares nothing with stages.Usage beyond the shape.
-const usage = `usage: loop [--help]
+const usage = `usage: loop [--help] [--version]
 
 Works the ready-for-agent queue unattended, one ticket at a time: implementation,
 review and retrospective per ticket, then a PR. Takes no arguments.
@@ -102,6 +103,12 @@ func main() {
 	for _, arg := range os.Args[1:] {
 		if arg == "--help" || arg == "-h" {
 			fmt.Println(usage)
+			os.Exit(0)
+		}
+	}
+	for _, arg := range os.Args[1:] {
+		if arg == "--version" {
+			fmt.Println(version.Version)
 			os.Exit(0)
 		}
 	}

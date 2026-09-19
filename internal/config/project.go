@@ -68,6 +68,17 @@ type ProjectConfig struct {
 	// merging past a job that could go red (see git.DocsOnlyPaths). Keep it a
 	// superset of every root your workflows' `on.pull_request.paths` trigger on.
 	DocsOnlyExcludedRoots []string `toml:"docs_only_excluded_roots"`
+
+	// MinHarnessVersion is the oldest harness this config is written for, e.g.
+	// "0.2". Optional, and most Consumers will not set it until a compatibility
+	// break gives them a reason to.
+	//
+	// It exists because an older harness reading a newer config does not fail: TOML
+	// keys it does not know are ignored, so a renamed field reverts to a default and
+	// an unknown gate is skipped, while the run still reports success. The pin turns
+	// that into an error the operator reads at startup instead of a wrong run they
+	// find out about later.
+	MinHarnessVersion string `toml:"min_harness_version"`
 	// Tracker holds the non-secret tracker selection names (was the hardcoded
 	// Linear label UUIDs + ready/blocked label names).
 	Tracker TrackerConfig `toml:"tracker"`

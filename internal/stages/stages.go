@@ -139,6 +139,12 @@ type Args struct {
 // reach it before holding any credential.
 var ErrHelp = errors.New("help requested")
 
+// ErrVersion is returned by ParseArgs when the operator asked which binary this
+// is. Like ErrHelp it is a successful outcome, answered before any credential is
+// read: a Consumer's `min_harness_version` pin is unactionable if you cannot find
+// out what you are running.
+var ErrVersion = errors.New("version requested")
+
 // Usage is the one-line grammar for tool. allowNext gates the pipeline-only
 // `--next`, so a tool that rejects the flag never advertises it.
 func Usage(tool string, allowNext bool) string {
@@ -150,10 +156,16 @@ func Usage(tool string, allowNext bool) string {
 
 func ParseArgs(tool string, argv []string, allowNext bool) (Args, error) {
 	// Help outranks the rest of the line: `pipeline BEH-1 --help` explains itself
-	// rather than starting a run over BEH-1.
+	// rather than starting a run over BEH-1. Help also outranks --version, so
+	// asking for both gets the more informative answer.
 	for _, arg := range argv {
 		if arg == "--help" || arg == "-h" {
 			return Args{}, ErrHelp
+		}
+	}
+	for _, arg := range argv {
+		if arg == "--version" {
+			return Args{}, ErrVersion
 		}
 	}
 
