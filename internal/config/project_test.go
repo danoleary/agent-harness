@@ -30,6 +30,13 @@ func testProjectConfig() ProjectConfig {
 
 func TestMain(m *testing.M) {
 	projectLoader = func(string) (ProjectConfig, error) { return testProjectConfig(), nil }
+	// Prompt bodies are a required Consumer surface, and fullEnv's PROJECT_PATH is
+	// a fixture path with no checkout behind it. Inject usable bodies package-wide
+	// so every Load test exercises what it is about; the prompts tests drive the
+	// real loader against a temp dir.
+	promptsLoader = func(string) (PromptBodies, error) {
+		return PromptBodies{Implement: "/implement", Review: "/review", Retro: "/retro"}, nil
+	}
 	os.Exit(m.Run())
 }
 

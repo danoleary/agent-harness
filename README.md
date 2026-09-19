@@ -43,6 +43,10 @@ The project needs an `.agent-harness/` directory — see
 [`docs/CONSUMER.md`](docs/CONSUMER.md) for the config, the prompt bodies, and how
 to build a sandbox image `FROM` the published base.
 
+The harness declares no skill of its own. Each of the three prompt bodies names
+the skill its stage invokes, and all three are required: a missing or blank body
+fails at config load rather than running a stage with nothing to invoke.
+
 Then set the host environment:
 
 ```bash

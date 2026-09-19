@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -40,17 +41,51 @@ func TestLoadPromptsReadsPerStageBodies(t *testing.T) {
 	}
 }
 
-// A missing body file is not a hard error — the Stage still runs under the
-// non-overridable envelope (ADR-0009 consequence 3). The body is the Consumer's
-// quality concern; the contract is the harness's, and it lives in the envelope.
-func TestLoadPromptsMissingBodyIsEmptyNotError(t *testing.T) {
+// Every body is REQUIRED (ADR-0009, amended). The harness ships no default skill
+// for any Stage, so a missing body leaves that Stage running under the envelope
+// alone with nothing to invoke — a session that looks healthy, burns a sandbox,
+// a claim and a ticket, and produces nothing. Failing at config load turns that
+// into an error the operator reads before the first container starts.
+func TestLoadPromptsMissingBodyIsAnError(t *testing.T) {
 	dir := t.TempDir() // no .agent-harness/prompts at all
-	pb, err := LoadPrompts(dir)
-	if err != nil {
-		t.Fatalf("LoadPrompts should not error on missing bodies: %v", err)
+
+	_, err := LoadPrompts(dir)
+	if err == nil {
+		t.Fatal("LoadPrompts must error when the Consumer declares no prompt body")
 	}
-	if pb.Implement != "" || pb.Review != "" || pb.Retro != "" {
-		t.Errorf("missing bodies should be empty, got %+v", pb)
+	// One error names every unusable path, so a project adopting the harness
+	// fixes all three at once instead of one failed run at a time.
+	for _, stage := range []string{"implement.md", "review.md", "retro.md"} {
+		if !strings.Contains(err.Error(), stage) {
+			t.Errorf("error must name %s; got: %v", stage, err)
+		}
+	}
+	// And it must say what belongs in the file. "Missing prompt body" alone does
+	// not tell an operator that naming the skill is now their job.
+	if !strings.Contains(strings.ToLower(err.Error()), "skill") {
+		t.Errorf("error must point at naming the skill; got: %v", err)
+	}
+}
+
+// A body that exists but holds only whitespace is the same hole as a missing one:
+// the Stage still has nothing to invoke. A `touch implement.md` must not satisfy
+// the contract.
+func TestLoadPromptsBlankBodyIsAnError(t *testing.T) {
+	dir := t.TempDir()
+	writePromptBody(t, dir, "implement", "/tdd Work on {{.Identifier}}.")
+	writePromptBody(t, dir, "review", "  \n\t\n ")
+	writePromptBody(t, dir, "retro", "/retrospective for {{.Identifier}}.")
+
+	_, err := LoadPrompts(dir)
+	if err == nil {
+		t.Fatal("LoadPrompts must error on a blank prompt body")
+	}
+	if !strings.Contains(err.Error(), "review.md") {
+		t.Errorf("error must name the blank body; got: %v", err)
+	}
+	// It must not blame a body that is fine, or the operator rewrites the wrong file.
+	if strings.Contains(err.Error(), "implement.md") {
+		t.Errorf("error must not name a usable body; got: %v", err)
 	}
 }
 

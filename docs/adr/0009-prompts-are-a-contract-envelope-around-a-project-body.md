@@ -48,5 +48,23 @@ is the harness's public API; changing its contract is a breaking change.
 - Consumers get real prompt freedom without being able to break push/PR/filing.
 - The host-side "when to post issues / create PRs" logic needs no per-Consumer
   configuration — it is structurally out of the agent's reach.
-- If a Consumer's body omits the skill invocation entirely, the Stage still runs
-  under the envelope; quality is the Consumer's problem, the contract is not.
+- A Consumer's body is where a skill invocation comes from. The harness declares
+  none, so a Stage with no body has nothing to invoke (see the amendment below).
+
+## Amendment, 2026-09-19: a Consumer body is required
+
+The original decision let a Stage run with no body at all: the envelope was the
+contract, and an absent body was the Consumer's quality problem.
+
+That degraded silently in the one direction that costs the most. A skill-less
+implementation session still starts a container, still claims the ticket, still
+exits 0, and still reports a healthy run — it simply produces no worktree and no
+commit. The operator learns this an hour later from an empty branch, and nothing
+in the run distinguishes it from a genuine no-op ticket.
+
+**`config.LoadPrompts` now fails when any of the three bodies is missing or
+blank**, naming every unusable path in one error. The harness still ships no
+default skill — the correction is to refuse to run without the Consumer's
+declaration, not to supply one. A default would be worse: the harness cannot know
+which skills a project carries, so a baked-in `/tdd` would name a skill that may
+not exist there, and the same silent no-op would return wearing a harness name.
