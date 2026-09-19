@@ -33,18 +33,44 @@ LOOP_BIN="${LOOP_BIN:-$HARNESS_DIR/bin/loop}"
 # daemon liveness without re-reading the harness config. Writing the pidfile
 # anywhere else makes a running daemon look stopped.
 #
-# PROJECT_PATH comes from the environment, else from the .env beside the binary
-# (the same file the daemon itself reads). If neither resolves it, fall back to
-# the harness dir so a bare `loop-start.sh` still launches something inspectable
-# rather than failing on an unset variable.
-if [ -z "${PROJECT_PATH:-}" ] && [ -f "$HARNESS_DIR/.env" ]; then
-    # A single grepped assignment, not `source`: the .env holds live credentials
-    # and must not be evaluated by this shell.
-    PROJECT_PATH="$(grep -E '^PROJECT_PATH=' "$HARNESS_DIR/.env" | tail -n 1 | cut -d= -f2- | sed -e 's/^["'"'"']//' -e 's/["'"'"']$//' || true)"
-fi
+# PROJECT_PATH comes from the environment, else from the same env file the daemon
+# itself reads, looked up in the same order (config.ResolveEnvFile):
+#
+#   1. $HARNESS_ENV_FILE                                  explicit
+#   2. $HARNESS_DIR/.env                                  beside the binary
+#   3. ${XDG_CONFIG_HOME:-$HOME/.config}/agent-harness/.env   operator config dir
+#
+# The sibling file is checked before the config dir so a from-source operator's
+# existing layout keeps winning. The config dir is what an operator who installed
+# from a release archive has — no checkout, so no sibling .env — and without this
+# lookup PROJECT_PATH stays unset for them, the pidfile and log default beside the
+# binary instead of under the Consumer's .agent-harness/, and the viewer reports a
+# running daemon as stopped (it derives both from the logs dir it tails, ADR-0006).
+#
+# If nothing resolves it, fall back to the harness dir so a bare `loop-start.sh`
+# still launches something inspectable rather than failing on an unset variable.
+harness_config_home="${XDG_CONFIG_HOME:-${HOME:-}/.config}"
+for env_candidate in \
+    "${HARNESS_ENV_FILE:-}" \
+    "$HARNESS_DIR/.env" \
+    "${harness_config_home}/agent-harness/.env"; do
+    [ -n "${PROJECT_PATH:-}" ] && break
+    [ -n "$env_candidate" ] || continue
+    [ -f "$env_candidate" ] || continue
+    # A single grepped assignment, not `source`: the env file holds live
+    # credentials and must not be evaluated by this shell.
+    PROJECT_PATH="$(grep -E '^PROJECT_PATH=' "$env_candidate" | tail -n 1 | cut -d= -f2- | sed -e 's/^["'"'"']//' -e 's/["'"'"']$//' || true)"
+done
 
 if [ -n "${PROJECT_PATH:-}" ]; then
     RUNTIME_DIR="$PROJECT_PATH/.agent-harness"
+    # Hand the daemon the project this launch decided on. It resolves its own env
+    # file relative to ITS cwd, which is the caller's — so without this the script
+    # and the daemon can read different files and disagree about which project is
+    # being worked, leaving the pidfile and log under one while work happens in
+    # another. An inherited value wins over any env file (LoadDotEnv fills only
+    # unset keys), so exporting it makes the two agree by construction.
+    export PROJECT_PATH
 else
     RUNTIME_DIR="$HARNESS_DIR"
 fi

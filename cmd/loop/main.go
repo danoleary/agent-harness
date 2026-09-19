@@ -78,7 +78,34 @@ const (
 	dockerPruneTimeout = 5 * time.Minute
 )
 
+// usage is the daemon's own grammar. The loop takes no ticket — the queue is the
+// input — so it shares nothing with stages.Usage beyond the shape.
+const usage = `usage: loop [--help]
+
+Works the ready-for-agent queue unattended, one ticket at a time: implementation,
+review and retrospective per ticket, then a PR. Takes no arguments.
+
+Configuration is read from the environment, filled in from the first of:
+  $HARNESS_ENV_FILE
+  ./.env
+  $XDG_CONFIG_HOME/agent-harness/.env   (else ~/.config/agent-harness/.env)
+Never keep that file inside the project checkout: every sandbox bind-mounts it.
+
+Stop it gracefully with ` + "`touch $PROJECT_PATH/.agent-harness/STOP`" + ` or one SIGINT.
+See CONSUMER.md for the .agent-harness/ directory a project must commit.`
+
 func main() {
+	// Usage before config: an operator who has just unpacked a release archive must
+	// be able to ask what this takes without holding a credential yet. Handled here
+	// because the daemon otherwise parses no arguments at all, so `loop --help` fell
+	// through to "missing Claude credential" — which teaches nothing.
+	for _, arg := range os.Args[1:] {
+		if arg == "--help" || arg == "-h" {
+			fmt.Println(usage)
+			os.Exit(0)
+		}
+	}
+
 	// Config is loaded once for the whole daemon: PROJECT_PATH locates the STOP
 	// sentinel and the primary checkout to fast-forward; LINEAR_API_KEY backs
 	// selection. A bad config must fail loud before the loop starts.

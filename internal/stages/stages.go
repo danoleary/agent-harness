@@ -133,7 +133,30 @@ type Args struct {
 // allowNext gates the pipeline-only `--next` auto-select flag: the three
 // standalone tools pass false (they never select a ticket), so for them `--next`
 // is an unknown token that falls through to the missing-identifier usage error.
+// ErrHelp is returned by ParseArgs when the operator asked for usage rather than
+// a run. The cmd wrapper prints Usage to stdout and exits 0: help is a successful
+// outcome, and an operator who just unpacked a release archive must be able to
+// reach it before holding any credential.
+var ErrHelp = errors.New("help requested")
+
+// Usage is the one-line grammar for tool. allowNext gates the pipeline-only
+// `--next`, so a tool that rejects the flag never advertises it.
+func Usage(tool string, allowNext bool) string {
+	if allowNext {
+		return fmt.Sprintf("usage: %s (<TICKET-ID> | --next) [--dry-run] [--verbose] [--force] [--help]", tool)
+	}
+	return fmt.Sprintf("usage: %s <TICKET-ID> [--dry-run] [--verbose] [--force] [--help]", tool)
+}
+
 func ParseArgs(tool string, argv []string, allowNext bool) (Args, error) {
+	// Help outranks the rest of the line: `pipeline BEH-1 --help` explains itself
+	// rather than starting a run over BEH-1.
+	for _, arg := range argv {
+		if arg == "--help" || arg == "-h" {
+			return Args{}, ErrHelp
+		}
+	}
+
 	var a Args
 	for _, arg := range argv {
 		switch {
@@ -158,11 +181,7 @@ func ParseArgs(tool string, argv []string, allowNext bool) (Args, error) {
 		return a, nil
 	}
 	if !ticketRE.MatchString(a.Identifier) {
-		usage := fmt.Sprintf("usage: %s <TICKET-ID> [--dry-run] [--verbose] [--force]", tool)
-		if allowNext {
-			usage = fmt.Sprintf("usage: %s (<TICKET-ID> | --next) [--dry-run] [--verbose] [--force]", tool)
-		}
-		return a, fmt.Errorf("%s  (got: %q)", usage, a.Identifier)
+		return a, fmt.Errorf("%s  (got: %q)", Usage(tool, allowNext), a.Identifier)
 	}
 	return a, nil
 }
@@ -217,8 +236,27 @@ type Result struct {
 // environment. Shared so the pipeline and each standalone tool load it the same
 // way.
 func LoadConfig() (config.Config, error) {
-	config.LoadDotEnv(".env")
-	return config.Load(os.Getenv)
+	wd, _ := os.Getwd()
+	envFile := config.ResolveEnvFile(os.Getenv, wd)
+	config.LoadDotEnv(envFile)
+
+	cfg, err := config.Load(os.Getenv)
+	if err != nil {
+		return cfg, err
+	}
+
+	// The credential file must not live inside the Consumer checkout: every stage
+	// bind-mounts that checkout into its sandbox at its real path (ADR-0002), so a
+	// .env there is a file the agent session can read — handing over the tracker and
+	// GitHub tokens the harness deliberately keeps host-side. A warning, not an
+	// error: the run is already configured and refusing it would strand an operator
+	// mid-queue for a file they can move afterwards.
+	if config.EnvFileInsideProject(envFile, cfg.ProjectPath) {
+		fmt.Fprintf(os.Stderr,
+			"warning: credential file %s is inside the bind-mounted checkout %s — every sandbox can read it. Move it to %s.\n",
+			envFile, cfg.ProjectPath, config.EnvFileHint(os.Getenv))
+	}
+	return cfg, nil
 }
 
 // Setup performs the once-per-run wiring every tool needs: load config, mint a

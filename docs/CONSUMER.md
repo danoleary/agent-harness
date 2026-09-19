@@ -13,6 +13,11 @@ On the **host** (the machine running the harness):
 - `docker`, `git` 2.45+, `gh`
 - A Claude credential and a tracker credential (see [Secrets](#secrets))
 
+Those credentials live on the host, in `./.env` or
+`${XDG_CONFIG_HOME:-~/.config}/agent-harness/.env` — **never in the repository
+the harness works.** That checkout is bind-mounted into every sandbox, so a
+credential file inside it is readable by the agent session.
+
 You do **not** need a Go toolchain. Download a binary from
 [Releases](../../releases), or `go install` if you prefer.
 
@@ -87,13 +92,29 @@ command = "dotnet format --verify-no-changes"
 
 ### 2. `.agent-harness/prompts/`
 
-Three per-stage prompt **bodies**: `implement.md`, `review.md`, `retro.md`.
+Three per-stage prompt **bodies**: `implement.md`, `review.md`, `retro.md`. **All
+three are required, and each must name the skill its stage invokes.**
 
 A body says which skill to invoke and states your project's conventions. The
 harness wraps each one in a non-overridable **contract envelope** — the findings
 dropbox protocol, the tracker-off steer, the branch and handoff contract, the
 sanitize rule, and the injected ticket context (ADR-0009). A body cannot delete
 the envelope; it only fills in what is project-specific.
+
+The harness declares no skill of its own, for any stage. It cannot: it does not
+know which skills your project carries. So a missing or blank body is a hard
+error at config load, naming every file you still owe it — rather than a stage
+that starts a container, claims your ticket, exits 0 and produces nothing.
+
+The skill a body names must exist in **your** repository. A body is also a Go
+template, so `{{.Identifier}}`, `{{.Title}}`, `{{.Slug}}`, `{{.BranchPrefix}}`
+and `{{.WorktreePath}}` interpolate:
+
+```markdown
+/tdd Work on {{.Identifier}}.
+
+Run `dotnet test` before you commit. Commit on `{{.BranchPrefix}}/{{.Slug}}`.
+```
 
 ## Your sandbox image
 
