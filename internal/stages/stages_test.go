@@ -729,3 +729,37 @@ func TestTddCap(t *testing.T) {
 		t.Errorf("tddCap(ordinary ticket) = %v, want %v", got, cfg.TddTimeout)
 	}
 }
+
+// `--help` is the first thing an operator who downloaded a release archive types.
+// It must reach usage without a credential, a config file or a tracker call:
+// exiting 1 on "missing Claude credential" teaches nothing about what the tool
+// takes, and a new operator cannot tell a usage mistake from a setup mistake.
+func TestParseArgsHelpRequestsUsage(t *testing.T) {
+	for _, flag := range []string{"--help", "-h"} {
+		if _, err := ParseArgs("pipeline", []string{flag}, true); !errors.Is(err, ErrHelp) {
+			t.Errorf("ParseArgs(%q) error = %v, want ErrHelp", flag, err)
+		}
+	}
+}
+
+// Help wins over everything else on the line, so `pipeline BEH-1 --help` explains
+// itself rather than starting a run over BEH-1.
+func TestParseArgsHelpOutranksAnIdentifier(t *testing.T) {
+	if _, err := ParseArgs("pipeline", []string{"BEH-1", "--help"}, true); !errors.Is(err, ErrHelp) {
+		t.Errorf("error = %v, want ErrHelp", err)
+	}
+}
+
+// The usage line names the tool it was asked about, and the pipeline-only --next.
+func TestUsageNamesToolAndNext(t *testing.T) {
+	u := Usage("pipeline", true)
+	if !strings.Contains(u, "pipeline") {
+		t.Errorf("usage must name the tool: %q", u)
+	}
+	if !strings.Contains(u, "--next") {
+		t.Errorf("usage must document --next when it is allowed: %q", u)
+	}
+	if u := Usage("review", false); strings.Contains(u, "--next") {
+		t.Errorf("usage must not offer --next to a tool that rejects it: %q", u)
+	}
+}

@@ -13,6 +13,11 @@ On the **host** (the machine running the harness):
 - `docker`, `git` 2.45+, `gh`
 - A Claude credential and a tracker credential (see [Secrets](#secrets))
 
+Those credentials live on the host, in `./.env` or
+`${XDG_CONFIG_HOME:-~/.config}/agent-harness/.env` — **never in the repository
+the harness works.** That checkout is bind-mounted into every sandbox, so a
+credential file inside it is readable by the agent session.
+
 You do **not** need a Go toolchain. Download a binary from
 [Releases](../../releases), or `go install` if you prefer.
 

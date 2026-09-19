@@ -501,3 +501,213 @@ func TestLoadTimeoutFallback(t *testing.T) {
 		}
 	}
 }
+
+// An operator who installed the harness from a release archive has no checkout to
+// put a .env beside, and the Consumer's own repo is the one place it must never go
+// (every stage bind-mounts that checkout into the sandbox, so a .env there hands
+// the host-only tracker and GitHub credentials to the agent session). So the env
+// file is resolved from the operator's own config dir, independent of cwd.
+func TestResolveEnvFileUsesXDGConfigDirWhenNoLocalFile(t *testing.T) {
+	home := t.TempDir()
+	xdg := filepath.Join(home, "xdg")
+	want := filepath.Join(xdg, "agent-harness", ".env")
+	if err := os.MkdirAll(filepath.Dir(want), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(want, []byte("K=V\n"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	got := ResolveEnvFile(func(k string) string {
+		switch k {
+		case "XDG_CONFIG_HOME":
+			return xdg
+		case "HOME":
+			return home
+		}
+		return ""
+	}, filepath.Join(home, "somewhere-else"))
+	if got != want {
+		t.Errorf("ResolveEnvFile = %q, want %q", got, want)
+	}
+}
+
+// With no XDG_CONFIG_HOME set, the same file is looked for under the
+// platform-conventional ~/.config, so the documented path holds on a stock macOS
+// shell where XDG_CONFIG_HOME is usually unset.
+func TestResolveEnvFileFallsBackToHomeConfig(t *testing.T) {
+	home := t.TempDir()
+	want := filepath.Join(home, ".config", "agent-harness", ".env")
+	if err := os.MkdirAll(filepath.Dir(want), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(want, []byte("K=V\n"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	got := ResolveEnvFile(func(k string) string {
+		if k == "HOME" {
+			return home
+		}
+		return ""
+	}, filepath.Join(home, "somewhere-else"))
+	if got != want {
+		t.Errorf("ResolveEnvFile = %q, want %q", got, want)
+	}
+}
+
+// HARNESS_ENV_FILE wins outright, so an operator driving several projects can keep
+// a credential set per project outside every checkout.
+func TestResolveEnvFileHonoursExplicitOverride(t *testing.T) {
+	dir := t.TempDir()
+	explicit := filepath.Join(dir, "work.env")
+	if err := os.WriteFile(explicit, []byte("K=V\n"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	// A file in the config dir too, to prove the override outranks it.
+	xdg := filepath.Join(dir, "xdg")
+	if err := os.MkdirAll(filepath.Join(xdg, "agent-harness"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(xdg, "agent-harness", ".env"), []byte("K=W\n"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	got := ResolveEnvFile(func(k string) string {
+		switch k {
+		case "HARNESS_ENV_FILE":
+			return explicit
+		case "XDG_CONFIG_HOME":
+			return xdg
+		}
+		return ""
+	}, dir)
+	if got != explicit {
+		t.Errorf("ResolveEnvFile = %q, want the explicit override %q", got, explicit)
+	}
+}
+
+// A .env beside the binary/checkout still works: it is how every existing
+// from-source operator runs, and dropping it would break them on upgrade.
+func TestResolveEnvFileFallsBackToWorkingDir(t *testing.T) {
+	home := t.TempDir() // no config-dir .env
+	wd := t.TempDir()
+	want := filepath.Join(wd, ".env")
+	if err := os.WriteFile(want, []byte("K=V\n"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	got := ResolveEnvFile(func(k string) string {
+		if k == "HOME" {
+			return home
+		}
+		return ""
+	}, wd)
+	if got != want {
+		t.Errorf("ResolveEnvFile = %q, want the working-dir fallback %q", got, want)
+	}
+}
+
+// Nothing anywhere resolves to "", which LoadDotEnv treats as a no-op — the
+// environment alone is a legitimate way to run.
+func TestResolveEnvFileEmptyWhenNoneExists(t *testing.T) {
+	home := t.TempDir()
+	if got := ResolveEnvFile(func(k string) string {
+		if k == "HOME" {
+			return home
+		}
+		return ""
+	}, t.TempDir()); got != "" {
+		t.Errorf("ResolveEnvFile = %q, want empty", got)
+	}
+}
+
+// The bind-mount hazard, detected so LoadConfig can warn about it: a credential
+// file anywhere inside the Consumer checkout is readable by every sandbox.
+func TestEnvFileInsideProject(t *testing.T) {
+	cases := []struct {
+		name    string
+		envFile string
+		project string
+		want    bool
+	}{
+		{"at the checkout root", "/src/herd/.env", "/src/herd", true},
+		{"nested in the checkout", "/src/herd/.agent-harness/.env", "/src/herd", true},
+		{"operator config dir", "/Users/dan/.config/agent-harness/.env", "/src/herd", false},
+		// A sibling whose name merely starts with the checkout's path is NOT inside
+		// it; a raw string-prefix test would call this a leak and nag forever.
+		{"sibling with a shared prefix", "/src/herd-notes/.env", "/src/herd", false},
+		{"no env file at all", "", "/src/herd", false},
+		{"no project path", "/src/herd/.env", "", false},
+		{"trailing separator on the project", "/src/herd/.env", "/src/herd/", true},
+	}
+	for _, c := range cases {
+		if got := EnvFileInsideProject(c.envFile, c.project); got != c.want {
+			t.Errorf("%s: EnvFileInsideProject(%q, %q) = %v, want %v", c.name, c.envFile, c.project, got, c.want)
+		}
+	}
+}
+
+// The hint is what the warning tells the operator to do, so it must name the same
+// path ResolveEnvFile prefers — otherwise the fix does not take effect.
+func TestEnvFileHintMatchesTheResolvedConfigDir(t *testing.T) {
+	home := t.TempDir()
+	getenv := func(k string) string {
+		if k == "HOME" {
+			return home
+		}
+		return ""
+	}
+	hint := EnvFileHint(getenv)
+	want := filepath.Join(home, ".config", "agent-harness", ".env")
+	if hint != want {
+		t.Errorf("EnvFileHint = %q, want %q", hint, want)
+	}
+	// Writing the hinted file makes ResolveEnvFile pick it up.
+	if err := os.MkdirAll(filepath.Dir(hint), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(hint, []byte("K=V\n"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if got := ResolveEnvFile(getenv, t.TempDir()); got != hint {
+		t.Errorf("ResolveEnvFile = %q, want the hinted path %q", got, hint)
+	}
+}
+
+// Local beats global, and scripts/loop-start.sh resolves PROJECT_PATH the same
+// way. If the two disagreed, the script and the daemon could read different files
+// — pidfile under one project, work happening in another.
+func TestResolveEnvFilePrefersWorkingDirOverConfigDir(t *testing.T) {
+	home := t.TempDir()
+	wd := t.TempDir()
+	local := filepath.Join(wd, ".env")
+	if err := os.WriteFile(local, []byte("K=local\n"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	global := filepath.Join(home, ".config", "agent-harness", ".env")
+	if err := os.MkdirAll(filepath.Dir(global), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(global, []byte("K=global\n"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	got := ResolveEnvFile(func(k string) string {
+		if k == "HOME" {
+			return home
+		}
+		return ""
+	}, wd)
+	if got != local {
+		t.Errorf("ResolveEnvFile = %q, want the working-dir file %q", got, local)
+	}
+}
+
+// With neither HOME nor XDG_CONFIG_HOME there is no config dir to name, so the
+// hint is empty rather than a bogus "/.config/…" an operator cannot write.
+func TestEnvFileHintEmptyWithoutAHome(t *testing.T) {
+	if got := EnvFileHint(func(string) string { return "" }); got != "" {
+		t.Errorf("EnvFileHint = %q, want empty", got)
+	}
+}

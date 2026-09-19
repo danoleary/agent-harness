@@ -47,11 +47,31 @@ The harness declares no skill of its own. Each of the three prompt bodies names
 the skill its stage invokes, and all three are required: a missing or blank body
 fails at config load rather than running a stage with nothing to invoke.
 
-Then set the host environment:
+Then set the host environment. The harness reads its credentials from the first
+of these that exists, so an operator with no checkout has a home for them:
+
+| Order | Path | Who it is for |
+|---|---|---|
+| 1 | `$HARNESS_ENV_FILE` | driving several projects, one credential set each |
+| 2 | `./.env` | running from a checkout (local beats global) |
+| 3 | `${XDG_CONFIG_HOME:-~/.config}/agent-harness/.env` | installed from a release archive |
 
 ```bash
-cp .env.example .env     # fill in the required secrets (see below)
+# From a checkout:
+cp .env.example .env
+
+# From a release archive (no checkout):
+mkdir -p ~/.config/agent-harness
+cp .env.example ~/.config/agent-harness/.env   # the archive ships this file
 ```
+
+**Never keep that file inside the project checkout.** Every stage bind-mounts the
+checkout into its sandbox at its real path, so a credential file under it is one
+the agent session can read — handing over the tracker and GitHub tokens the
+harness deliberately keeps host-side (ADR-0002). The harness warns if it finds
+one there.
+
+Exported variables win over the file, so `LINEAR_API_KEY=… loop` also works.
 
 The sandbox image builds (or pulls) itself on first run. To control when that
 ~minutes-long build happens, pre-build it: `make image`.
@@ -81,6 +101,9 @@ compromised session cannot move your backlog or touch your remote.
 ```bash
 ./scripts/loop-start.sh
 ```
+
+Every command also takes `--help`, which prints its grammar and exits without
+needing a credential.
 
 **Watch it run** — a read-only live view of the current ticket and stage, tailing
 the global event stream (`logs/loop.jsonl`) the daemon and the pipeline write. It

@@ -214,5 +214,101 @@ else
     echo -e "${GREEN}PASS${NC}"
 fi
 
+# --- PROJECT_PATH is read from the operator config dir when there is no sibling .env
+#
+# The download-only operator: binaries on PATH, credentials in
+# ~/.config/agent-harness/.env, and no harness checkout for a sibling .env to sit
+# beside. Without this lookup PROJECT_PATH stays unset here, the pidfile and log
+# default beside the binary instead of under the Consumer's .agent-harness/, and
+# `watch` reports a running daemon as stopped.
+echo -n "loop-start.sh reads PROJECT_PATH from the operator config dir ... "
+XDG_HARNESS="$TEST_DIR/harness-no-env"
+mkdir -p "$XDG_HARNESS/scripts" "$XDG_HARNESS/bin"
+cp "$SCRIPT_PATH" "$XDG_HARNESS/scripts/loop-start.sh"
+cp "$FAKE_BIN" "$XDG_HARNESS/bin/loop"
+XDG_PROJ="$TEST_DIR/consumer-from-xdg"
+mkdir -p "$XDG_PROJ"
+XDG_DIR="$TEST_DIR/xdg-config"
+mkdir -p "$XDG_DIR/agent-harness"
+{
+    echo "GH_TOKEN=\$(touch $TEST_DIR/SOURCED_THE_XDG_ENV)"
+    echo "PROJECT_PATH=\"$XDG_PROJ\""
+} > "$XDG_DIR/agent-harness/.env"
+( cd "$XDG_HARNESS" && env -u PROJECT_PATH XDG_CONFIG_HOME="$XDG_DIR" ./scripts/loop-start.sh > /dev/null 2>&1 )
+xdg_pid="$(cat "$XDG_PROJ/.agent-harness/loop.pid" 2>/dev/null || true)"
+STARTED_PIDS="$STARTED_PIDS $xdg_pid"
+if [ -f "$TEST_DIR/SOURCED_THE_XDG_ENV" ]; then
+    echo -e "${RED}FAIL${NC} - the config-dir .env was evaluated, not grepped; a credential line executed"
+    exit 1
+elif [ -z "$xdg_pid" ] || ! kill -0 "$xdg_pid" 2>/dev/null; then
+    echo -e "${RED}FAIL${NC} - no live pidfile at $XDG_PROJ/.agent-harness/loop.pid (PROJECT_PATH not read from the config dir)"
+    exit 1
+else
+    echo -e "${GREEN}PASS${NC}"
+fi
+
+# --- a sibling .env still outranks the config dir --------------------------
+#
+# The from-source operator must not have their behaviour changed by the new
+# lookup: the .env beside the binary is the one the daemon itself prefers when it
+# runs from that directory, so loop-start.sh must agree with it.
+echo -n "loop-start.sh prefers a sibling .env over the operator config dir ... "
+BOTH_HARNESS="$TEST_DIR/harness-both"
+mkdir -p "$BOTH_HARNESS/scripts" "$BOTH_HARNESS/bin"
+cp "$SCRIPT_PATH" "$BOTH_HARNESS/scripts/loop-start.sh"
+cp "$FAKE_BIN" "$BOTH_HARNESS/bin/loop"
+SIBLING_PROJ="$TEST_DIR/consumer-sibling-wins"
+IGNORED_PROJ="$TEST_DIR/consumer-should-be-ignored"
+mkdir -p "$SIBLING_PROJ" "$IGNORED_PROJ"
+echo "PROJECT_PATH=\"$SIBLING_PROJ\"" > "$BOTH_HARNESS/.env"
+BOTH_XDG="$TEST_DIR/xdg-both"
+mkdir -p "$BOTH_XDG/agent-harness"
+echo "PROJECT_PATH=\"$IGNORED_PROJ\"" > "$BOTH_XDG/agent-harness/.env"
+( cd "$BOTH_HARNESS" && env -u PROJECT_PATH XDG_CONFIG_HOME="$BOTH_XDG" ./scripts/loop-start.sh > /dev/null 2>&1 )
+both_pid="$(cat "$SIBLING_PROJ/.agent-harness/loop.pid" 2>/dev/null || true)"
+STARTED_PIDS="$STARTED_PIDS $both_pid"
+if [ -f "$IGNORED_PROJ/.agent-harness/loop.pid" ]; then
+    echo -e "${RED}FAIL${NC} - the config-dir .env won; a sibling .env must outrank it"
+    exit 1
+elif [ -z "$both_pid" ] || ! kill -0 "$both_pid" 2>/dev/null; then
+    echo -e "${RED}FAIL${NC} - no live pidfile at $SIBLING_PROJ/.agent-harness/loop.pid"
+    exit 1
+else
+    echo -e "${GREEN}PASS${NC}"
+fi
+
+# --- the resolved PROJECT_PATH is handed to the daemon ---------------------
+#
+# The script places the pidfile and log by the PROJECT_PATH it resolved, but the
+# daemon resolves its own env file relative to ITS cwd. Unless the script exports
+# what it resolved, the two can pick different files — the pidfile under one
+# project while the daemon works another, which is the failure the viewer reports
+# as "loop not running". Exporting it makes them agree by construction.
+echo -n "loop-start.sh exports the resolved PROJECT_PATH to the daemon ... "
+EXPORT_HARNESS="$TEST_DIR/harness-export"
+mkdir -p "$EXPORT_HARNESS/scripts" "$EXPORT_HARNESS/bin"
+cp "$SCRIPT_PATH" "$EXPORT_HARNESS/scripts/loop-start.sh"
+EXPORT_PROJ="$TEST_DIR/consumer-export"
+mkdir -p "$EXPORT_PROJ"
+echo "PROJECT_PATH=\"$EXPORT_PROJ\"" > "$EXPORT_HARNESS/.env"
+# A fake daemon that records the PROJECT_PATH it actually inherited.
+cat > "$EXPORT_HARNESS/bin/loop" <<EOF
+#!/bin/bash
+echo "PROJECT_PATH=\${PROJECT_PATH:-<unset>}" > "$TEST_DIR/inherited-project-path"
+exec sleep 60
+EOF
+chmod +x "$EXPORT_HARNESS/bin/loop"
+( cd "$EXPORT_HARNESS" && env -u PROJECT_PATH ./scripts/loop-start.sh > /dev/null 2>&1 )
+export_pid="$(cat "$EXPORT_PROJ/.agent-harness/loop.pid" 2>/dev/null || true)"
+STARTED_PIDS="$STARTED_PIDS $export_pid"
+wait_for_log "$TEST_DIR/inherited-project-path" "PROJECT_PATH="
+inherited="$(cat "$TEST_DIR/inherited-project-path" 2>/dev/null || true)"
+if [ "$inherited" != "PROJECT_PATH=$EXPORT_PROJ" ]; then
+    echo -e "${RED}FAIL${NC} - daemon inherited '$inherited', want 'PROJECT_PATH=$EXPORT_PROJ'"
+    exit 1
+else
+    echo -e "${GREEN}PASS${NC}"
+fi
+
 echo
 echo -e "${GREEN}All tests passed!${NC}"

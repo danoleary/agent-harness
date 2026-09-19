@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -413,11 +414,113 @@ func validateIdleBelowCaps(cfg Config) error {
 	return nil
 }
 
+// EnvFileName is the basename of the operator's credential file, and
+// EnvConfigDirName the directory it sits in under the operator's config dir.
+const (
+	EnvFileName      = ".env"
+	EnvConfigDirName = "agent-harness"
+)
+
+// ResolveEnvFile returns the env file to load, or "" when there is none.
+//
+// An operator who installed from a release archive has no checkout to keep a
+// `.env` beside, and the one place it must never live is the Consumer's own
+// repository: every stage bind-mounts that checkout into its sandbox (ADR-0002),
+// so a credential file there would hand the host-only tracker and GitHub tokens
+// to the agent session as a readable file. The lookup therefore keys off the
+// operator, not the project:
+//
+//  1. $HARNESS_ENV_FILE — explicit, so one operator can hold a credential set per
+//     project, each outside every checkout.
+//  2. <workingDir>/.env — how every from-source operator already runs. Local beats
+//     global, the usual precedence, so adding a config-dir file later cannot
+//     silently repoint an existing setup at another project.
+//  3. $XDG_CONFIG_HOME/agent-harness/.env, else ~/.config/agent-harness/.env —
+//     the home for an operator who installed from a release archive and has no
+//     checkout to keep a file beside. XDG_CONFIG_HOME is usually unset on macOS,
+//     so the ~/.config form is what most operators get.
+//
+// scripts/loop-start.sh resolves PROJECT_PATH in this same order. The two must
+// agree: if the script read one file and the daemon another, the pidfile and log
+// would land under a different project than the one being worked, and the viewer
+// would report a running daemon as stopped.
+//
+// Only an existing file is returned, so an operator who exports the variables
+// directly gets "" and no file is read.
+func ResolveEnvFile(getenv Getenv, workingDir string) string {
+	if explicit := getenv("HARNESS_ENV_FILE"); explicit != "" {
+		if fileExists(explicit) {
+			return explicit
+		}
+	}
+
+	if workingDir != "" {
+		candidate := filepath.Join(workingDir, EnvFileName)
+		if fileExists(candidate) {
+			return candidate
+		}
+	}
+
+	if candidate := EnvFileHint(getenv); candidate != "" {
+		if fileExists(candidate) {
+			return candidate
+		}
+	}
+	return ""
+}
+
+// EnvFileHint is the path the operator SHOULD keep credentials in: the config-dir
+// location ResolveEnvFile prefers. The bind-mount warning quotes it, so the two
+// must agree or the advice does not fix the problem.
+func EnvFileHint(getenv Getenv) string {
+	configHome := getenv("XDG_CONFIG_HOME")
+	if configHome == "" {
+		home := getenv("HOME")
+		if home == "" {
+			// No HOME and no XDG_CONFIG_HOME: there is no config dir to name, and
+			// returning "/.config/…" would send an operator to a path they cannot
+			// write. The caller treats "" as "no candidate".
+			return ""
+		}
+		configHome = filepath.Join(home, ".config")
+	}
+	return filepath.Join(configHome, EnvConfigDirName, EnvFileName)
+}
+
+// EnvFileInsideProject reports whether envFile sits inside projectPath, which is
+// the bind-mount hazard: the whole Consumer checkout is mounted into every sandbox
+// at its real path (ADR-0002), so a credential file under it is readable by the
+// agent session.
+//
+// The comparison is path-segment-wise, not a string prefix: `/src/herd-notes` is
+// not inside `/src/herd`, and treating it as inside would warn an operator who did
+// nothing wrong.
+func EnvFileInsideProject(envFile, projectPath string) bool {
+	if envFile == "" || projectPath == "" {
+		return false
+	}
+	rel, err := filepath.Rel(filepath.Clean(projectPath), filepath.Clean(envFile))
+	if err != nil {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// fileExists reports whether path is an existing regular file. A directory named
+// `.env` is not a credential file, so it does not count.
+func fileExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.Mode().IsRegular()
+}
+
 // LoadDotEnv loads KEY=VALUE pairs from a .env file into the process environment
 // for any key not already set (mirrors `node --env-file-if-exists`). An absent
 // file is a no-op. It is shared by the cmd entrypoints so each stays a thin
 // wrapper. Call it before Load so the file fills any gaps the real env leaves.
 func LoadDotEnv(path string) {
+	if path == "" {
+		return
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return

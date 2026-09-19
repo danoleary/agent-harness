@@ -67,7 +67,15 @@ jobs:
             done
             # Ship the Consumer-facing docs beside the binaries so an operator who
             # only ever downloads a tarball still has the adoption contract.
-            cp README.md docs/CONSUMER.md LICENSE "$stage/"
+            #
+            # .env.example and loop-start.sh travel with them because the README
+            # instructs an operator to use BOTH — "cp .env.example .env" and
+            # "./scripts/loop-start.sh" — and a download-only operator has no
+            # checkout to find either in. Omitting them made the documented
+            # quickstart impossible to follow from a release archive.
+            cp README.md docs/CONSUMER.md LICENSE .env.example "$stage/"
+            mkdir -p "$stage/scripts"
+            cp scripts/loop-start.sh "$stage/scripts/"
             tar -czf "${stage}.tar.gz" -C dist "$(basename "$stage")"
             rm -rf "$stage"
           done

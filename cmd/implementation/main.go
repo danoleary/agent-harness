@@ -9,6 +9,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 
@@ -17,6 +18,12 @@ import (
 
 func main() {
 	args, err := stages.ParseArgs("implementation", os.Args[1:], false)
+	if errors.Is(err, stages.ErrHelp) {
+		// Asked-for usage is a success: print it on stdout and exit 0, so `--help`
+		// works before any credential is set and can be piped.
+		fmt.Println(stages.Usage("implementation", false))
+		os.Exit(0)
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		os.Exit(1)
