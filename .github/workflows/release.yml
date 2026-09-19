@@ -60,9 +60,13 @@ jobs:
             stage="dist/agent-harness_${version}_${goos}_${goarch}"
             mkdir -p "$stage"
             for tool in implementation review retrospective pipeline loop watch; do
+              # -X stamps the release tag into internal/version, which `--version`
+              # prints and a Consumer's `min_harness_version` pin is checked
+              # against. Without it every release reports "dev" and the pin check
+              # silently degrades to a skip.
               CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
                 go build -buildvcs=false -trimpath \
-                -ldflags "-s -w" \
+                -ldflags "-s -w -X github.com/danoleary/agent-harness/internal/version.Version=${version}" \
                 -o "$stage/$tool" "./cmd/$tool"
             done
             # Ship the Consumer-facing docs beside the binaries so an operator who

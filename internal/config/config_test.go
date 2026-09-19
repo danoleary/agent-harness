@@ -632,7 +632,9 @@ func TestEnvFileInsideProject(t *testing.T) {
 		want    bool
 	}{
 		{"at the checkout root", "/src/herd/.env", "/src/herd", true},
-		{"nested in the checkout", "/src/herd/.agent-harness/.env", "/src/herd", true},
+		// `.agent-harness/.env` is deliberately absent here: it is the masked
+		// location, exempted by TestEnvFileInsideProjectExemptsTheMaskedLocation.
+		{"nested in the checkout", "/src/herd/web/.env", "/src/herd", true},
 		{"operator config dir", "/Users/dan/.config/agent-harness/.env", "/src/herd", false},
 		// A sibling whose name merely starts with the checkout's path is NOT inside
 		// it; a raw string-prefix test would call this a leak and nag forever.
@@ -709,5 +711,97 @@ func TestResolveEnvFilePrefersWorkingDirOverConfigDir(t *testing.T) {
 func TestEnvFileHintEmptyWithoutAHome(t *testing.T) {
 	if got := EnvFileHint(func(string) string { return "" }); got != "" {
 		t.Errorf("EnvFileHint = %q, want empty", got)
+	}
+}
+
+// The in-repo location. A Consumer already commits `.agent-harness/` for its
+// config and prompts, so that is where an operator looks for the credential file
+// too — and the harness masks it in every sandbox, so it is safe to keep there.
+// Found relative to cwd, which is the checkout when you run the harness from the
+// project you are working.
+func TestResolveEnvFileFindsTheInRepoLocation(t *testing.T) {
+	home := t.TempDir() // no config-dir .env
+	project := t.TempDir()
+	want := filepath.Join(project, ".agent-harness", ".env")
+	if err := os.MkdirAll(filepath.Dir(want), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(want, []byte("K=V\n"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	got := ResolveEnvFile(func(k string) string {
+		if k == "HOME" {
+			return home
+		}
+		return ""
+	}, project)
+	if got != want {
+		t.Errorf("ResolveEnvFile = %q, want the in-repo file %q", got, want)
+	}
+}
+
+// With PROJECT_PATH already exported the in-repo file is found from any cwd, so a
+// `loop` launched from elsewhere still reads the project's own credentials.
+func TestResolveEnvFileFindsTheInRepoLocationViaProjectPath(t *testing.T) {
+	home := t.TempDir()
+	project := t.TempDir()
+	want := filepath.Join(project, ".agent-harness", ".env")
+	if err := os.MkdirAll(filepath.Dir(want), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(want, []byte("K=V\n"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	got := ResolveEnvFile(func(k string) string {
+		switch k {
+		case "HOME":
+			return home
+		case "PROJECT_PATH":
+			return project
+		}
+		return ""
+	}, t.TempDir()) // cwd is somewhere else entirely
+	if got != want {
+		t.Errorf("ResolveEnvFile = %q, want the in-repo file %q", got, want)
+	}
+}
+
+// A bare ./.env still outranks ./.agent-harness/.env: an operator who keeps one
+// beside the harness checkout should not have it shadowed by a project file.
+func TestResolveEnvFilePrefersBareDotEnvOverTheInRepoLocation(t *testing.T) {
+	dir := t.TempDir()
+	bare := filepath.Join(dir, ".env")
+	if err := os.WriteFile(bare, []byte("K=bare\n"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	inRepo := filepath.Join(dir, ".agent-harness", ".env")
+	if err := os.MkdirAll(filepath.Dir(inRepo), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(inRepo, []byte("K=inrepo\n"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	if got := ResolveEnvFile(func(string) string { return "" }, dir); got != bare {
+		t.Errorf("ResolveEnvFile = %q, want %q", got, bare)
+	}
+}
+
+// The blessed in-repo path is masked in every container, so it must NOT trip the
+// "inside the bind-mounted checkout" warning — that warning exists for a
+// credential file the mask does not cover, and crying wolf about the documented
+// location would train an operator to ignore it.
+func TestEnvFileInsideProjectExemptsTheMaskedLocation(t *testing.T) {
+	if EnvFileInsideProject("/src/herd/.agent-harness/.env", "/src/herd") {
+		t.Error("the masked in-repo location must not be reported as an exposure")
+	}
+	// Anywhere else inside the checkout is still unmasked, so still a warning.
+	if !EnvFileInsideProject("/src/herd/.env", "/src/herd") {
+		t.Error("a credential file elsewhere in the checkout is not masked and must warn")
+	}
+	if !EnvFileInsideProject("/src/herd/web/.env", "/src/herd") {
+		t.Error("a nested credential file is not masked and must warn")
 	}
 }

@@ -8,6 +8,9 @@
 # runs (BEH-459). It is a no-op in a normal checkout (CI), so it only unblocks
 # worktree work. The check-buildvcs guard fails the gate if a VCS-stamping go
 # command (build/install/run/test) ever drops the flag.
+# No -X version stamp on purpose: a local build is not a release, so it reports
+# "dev" and a Consumer's min_harness_version pin skips rather than compares. The
+# release workflow is what stamps a real version in.
 build:
 	go build -buildvcs=false -o bin/implementation ./cmd/implementation
 	go build -buildvcs=false -o bin/review ./cmd/review

@@ -277,6 +277,37 @@ else
     echo -e "${GREEN}PASS${NC}"
 fi
 
+# --- PROJECT_PATH is read from the project's own .agent-harness/.env -------
+#
+# The in-repo location: credentials beside the config and prompts the project
+# already commits, found when the harness is run from that project. The harness
+# masks this exact path in every container, which is what makes keeping it there
+# safe.
+echo -n "loop-start.sh reads PROJECT_PATH from the project's .agent-harness/.env ... "
+REPO_HARNESS="$TEST_DIR/harness-for-repo-env"
+mkdir -p "$REPO_HARNESS/scripts" "$REPO_HARNESS/bin"
+cp "$SCRIPT_PATH" "$REPO_HARNESS/scripts/loop-start.sh"
+cp "$FAKE_BIN" "$REPO_HARNESS/bin/loop"
+REPO_PROJ="$TEST_DIR/consumer-in-repo-env"
+mkdir -p "$REPO_PROJ/.agent-harness"
+{
+    echo "GH_TOKEN=\$(touch $TEST_DIR/SOURCED_THE_REPO_ENV)"
+    echo "PROJECT_PATH=\"$REPO_PROJ\""
+} > "$REPO_PROJ/.agent-harness/.env"
+# Run FROM the project, with no sibling .env and an empty config dir.
+( cd "$REPO_PROJ" && env -u PROJECT_PATH XDG_CONFIG_HOME="$TEST_DIR/empty-xdg" "$REPO_HARNESS/scripts/loop-start.sh" > /dev/null 2>&1 )
+repo_pid="$(cat "$REPO_PROJ/.agent-harness/loop.pid" 2>/dev/null || true)"
+STARTED_PIDS="$STARTED_PIDS $repo_pid"
+if [ -f "$TEST_DIR/SOURCED_THE_REPO_ENV" ]; then
+    echo -e "${RED}FAIL${NC} - the in-repo .env was evaluated, not grepped; a credential line executed"
+    exit 1
+elif [ -z "$repo_pid" ] || ! kill -0 "$repo_pid" 2>/dev/null; then
+    echo -e "${RED}FAIL${NC} - no live pidfile at $REPO_PROJ/.agent-harness/loop.pid (PROJECT_PATH not read from the project)"
+    exit 1
+else
+    echo -e "${GREEN}PASS${NC}"
+fi
+
 # --- the resolved PROJECT_PATH is handed to the daemon ---------------------
 #
 # The script places the pidfile and log by the PROJECT_PATH it resolved, but the

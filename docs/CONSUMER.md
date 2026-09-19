@@ -13,10 +13,17 @@ On the **host** (the machine running the harness):
 - `docker`, `git` 2.45+, `gh`
 - A Claude credential and a tracker credential (see [Secrets](#secrets))
 
-Those credentials live on the host, in `./.env` or
-`${XDG_CONFIG_HOME:-~/.config}/agent-harness/.env` — **never in the repository
-the harness works.** That checkout is bind-mounted into every sandbox, so a
-credential file inside it is readable by the agent session.
+Those credentials live on the host, and you have three places to put them:
+`./.env` beside a harness checkout, `.agent-harness/.env` inside your project, or
+`${XDG_CONFIG_HOME:-~/.config}/agent-harness/.env` for an install that drives
+several projects.
+
+`.agent-harness/.env` is inside the checkout every stage bind-mounts into its
+sandbox, so the harness **masks that exact path** in every container — the
+session, the gate, the install and `post_create` each mount an empty file over
+it. Gitignore it; the mask stops the sandbox reading it, not your git history.
+A credential file anywhere *else* in your repo is not masked and is readable by
+the agent session.
 
 You do **not** need a Go toolchain. Download a binary from
 [Releases](../../releases), or `go install` if you prefer.
@@ -58,6 +65,14 @@ dotnet restore
 [cache]
 volume = "myproject-nuget"
 path = "/root/.nuget/packages"
+
+# The oldest harness this config is written for. Optional — set it when you start
+# relying on a key or behaviour a given release introduced. An older binary
+# reading a newer config does not fail on its own: it ignores the keys it does not
+# know, so an unknown gate is skipped and a renamed field reverts to a default
+# while the run still reports success. The pin turns that into an error at
+# startup. Check what you are running with `pipeline --version`.
+min_harness_version = "0.2"
 
 # Which tracker, and its NON-SECRET selection names. The API credential is
 # env-only. kind = "linear" | "github" | "jira".
