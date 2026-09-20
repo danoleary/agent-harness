@@ -33,10 +33,21 @@ is bash-3.2-safe.
 
 ### Usage
 
+An installed harness reaches it through the dispatcher, which resolves the daemon
+binary for it and passes it in as `LOOP_BIN` (ADR-0012):
+
+```bash
+agent-harness start      # detached launch; touch $PROJECT_PATH/.agent-harness/STOP to stop
+```
+
+Run directly, it finds the daemon binary itself — in `bin/` after a `make build`,
+beside itself in an installed `libexec/agent-harness/`, at an unpacked archive's
+root, or on `PATH`:
+
 ```bash
 cd agent-harness
 make build               # build bin/loop first
-./scripts/loop-start.sh  # detached launch; touch .agent-harness/STOP to stop
+./scripts/loop-start.sh
 ```
 
 ### Testing

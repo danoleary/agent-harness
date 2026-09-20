@@ -1,5 +1,5 @@
 # Agent harness — Go toolchain shortcuts. Requires Go 1.26+.
-.PHONY: build base-image test implementation review retrospective pipeline loop watch vet fmt fmt-check check-exec check-bash3 check-buildvcs check-ci check-scripts check tidy
+.PHONY: build install uninstall base-image test implementation review retrospective pipeline loop watch vet fmt fmt-check check-exec check-bash3 check-buildvcs check-ci check-scripts check tidy
 
 # Build the tool binaries into ./bin.
 #
@@ -12,12 +12,43 @@
 # "dev" and a Consumer's min_harness_version pin skips rather than compares. The
 # release workflow is what stamps a real version in.
 build:
+	go build -buildvcs=false -o bin/agent-harness ./cmd/agent-harness
 	go build -buildvcs=false -o bin/implementation ./cmd/implementation
 	go build -buildvcs=false -o bin/review ./cmd/review
 	go build -buildvcs=false -o bin/retrospective ./cmd/retrospective
 	go build -buildvcs=false -o bin/pipeline ./cmd/pipeline
 	go build -buildvcs=false -o bin/loop ./cmd/loop
 	go build -buildvcs=false -o bin/watch ./cmd/watch
+
+# Install a from-source build into PREFIX, in the SAME layout install.sh produces:
+# the dispatcher alone in bin/, the stage binaries in a private libexec dir, the
+# docs and the credential template in share/. Overridable: `make install PREFIX=/opt/ah`.
+#
+# The stage binaries deliberately never reach bin/. They are named for their role
+# (loop, watch, review, …), and those words are too generic to put on a shared
+# PATH — `watch` alone would shadow procps' watch(1). `agent-harness <command>`
+# is the entrypoint; see cmd/agent-harness and ADR-0012.
+PREFIX ?= $(HOME)/.local
+STAGE_TOOLS = implementation review retrospective pipeline loop watch
+install: build
+	@mkdir -p "$(PREFIX)/bin" "$(PREFIX)/libexec/agent-harness" "$(PREFIX)/share/agent-harness"
+	@cp bin/agent-harness "$(PREFIX)/bin/agent-harness"
+	@for tool in $(STAGE_TOOLS); do cp "bin/$$tool" "$(PREFIX)/libexec/agent-harness/$$tool"; done
+	@cp scripts/loop-start.sh "$(PREFIX)/libexec/agent-harness/loop-start.sh"
+	@cp README.md LICENSE .env.example "$(PREFIX)/share/agent-harness/"
+	@cp docs/CONSUMER.md "$(PREFIX)/share/agent-harness/CONSUMER.md"
+	@echo "installed $(PREFIX)/bin/agent-harness"
+	@case ":$$PATH:" in *":$(PREFIX)/bin:"*) ;; *) echo "note: $(PREFIX)/bin is not on your PATH" ;; esac
+
+# Remove a `make install` (or install.sh) install from PREFIX. Named files only —
+# never rm -rf on a directory that may hold things the operator put there.
+uninstall:
+	@rm -f "$(PREFIX)/bin/agent-harness" "$(PREFIX)/libexec/agent-harness/loop-start.sh"
+	@for tool in $(STAGE_TOOLS); do rm -f "$(PREFIX)/libexec/agent-harness/$$tool"; done
+	@rm -f "$(PREFIX)/share/agent-harness/README.md" "$(PREFIX)/share/agent-harness/CONSUMER.md" \
+		"$(PREFIX)/share/agent-harness/LICENSE" "$(PREFIX)/share/agent-harness/.env.example"
+	@rmdir "$(PREFIX)/libexec/agent-harness" "$(PREFIX)/share/agent-harness" 2>/dev/null || true
+	@echo "removed the agent harness from $(PREFIX)"
 
 # Build the sandbox BASE image — the harness<->sandbox contract every Consumer
 # FROMs (ADR-0008), and what the release workflow publishes to GHCR. It carries no

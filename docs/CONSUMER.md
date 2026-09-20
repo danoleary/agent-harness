@@ -25,8 +25,18 @@ it. Gitignore it; the mask stops the sandbox reading it, not your git history.
 A credential file anywhere *else* in your repo is not masked and is readable by
 the agent session.
 
-You do **not** need a Go toolchain. Download a binary from
-[Releases](../../releases), or `go install` if you prefer.
+You do **not** need a Go toolchain. One command installs the harness — no
+checkout, no `sudo`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/danoleary/agent-harness/main/install.sh | sh
+```
+
+It puts a single command, `agent-harness`, on your `PATH` and everything else in
+a private `libexec` dir beside it (ADR-0012), along with `.env.example` and this
+file under `~/.local/share/agent-harness/`. `agent-harness --help` lists every
+command. A `go install` or a downloaded archive from [Releases](../../releases)
+work too.
 
 ## The two surfaces you own
 
@@ -71,7 +81,7 @@ path = "/root/.nuget/packages"
 # reading a newer config does not fail on its own: it ignores the keys it does not
 # know, so an unknown gate is skipped and a renamed field reverts to a default
 # while the run still reports success. The pin turns that into an error at
-# startup. Check what you are running with `pipeline --version`.
+# startup. Check what you are running with `agent-harness --version`.
 min_harness_version = "0.2"
 
 # Which tracker, and its NON-SECRET selection names. The API credential is

@@ -1066,6 +1066,17 @@ reader over a structured stream rather than a `--tui` flag on the daemon.
   stop file). No dep tree on purpose — this process holds real credentials.
   Built with `go build`; the binary is self-contained (no runtime needed on the
   host beyond `docker`).
+- **Distribution: one command, one name on `PATH`** (ADR-0012). `install.sh`
+  fetches the release archive for the host, verifies it against the published
+  `checksums.txt`, and lays it out under a sudo-free prefix (`~/.local` by
+  default): `bin/agent-harness` alone on the `PATH`, the six stage binaries and
+  `loop-start.sh` in `libexec/agent-harness/`, the docs and `.env.example` in
+  `share/agent-harness/`. `cmd/agent-harness` is a dispatcher that resolves a
+  subcommand out of that private dir and `syscall.Exec`s it, so the stage
+  binaries keep their signal, TTY and exit-code behaviour exactly — and their
+  generic names (`watch`, `review`, `loop`, …) never reach a shared `bin` dir.
+  The release archive's layout *is* the installed layout, so an unpacked archive
+  also runs in place.
 - Config: `agent-harness/.env` (`LINEAR_API_KEY`, `ANTHROPIC_API_KEY`,
   `GH_TOKEN`, `PROJECT_PATH`, bot identity, timeouts) + CLI flags (`--verbose`,
   `--once` for a single ticket then exit, label/timeout overrides).
@@ -1090,7 +1101,8 @@ reader over a structured stream rather than a `--tui` flag on the daemon.
   forwards to every stage.
 - **Run model: a standalone detached process — no tmux, no supervisor.** The loop
   is started as a plain background process the operator walks away from (a thin
-  `scripts/loop-start.sh` does `nohup bin/loop >> … & echo $! > agent-harness/loop.pid`),
+  `scripts/loop-start.sh`, reached as `agent-harness start`, does
+  `nohup bin/loop >> … & echo $! > agent-harness/loop.pid`),
   not under tmux, launchd, or systemd. Lifecycle is the stop model in §Stop control:
   `touch .agent-harness/STOP` to wind down gracefully (the PID file is for a hard
   `kill` only if needed). No supervisor means no auto-restart — a crash or a breaker
