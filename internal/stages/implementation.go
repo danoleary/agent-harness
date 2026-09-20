@@ -298,7 +298,7 @@ func Implementation(h hostio.Host, cfg config.Config, log *runlog.Logger, args A
 		// ticket failure, so the loop reclaims disk + backs off and the breaker stays
 		// blind to it — otherwise the same top-of-queue ticket racks up identical
 		// preflight failures and trips the breaker in seconds (the observed pattern).
-		return Result{Err: err, PreflightAbort: true}
+		return Result{Err: err, Disposition: PreflightAborted}
 	}
 
 	// Claim the ticket — unless selection already did on the --next path. On the
@@ -501,5 +501,10 @@ func Implementation(h hostio.Host, cfg config.Config, log *runlog.Logger, args A
 	// A successful run is never retryable. Surface a spending-cap abort too so the
 	// loop classifies a capped implementation as retry-after-reset (breaker-neutral)
 	// rather than a ship failure.
-	return Result{OK: result.OK, Retryable: !result.OK && retryableEnvCrash(outcome, capAborted), SpendingCapAbort: capAborted, SpendingCapResetTime: outcome.SpendingCapResetTime}
+	res := Result{OK: result.OK, Retryable: !result.OK && retryableEnvCrash(outcome, capAborted)}
+	if capAborted {
+		res.Disposition = CapAborted
+		res.CapResetAt = outcome.SpendingCapResetTime
+	}
+	return res
 }

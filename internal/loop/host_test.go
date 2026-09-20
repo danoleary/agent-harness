@@ -1,6 +1,10 @@
 package loop
 
-import "time"
+import (
+	"time"
+
+	"github.com/danoleary/agent-harness/internal/stages"
+)
 
 // fakeHost is the scripted [Host] the daemon tests drive: one field per method,
 // each falling back to the quiet, healthy default when a test leaves it unset —
@@ -20,8 +24,8 @@ type fakeHost struct {
 	comment        func(string, string) error
 	claims         func() ([]StaleClaim, error)
 	remoteBranch   func(string) bool
-	runPipeline    func(string) TicketOutcome
-	recoverFix     func(string) (TicketOutcome, bool)
+	runPipeline    func(string) stages.Result
+	recoverFix     func(string) (stages.Result, bool)
 	freeDisk       func() (uint64, error)
 	pruneWorktrees func() (int, error)
 	cachePrune     func() error
@@ -93,16 +97,16 @@ func (h *fakeHost) TicketHasRemoteBranch(id string) bool {
 	return h.remoteBranch(id)
 }
 
-func (h *fakeHost) RunPipeline(id string) TicketOutcome {
+func (h *fakeHost) RunPipeline(id string) stages.Result {
 	if h.runPipeline == nil {
-		return TicketOutcome{}
+		return stages.Result{}
 	}
 	return h.runPipeline(id)
 }
 
-func (h *fakeHost) RecoverCommittedFix(id string) (TicketOutcome, bool) {
+func (h *fakeHost) RecoverCommittedFix(id string) (stages.Result, bool) {
 	if h.recoverFix == nil {
-		return TicketOutcome{}, false // nothing to recover: release as usual
+		return stages.Result{}, false // nothing to recover: release as usual
 	}
 	return h.recoverFix(id)
 }

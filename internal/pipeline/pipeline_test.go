@@ -67,7 +67,7 @@ func TestRunAllStagesSucceedExitsZeroInOrder(t *testing.T) {
 		Retrospective:  r.stage("retro", stages.Result{OK: true}),
 		Log:            r,
 	})
-	if code := out.ExitCode; code != 0 {
+	if code := out.ExitCode(); code != 0 {
 		t.Errorf("exit code = %d, want 0", code)
 	}
 	if want := []string{"impl", "review", "retro"}; !reflect.DeepEqual(r.order, want) {
@@ -87,7 +87,7 @@ func TestRunImplementationFailureSkipsReviewButRunsRetro(t *testing.T) {
 		Retrospective:  r.stage("retro", stages.Result{OK: true}),
 		Log:            r,
 	})
-	if code := out.ExitCode; code != 1 {
+	if code := out.ExitCode(); code != 1 {
 		t.Errorf("exit code = %d, want 1", code)
 	}
 	if want := []string{"impl", "retro"}; !reflect.DeepEqual(r.order, want) {
@@ -109,7 +109,7 @@ func TestRunRetriesImplementationOnEnvCrashThenSucceeds(t *testing.T) {
 		Retrospective: r.stage("retro", stages.Result{OK: true}),
 		Log:           r,
 	})
-	if code := out.ExitCode; code != 0 {
+	if code := out.ExitCode(); code != 0 {
 		t.Errorf("exit code = %d, want 0 (a retried env-crash that then succeeds passes)", code)
 	}
 	if want := []string{"impl", "impl", "review", "retro"}; !reflect.DeepEqual(r.order, want) {
@@ -132,7 +132,7 @@ func TestRunRetriesImplementationOnlyOnceThenGivesUp(t *testing.T) {
 		Retrospective: r.stage("retro", stages.Result{OK: true}),
 		Log:           r,
 	})
-	if code := out.ExitCode; code != 1 {
+	if code := out.ExitCode(); code != 1 {
 		t.Errorf("exit code = %d, want 1 (both attempts failed)", code)
 	}
 	if want := []string{"impl", "impl", "retro"}; !reflect.DeepEqual(r.order, want) {
@@ -154,7 +154,7 @@ func TestRunDoesNotRetryGenuineImplementationFailure(t *testing.T) {
 		Retrospective: r.stage("retro", stages.Result{OK: true}),
 		Log:           r,
 	})
-	if code := out.ExitCode; code != 1 {
+	if code := out.ExitCode(); code != 1 {
 		t.Errorf("exit code = %d, want 1 (a non-retryable failure fails the run)", code)
 	}
 	if want := []string{"impl", "retro"}; !reflect.DeepEqual(r.order, want) {
@@ -174,7 +174,7 @@ func TestRunReviewFailureStillRunsRetroAndFails(t *testing.T) {
 		Retrospective:  r.stage("retro", stages.Result{OK: true}),
 		Log:            r,
 	})
-	if code := out.ExitCode; code != 1 {
+	if code := out.ExitCode(); code != 1 {
 		t.Errorf("exit code = %d, want 1", code)
 	}
 	if want := []string{"impl", "review", "retro"}; !reflect.DeepEqual(r.order, want) {
@@ -191,7 +191,7 @@ func TestRunRetrospectiveFailureFailsTheRun(t *testing.T) {
 		Retrospective:  r.stage("retro", stages.Result{OK: false}),
 		Log:            r,
 	})
-	if code := out.ExitCode; code != 1 {
+	if code := out.ExitCode(); code != 1 {
 		t.Errorf("exit code = %d, want 1 (a failed retrospective fails the run)", code)
 	}
 }
@@ -205,7 +205,7 @@ func TestRunNarratesStageHardError(t *testing.T) {
 		Retrospective:  r.stage("retro", stages.Result{OK: true}),
 		Log:            r,
 	})
-	if code := out.ExitCode; code != 1 {
+	if code := out.ExitCode(); code != 1 {
 		t.Errorf("exit code = %d, want 1 (a stage hard error fails the run)", code)
 	}
 	if !r.saw("linear fetch failed") {
@@ -222,7 +222,7 @@ func TestRunFetchMainFailureIsWarnOnlyAndStagesStillRun(t *testing.T) {
 		Retrospective:  r.stage("retro", stages.Result{OK: true}),
 		Log:            r,
 	})
-	if code := out.ExitCode; code != 0 {
+	if code := out.ExitCode(); code != 0 {
 		t.Errorf("exit code = %d, want 0 (a fetch failure must not abort the pipeline)", code)
 	}
 	if len(r.order) != 3 {
@@ -233,85 +233,76 @@ func TestRunFetchMainFailureIsWarnOnlyAndStagesStillRun(t *testing.T) {
 	}
 }
 
-// The review stage's ReachedPushedPR must propagate to the Outcome even when the
+// The review stage's Shipped disposition must propagate to the run even when the
 // run as a whole fails — a PR that shipped but went CI-red after the auto-fix budget
-// is exit-1 yet "reached a pushed PR", the exact case the loop breaker must read as
-// a success (no increment), NOT infer from the exit code.
-func TestRunPropagatesReachedPushedPRFromReviewEvenOnFailure(t *testing.T) {
+// is exit-1 yet Shipped, the exact case the loop breaker must read as a success (no
+// increment), NOT infer from the exit code.
+func TestRunPropagatesShippedFromReviewEvenOnFailure(t *testing.T) {
 	r := &recorder{}
 	out := Run(Deps{
 		FetchMain:      func() error { return nil },
 		Implementation: r.stage("impl", stages.Result{OK: true}),
-		Review:         r.stage("review", stages.Result{OK: false, ReachedPushedPR: true}), // PR shipped, CI red after budget
+		Review:         r.stage("review", stages.Result{OK: false, Disposition: stages.Shipped}), // PR shipped, CI red after budget
 		Retrospective:  r.stage("retro", stages.Result{OK: true}),
 		Log:            r,
 	})
-	if out.ExitCode != 1 {
-		t.Errorf("exit code = %d, want 1 (a not-OK review fails the run)", out.ExitCode)
+	if out.ExitCode() != 1 {
+		t.Errorf("exit code = %d, want 1 (a not-OK review fails the run)", out.ExitCode())
 	}
-	if !out.ReachedPushedPR {
-		t.Error("Outcome.ReachedPushedPR must be true — the review pushed a PR even though the run failed")
+	if out.Disposition != stages.Shipped {
+		t.Errorf("Disposition = %s, want shipped — the review pushed a PR even though the run failed", out.Disposition)
 	}
 }
 
-// BEH-603: the review stage's RecommendClose disposition must propagate to the
-// Outcome so the loop keeps the ticket In Progress for a human to close rather than
-// releasing it to Todo. The run is not-OK (nothing shipped) but it is not a failure
-// to be re-attempted.
+// BEH-603: the review stage's RecommendClose disposition must propagate to the run
+// so the loop closes the ticket as a duplicate/superseded rather than releasing it
+// to Todo. The run is not-OK (nothing shipped) but it is not a failure to be
+// re-attempted.
 func TestRunPropagatesRecommendCloseFromReview(t *testing.T) {
 	r := &recorder{}
 	out := Run(Deps{
 		FetchMain:      func() error { return nil },
 		Implementation: r.stage("impl", stages.Result{OK: true}),
-		Review:         r.stage("review", stages.Result{OK: false, RecommendClose: true}), // zero-net-diff branch
+		Review:         r.stage("review", stages.Result{OK: false, Disposition: stages.RecommendClose}), // zero-net-diff branch
 		Retrospective:  r.stage("retro", stages.Result{OK: true}),
 		Log:            r,
 	})
-	if !out.RecommendClose {
-		t.Error("Outcome.RecommendClose must propagate from the review stage")
-	}
-	if out.ReachedPushedPR {
-		t.Error("a recommend-close pushed nothing — ReachedPushedPR must be false")
+	if out.Disposition != stages.RecommendClose {
+		t.Errorf("Disposition = %s, want recommend-close (it must propagate from the review stage)", out.Disposition)
 	}
 }
 
-// A spending-cap abort in ANY stage propagates to the Outcome so the loop reads
+// A spending-cap abort in ANY stage propagates to the run so the loop reads
 // retry-after-reset and keeps the breaker blind to it.
 func TestRunPropagatesSpendingCapAbortFromAnyStage(t *testing.T) {
 	r := &recorder{}
 	out := Run(Deps{
 		FetchMain:      func() error { return nil },
-		Implementation: r.stage("impl", stages.Result{OK: false, SpendingCapAbort: true}), // capped before any PR
+		Implementation: r.stage("impl", stages.Result{OK: false, Disposition: stages.CapAborted}), // capped before any PR
 		Review:         r.stage("review", stages.Result{OK: true}),
 		Retrospective:  r.stage("retro", stages.Result{OK: true}),
 		Log:            r,
 	})
-	if !out.SpendingCapAbort {
-		t.Error("Outcome.SpendingCapAbort must be true when a stage cap-aborted")
-	}
-	if out.ReachedPushedPR {
-		t.Error("a cap abort before review pushed nothing — ReachedPushedPR must be false")
+	if out.Disposition != stages.CapAborted {
+		t.Errorf("Disposition = %s, want cap-aborted when a stage cap-aborted", out.Disposition)
 	}
 }
 
-// The implementation stage's PreflightAbort (the Docker sandbox couldn't launch:
-// full disk / daemon down) propagates to the Outcome so the loop reclaims disk +
+// The implementation stage's PreflightAborted (the Docker sandbox couldn't launch:
+// full disk / daemon down) propagates to the run so the loop reclaims disk +
 // backs off and the breaker stays blind to it. The abort is not Retryable, so the
 // pipeline does NOT re-attempt implementation, and review is skipped (impl not OK).
 func TestRunPropagatesPreflightAbortFromImplementation(t *testing.T) {
 	r := &recorder{}
 	out := Run(Deps{
 		FetchMain:      func() error { return nil },
-		Implementation: r.stage("impl", stages.Result{OK: false, PreflightAbort: true}), // preflight refused before any work
+		Implementation: r.stage("impl", stages.Result{OK: false, Disposition: stages.PreflightAborted}), // preflight refused before any work
 		Review:         r.stage("review", stages.Result{OK: true}),
 		Retrospective:  r.stage("retro", stages.Result{OK: true}),
 		Log:            r,
 	})
-	if !out.PreflightAbort {
-		t.Error("Outcome.PreflightAbort must be true when the implementation stage's preflight aborted")
-	}
-	if out.ReachedPushedPR {
-		t.Error("a preflight abort pushed nothing — ReachedPushedPR must be false")
+	if out.Disposition != stages.PreflightAborted {
+		t.Errorf("Disposition = %s, want preflight-aborted when the implementation stage's preflight aborted", out.Disposition)
 	}
 	// A preflight abort is not Retryable, so implementation runs once (no re-attempt) and
 	// review is skipped (impl not OK); retrospective still runs.
@@ -321,19 +312,54 @@ func TestRunPropagatesPreflightAbortFromImplementation(t *testing.T) {
 }
 
 // The exact reset time a cap-aborting stage parsed from its abort message propagates to
-// the Outcome so the loop can back off until the cap clears rather than a fixed guess
-// (BEH-708). It rides alongside SpendingCapAbort from whichever stage was capped.
+// the run so the loop can back off until the cap clears rather than a fixed guess
+// (BEH-708). It rides alongside the CapAborted disposition of whichever stage was capped.
 func TestRunPropagatesSpendingCapResetTimeFromAbortingStage(t *testing.T) {
 	r := &recorder{}
 	reset := time.Date(2026, 7, 5, 8, 40, 0, 0, time.UTC)
 	out := Run(Deps{
 		FetchMain:      func() error { return nil },
-		Implementation: r.stage("impl", stages.Result{OK: false, SpendingCapAbort: true, SpendingCapResetTime: reset}),
+		Implementation: r.stage("impl", stages.Result{OK: false, Disposition: stages.CapAborted, CapResetAt: reset}),
 		Review:         r.stage("review", stages.Result{OK: true}),
 		Retrospective:  r.stage("retro", stages.Result{OK: true}),
 		Log:            r,
 	})
-	if !out.SpendingCapResetTime.Equal(reset) {
-		t.Errorf("Outcome.SpendingCapResetTime = %s, want %s (the aborting stage's reset time)", out.SpendingCapResetTime, reset)
+	if !out.CapResetAt.Equal(reset) {
+		t.Errorf("CapResetAt = %s, want %s (the aborting stage's reset time)", out.CapResetAt, reset)
+	}
+}
+
+// The fold's precedence, at the only place two stages can disagree: the review
+// reaches a verdict and the retrospective is then cap-aborted. The review's verdict
+// is the run's — a ship stays a ship (the loop must not release a shipped ticket)
+// and a zero-net-diff branch stays a recommend-close (re-running it can only reach
+// the same conclusion) — while a cap abort with no such verdict is the run's story,
+// outranking the implementation's preflight abort exactly as the loop's branch order
+// always has.
+func TestRunFoldsTheDispositionInPrecedenceOrder(t *testing.T) {
+	cases := []struct {
+		name                string
+		impl, review, retro stages.Disposition
+		want                stages.Disposition
+	}{
+		{"a ship outranks a later cap abort", stages.NoPR, stages.Shipped, stages.CapAborted, stages.Shipped},
+		{"a recommend-close outranks a later cap abort", stages.NoPR, stages.RecommendClose, stages.CapAborted, stages.RecommendClose},
+		{"a cap abort outranks a preflight abort", stages.PreflightAborted, stages.NoPR, stages.CapAborted, stages.CapAborted},
+		{"nothing to report is a no-PR run", stages.NoPR, stages.NoPR, stages.NoPR, stages.NoPR},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			r := &recorder{}
+			out := Run(Deps{
+				FetchMain:      func() error { return nil },
+				Implementation: r.stage("impl", stages.Result{OK: true, Disposition: c.impl}),
+				Review:         r.stage("review", stages.Result{OK: true, Disposition: c.review}),
+				Retrospective:  r.stage("retro", stages.Result{OK: true, Disposition: c.retro}),
+				Log:            r,
+			})
+			if out.Disposition != c.want {
+				t.Errorf("Disposition = %s, want %s", out.Disposition, c.want)
+			}
+		})
 	}
 }

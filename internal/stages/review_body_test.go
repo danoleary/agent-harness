@@ -34,7 +34,7 @@ func TestReviewGreenPathPushesAndOpensThePR(t *testing.T) {
 
 	res := Review(h, stageCfg(), log, Args{Identifier: "PROJ-1"})
 
-	if !res.OK || !res.ReachedPushedPR {
+	if !res.OK || res.Disposition != Shipped {
 		t.Fatalf("a green gate over a clean, reviewed worktree ships, got %+v", res)
 	}
 	if got := shellLabels(h.Shells); len(got) != 2 || got[0] != prepStep || got[1] != gateStep+"-check" {
@@ -65,7 +65,7 @@ func TestReviewRedGateWithholdsThePushAndNamesTheGate(t *testing.T) {
 
 	res := Review(h, stageCfg(), log, Args{Identifier: "PROJ-2"})
 
-	if res.OK || res.ReachedPushedPR {
+	if res.OK || res.Disposition == Shipped {
 		t.Fatalf("a red gate ships nothing, got %+v", res)
 	}
 	if strings.Contains(strings.Join(h.Calls, "|"), "push") {
@@ -146,7 +146,7 @@ func TestReviewBlockedVerdictFailsThePushClosed(t *testing.T) {
 
 	res := Review(h, stageCfg(), log, Args{Identifier: "PROJ-6"})
 
-	if res.OK || res.ReachedPushedPR {
+	if res.OK || res.Disposition == Shipped {
 		t.Fatalf("a blocked verdict ships nothing, got %+v", res)
 	}
 	if !strings.Contains(narration(t, log), "BEH-580") {
@@ -163,7 +163,7 @@ func TestReviewEmptyDiffRecommendsClose(t *testing.T) {
 
 	res := Review(h, stageCfg(), stageLog(t, "PROJ-7"), Args{Identifier: "PROJ-7"})
 
-	if res.OK || !res.RecommendClose {
+	if res.OK || res.Disposition != RecommendClose {
 		t.Fatalf("a zero-net-diff branch recommends close, got %+v", res)
 	}
 	if strings.Contains(strings.Join(h.Calls, "|"), "push") {
@@ -180,7 +180,7 @@ func TestReviewPostRebaseEmptyDiffRecommendsClose(t *testing.T) {
 	h.DiffEmpty = false
 	res := Review(collapsing{h}, stageCfg(), stageLog(t, "PROJ-8"), Args{Identifier: "PROJ-8"})
 
-	if res.OK || !res.RecommendClose {
+	if res.OK || res.Disposition != RecommendClose {
 		t.Fatalf("a branch the rebase collapsed to nothing recommends close (BEH-680), got %+v", res)
 	}
 	if strings.Contains(strings.Join(h.Calls, "|"), "push-force") {
@@ -283,9 +283,9 @@ func TestReviewDisjointHistoryIsNotAContentConflict(t *testing.T) {
 }
 
 // CI red after the auto-fix budget still leaves a reviewable PR for a human — NOT a
-// ship failure, so ReachedPushedPR stays true and the loop's breaker must not count
-// it (DESIGN.md §Circuit breaker).
-func TestReviewRedCIStillReportsReachedPushedPR(t *testing.T) {
+// ship failure, so the disposition stays Shipped and the loop's breaker must not
+// count it (DESIGN.md §Circuit breaker).
+func TestReviewRedCIStillReportsShipped(t *testing.T) {
 	h := hostio.NewFake()
 	h.CI = ci.Outcome{OK: false, Reason: "checks still red after 3 fix attempts"}
 
@@ -294,35 +294,39 @@ func TestReviewRedCIStillReportsReachedPushedPR(t *testing.T) {
 	if res.OK {
 		t.Fatal("red CI is not a success")
 	}
-	if !res.ReachedPushedPR {
+	if res.Disposition != Shipped {
 		t.Error("the PR exists, so the breaker must see a ship (DESIGN.md §Circuit breaker)")
 	}
 }
 
 // BEH-602: the branch became a no-op against the latest origin/main only after the
 // pre-push rebase, so the PR is open with nothing for CI to validate. Honour the
-// recommend-close disposition rather than burn the poll budget.
+// recommend-close disposition rather than burn the poll budget — and report it as the
+// run's disposition even though a PR was opened, since that is what makes the loop
+// close the ticket (BEH-682) instead of reading a no-op PR as a clean ship.
 func TestReviewCIRecommendCloseKeepsThePRAndTheWorktree(t *testing.T) {
 	h := hostio.NewFake()
 	h.CI = ci.Outcome{RecommendClose: true, Reason: "branch is a no-op against origin/main"}
 
 	res := Review(h, stageCfg(), stageLog(t, "PROJ-14"), Args{Identifier: "PROJ-14"})
 
-	if !res.RecommendClose || !res.ReachedPushedPR || res.OK {
+	if res.Disposition != RecommendClose || res.OK {
 		t.Fatalf("a post-PR no-op recommends close with the PR kept, got %+v", res)
 	}
 }
 
 // BEH-571: an auto-fix session that hit an active spending cap is a billing window
-// that resets, not an unfixable CI — the loop must read retry-after-reset.
-func TestReviewCISpendingCapIsRetryAfterReset(t *testing.T) {
+// that resets, not an unfixable CI. The PR is already open, so the run's disposition
+// is the ship it is — a shipped PR outranks a cap abort for both the loop (which
+// never releases a shipped ticket) and the breaker (which counts it a success).
+func TestReviewCISpendingCapKeepsTheShippedPR(t *testing.T) {
 	h := hostio.NewFake()
 	h.CI = ci.Outcome{SpendingCapAbort: true}
 
 	res := Review(h, stageCfg(), stageLog(t, "PROJ-15"), Args{Identifier: "PROJ-15"})
 
-	if !res.SpendingCapAbort || !res.ReachedPushedPR || res.OK {
-		t.Fatalf("a capped auto-fix defers with the PR kept, got %+v", res)
+	if res.Disposition != Shipped || res.OK {
+		t.Fatalf("a capped auto-fix keeps the shipped PR, got %+v", res)
 	}
 }
 
@@ -373,7 +377,7 @@ func TestReviewPRCreationFailureIsNotAShip(t *testing.T) {
 
 	res := Review(h, stageCfg(), log, Args{Identifier: "PROJ-18"})
 
-	if res.OK || res.ReachedPushedPR {
+	if res.OK || res.Disposition == Shipped {
 		t.Fatalf("no PR means no ship, got %+v", res)
 	}
 	if !strings.Contains(narration(t, log), "open the PR manually") {

@@ -192,8 +192,8 @@ func Retrospective(h hostio.Host, cfg config.Config, log *runlog.Logger, args Ar
 		// Keep the worktree as a recoverable breadcrumb (DESIGN.md failure matrix).
 		// Surface a spending-cap abort so the loop reads retry-after-reset; a
 		// retrospective-only failure never blocks shipping (the PR already exists), so
-		// the breaker keys off review's ReachedPushedPR, not this OK.
-		return Result{OK: false, SpendingCapAbort: outcome.SpendingCapAbort, SpendingCapResetTime: outcome.SpendingCapResetTime}
+		// the breaker keys off the run's Disposition (review's ship), not this OK.
+		return capFailure(outcome)
 	}
 
 	// Reap the worktree only once the work has escaped it — retrospective filed AND

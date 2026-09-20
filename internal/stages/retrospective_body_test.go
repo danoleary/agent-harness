@@ -77,7 +77,7 @@ func TestRetrospectiveCapAbortClearsTheDefaultEmptyDropbox(t *testing.T) {
 
 	res := Retrospective(h, stageCfg(), log, Args{Identifier: "PROJ-3"})
 
-	if res.OK || !res.SpendingCapAbort {
+	if res.OK || res.Disposition != CapAborted {
 		t.Fatalf("a capped retrospective is retry-after-reset, got %+v", res)
 	}
 	if !strings.Contains(narration(t, log), "spending cap") {
