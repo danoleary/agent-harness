@@ -66,18 +66,22 @@ func stopAfter(n int) func() bool {
 func TestStartupClearsStaleStopThenFetchesMain(t *testing.T) {
 	r := &recorder{}
 	code := Run(Deps{
-		ClearStopFile: func() error { r.order = append(r.order, "clear-stop"); return nil },
-		FetchMain:     func() error { r.order = append(r.order, "fetch-main"); return nil },
-		StopRequested: func() bool { return true }, // stop already requested at the first checkpoint
-		ResolveNext:   func() (string, bool) { r.order = append(r.order, "resolve"); return "", false },
-		RunPipeline: func(string) TicketOutcome {
-			r.order = append(r.order, "pipeline")
-			return TicketOutcome{ReachedPushedPR: true}
+		Host: &fakeHost{
+			clearStop:     func() error { r.order = append(r.order, "clear-stop"); return nil },
+			fetchMain:     func() error { r.order = append(r.order, "fetch-main"); return nil },
+			stopRequested: func() bool { return true }, // stop already requested at the first checkpoint
+			resolveNext:   func() (string, bool) { r.order = append(r.order, "resolve"); return "", false },
+			runPipeline: func(string) TicketOutcome {
+				r.order = append(r.order, "pipeline")
+				return TicketOutcome{ReachedPushedPR: true}
+			},
 		},
-		Sleep:        func(time.Duration) { r.order = append(r.order, "sleep") },
-		PollInterval: time.Minute,
-		TickInterval: 2 * time.Second,
-		Log:          r,
+		Limits: Limits{
+			PollInterval: time.Minute,
+			TickInterval: 2 * time.Second,
+		},
+		Clock: testClock{sleep: func(time.Duration) { r.order = append(r.order, "sleep") }},
+		Log:   r,
 	})
 	if code != 0 {
 		t.Errorf("exit code = %d, want 0 (a deliberate stop is a clean exit)", code)
@@ -100,18 +104,22 @@ func TestEmptyQueueIdlesThenRePollsNotExit(t *testing.T) {
 	// 10s/2s = 5 ticks. Stop is arranged to land at the SECOND between-ticket
 	// checkpoint, after one full idle cycle, proving the loop re-polled (didn't exit).
 	code := Run(Deps{
-		ClearStopFile: func() error { return nil },
-		FetchMain:     func() error { return nil },
-		StopRequested: stopAfter(6), // 1 checkpoint + 5 idle-tick checks pass, then stop at the next checkpoint
-		ResolveNext:   func() (string, bool) { r.order = append(r.order, "resolve"); return "", false },
-		RunPipeline: func(string) TicketOutcome {
-			r.order = append(r.order, "pipeline")
-			return TicketOutcome{ReachedPushedPR: true}
+		Host: &fakeHost{
+			clearStop:     func() error { return nil },
+			fetchMain:     func() error { return nil },
+			stopRequested: stopAfter(6), // 1 checkpoint + 5 idle-tick checks pass, then stop at the next checkpoint
+			resolveNext:   func() (string, bool) { r.order = append(r.order, "resolve"); return "", false },
+			runPipeline: func(string) TicketOutcome {
+				r.order = append(r.order, "pipeline")
+				return TicketOutcome{ReachedPushedPR: true}
+			},
 		},
-		Sleep:        func(d time.Duration) { r.order = append(r.order, "sleep"); slept = append(slept, d) },
-		PollInterval: 10 * time.Second,
-		TickInterval: 2 * time.Second,
-		Log:          r,
+		Limits: Limits{
+			PollInterval: 10 * time.Second,
+			TickInterval: 2 * time.Second,
+		},
+		Clock: testClock{sleep: func(d time.Duration) { r.order = append(r.order, "sleep"); slept = append(slept, d) }},
+		Log:   r,
 	})
 	if code != 0 {
 		t.Errorf("exit code = %d, want 0 (an empty queue then stop is a clean exit)", code)
@@ -152,19 +160,23 @@ func TestTicketRunsPipelineThenFetchesMainAndContinues(t *testing.T) {
 	var ranWith string
 	var fetches int
 	code := Run(Deps{
-		ClearStopFile: func() error { return nil },
-		FetchMain:     func() error { fetches++; r.order = append(r.order, "fetch"); return nil },
-		StopRequested: stopAfter(1), // run one ticket, then stop at the 2nd checkpoint
-		ResolveNext:   func() (string, bool) { r.order = append(r.order, "resolve"); return "BEH-100", true },
-		RunPipeline: func(id string) TicketOutcome {
-			r.order = append(r.order, "pipeline")
-			ranWith = id
-			return TicketOutcome{ReachedPushedPR: true}
+		Host: &fakeHost{
+			clearStop:     func() error { return nil },
+			fetchMain:     func() error { fetches++; r.order = append(r.order, "fetch"); return nil },
+			stopRequested: stopAfter(1), // run one ticket, then stop at the 2nd checkpoint
+			resolveNext:   func() (string, bool) { r.order = append(r.order, "resolve"); return "BEH-100", true },
+			runPipeline: func(id string) TicketOutcome {
+				r.order = append(r.order, "pipeline")
+				ranWith = id
+				return TicketOutcome{ReachedPushedPR: true}
+			},
 		},
-		Sleep:        func(time.Duration) { r.order = append(r.order, "sleep") },
-		PollInterval: time.Minute,
-		TickInterval: 2 * time.Second,
-		Log:          r,
+		Limits: Limits{
+			PollInterval: time.Minute,
+			TickInterval: 2 * time.Second,
+		},
+		Clock: testClock{sleep: func(time.Duration) { r.order = append(r.order, "sleep") }},
+		Log:   r,
 	})
 	if code != 0 {
 		t.Errorf("exit code = %d, want 0 (a ticket then a stop is a clean exit)", code)
@@ -192,15 +204,19 @@ func TestGracefulStopBetweenTicketsRunsTwoThenStops(t *testing.T) {
 	r := &recorder{}
 	var ran int
 	code := Run(Deps{
-		ClearStopFile: func() error { return nil },
-		FetchMain:     func() error { return nil },
-		StopRequested: stopAfter(2), // two tickets, stop at the 3rd checkpoint
-		ResolveNext:   func() (string, bool) { return "BEH-1", true },
-		RunPipeline:   func(string) TicketOutcome { ran++; return TicketOutcome{ReachedPushedPR: true} },
-		Sleep:         func(time.Duration) {},
-		PollInterval:  time.Minute,
-		TickInterval:  2 * time.Second,
-		Log:           r,
+		Host: &fakeHost{
+			clearStop:     func() error { return nil },
+			fetchMain:     func() error { return nil },
+			stopRequested: stopAfter(2), // two tickets, stop at the 3rd checkpoint
+			resolveNext:   func() (string, bool) { return "BEH-1", true },
+			runPipeline:   func(string) TicketOutcome { ran++; return TicketOutcome{ReachedPushedPR: true} },
+		},
+		Limits: Limits{
+			PollInterval: time.Minute,
+			TickInterval: 2 * time.Second,
+		},
+		Clock: testClock{sleep: func(time.Duration) {}},
+		Log:   r,
 	})
 	if code != 0 {
 		t.Errorf("exit code = %d, want 0", code)
@@ -224,17 +240,21 @@ func TestBreakerTripsAndExitsAfterThreeNoPRTickets(t *testing.T) {
 	var ran int
 	var released []string
 	code := Run(Deps{
-		ClearStopFile:          func() error { return nil },
-		FetchMain:              func() error { return nil },
-		StopRequested:          func() bool { return false }, // never stopped — only the breaker can end this
-		ResolveNext:            func() (string, bool) { return "BEH-99", true },
-		RunPipeline:            func(string) TicketOutcome { ran++; return TicketOutcome{ReachedPushedPR: false} },
-		ReleaseTicket:          func(id string) error { released = append(released, id); return nil },
-		Sleep:                  func(time.Duration) {},
-		PollInterval:           time.Minute,
-		TickInterval:           2 * time.Second,
-		MaxConsecutiveFailures: 3,
-		Log:                    r,
+		Host: &fakeHost{
+			clearStop:     func() error { return nil },
+			fetchMain:     func() error { return nil },
+			stopRequested: func() bool { return false }, // never stopped — only the breaker can end this
+			resolveNext:   func() (string, bool) { return "BEH-99", true },
+			runPipeline:   func(string) TicketOutcome { ran++; return TicketOutcome{ReachedPushedPR: false} },
+			release:       func(id string) error { released = append(released, id); return nil },
+		},
+		Limits: Limits{
+			PollInterval:           time.Minute,
+			TickInterval:           2 * time.Second,
+			MaxConsecutiveFailures: 3,
+		},
+		Clock: testClock{sleep: func(time.Duration) {}},
+		Log:   r,
 	})
 	if code != 0 {
 		t.Errorf("exit code = %d, want 0 (a breaker trip is a deliberate wind-down, same path as STOP)", code)
@@ -273,19 +293,23 @@ func TestNoPRRunReleasesTicketBackToTodo(t *testing.T) {
 	r := &recorder{}
 	var released []string
 	code := Run(Deps{
-		ClearStopFile: func() error { return nil },
-		FetchMain:     func() error { return nil },
-		StopRequested: stopAfter(1), // one ticket, then stop at the 2nd checkpoint
-		ResolveNext:   func() (string, bool) { return "BEH-42", true },
-		RunPipeline: func(string) TicketOutcome {
-			return TicketOutcome{ReachedPushedPR: false} // ran, but no PR (not a cap abort)
+		Host: &fakeHost{
+			clearStop:     func() error { return nil },
+			fetchMain:     func() error { return nil },
+			stopRequested: stopAfter(1), // one ticket, then stop at the 2nd checkpoint
+			resolveNext:   func() (string, bool) { return "BEH-42", true },
+			runPipeline: func(string) TicketOutcome {
+				return TicketOutcome{ReachedPushedPR: false} // ran, but no PR (not a cap abort)
+			},
+			release: func(id string) error { released = append(released, id); return nil },
 		},
-		ReleaseTicket:          func(id string) error { released = append(released, id); return nil },
-		Sleep:                  func(time.Duration) {},
-		PollInterval:           time.Minute,
-		TickInterval:           2 * time.Second,
-		MaxConsecutiveFailures: 3, // generous — one failure must not trip it
-		Log:                    r,
+		Limits: Limits{
+			PollInterval:           time.Minute,
+			TickInterval:           2 * time.Second,
+			MaxConsecutiveFailures: 3, // generous — one failure must not trip it
+		},
+		Clock: testClock{sleep: func(time.Duration) {}},
+		Log:   r,
 	})
 	if code != 0 {
 		t.Errorf("exit code = %d, want 0 (a no-PR run then stop is a clean exit)", code)
@@ -317,18 +341,22 @@ func TestNoPRRunCommentsOnRelease(t *testing.T) {
 	r := &recorder{}
 	c := &commentRec{}
 	code := Run(Deps{
-		ClearStopFile:          func() error { return nil },
-		FetchMain:              func() error { return nil },
-		StopRequested:          stopAfter(1),
-		ResolveNext:            func() (string, bool) { return "BEH-42", true },
-		RunPipeline:            func(string) TicketOutcome { return TicketOutcome{ReachedPushedPR: false} },
-		ReleaseTicket:          func(string) error { return nil },
-		CommentTicket:          c.post,
-		Sleep:                  func(time.Duration) {},
-		PollInterval:           time.Minute,
-		TickInterval:           2 * time.Second,
-		MaxConsecutiveFailures: 3,
-		Log:                    r,
+		Host: &fakeHost{
+			clearStop:     func() error { return nil },
+			fetchMain:     func() error { return nil },
+			stopRequested: stopAfter(1),
+			resolveNext:   func() (string, bool) { return "BEH-42", true },
+			runPipeline:   func(string) TicketOutcome { return TicketOutcome{ReachedPushedPR: false} },
+			release:       func(string) error { return nil },
+			comment:       c.post,
+		},
+		Limits: Limits{
+			PollInterval:           time.Minute,
+			TickInterval:           2 * time.Second,
+			MaxConsecutiveFailures: 3,
+		},
+		Clock: testClock{sleep: func(time.Duration) {}},
+		Log:   r,
 	})
 	if code != 0 {
 		t.Errorf("exit code = %d, want 0", code)
@@ -341,30 +369,33 @@ func TestNoPRRunCommentsOnRelease(t *testing.T) {
 	}
 }
 
-// TestRecommendCloseWithoutCloserFallsBackToKeepingInProgress pins the BEH-682
-// best-effort fallback: when no CloseTicket adapter is wired (or it fails), a
-// recommend-close run must STILL never release the ticket back to Todo. Releasing
-// would let the dispatch guard re-grab it and re-run the whole pipeline to the same
-// "nothing to ship" conclusion forever; with no way to close it, keeping it In
-// Progress for a human is the safe degrade — never a bounce back to Todo.
-func TestRecommendCloseWithoutCloserFallsBackToKeepingInProgress(t *testing.T) {
+// TestRecommendCloseThatCannotCloseFallsBackToKeepingInProgress pins the BEH-682
+// best-effort fallback: when the close FAILS, a recommend-close run must STILL never
+// release the ticket back to Todo. Releasing would let the dispatch guard re-grab it
+// and re-run the whole pipeline to the same "nothing to ship" conclusion forever;
+// with no way to close it, keeping it In Progress for a human is the safe degrade —
+// never a bounce back to Todo.
+func TestRecommendCloseThatCannotCloseFallsBackToKeepingInProgress(t *testing.T) {
 	r := &recorder{}
 	var released []string
 	code := Run(Deps{
-		ClearStopFile: func() error { return nil },
-		FetchMain:     func() error { return nil },
-		StopRequested: stopAfter(1),
-		ResolveNext:   func() (string, bool) { return "BEH-365", true },
-		RunPipeline: func(string) TicketOutcome {
-			return TicketOutcome{ReachedPushedPR: false, RecommendClose: true}
+		Host: &fakeHost{
+			clearStop:     func() error { return nil },
+			fetchMain:     func() error { return nil },
+			stopRequested: stopAfter(1),
+			resolveNext:   func() (string, bool) { return "BEH-365", true },
+			runPipeline: func(string) TicketOutcome {
+				return TicketOutcome{ReachedPushedPR: false, RecommendClose: true}
+			}, // No CloseTicket wired — exercises the nil-closer fallback path.
+			release: func(id string) error { released = append(released, id); return nil },
 		},
-		// No CloseTicket wired — exercises the nil-closer fallback path.
-		ReleaseTicket:          func(id string) error { released = append(released, id); return nil },
-		Sleep:                  func(time.Duration) {},
-		PollInterval:           time.Minute,
-		TickInterval:           2 * time.Second,
-		MaxConsecutiveFailures: 3,
-		Log:                    r,
+		Limits: Limits{
+			PollInterval:           time.Minute,
+			TickInterval:           2 * time.Second,
+			MaxConsecutiveFailures: 3,
+		},
+		Clock: testClock{sleep: func(time.Duration) {}},
+		Log:   r,
 	})
 	if code != 0 {
 		t.Errorf("exit code = %d, want 0 (a recommend-close run then stop is a clean exit)", code)
@@ -384,20 +415,24 @@ func TestRecommendCloseRunClosesTicket(t *testing.T) {
 	r := &recorder{}
 	var closed, released []string
 	code := Run(Deps{
-		ClearStopFile: func() error { return nil },
-		FetchMain:     func() error { return nil },
-		StopRequested: stopAfter(1),
-		ResolveNext:   func() (string, bool) { return "BEH-365", true },
-		RunPipeline: func(string) TicketOutcome {
-			return TicketOutcome{ReachedPushedPR: false, RecommendClose: true}
+		Host: &fakeHost{
+			clearStop:     func() error { return nil },
+			fetchMain:     func() error { return nil },
+			stopRequested: stopAfter(1),
+			resolveNext:   func() (string, bool) { return "BEH-365", true },
+			runPipeline: func(string) TicketOutcome {
+				return TicketOutcome{ReachedPushedPR: false, RecommendClose: true}
+			},
+			closeTicket: func(id string) error { closed = append(closed, id); return nil },
+			release:     func(id string) error { released = append(released, id); return nil },
 		},
-		CloseTicket:            func(id string) error { closed = append(closed, id); return nil },
-		ReleaseTicket:          func(id string) error { released = append(released, id); return nil },
-		Sleep:                  func(time.Duration) {},
-		PollInterval:           time.Minute,
-		TickInterval:           2 * time.Second,
-		MaxConsecutiveFailures: 3,
-		Log:                    r,
+		Limits: Limits{
+			PollInterval:           time.Minute,
+			TickInterval:           2 * time.Second,
+			MaxConsecutiveFailures: 3,
+		},
+		Clock: testClock{sleep: func(time.Duration) {}},
+		Log:   r,
 	})
 	if code != 0 {
 		t.Errorf("exit code = %d, want 0 (a recommend-close run then stop is a clean exit)", code)
@@ -421,20 +456,24 @@ func TestRecommendCloseAfterPushedPRClosesTicket(t *testing.T) {
 	r := &recorder{}
 	var closed, released []string
 	code := Run(Deps{
-		ClearStopFile: func() error { return nil },
-		FetchMain:     func() error { return nil },
-		StopRequested: stopAfter(1),
-		ResolveNext:   func() (string, bool) { return "BEH-365", true },
-		RunPipeline: func(string) TicketOutcome {
-			return TicketOutcome{ReachedPushedPR: true, RecommendClose: true}
+		Host: &fakeHost{
+			clearStop:     func() error { return nil },
+			fetchMain:     func() error { return nil },
+			stopRequested: stopAfter(1),
+			resolveNext:   func() (string, bool) { return "BEH-365", true },
+			runPipeline: func(string) TicketOutcome {
+				return TicketOutcome{ReachedPushedPR: true, RecommendClose: true}
+			},
+			closeTicket: func(id string) error { closed = append(closed, id); return nil },
+			release:     func(id string) error { released = append(released, id); return nil },
 		},
-		CloseTicket:            func(id string) error { closed = append(closed, id); return nil },
-		ReleaseTicket:          func(id string) error { released = append(released, id); return nil },
-		Sleep:                  func(time.Duration) {},
-		PollInterval:           time.Minute,
-		TickInterval:           2 * time.Second,
-		MaxConsecutiveFailures: 3,
-		Log:                    r,
+		Limits: Limits{
+			PollInterval:           time.Minute,
+			TickInterval:           2 * time.Second,
+			MaxConsecutiveFailures: 3,
+		},
+		Clock: testClock{sleep: func(time.Duration) {}},
+		Log:   r,
 	})
 	if code != 0 {
 		t.Errorf("exit code = %d, want 0 (a recommend-close run then stop is a clean exit)", code)
@@ -455,19 +494,23 @@ func TestRecommendCloseRunCommentsRecommendingClose(t *testing.T) {
 	r := &recorder{}
 	c := &commentRec{}
 	code := Run(Deps{
-		ClearStopFile:          func() error { return nil },
-		FetchMain:              func() error { return nil },
-		StopRequested:          stopAfter(1),
-		ResolveNext:            func() (string, bool) { return "BEH-365", true },
-		RunPipeline:            func(string) TicketOutcome { return TicketOutcome{RecommendClose: true} },
-		CloseTicket:            func(string) error { return nil },
-		ReleaseTicket:          func(string) error { return nil },
-		CommentTicket:          c.post,
-		Sleep:                  func(time.Duration) {},
-		PollInterval:           time.Minute,
-		TickInterval:           2 * time.Second,
-		MaxConsecutiveFailures: 3,
-		Log:                    r,
+		Host: &fakeHost{
+			clearStop:     func() error { return nil },
+			fetchMain:     func() error { return nil },
+			stopRequested: stopAfter(1),
+			resolveNext:   func() (string, bool) { return "BEH-365", true },
+			runPipeline:   func(string) TicketOutcome { return TicketOutcome{RecommendClose: true} },
+			closeTicket:   func(string) error { return nil },
+			release:       func(string) error { return nil },
+			comment:       c.post,
+		},
+		Limits: Limits{
+			PollInterval:           time.Minute,
+			TickInterval:           2 * time.Second,
+			MaxConsecutiveFailures: 3,
+		},
+		Clock: testClock{sleep: func(time.Duration) {}},
+		Log:   r,
 	})
 	if code != 0 {
 		t.Errorf("exit code = %d, want 0", code)
@@ -492,19 +535,23 @@ func TestRecommendCloseFailedCloseCommentsInProgressNotCanceled(t *testing.T) {
 	r := &recorder{}
 	c := &commentRec{}
 	code := Run(Deps{
-		ClearStopFile:          func() error { return nil },
-		FetchMain:              func() error { return nil },
-		StopRequested:          stopAfter(1),
-		ResolveNext:            func() (string, bool) { return "BEH-365", true },
-		RunPipeline:            func(string) TicketOutcome { return TicketOutcome{RecommendClose: true} },
-		CloseTicket:            func(string) error { return errors.New("tracker hiccup") },
-		ReleaseTicket:          func(string) error { return nil },
-		CommentTicket:          c.post,
-		Sleep:                  func(time.Duration) {},
-		PollInterval:           time.Minute,
-		TickInterval:           2 * time.Second,
-		MaxConsecutiveFailures: 3,
-		Log:                    r,
+		Host: &fakeHost{
+			clearStop:     func() error { return nil },
+			fetchMain:     func() error { return nil },
+			stopRequested: stopAfter(1),
+			resolveNext:   func() (string, bool) { return "BEH-365", true },
+			runPipeline:   func(string) TicketOutcome { return TicketOutcome{RecommendClose: true} },
+			closeTicket:   func(string) error { return errors.New("tracker hiccup") },
+			release:       func(string) error { return nil },
+			comment:       c.post,
+		},
+		Limits: Limits{
+			PollInterval:           time.Minute,
+			TickInterval:           2 * time.Second,
+			MaxConsecutiveFailures: 3,
+		},
+		Clock: testClock{sleep: func(time.Duration) {}},
+		Log:   r,
 	})
 	if code != 0 {
 		t.Errorf("exit code = %d, want 0", code)
@@ -529,18 +576,22 @@ func TestCapAbortReleaseCommentsWithReason(t *testing.T) {
 	r := &recorder{}
 	c := &commentRec{}
 	code := Run(Deps{
-		ClearStopFile: func() error { return nil },
-		FetchMain:     func() error { return nil },
-		StopRequested: stopAfter(6), // 1 top checkpoint + 5 backoff ticks, then stop
-		ResolveNext:   func() (string, bool) { return "BEH-7", true },
-		RunPipeline:   func(string) TicketOutcome { return TicketOutcome{SpendingCapAbort: true} },
-		ReleaseTicket: func(string) error { return nil },
-		CommentTicket: c.post,
-		Sleep:         func(time.Duration) {},
-		PollInterval:  time.Minute,
-		TickInterval:  2 * time.Second,
-		CapBackoff:    10 * time.Second,
-		Log:           r,
+		Host: &fakeHost{
+			clearStop:     func() error { return nil },
+			fetchMain:     func() error { return nil },
+			stopRequested: stopAfter(6), // 1 top checkpoint + 5 backoff ticks, then stop
+			resolveNext:   func() (string, bool) { return "BEH-7", true },
+			runPipeline:   func(string) TicketOutcome { return TicketOutcome{SpendingCapAbort: true} },
+			release:       func(string) error { return nil },
+			comment:       c.post,
+		},
+		Limits: Limits{
+			PollInterval: time.Minute,
+			TickInterval: 2 * time.Second,
+			CapBackoff:   10 * time.Second,
+		},
+		Clock: testClock{sleep: func(time.Duration) {}},
+		Log:   r,
 	})
 	if code != 0 {
 		t.Errorf("exit code = %d, want 0", code)
@@ -570,22 +621,25 @@ func TestSpendingCapAbortReleasesTicketBacksOffAndLeavesBreakerNeutral(t *testin
 	// One top checkpoint (pass) + 5 backoff-tick stop-checks pass, then stop at the
 	// next top checkpoint: stopAfter(6).
 	code := Run(Deps{
-		ClearStopFile: func() error { return nil },
-		FetchMain:     func() error { return nil },
-		StopRequested: stopAfter(6),
-		ResolveNext:   func() (string, bool) { return "BEH-7", true },
-		RunPipeline: func(string) TicketOutcome {
-			ran++
-			return TicketOutcome{SpendingCapAbort: true}
+		Host: &fakeHost{
+			clearStop:     func() error { return nil },
+			fetchMain:     func() error { return nil },
+			stopRequested: stopAfter(6),
+			resolveNext:   func() (string, bool) { return "BEH-7", true },
+			runPipeline: func(string) TicketOutcome {
+				ran++
+				return TicketOutcome{SpendingCapAbort: true}
+			},
+			release: func(id string) error { released = append(released, id); return nil },
 		},
-		ReleaseTicket: func(id string) error { released = append(released, id); return nil },
-		Sleep:         func(d time.Duration) { slept = append(slept, d) },
-		PollInterval:  time.Minute,
-		TickInterval:  2 * time.Second,
-		CapBackoff:    10 * time.Second,
-		// Threshold 1: a single counted failure would trip immediately. It must NOT.
-		MaxConsecutiveFailures: 1,
-		Log:                    r,
+		Limits: Limits{
+			PollInterval:           time.Minute,
+			TickInterval:           2 * time.Second,
+			CapBackoff:             10 * time.Second, // Threshold 1: a single counted failure would trip immediately. It must NOT.
+			MaxConsecutiveFailures: 1,
+		},
+		Clock: testClock{sleep: func(d time.Duration) { slept = append(slept, d) }},
+		Log:   r,
 	})
 	if code != 0 {
 		t.Errorf("exit code = %d, want 0 (a cap abort then stop is a clean exit)", code)
@@ -630,31 +684,33 @@ func TestPreflightAbortReclaimsBacksOffAndLeavesBreakerNeutral(t *testing.T) {
 	// PollInterval/TickInterval = 10s/2s = 5 ticks for a full backoff; stopAfter(6) =
 	// one top checkpoint + 5 backoff-tick checks pass, then stop at the next top.
 	code := Run(Deps{
-		ClearStopFile: func() error { return nil },
-		FetchMain:     func() error { return nil },
-		StopRequested: stopAfter(6),
-		ResolveNext:   func() (string, bool) { return "BEH-7", true },
-		RunPipeline: func(string) TicketOutcome {
-			ran++
-			return TicketOutcome{PreflightAbort: true}
+		Host: &fakeHost{
+			clearStop:     func() error { return nil },
+			fetchMain:     func() error { return nil },
+			stopRequested: stopAfter(6),
+			resolveNext:   func() (string, bool) { return "BEH-7", true },
+			runPipeline: func(string) TicketOutcome {
+				ran++
+				return TicketOutcome{PreflightAbort: true}
+			}, // The impl stage owns the release on a preflight abort; a loop-level release here
+			// would be a wrong double-move, so fail loudly if the loop ever calls it.
+			release: func(id string) error {
+				t.Fatalf("loop must not release %s — the impl stage already did (ADR-0003)", id)
+				return nil
+			},
+			freeDisk:       func() (uint64, error) { return 1 * gib, nil }, // always under pressure
+			pruneWorktrees: func() (int, error) { return 0, nil },
+			cachePrune:     func() error { return nil },
+			dockerPrune:    func() error { dockerPrunes++; return nil },
 		},
-		// The impl stage owns the release on a preflight abort; a loop-level release here
-		// would be a wrong double-move, so fail loudly if the loop ever calls it.
-		ReleaseTicket: func(id string) error {
-			t.Fatalf("loop must not release %s — the impl stage already did (ADR-0003)", id)
-			return nil
+		Limits: Limits{
+			DiskReclaimThreshold:   8 * gib,
+			PollInterval:           10 * time.Second,
+			TickInterval:           2 * time.Second, // Threshold 1: a single counted failure would trip immediately. It must NOT.
+			MaxConsecutiveFailures: 1,
 		},
-		DiskReclaimThreshold: 8 * gib,
-		FreeDisk:             func() (uint64, error) { return 1 * gib, nil }, // always under pressure
-		PruneMergedWorktrees: func() (int, error) { return 0, nil },
-		CachePrune:           func() error { return nil },
-		DockerPrune:          func() error { dockerPrunes++; return nil },
-		Sleep:                func(d time.Duration) { slept = append(slept, d) },
-		PollInterval:         10 * time.Second,
-		TickInterval:         2 * time.Second,
-		// Threshold 1: a single counted failure would trip immediately. It must NOT.
-		MaxConsecutiveFailures: 1,
-		Log:                    r,
+		Clock: testClock{sleep: func(d time.Duration) { slept = append(slept, d) }},
+		Log:   r,
 	})
 	if code != 0 {
 		t.Errorf("exit code = %d, want 0 (a preflight abort then stop is a clean exit)", code)
@@ -693,22 +749,24 @@ func TestCapBackoffWaitsUntilParsedResetTime(t *testing.T) {
 	var ran int
 	var slept []time.Duration
 	code := Run(Deps{
-		ClearStopFile: func() error { return nil },
-		FetchMain:     func() error { return nil },
-		// 1 top checkpoint + 75 backoff ticks elapse, then stop at the next top checkpoint.
-		StopRequested: stopAfter(76),
-		Now:           func() time.Time { return now },
-		ResolveNext:   func() (string, bool) { return "BEH-7", true },
-		RunPipeline: func(string) TicketOutcome {
-			ran++
-			return TicketOutcome{SpendingCapAbort: true, CapResetTime: reset}
+		Host: &fakeHost{
+			clearStop:     func() error { return nil },
+			fetchMain:     func() error { return nil }, // 1 top checkpoint + 75 backoff ticks elapse, then stop at the next top checkpoint.
+			stopRequested: stopAfter(76),
+			resolveNext:   func() (string, bool) { return "BEH-7", true },
+			runPipeline: func(string) TicketOutcome {
+				ran++
+				return TicketOutcome{SpendingCapAbort: true, CapResetTime: reset}
+			},
+			release: func(string) error { return nil },
 		},
-		ReleaseTicket: func(string) error { return nil },
-		Sleep:         func(d time.Duration) { slept = append(slept, d) },
-		PollInterval:  time.Minute,
-		TickInterval:  2 * time.Second,
-		CapBackoff:    10 * time.Second, // the fixed guess — must be ignored in favour of the reset time
-		Log:           r,
+		Limits: Limits{
+			PollInterval: time.Minute,
+			TickInterval: 2 * time.Second,
+			CapBackoff:   10 * time.Second, // the fixed guess — must be ignored in favour of the reset time
+		},
+		Clock: testClock{now: func() time.Time { return now }, sleep: func(d time.Duration) { slept = append(slept, d) }},
+		Log:   r,
 	})
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0", code)
@@ -735,18 +793,21 @@ func TestCapBackoffFallsBackToFixedWhenResetImplausible(t *testing.T) {
 	reset := now.Add(23 * time.Hour) // well past maxCapResetBackoff → distrust, fall back
 	var slept []time.Duration
 	code := Run(Deps{
-		ClearStopFile: func() error { return nil },
-		FetchMain:     func() error { return nil },
-		StopRequested: stopAfter(6), // 1 top + 5 fixed-backoff ticks (10s/2s), then stop
-		Now:           func() time.Time { return now },
-		ResolveNext:   func() (string, bool) { return "BEH-7", true },
-		RunPipeline:   func(string) TicketOutcome { return TicketOutcome{SpendingCapAbort: true, CapResetTime: reset} },
-		ReleaseTicket: func(string) error { return nil },
-		Sleep:         func(d time.Duration) { slept = append(slept, d) },
-		PollInterval:  time.Minute,
-		TickInterval:  2 * time.Second,
-		CapBackoff:    10 * time.Second,
-		Log:           r,
+		Host: &fakeHost{
+			clearStop:     func() error { return nil },
+			fetchMain:     func() error { return nil },
+			stopRequested: stopAfter(6), // 1 top + 5 fixed-backoff ticks (10s/2s), then stop
+			resolveNext:   func() (string, bool) { return "BEH-7", true },
+			runPipeline:   func(string) TicketOutcome { return TicketOutcome{SpendingCapAbort: true, CapResetTime: reset} },
+			release:       func(string) error { return nil },
+		},
+		Limits: Limits{
+			PollInterval: time.Minute,
+			TickInterval: 2 * time.Second,
+			CapBackoff:   10 * time.Second,
+		},
+		Clock: testClock{now: func() time.Time { return now }, sleep: func(d time.Duration) { slept = append(slept, d) }},
+		Log:   r,
 	})
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0", code)
@@ -770,17 +831,21 @@ func TestCapBackoffFallsBackToFixedWhenResetImplausible(t *testing.T) {
 func TestCapBackoffNarratesEntryAndWake(t *testing.T) {
 	r := &recorder{}
 	code := Run(Deps{
-		ClearStopFile: func() error { return nil },
-		FetchMain:     func() error { return nil },
-		StopRequested: stopAfter(6), // 1 top checkpoint + 5 backoff ticks elapse, then stop
-		ResolveNext:   func() (string, bool) { return "BEH-7", true },
-		RunPipeline:   func(string) TicketOutcome { return TicketOutcome{SpendingCapAbort: true} },
-		ReleaseTicket: func(string) error { return nil },
-		Sleep:         func(time.Duration) {},
-		PollInterval:  time.Minute,
-		TickInterval:  2 * time.Second,
-		CapBackoff:    10 * time.Second,
-		Log:           r,
+		Host: &fakeHost{
+			clearStop:     func() error { return nil },
+			fetchMain:     func() error { return nil },
+			stopRequested: stopAfter(6), // 1 top checkpoint + 5 backoff ticks elapse, then stop
+			resolveNext:   func() (string, bool) { return "BEH-7", true },
+			runPipeline:   func(string) TicketOutcome { return TicketOutcome{SpendingCapAbort: true} },
+			release:       func(string) error { return nil },
+		},
+		Limits: Limits{
+			PollInterval: time.Minute,
+			TickInterval: 2 * time.Second,
+			CapBackoff:   10 * time.Second,
+		},
+		Clock: testClock{sleep: func(time.Duration) {}},
+		Log:   r,
 	})
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0", code)
@@ -813,18 +878,22 @@ func TestCapBackoffNarratesEntryAndWake(t *testing.T) {
 func TestCapBackoffEmitsPeriodicHeartbeat(t *testing.T) {
 	r := &recorder{}
 	code := Run(Deps{
-		ClearStopFile:       func() error { return nil },
-		FetchMain:           func() error { return nil },
-		StopRequested:       stopAfter(6), // 1 top checkpoint + 5 backoff ticks elapse, then stop
-		ResolveNext:         func() (string, bool) { return "BEH-7", true },
-		RunPipeline:         func(string) TicketOutcome { return TicketOutcome{SpendingCapAbort: true} },
-		ReleaseTicket:       func(string) error { return nil },
-		Sleep:               func(time.Duration) {},
-		PollInterval:        time.Minute,
-		TickInterval:        2 * time.Second,
-		CapBackoff:          10 * time.Second,
-		CapBackoffHeartbeat: 4 * time.Second,
-		Log:                 r,
+		Host: &fakeHost{
+			clearStop:     func() error { return nil },
+			fetchMain:     func() error { return nil },
+			stopRequested: stopAfter(6), // 1 top checkpoint + 5 backoff ticks elapse, then stop
+			resolveNext:   func() (string, bool) { return "BEH-7", true },
+			runPipeline:   func(string) TicketOutcome { return TicketOutcome{SpendingCapAbort: true} },
+			release:       func(string) error { return nil },
+		},
+		Limits: Limits{
+			PollInterval:        time.Minute,
+			TickInterval:        2 * time.Second,
+			CapBackoff:          10 * time.Second,
+			CapBackoffHeartbeat: 4 * time.Second,
+		},
+		Clock: testClock{sleep: func(time.Duration) {}},
+		Log:   r,
 	})
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0", code)
@@ -846,18 +915,21 @@ func TestCapBackoffEmitsPeriodicHeartbeat(t *testing.T) {
 func TestCapBackoffEmitsNoHeartbeatWhenCadenceUnset(t *testing.T) {
 	r := &recorder{}
 	code := Run(Deps{
-		ClearStopFile: func() error { return nil },
-		FetchMain:     func() error { return nil },
-		StopRequested: stopAfter(6),
-		ResolveNext:   func() (string, bool) { return "BEH-7", true },
-		RunPipeline:   func(string) TicketOutcome { return TicketOutcome{SpendingCapAbort: true} },
-		ReleaseTicket: func(string) error { return nil },
-		Sleep:         func(time.Duration) {},
-		PollInterval:  time.Minute,
-		TickInterval:  2 * time.Second,
-		CapBackoff:    10 * time.Second,
-		// CapBackoffHeartbeat unset (zero) → no intermediate heartbeats.
-		Log: r,
+		Host: &fakeHost{
+			clearStop:     func() error { return nil },
+			fetchMain:     func() error { return nil },
+			stopRequested: stopAfter(6),
+			resolveNext:   func() (string, bool) { return "BEH-7", true },
+			runPipeline:   func(string) TicketOutcome { return TicketOutcome{SpendingCapAbort: true} },
+			release:       func(string) error { return nil },
+		},
+		Limits: Limits{
+			PollInterval: time.Minute,
+			TickInterval: 2 * time.Second,
+			CapBackoff:   10 * time.Second, // CapBackoffHeartbeat unset (zero) → no intermediate heartbeats.
+		},
+		Clock: testClock{sleep: func(time.Duration) {}},
+		Log:   r,
 	})
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0", code)
@@ -888,17 +960,21 @@ func TestCapBackoffIsInterruptibleByStop(t *testing.T) {
 
 	var ticks int
 	code := Run(Deps{
-		ClearStopFile: func() error { return nil },
-		FetchMain:     func() error { return nil },
-		StopRequested: stop,
-		ResolveNext:   func() (string, bool) { return "BEH-7", true },
-		RunPipeline:   func(string) TicketOutcome { return TicketOutcome{SpendingCapAbort: true} },
-		ReleaseTicket: func(string) error { return nil },
-		Sleep:         func(time.Duration) { ticks++ },
-		PollInterval:  time.Minute,
-		TickInterval:  tick,
-		CapBackoff:    backoff,
-		Log:           r,
+		Host: &fakeHost{
+			clearStop:     func() error { return nil },
+			fetchMain:     func() error { return nil },
+			stopRequested: stop,
+			resolveNext:   func() (string, bool) { return "BEH-7", true },
+			runPipeline:   func(string) TicketOutcome { return TicketOutcome{SpendingCapAbort: true} },
+			release:       func(string) error { return nil },
+		},
+		Limits: Limits{
+			PollInterval: time.Minute,
+			TickInterval: tick,
+			CapBackoff:   backoff,
+		},
+		Clock: testClock{sleep: func(time.Duration) { ticks++ }},
+		Log:   r,
 	})
 	if code != 0 {
 		t.Errorf("exit code = %d, want 0", code)
@@ -929,30 +1005,34 @@ func TestCapAbortThenNormalRunAutoResumes(t *testing.T) {
 	var fetches int
 	var run int
 	code := Run(Deps{
-		ClearStopFile: func() error { return nil },
-		FetchMain:     func() error { fetches++; return nil },
-		StopRequested: stopAfter(4), // top, 2 backoff ticks, top → run the 2nd ticket, then stop at the 3rd top checkpoint
-		ResolveNext: func() (string, bool) {
-			if run == 0 {
-				return "BEH-A", true
-			}
-			return "BEH-B", true
+		Host: &fakeHost{
+			clearStop:     func() error { return nil },
+			fetchMain:     func() error { fetches++; return nil },
+			stopRequested: stopAfter(4), // top, 2 backoff ticks, top → run the 2nd ticket, then stop at the 3rd top checkpoint
+			resolveNext: func() (string, bool) {
+				if run == 0 {
+					return "BEH-A", true
+				}
+				return "BEH-B", true
+			},
+			runPipeline: func(id string) TicketOutcome {
+				run++
+				ranWith = append(ranWith, id)
+				if id == "BEH-A" {
+					return TicketOutcome{SpendingCapAbort: true} // first run: capped
+				}
+				return TicketOutcome{ReachedPushedPR: true} // auto-resumed run: ships normally
+			},
+			release: func(id string) error { released = append(released, id); return nil },
 		},
-		RunPipeline: func(id string) TicketOutcome {
-			run++
-			ranWith = append(ranWith, id)
-			if id == "BEH-A" {
-				return TicketOutcome{SpendingCapAbort: true} // first run: capped
-			}
-			return TicketOutcome{ReachedPushedPR: true} // auto-resumed run: ships normally
+		Limits: Limits{
+			PollInterval:           time.Minute,
+			TickInterval:           2 * time.Second,
+			CapBackoff:             4 * time.Second, // 2 ticks
+			MaxConsecutiveFailures: 3,
 		},
-		ReleaseTicket:          func(id string) error { released = append(released, id); return nil },
-		Sleep:                  func(time.Duration) {},
-		PollInterval:           time.Minute,
-		TickInterval:           2 * time.Second,
-		CapBackoff:             4 * time.Second, // 2 ticks
-		MaxConsecutiveFailures: 3,
-		Log:                    r,
+		Clock: testClock{sleep: func(time.Duration) {}},
+		Log:   r,
 	})
 	if code != 0 {
 		t.Errorf("exit code = %d, want 0", code)
@@ -978,16 +1058,20 @@ func TestBreakerDoesNotTripWhenTicketsKeepShipping(t *testing.T) {
 	r := &recorder{}
 	var ran int
 	code := Run(Deps{
-		ClearStopFile:          func() error { return nil },
-		FetchMain:              func() error { return nil },
-		StopRequested:          stopAfter(5), // five shipped tickets, then stop
-		ResolveNext:            func() (string, bool) { return "BEH-1", true },
-		RunPipeline:            func(string) TicketOutcome { ran++; return TicketOutcome{ReachedPushedPR: true} },
-		Sleep:                  func(time.Duration) {},
-		PollInterval:           time.Minute,
-		TickInterval:           2 * time.Second,
-		MaxConsecutiveFailures: 3,
-		Log:                    r,
+		Host: &fakeHost{
+			clearStop:     func() error { return nil },
+			fetchMain:     func() error { return nil },
+			stopRequested: stopAfter(5), // five shipped tickets, then stop
+			resolveNext:   func() (string, bool) { return "BEH-1", true },
+			runPipeline:   func(string) TicketOutcome { ran++; return TicketOutcome{ReachedPushedPR: true} },
+		},
+		Limits: Limits{
+			PollInterval:           time.Minute,
+			TickInterval:           2 * time.Second,
+			MaxConsecutiveFailures: 3,
+		},
+		Clock: testClock{sleep: func(time.Duration) {}},
+		Log:   r,
 	})
 	if code != 0 {
 		t.Errorf("exit code = %d, want 0", code)
@@ -1008,17 +1092,21 @@ func TestMaxTicketsStopsCleanlyAfterCeiling(t *testing.T) {
 	r := &recorder{}
 	var ran int
 	code := Run(Deps{
-		ClearStopFile:          func() error { return nil },
-		FetchMain:              func() error { return nil },
-		StopRequested:          func() bool { return false }, // never stopped — only the ceiling ends this
-		ResolveNext:            func() (string, bool) { return "BEH-1", true },
-		RunPipeline:            func(string) TicketOutcome { ran++; return TicketOutcome{ReachedPushedPR: true} },
-		Sleep:                  func(time.Duration) {},
-		PollInterval:           time.Minute,
-		TickInterval:           2 * time.Second,
-		MaxConsecutiveFailures: 3,
-		MaxTickets:             2,
-		Log:                    r,
+		Host: &fakeHost{
+			clearStop:     func() error { return nil },
+			fetchMain:     func() error { return nil },
+			stopRequested: func() bool { return false }, // never stopped — only the ceiling ends this
+			resolveNext:   func() (string, bool) { return "BEH-1", true },
+			runPipeline:   func(string) TicketOutcome { ran++; return TicketOutcome{ReachedPushedPR: true} },
+		},
+		Limits: Limits{
+			PollInterval:           time.Minute,
+			TickInterval:           2 * time.Second,
+			MaxConsecutiveFailures: 3,
+			MaxTickets:             2,
+		},
+		Clock: testClock{sleep: func(time.Duration) {}},
+		Log:   r,
 	})
 	if code != 0 {
 		t.Errorf("exit code = %d, want 0 (a ceiling is a deliberate wind-down, like STOP)", code)
@@ -1038,17 +1126,21 @@ func TestMaxTicketsZeroIsUnlimited(t *testing.T) {
 	r := &recorder{}
 	var ran int
 	code := Run(Deps{
-		ClearStopFile:          func() error { return nil },
-		FetchMain:              func() error { return nil },
-		StopRequested:          stopAfter(5), // five tickets, then stop — not the ceiling
-		ResolveNext:            func() (string, bool) { return "BEH-1", true },
-		RunPipeline:            func(string) TicketOutcome { ran++; return TicketOutcome{ReachedPushedPR: true} },
-		Sleep:                  func(time.Duration) {},
-		PollInterval:           time.Minute,
-		TickInterval:           2 * time.Second,
-		MaxConsecutiveFailures: 10,
-		MaxTickets:             0, // unlimited
-		Log:                    r,
+		Host: &fakeHost{
+			clearStop:     func() error { return nil },
+			fetchMain:     func() error { return nil },
+			stopRequested: stopAfter(5), // five tickets, then stop — not the ceiling
+			resolveNext:   func() (string, bool) { return "BEH-1", true },
+			runPipeline:   func(string) TicketOutcome { ran++; return TicketOutcome{ReachedPushedPR: true} },
+		},
+		Limits: Limits{
+			PollInterval:           time.Minute,
+			TickInterval:           2 * time.Second,
+			MaxConsecutiveFailures: 10,
+			MaxTickets:             0, // unlimited
+		},
+		Clock: testClock{sleep: func(time.Duration) {}},
+		Log:   r,
 	})
 	if code != 0 {
 		t.Errorf("exit code = %d, want 0", code)
@@ -1087,18 +1179,21 @@ func TestMaxRuntimeStopsCleanlyAfterCeiling(t *testing.T) {
 	var ran int
 	origin := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	code := Run(Deps{
-		ClearStopFile:          func() error { return nil },
-		FetchMain:              func() error { return nil },
-		StopRequested:          func() bool { return false },
-		ResolveNext:            func() (string, bool) { return "BEH-1", true },
-		RunPipeline:            func(string) TicketOutcome { ran++; return TicketOutcome{ReachedPushedPR: true} },
-		Sleep:                  func(time.Duration) {},
-		Now:                    clockFrom(origin, time.Minute),
-		PollInterval:           time.Minute,
-		TickInterval:           2 * time.Second,
-		MaxConsecutiveFailures: 10,
-		MaxRuntime:             90 * time.Second,
-		Log:                    r,
+		Host: &fakeHost{
+			clearStop:     func() error { return nil },
+			fetchMain:     func() error { return nil },
+			stopRequested: func() bool { return false },
+			resolveNext:   func() (string, bool) { return "BEH-1", true },
+			runPipeline:   func(string) TicketOutcome { ran++; return TicketOutcome{ReachedPushedPR: true} },
+		},
+		Limits: Limits{
+			PollInterval:           time.Minute,
+			TickInterval:           2 * time.Second,
+			MaxConsecutiveFailures: 10,
+			MaxRuntime:             90 * time.Second,
+		},
+		Clock: testClock{now: clockFrom(origin, time.Minute), sleep: func(time.Duration) {}},
+		Log:   r,
 	})
 	if code != 0 {
 		t.Errorf("exit code = %d, want 0 (a runtime ceiling is a deliberate wind-down)", code)
@@ -1119,18 +1214,21 @@ func TestMaxRuntimeZeroIsUnlimited(t *testing.T) {
 	var ran int
 	origin := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	code := Run(Deps{
-		ClearStopFile:          func() error { return nil },
-		FetchMain:              func() error { return nil },
-		StopRequested:          stopAfter(3),
-		ResolveNext:            func() (string, bool) { return "BEH-1", true },
-		RunPipeline:            func(string) TicketOutcome { ran++; return TicketOutcome{ReachedPushedPR: true} },
-		Sleep:                  func(time.Duration) {},
-		Now:                    clockFrom(origin, time.Hour), // leaps an hour per check
-		PollInterval:           time.Minute,
-		TickInterval:           2 * time.Second,
-		MaxConsecutiveFailures: 10,
-		MaxRuntime:             0, // unlimited
-		Log:                    r,
+		Host: &fakeHost{
+			clearStop:     func() error { return nil },
+			fetchMain:     func() error { return nil },
+			stopRequested: stopAfter(3),
+			resolveNext:   func() (string, bool) { return "BEH-1", true },
+			runPipeline:   func(string) TicketOutcome { ran++; return TicketOutcome{ReachedPushedPR: true} },
+		},
+		Limits: Limits{
+			PollInterval:           time.Minute,
+			TickInterval:           2 * time.Second,
+			MaxConsecutiveFailures: 10,
+			MaxRuntime:             0, // unlimited
+		},
+		Clock: testClock{now: clockFrom(origin, time.Hour), sleep: func(time.Duration) {}}, // leaps an hour per check,
+		Log:   r,
 	})
 	if code != 0 {
 		t.Errorf("exit code = %d, want 0", code)
@@ -1165,18 +1263,22 @@ func TestIdleSleepIsBrokenIntoTicksAndStopsEarly(t *testing.T) {
 
 	var ticks int
 	code := Run(Deps{
-		ClearStopFile: func() error { return nil },
-		FetchMain:     func() error { return nil },
-		StopRequested: stop,
-		ResolveNext:   func() (string, bool) { return "", false }, // always empty → idle
-		RunPipeline: func(string) TicketOutcome {
-			t.Fatal("RunPipeline must not run on an empty queue")
-			return TicketOutcome{}
+		Host: &fakeHost{
+			clearStop:     func() error { return nil },
+			fetchMain:     func() error { return nil },
+			stopRequested: stop,
+			resolveNext:   func() (string, bool) { return "", false }, // always empty → idle
+			runPipeline: func(string) TicketOutcome {
+				t.Fatal("RunPipeline must not run on an empty queue")
+				return TicketOutcome{}
+			},
 		},
-		Sleep:        func(d time.Duration) { ticks++ },
-		PollInterval: poll,
-		TickInterval: tick,
-		Log:          r,
+		Limits: Limits{
+			PollInterval: poll,
+			TickInterval: tick,
+		},
+		Clock: testClock{sleep: func(d time.Duration) { ticks++ }},
+		Log:   r,
 	})
 	if code != 0 {
 		t.Errorf("exit code = %d, want 0", code)
@@ -1219,19 +1321,23 @@ func TestDiskReclaimPrunesBelowThresholdBeforeSelecting(t *testing.T) {
 	r := &recorder{}
 	var cachePruned bool
 	code := Run(Deps{
-		ClearStopFile:        func() error { return nil },
-		FetchMain:            func() error { return nil },
-		StopRequested:        stopAfter(1), // one iteration, then stop
-		DiskReclaimThreshold: 8 * gib,
-		FreeDisk:             freeDiskSeq(1*gib, 9*gib), // below at the gate, healthy after the prune
-		PruneMergedWorktrees: func() (int, error) { r.order = append(r.order, "prune"); return 2, nil },
-		CachePrune:           func() error { cachePruned = true; return nil },
-		ResolveNext:          func() (string, bool) { r.order = append(r.order, "resolve"); return "", false },
-		RunPipeline:          func(string) TicketOutcome { return TicketOutcome{ReachedPushedPR: true} },
-		Sleep:                func(time.Duration) {},
-		PollInterval:         time.Minute,
-		TickInterval:         2 * time.Second,
-		Log:                  r,
+		Host: &fakeHost{
+			clearStop:      func() error { return nil },
+			fetchMain:      func() error { return nil },
+			stopRequested:  stopAfter(1),              // one iteration, then stop
+			freeDisk:       freeDiskSeq(1*gib, 9*gib), // below at the gate, healthy after the prune
+			pruneWorktrees: func() (int, error) { r.order = append(r.order, "prune"); return 2, nil },
+			cachePrune:     func() error { cachePruned = true; return nil },
+			resolveNext:    func() (string, bool) { r.order = append(r.order, "resolve"); return "", false },
+			runPipeline:    func(string) TicketOutcome { return TicketOutcome{ReachedPushedPR: true} },
+		},
+		Limits: Limits{
+			DiskReclaimThreshold: 8 * gib,
+			PollInterval:         time.Minute,
+			TickInterval:         2 * time.Second,
+		},
+		Clock: testClock{sleep: func(time.Duration) {}},
+		Log:   r,
 	})
 	if code != 0 {
 		t.Errorf("exit code = %d, want 0", code)
@@ -1269,19 +1375,23 @@ func TestDiskReclaimSilentAtOrAboveThreshold(t *testing.T) {
 	var pruned, cachePruned bool
 	var statfsCalls int
 	code := Run(Deps{
-		ClearStopFile:        func() error { return nil },
-		FetchMain:            func() error { return nil },
-		StopRequested:        stopAfter(1),
-		DiskReclaimThreshold: 8 * gib,
-		FreeDisk:             func() (uint64, error) { statfsCalls++; return 8 * gib, nil }, // exactly at the floor — healthy
-		PruneMergedWorktrees: func() (int, error) { pruned = true; return 0, nil },
-		CachePrune:           func() error { cachePruned = true; return nil },
-		ResolveNext:          func() (string, bool) { return "", false },
-		RunPipeline:          func(string) TicketOutcome { return TicketOutcome{ReachedPushedPR: true} },
-		Sleep:                func(time.Duration) {},
-		PollInterval:         time.Minute,
-		TickInterval:         2 * time.Second,
-		Log:                  r,
+		Host: &fakeHost{
+			clearStop:      func() error { return nil },
+			fetchMain:      func() error { return nil },
+			stopRequested:  stopAfter(1),
+			freeDisk:       func() (uint64, error) { statfsCalls++; return 8 * gib, nil }, // exactly at the floor — healthy
+			pruneWorktrees: func() (int, error) { pruned = true; return 0, nil },
+			cachePrune:     func() error { cachePruned = true; return nil },
+			resolveNext:    func() (string, bool) { return "", false },
+			runPipeline:    func(string) TicketOutcome { return TicketOutcome{ReachedPushedPR: true} },
+		},
+		Limits: Limits{
+			DiskReclaimThreshold: 8 * gib,
+			PollInterval:         time.Minute,
+			TickInterval:         2 * time.Second,
+		},
+		Clock: testClock{sleep: func(time.Duration) {}},
+		Log:   r,
 	})
 	if code != 0 {
 		t.Errorf("exit code = %d, want 0", code)
@@ -1306,18 +1416,22 @@ func TestDiskReclaimZeroThresholdDisables(t *testing.T) {
 	r := &recorder{}
 	var statfsCalls int
 	code := Run(Deps{
-		ClearStopFile:        func() error { return nil },
-		FetchMain:            func() error { return nil },
-		StopRequested:        stopAfter(1),
-		DiskReclaimThreshold: 0, // disabled
-		FreeDisk:             func() (uint64, error) { statfsCalls++; return 0, nil },
-		PruneMergedWorktrees: func() (int, error) { t.Fatal("prune must not run when reclaim is disabled"); return 0, nil },
-		ResolveNext:          func() (string, bool) { return "", false },
-		RunPipeline:          func(string) TicketOutcome { return TicketOutcome{ReachedPushedPR: true} },
-		Sleep:                func(time.Duration) {},
-		PollInterval:         time.Minute,
-		TickInterval:         2 * time.Second,
-		Log:                  r,
+		Host: &fakeHost{
+			clearStop:      func() error { return nil },
+			fetchMain:      func() error { return nil },
+			stopRequested:  stopAfter(1),
+			freeDisk:       func() (uint64, error) { statfsCalls++; return 0, nil },
+			pruneWorktrees: func() (int, error) { t.Fatal("prune must not run when reclaim is disabled"); return 0, nil },
+			resolveNext:    func() (string, bool) { return "", false },
+			runPipeline:    func(string) TicketOutcome { return TicketOutcome{ReachedPushedPR: true} },
+		},
+		Limits: Limits{
+			DiskReclaimThreshold: 0, // disabled
+			PollInterval:         time.Minute,
+			TickInterval:         2 * time.Second,
+		},
+		Clock: testClock{sleep: func(time.Duration) {}},
+		Log:   r,
 	})
 	if code != 0 {
 		t.Errorf("exit code = %d, want 0", code)
@@ -1333,20 +1447,23 @@ func TestDiskReclaimZeroThresholdDisables(t *testing.T) {
 func TestDiskReclaimRunsCachePruneWhenStillBelowAfterWorktreePrune(t *testing.T) {
 	r := &recorder{}
 	code := Run(Deps{
-		ClearStopFile:        func() error { return nil },
-		FetchMain:            func() error { return nil },
-		StopRequested:        stopAfter(1),
-		DiskReclaimThreshold: 8 * gib,
-		// Below at the gate, and STILL below after the worktree prune → store prune runs.
-		FreeDisk:             freeDiskSeq(1*gib, 2*gib, 3*gib),
-		PruneMergedWorktrees: func() (int, error) { r.order = append(r.order, "prune"); return 1, nil },
-		CachePrune:           func() error { r.order = append(r.order, "cache-prune"); return nil },
-		ResolveNext:          func() (string, bool) { return "", false },
-		RunPipeline:          func(string) TicketOutcome { return TicketOutcome{ReachedPushedPR: true} },
-		Sleep:                func(time.Duration) {},
-		PollInterval:         time.Minute,
-		TickInterval:         2 * time.Second,
-		Log:                  r,
+		Host: &fakeHost{
+			clearStop:      func() error { return nil },
+			fetchMain:      func() error { return nil },
+			stopRequested:  stopAfter(1),
+			freeDisk:       freeDiskSeq(1*gib, 2*gib, 3*gib),
+			pruneWorktrees: func() (int, error) { r.order = append(r.order, "prune"); return 1, nil },
+			cachePrune:     func() error { r.order = append(r.order, "cache-prune"); return nil },
+			resolveNext:    func() (string, bool) { return "", false },
+			runPipeline:    func(string) TicketOutcome { return TicketOutcome{ReachedPushedPR: true} },
+		},
+		Limits: Limits{
+			DiskReclaimThreshold: 8 * gib, // Below at the gate, and STILL below after the worktree prune → store prune runs.
+			PollInterval:         time.Minute,
+			TickInterval:         2 * time.Second,
+		},
+		Clock: testClock{sleep: func(time.Duration) {}},
+		Log:   r,
 	})
 	if code != 0 {
 		t.Errorf("exit code = %d, want 0", code)
@@ -1369,20 +1486,24 @@ func TestDiskReclaimRunsCachePruneWhenStillBelowAfterWorktreePrune(t *testing.T)
 func TestDiskReclaimRunsDockerPruneWhenStillBelowAfterCachePrune(t *testing.T) {
 	r := &recorder{}
 	code := Run(Deps{
-		ClearStopFile:        func() error { return nil },
-		FetchMain:            func() error { return nil },
-		StopRequested:        stopAfter(1),
-		DiskReclaimThreshold: 8 * gib,
-		FreeDisk:             freeDiskSeq(1*gib, 2*gib, 3*gib, 9*gib),
-		PruneMergedWorktrees: func() (int, error) { r.order = append(r.order, "prune"); return 1, nil },
-		CachePrune:           func() error { r.order = append(r.order, "cache-prune"); return nil },
-		DockerPrune:          func() error { r.order = append(r.order, "docker-prune"); return nil },
-		ResolveNext:          func() (string, bool) { return "", false },
-		RunPipeline:          func(string) TicketOutcome { return TicketOutcome{ReachedPushedPR: true} },
-		Sleep:                func(time.Duration) {},
-		PollInterval:         time.Minute,
-		TickInterval:         2 * time.Second,
-		Log:                  r,
+		Host: &fakeHost{
+			clearStop:      func() error { return nil },
+			fetchMain:      func() error { return nil },
+			stopRequested:  stopAfter(1),
+			freeDisk:       freeDiskSeq(1*gib, 2*gib, 3*gib, 9*gib),
+			pruneWorktrees: func() (int, error) { r.order = append(r.order, "prune"); return 1, nil },
+			cachePrune:     func() error { r.order = append(r.order, "cache-prune"); return nil },
+			dockerPrune:    func() error { r.order = append(r.order, "docker-prune"); return nil },
+			resolveNext:    func() (string, bool) { return "", false },
+			runPipeline:    func(string) TicketOutcome { return TicketOutcome{ReachedPushedPR: true} },
+		},
+		Limits: Limits{
+			DiskReclaimThreshold: 8 * gib,
+			PollInterval:         time.Minute,
+			TickInterval:         2 * time.Second,
+		},
+		Clock: testClock{sleep: func(time.Duration) {}},
+		Log:   r,
 	})
 	if code != 0 {
 		t.Errorf("exit code = %d, want 0", code)
@@ -1406,20 +1527,24 @@ func TestDiskReclaimSkipsDockerPruneOnceCheaperPrunesClearTheFloor(t *testing.T)
 	r := &recorder{}
 	var cachePruned, dockerPruned bool
 	code := Run(Deps{
-		ClearStopFile:        func() error { return nil },
-		FetchMain:            func() error { return nil },
-		StopRequested:        stopAfter(1),
-		DiskReclaimThreshold: 8 * gib,
-		FreeDisk:             freeDiskSeq(1*gib, 9*gib), // worktree prune alone clears the floor
-		PruneMergedWorktrees: func() (int, error) { return 2, nil },
-		CachePrune:           func() error { cachePruned = true; return nil },
-		DockerPrune:          func() error { dockerPruned = true; return nil },
-		ResolveNext:          func() (string, bool) { return "", false },
-		RunPipeline:          func(string) TicketOutcome { return TicketOutcome{ReachedPushedPR: true} },
-		Sleep:                func(time.Duration) {},
-		PollInterval:         time.Minute,
-		TickInterval:         2 * time.Second,
-		Log:                  r,
+		Host: &fakeHost{
+			clearStop:      func() error { return nil },
+			fetchMain:      func() error { return nil },
+			stopRequested:  stopAfter(1),
+			freeDisk:       freeDiskSeq(1*gib, 9*gib), // worktree prune alone clears the floor
+			pruneWorktrees: func() (int, error) { return 2, nil },
+			cachePrune:     func() error { cachePruned = true; return nil },
+			dockerPrune:    func() error { dockerPruned = true; return nil },
+			resolveNext:    func() (string, bool) { return "", false },
+			runPipeline:    func(string) TicketOutcome { return TicketOutcome{ReachedPushedPR: true} },
+		},
+		Limits: Limits{
+			DiskReclaimThreshold: 8 * gib,
+			PollInterval:         time.Minute,
+			TickInterval:         2 * time.Second,
+		},
+		Clock: testClock{sleep: func(time.Duration) {}},
+		Log:   r,
 	})
 	if code != 0 {
 		t.Errorf("exit code = %d, want 0", code)
@@ -1448,20 +1573,24 @@ func TestDiskReclaimPruneFailureIsSwallowedAndBreakerUntouched(t *testing.T) {
 	r := &recorder{}
 	var ran int
 	code := Run(Deps{
-		ClearStopFile:          func() error { return nil },
-		FetchMain:              func() error { return nil },
-		StopRequested:          stopAfter(2), // two tickets, then stop at the 3rd checkpoint
-		DiskReclaimThreshold:   8 * gib,
-		FreeDisk:               func() (uint64, error) { return 1 * gib, nil }, // always under pressure
-		PruneMergedWorktrees:   func() (int, error) { return 0, stubErr("gh unreachable") },
-		CachePrune:             func() error { return nil },
-		ResolveNext:            func() (string, bool) { return "BEH-1", true },
-		RunPipeline:            func(string) TicketOutcome { ran++; return TicketOutcome{ReachedPushedPR: true} },
-		Sleep:                  func(time.Duration) {},
-		PollInterval:           time.Minute,
-		TickInterval:           2 * time.Second,
-		MaxConsecutiveFailures: 1, // a single counted failure would trip — reclaim failure must NOT count
-		Log:                    r,
+		Host: &fakeHost{
+			clearStop:      func() error { return nil },
+			fetchMain:      func() error { return nil },
+			stopRequested:  stopAfter(2),                                   // two tickets, then stop at the 3rd checkpoint
+			freeDisk:       func() (uint64, error) { return 1 * gib, nil }, // always under pressure
+			pruneWorktrees: func() (int, error) { return 0, stubErr("gh unreachable") },
+			cachePrune:     func() error { return nil },
+			resolveNext:    func() (string, bool) { return "BEH-1", true },
+			runPipeline:    func(string) TicketOutcome { ran++; return TicketOutcome{ReachedPushedPR: true} },
+		},
+		Limits: Limits{
+			DiskReclaimThreshold:   8 * gib,
+			PollInterval:           time.Minute,
+			TickInterval:           2 * time.Second,
+			MaxConsecutiveFailures: 1, // a single counted failure would trip — reclaim failure must NOT count
+		},
+		Clock: testClock{sleep: func(time.Duration) {}},
+		Log:   r,
 	})
 	if code != 0 {
 		t.Errorf("exit code = %d, want 0 (a failed prune must not end the loop)", code)
@@ -1503,15 +1632,19 @@ func assertTerminalLoopStopped(t *testing.T, r *recorder, reasonSubstr string) {
 func TestStopRequestedEmitsTerminalLoopStoppedRecord(t *testing.T) {
 	r := &recorder{}
 	code := Run(Deps{
-		ClearStopFile: func() error { return nil },
-		FetchMain:     func() error { return nil },
-		StopRequested: func() bool { return true },
-		ResolveNext:   func() (string, bool) { return "", false },
-		RunPipeline:   func(string) TicketOutcome { return TicketOutcome{} },
-		Sleep:         func(time.Duration) {},
-		PollInterval:  time.Minute,
-		TickInterval:  2 * time.Second,
-		Log:           r,
+		Host: &fakeHost{
+			clearStop:     func() error { return nil },
+			fetchMain:     func() error { return nil },
+			stopRequested: func() bool { return true },
+			resolveNext:   func() (string, bool) { return "", false },
+			runPipeline:   func(string) TicketOutcome { return TicketOutcome{} },
+		},
+		Limits: Limits{
+			PollInterval: time.Minute,
+			TickInterval: 2 * time.Second,
+		},
+		Clock: testClock{sleep: func(time.Duration) {}},
+		Log:   r,
 	})
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0", code)
@@ -1523,17 +1656,21 @@ func TestStopRequestedEmitsTerminalLoopStoppedRecord(t *testing.T) {
 func TestMaxTicketsEmitsTerminalLoopStoppedRecord(t *testing.T) {
 	r := &recorder{}
 	code := Run(Deps{
-		ClearStopFile:          func() error { return nil },
-		FetchMain:              func() error { return nil },
-		StopRequested:          func() bool { return false },
-		ResolveNext:            func() (string, bool) { return "BEH-1", true },
-		RunPipeline:            func(string) TicketOutcome { return TicketOutcome{ReachedPushedPR: true} },
-		Sleep:                  func(time.Duration) {},
-		PollInterval:           time.Minute,
-		TickInterval:           2 * time.Second,
-		MaxConsecutiveFailures: 3,
-		MaxTickets:             2,
-		Log:                    r,
+		Host: &fakeHost{
+			clearStop:     func() error { return nil },
+			fetchMain:     func() error { return nil },
+			stopRequested: func() bool { return false },
+			resolveNext:   func() (string, bool) { return "BEH-1", true },
+			runPipeline:   func(string) TicketOutcome { return TicketOutcome{ReachedPushedPR: true} },
+		},
+		Limits: Limits{
+			PollInterval:           time.Minute,
+			TickInterval:           2 * time.Second,
+			MaxConsecutiveFailures: 3,
+			MaxTickets:             2,
+		},
+		Clock: testClock{sleep: func(time.Duration) {}},
+		Log:   r,
 	})
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0", code)
@@ -1546,18 +1683,21 @@ func TestMaxRuntimeEmitsTerminalLoopStoppedRecord(t *testing.T) {
 	r := &recorder{}
 	origin := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	code := Run(Deps{
-		ClearStopFile:          func() error { return nil },
-		FetchMain:              func() error { return nil },
-		StopRequested:          func() bool { return false },
-		ResolveNext:            func() (string, bool) { return "BEH-1", true },
-		RunPipeline:            func(string) TicketOutcome { return TicketOutcome{ReachedPushedPR: true} },
-		Sleep:                  func(time.Duration) {},
-		Now:                    clockFrom(origin, time.Minute),
-		PollInterval:           time.Minute,
-		TickInterval:           2 * time.Second,
-		MaxConsecutiveFailures: 10,
-		MaxRuntime:             90 * time.Second,
-		Log:                    r,
+		Host: &fakeHost{
+			clearStop:     func() error { return nil },
+			fetchMain:     func() error { return nil },
+			stopRequested: func() bool { return false },
+			resolveNext:   func() (string, bool) { return "BEH-1", true },
+			runPipeline:   func(string) TicketOutcome { return TicketOutcome{ReachedPushedPR: true} },
+		},
+		Limits: Limits{
+			PollInterval:           time.Minute,
+			TickInterval:           2 * time.Second,
+			MaxConsecutiveFailures: 10,
+			MaxRuntime:             90 * time.Second,
+		},
+		Clock: testClock{now: clockFrom(origin, time.Minute), sleep: func(time.Duration) {}},
+		Log:   r,
 	})
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0", code)
@@ -1571,17 +1711,21 @@ func TestMaxRuntimeEmitsTerminalLoopStoppedRecord(t *testing.T) {
 func TestBreakerTripEmitsTerminalLoopStoppedRecord(t *testing.T) {
 	r := &recorder{}
 	code := Run(Deps{
-		ClearStopFile:          func() error { return nil },
-		FetchMain:              func() error { return nil },
-		StopRequested:          func() bool { return false },
-		ResolveNext:            func() (string, bool) { return "BEH-99", true },
-		RunPipeline:            func(string) TicketOutcome { return TicketOutcome{ReachedPushedPR: false} },
-		ReleaseTicket:          func(string) error { return nil },
-		Sleep:                  func(time.Duration) {},
-		PollInterval:           time.Minute,
-		TickInterval:           2 * time.Second,
-		MaxConsecutiveFailures: 3,
-		Log:                    r,
+		Host: &fakeHost{
+			clearStop:     func() error { return nil },
+			fetchMain:     func() error { return nil },
+			stopRequested: func() bool { return false },
+			resolveNext:   func() (string, bool) { return "BEH-99", true },
+			runPipeline:   func(string) TicketOutcome { return TicketOutcome{ReachedPushedPR: false} },
+			release:       func(string) error { return nil },
+		},
+		Limits: Limits{
+			PollInterval:           time.Minute,
+			TickInterval:           2 * time.Second,
+			MaxConsecutiveFailures: 3,
+		},
+		Clock: testClock{sleep: func(time.Duration) {}},
+		Log:   r,
 	})
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0", code)
@@ -1604,23 +1748,27 @@ func TestCommittedFixIsCompletedNotReleased(t *testing.T) {
 	r := &recorder{}
 	var released, recovered []string
 	code := Run(Deps{
-		ClearStopFile: func() error { return nil },
-		FetchMain:     func() error { return nil },
-		StopRequested: stopAfter(1), // one ticket, then stop at the 2nd checkpoint
-		ResolveNext:   func() (string, bool) { return "BEH-649", true },
-		RunPipeline: func(string) TicketOutcome {
-			return TicketOutcome{ReachedPushedPR: false} // ran, committed, but never pushed
+		Host: &fakeHost{
+			clearStop:     func() error { return nil },
+			fetchMain:     func() error { return nil },
+			stopRequested: stopAfter(1), // one ticket, then stop at the 2nd checkpoint
+			resolveNext:   func() (string, bool) { return "BEH-649", true },
+			runPipeline: func(string) TicketOutcome {
+				return TicketOutcome{ReachedPushedPR: false} // ran, committed, but never pushed
+			},
+			recoverFix: func(id string) (TicketOutcome, bool) {
+				recovered = append(recovered, id)
+				return TicketOutcome{ReachedPushedPR: true}, true // there WAS a committed fix; completing it opened a PR
+			},
+			release: func(id string) error { released = append(released, id); return nil },
 		},
-		RecoverCommittedFix: func(id string) (TicketOutcome, bool) {
-			recovered = append(recovered, id)
-			return TicketOutcome{ReachedPushedPR: true}, true // there WAS a committed fix; completing it opened a PR
+		Limits: Limits{
+			PollInterval:           time.Minute,
+			TickInterval:           2 * time.Second,
+			MaxConsecutiveFailures: 1, // threshold 1: a single counted failure would trip — completing it must NOT
 		},
-		ReleaseTicket:          func(id string) error { released = append(released, id); return nil },
-		Sleep:                  func(time.Duration) {},
-		PollInterval:           time.Minute,
-		TickInterval:           2 * time.Second,
-		MaxConsecutiveFailures: 1, // threshold 1: a single counted failure would trip — completing it must NOT
-		Log:                    r,
+		Clock: testClock{sleep: func(time.Duration) {}},
+		Log:   r,
 	})
 	if code != 0 {
 		t.Errorf("exit code = %d, want 0 (a completed fix then a stop is a clean exit)", code)
@@ -1648,19 +1796,22 @@ func TestNothingToRecoverFallsThroughToRelease(t *testing.T) {
 	r := &recorder{}
 	var released []string
 	code := Run(Deps{
-		ClearStopFile: func() error { return nil },
-		FetchMain:     func() error { return nil },
-		StopRequested: stopAfter(1),
-		ResolveNext:   func() (string, bool) { return "BEH-42", true },
-		RunPipeline:   func(string) TicketOutcome { return TicketOutcome{ReachedPushedPR: false} },
-		// Nothing to recover: no committed-but-unpushed fix on the branch.
-		RecoverCommittedFix:    func(string) (TicketOutcome, bool) { return TicketOutcome{}, false },
-		ReleaseTicket:          func(id string) error { released = append(released, id); return nil },
-		Sleep:                  func(time.Duration) {},
-		PollInterval:           time.Minute,
-		TickInterval:           2 * time.Second,
-		MaxConsecutiveFailures: 3,
-		Log:                    r,
+		Host: &fakeHost{
+			clearStop:     func() error { return nil },
+			fetchMain:     func() error { return nil },
+			stopRequested: stopAfter(1),
+			resolveNext:   func() (string, bool) { return "BEH-42", true },
+			runPipeline:   func(string) TicketOutcome { return TicketOutcome{ReachedPushedPR: false} }, // Nothing to recover: no committed-but-unpushed fix on the branch.
+			recoverFix:    func(string) (TicketOutcome, bool) { return TicketOutcome{}, false },
+			release:       func(id string) error { released = append(released, id); return nil },
+		},
+		Limits: Limits{
+			PollInterval:           time.Minute,
+			TickInterval:           2 * time.Second,
+			MaxConsecutiveFailures: 3,
+		},
+		Clock: testClock{sleep: func(time.Duration) {}},
+		Log:   r,
 	})
 	if code != 0 {
 		t.Errorf("exit code = %d, want 0", code)
@@ -1679,19 +1830,22 @@ func TestFailedCompletionFallsThroughToRelease(t *testing.T) {
 	r := &recorder{}
 	var released []string
 	code := Run(Deps{
-		ClearStopFile: func() error { return nil },
-		FetchMain:     func() error { return nil },
-		StopRequested: stopAfter(1),
-		ResolveNext:   func() (string, bool) { return "BEH-42", true },
-		RunPipeline:   func(string) TicketOutcome { return TicketOutcome{ReachedPushedPR: false} },
-		// Found a committed fix, but completing it (push/PR) failed.
-		RecoverCommittedFix:    func(string) (TicketOutcome, bool) { return TicketOutcome{ReachedPushedPR: false}, true },
-		ReleaseTicket:          func(id string) error { released = append(released, id); return nil },
-		Sleep:                  func(time.Duration) {},
-		PollInterval:           time.Minute,
-		TickInterval:           2 * time.Second,
-		MaxConsecutiveFailures: 3,
-		Log:                    r,
+		Host: &fakeHost{
+			clearStop:     func() error { return nil },
+			fetchMain:     func() error { return nil },
+			stopRequested: stopAfter(1),
+			resolveNext:   func() (string, bool) { return "BEH-42", true },
+			runPipeline:   func(string) TicketOutcome { return TicketOutcome{ReachedPushedPR: false} }, // Found a committed fix, but completing it (push/PR) failed.
+			recoverFix:    func(string) (TicketOutcome, bool) { return TicketOutcome{ReachedPushedPR: false}, true },
+			release:       func(id string) error { released = append(released, id); return nil },
+		},
+		Limits: Limits{
+			PollInterval:           time.Minute,
+			TickInterval:           2 * time.Second,
+			MaxConsecutiveFailures: 3,
+		},
+		Clock: testClock{sleep: func(time.Duration) {}},
+		Log:   r,
 	})
 	if code != 0 {
 		t.Errorf("exit code = %d, want 0", code)
@@ -1713,21 +1867,25 @@ func TestRepeatedCommittedFixCompletionsNeverTripBreaker(t *testing.T) {
 	r := &recorder{}
 	var released, completed []string
 	code := Run(Deps{
-		ClearStopFile: func() error { return nil },
-		FetchMain:     func() error { return nil },
-		StopRequested: stopAfter(5), // five committed-but-unpushed runs, then stop — NOT the breaker
-		ResolveNext:   func() (string, bool) { return "BEH-649", true },
-		RunPipeline:   func(string) TicketOutcome { return TicketOutcome{ReachedPushedPR: false} },
-		RecoverCommittedFix: func(id string) (TicketOutcome, bool) {
-			completed = append(completed, id)
-			return TicketOutcome{ReachedPushedPR: true}, true
+		Host: &fakeHost{
+			clearStop:     func() error { return nil },
+			fetchMain:     func() error { return nil },
+			stopRequested: stopAfter(5), // five committed-but-unpushed runs, then stop — NOT the breaker
+			resolveNext:   func() (string, bool) { return "BEH-649", true },
+			runPipeline:   func(string) TicketOutcome { return TicketOutcome{ReachedPushedPR: false} },
+			recoverFix: func(id string) (TicketOutcome, bool) {
+				completed = append(completed, id)
+				return TicketOutcome{ReachedPushedPR: true}, true
+			},
+			release: func(id string) error { released = append(released, id); return nil },
 		},
-		ReleaseTicket:          func(id string) error { released = append(released, id); return nil },
-		Sleep:                  func(time.Duration) {},
-		PollInterval:           time.Minute,
-		TickInterval:           2 * time.Second,
-		MaxConsecutiveFailures: 3, // three consecutive no-PR runs would have tripped the pre-fix loop
-		Log:                    r,
+		Limits: Limits{
+			PollInterval:           time.Minute,
+			TickInterval:           2 * time.Second,
+			MaxConsecutiveFailures: 3, // three consecutive no-PR runs would have tripped the pre-fix loop
+		},
+		Clock: testClock{sleep: func(time.Duration) {}},
+		Log:   r,
 	})
 	if code != 0 {
 		t.Errorf("exit code = %d, want 0", code)
@@ -1740,5 +1898,53 @@ func TestRepeatedCommittedFixCompletionsNeverTripBreaker(t *testing.T) {
 	}
 	if r.saw("circuit breaker") {
 		t.Errorf("completing every committed fix must never trip the breaker; events = %v", r.events)
+	}
+}
+
+// A comment that fails to post is a lost breadcrumb, never a lost daemon: the
+// release already happened, so the failure is warned and the loop carries on
+// (mirroring AddComment's best-effort contract).
+func TestFailedCommentIsWarnedNotFatal(t *testing.T) {
+	r := &recorder{}
+	code := Run(Deps{
+		Host: &fakeHost{
+			stopRequested: stopAfter(1),
+			resolveNext:   func() (string, bool) { return "BEH-42", true },
+			runPipeline:   func(string) TicketOutcome { return TicketOutcome{} },
+			comment:       func(string, string) error { return errors.New("tracker 503") },
+		},
+		Limits: Limits{PollInterval: time.Minute, TickInterval: 2 * time.Second},
+		Clock:  testClock{sleep: func(time.Duration) {}},
+		Log:    r,
+	})
+	if code != 0 {
+		t.Errorf("exit code = %d, want 0 — a failed breadcrumb must not sink the daemon", code)
+	}
+	if !r.saw("could not comment on BEH-42") {
+		t.Errorf("expected a warning about the failed comment; events = %v", r.events)
+	}
+}
+
+// An unset Clock is real time, not a nil dereference: the daemon a caller forgot
+// to hand a clock still runs, it just can't be fast-forwarded by a test.
+func TestUnsetClockDefaultsToSystemTime(t *testing.T) {
+	r := &recorder{}
+	code := Run(Deps{
+		Host:   &fakeHost{stopRequested: func() bool { return true }},
+		Limits: Limits{PollInterval: time.Minute, TickInterval: 2 * time.Second},
+		Log:    r,
+	})
+	if code != 0 {
+		t.Errorf("exit code = %d, want 0", code)
+	}
+
+	var c Clock = SystemClock{}
+	if c.Now().IsZero() {
+		t.Error("SystemClock.Now() is the zero instant, want real time")
+	}
+	start := time.Now()
+	c.Sleep(time.Millisecond)
+	if time.Since(start) < time.Millisecond {
+		t.Error("SystemClock.Sleep() returned early, want a real wait")
 	}
 }

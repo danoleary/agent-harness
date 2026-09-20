@@ -132,6 +132,8 @@ sites in the review stage alone is bound once, in the adapter.
 - The `cmd/` entrypoints and `cmd/pipeline`/`cmd/loop` are the composition root:
   they build one `hostio.Real` per slice, which all three stages share (one run id,
   one tracker client).
-- This is the port the next two refactors land on: `loop.Deps`' 27 fields collapse
-  onto it, and the fake it ships is what makes moving Ground-truth gathering behind
-  the verify decision affordable.
+- This is the port the next two refactors land on. `loop.Deps`' 27 fields collapsed
+  onto the same shape in [ADR-0014](0014-the-daemon-takes-a-host-limits-and-a-clock.md) — a daemon-lifetime `loop.Host` beside this
+  ticket-lifetime one — and the fake it ships is what made the daemon's ship-critical
+  committed-fix recovery (`internal/ship`) testable. It is also what makes moving
+  Ground-truth gathering behind the verify decision affordable.

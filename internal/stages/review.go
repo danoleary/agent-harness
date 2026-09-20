@@ -10,10 +10,10 @@ import (
 	"github.com/danoleary/agent-harness/internal/config"
 	"github.com/danoleary/agent-harness/internal/hostio"
 	"github.com/danoleary/agent-harness/internal/loopstream"
-	"github.com/danoleary/agent-harness/internal/pr"
 	"github.com/danoleary/agent-harness/internal/prompt"
 	"github.com/danoleary/agent-harness/internal/runlog"
 	"github.com/danoleary/agent-harness/internal/session"
+	"github.com/danoleary/agent-harness/internal/ship"
 	"github.com/danoleary/agent-harness/internal/ticket"
 	"github.com/danoleary/agent-harness/internal/verify"
 )
@@ -474,25 +474,19 @@ func Review(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Res
 		return Result{OK: false, RecommendClose: true}
 	}
 
-	// force-with-lease, not a plain push: the rebase above is unconditional, so on any
-	// branch already on the remote it has just rewritten every SHA and a plain push is
-	// rejected non-fast-forward. That is not a rare state — a run whose `gh pr create`
-	// timed out after a successful push leaves exactly it, and because the ticket then
-	// has no PR the loop re-selects it, rebases again, and is rejected again, forever.
-	// The lease keeps the force safe: it refuses to clobber remote commits the harness
-	// hasn't observed, and the harness owns this branch outright.
-	if err := h.PushForceWithLease(slug); err != nil {
-		log.Event("review ✗ push failed: " + err.Error() + " — keeping worktree")
+	// Push and open the PR through the one host-side "finish a branch" implementation
+	// the daemon's committed-fix recovery also uses (internal/ship), so the two can
+	// never drift on how the harness ships a branch.
+	shipped := ship.Finish(h, log, slug, t)
+	if !shipped.Pushed {
+		log.Event("review ✗ push failed: " + shipped.Err.Error() + " — keeping worktree")
 		return Result{OK: false}
 	}
-	log.Event("pushed " + h.BranchName(slug) + " to origin")
-
-	url, err := h.CreatePR(slug, pr.BuildTitle(t), pr.BuildBody(t, h.CommitSubjects(slug)))
-	if err != nil {
-		log.Event("review ✗ gh pr create failed: " + err.Error() + " — branch pushed, open the PR manually")
+	if shipped.Err != nil {
+		log.Event("review ✗ gh pr create failed: " + shipped.Err.Error() + " — branch pushed, open the PR manually")
 		return Result{OK: false}
 	}
-	log.Structured(loopstream.Record{Kind: loopstream.KindPROpened, Ticket: args.Identifier, Stage: "review", Message: "review ✓ PR opened: " + url})
+	log.Structured(loopstream.Record{Kind: loopstream.KindPROpened, Ticket: args.Identifier, Stage: "review", Message: "review ✓ PR opened: " + shipped.URL})
 
 	// The branch is pushed and the PR is open: from here on the ticket has "reached a
 	// pushed PR" regardless of how the CI watch turns out, so the loop's circuit

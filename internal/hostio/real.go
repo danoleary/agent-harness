@@ -296,6 +296,14 @@ func (h *Real) CreatePR(slug, title, body string) (string, error) {
 
 func (h *Real) PRExists(slug string) bool { return pr.Exists(h.cfg.ProjectPath, h.BranchName(slug)) }
 
+// OpenPRExists narrows PRExists to a PR still in flight. The committed-fix
+// recovery asks it rather than PRExists: a branch whose PR was merged or closed
+// and then re-opened as new work is still strandable, so only an OPEN PR means
+// "this branch already escaped the worktree".
+func (h *Real) OpenPRExists(slug string) bool {
+	return pr.OpenExists(h.cfg.ProjectPath, h.BranchName(slug))
+}
+
 // ChecksReadable reports whether GH_TOKEN can read check runs — the post-PR
 // CI-watch needs a classic repo-scoped PAT (fine-grained PATs lack the Checks
 // permission). Not fatal: the PR still ships and the watch degrades gracefully

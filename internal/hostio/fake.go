@@ -78,6 +78,7 @@ type Fake struct {
 	PRURL        string
 	CreatePRErr  error
 	PRThere      bool
+	OpenPRThere  bool
 	ChecksOK     bool
 	ChecksDetail string
 	CI           ci.Outcome
@@ -118,6 +119,7 @@ func NewFake() *Fake {
 		RebaseVerdict: gitpkg.RebaseClean,
 		PRURL:         "https://github.com/acme/widgets/pull/1",
 		PRThere:       true,
+		OpenPRThere:   true,
 		ChecksOK:      true,
 		CI:            ci.Outcome{OK: true, Reason: "all checks green"},
 		Trk:           NewFakeTracker(),
@@ -239,6 +241,7 @@ func (f *Fake) CreatePR(slug, title, body string) (string, error) {
 }
 
 func (f *Fake) PRExists(string) bool           { return f.PRThere }
+func (f *Fake) OpenPRExists(string) bool       { return f.OpenPRThere }
 func (f *Fake) ChecksReadable() (bool, string) { return f.ChecksOK, f.ChecksDetail }
 
 func (f *Fake) WatchCI(w CIWatch) ci.Outcome {

@@ -2,10 +2,11 @@
 // pipeline (internal/pipeline) over the ready-for-agent queue in a long-running
 // for{}, with graceful between-ticket stop control (DESIGN.md "The loop" +
 // "Stop control") and a circuit breaker that winds the daemon down when it is
-// repeatedly failing to ship. Like the pipeline, the I/O is injected as a Deps
-// struct so the sequencing — startup, select→run→repeat, idle-and-re-poll on an
+// repeatedly failing to ship. Everything that leaves the process is injected as
+// one [Host] (with the operator knobs beside it in [Limits] and the time seam in
+// [Clock]), so the sequencing — startup, select→run→repeat, idle-and-re-poll on an
 // empty queue, stop between tickets, trip-and-exit at the breaker threshold — is
-// unit-testable without Docker, Linear, or real signals.
+// unit-testable without Docker, a tracker, or real signals.
 //
 // A spending-cap abort is handled as a control-flow signal, not a ticket verdict:
 // the run's ticket is released back to Todo and the daemon enters a long
@@ -77,47 +78,83 @@ type Narrator interface {
 	Structured(loopstream.Record)
 }
 
-// Deps are the loop's injectable dependencies. Selection and pipeline execution
-// are pre-bound thunks (the caller captures cfg/log/runID); the stop predicate,
-// sentinel clear, and main fetch are the host-side I/O the real cmd/loop wires to
-// signals + the filesystem.
-type Deps struct {
+// Clock is the daemon's time seam: the wall clock the MaxRuntime ceiling and the
+// cap-backoff wake-time narration read, and the sleep every interruptible wait
+// ticks through. One seam rather than two thunks, because a test that fakes one
+// without the other is testing a daemon whose clock and sleep disagree.
+type Clock interface {
+	Now() time.Time
+	Sleep(d time.Duration)
+}
+
+// SystemClock is the production [Clock]: real time, real sleeping. It is also the
+// default an unset Deps.Clock degrades to, so a caller that forgets it gets a
+// working daemon rather than a nil dereference.
+type SystemClock struct{}
+
+func (SystemClock) Now() time.Time        { return time.Now() }
+func (SystemClock) Sleep(d time.Duration) { time.Sleep(d) }
+
+// Host is everything the daemon does that leaves the process: the stop-signal
+// filesystem, the tracker queue, one ticket's pipeline run, and the host disk it
+// reclaims between tickets. It is the loop's half of the port ADR-0013 drew for
+// the Stages — same shape, wider lifetime: a Stage's host is bound to one run of
+// one ticket, the daemon's outlives every ticket it works.
+//
+// It is one interface rather than a field per operation because a field per
+// operation is a seam per operation, each with one real adapter — and because a
+// missing field then reads as a missing feature. A method always exists here;
+// what an operator can turn off is declared in [Limits], where they can see it
+// (ADR-0014).
+type Host interface {
 	// ClearStopFile removes any stale STOP sentinel left by a prior run, so a
 	// leftover file can't make a fresh daemon stop before doing any work.
-	ClearStopFile func() error
-	// FetchMain fast-forwards the primary checkout's origin/main, at startup and
-	// after every ticket ("pull main after every session").
-	FetchMain func() error
+	ClearStopFile() error
 	// StopRequested folds the two stop signals — the SIGINT flag and the
 	// .agent-harness/STOP sentinel — into one predicate, checked at every
 	// between-ticket checkpoint and between idle ticks (DESIGN.md "Two signals,
 	// one check").
-	StopRequested func() bool
+	StopRequested() bool
+	// FetchMain fast-forwards the primary checkout's origin/main, at startup and
+	// after every ticket ("pull main after every session").
+	FetchMain() error
+
 	// ResolveNext selects and claims the top-of-queue eligible ticket, returning
 	// its identifier and ok=false when the queue is empty.
-	ResolveNext func() (identifier string, ok bool)
+	ResolveNext() (identifier string, ok bool)
 	// ReleaseTicket returns a claimed ticket to Todo after a run made no progress —
 	// a spending-cap abort (DESIGN.md §Spending-cap abort backoff) or any other no-PR
 	// run (BEH-590) — so it isn't stranded In Progress. A release failure is narrated,
 	// not fatal — the daemon still backs off / continues and re-polls.
-	ReleaseTicket func(identifier string) error
+	ReleaseTicket(identifier string) error
 	// CloseTicket moves a ticket into the tracker's terminal canceled state, consuming
 	// a recommend-close verdict (BEH-682): a run that found the branch makes zero net
 	// change against origin/main is a superseded/duplicate ticket, so it is closed
 	// rather than left claimed. Closing (not releasing) is what stops the re-loop —
 	// a canceled ticket leaves both the --next selection pool and the reaper pool, so
-	// it can never re-enter the pipeline. A nil func or a close failure degrades to the
-	// pre-BEH-682 behavior (kept In Progress for a human to close), narrated not fatal.
-	CloseTicket func(identifier string) error
+	// it can never re-enter the pipeline. A close failure degrades to the pre-BEH-682
+	// behavior (kept In Progress for a human to close), narrated not fatal.
+	CloseTicket(identifier string) error
 	// CommentTicket posts a breadcrumb on the released ticket noting the run died and
 	// why (BEH-590), so a repeatedly-failing ticket is visible on the board rather
-	// than silently bouncing Todo↔In Progress. Best-effort: a nil func or a post
-	// failure is tolerated (the release is what matters; the comment is the breadcrumb).
-	CommentTicket func(identifier, body string) error
+	// than silently bouncing Todo↔In Progress. Best-effort: a post failure is
+	// tolerated (the release is what matters; the comment is the breadcrumb).
+	CommentTicket(identifier, body string) error
+	// ListInProgressClaims returns the agent-claimed In Progress tickets the reaper
+	// evaluates each pass (BEH-677). A list error is warned and swallowed
+	// (best-effort, never fatal): the reaper is host-side cleanup, never a ticket
+	// outcome. Reaping is switched off by a non-positive [Limits.ClaimTTL], not by
+	// the absence of an implementation.
+	ListInProgressClaims() ([]StaleClaim, error)
+	// TicketHasRemoteBranch reports whether a branch was pushed for the ticket — the
+	// second "has work in flight" signal (alongside StaleClaim.HasLinkedPR) that spares
+	// a claim from reaping. It must fail SAFE toward true (don't reap on a flaky read).
+	TicketHasRemoteBranch(identifier string) bool
+
 	// RunPipeline runs the full implementation→review→retrospective pipeline over
 	// one ticket and returns the typed outcome the breaker keys on (did it reach a
 	// pushed PR?), not the opaque exit code.
-	RunPipeline func(identifier string) TicketOutcome
+	RunPipeline(identifier string) TicketOutcome
 	// RecoverCommittedFix attempts to FINISH a no-PR run whose fix was already
 	// committed on its branch but never pushed/PR'd — the recovered-checkpoint /
 	// verify-only state where the review stage left a gate-green, clean commit yet
@@ -125,36 +162,56 @@ type Deps struct {
 	// returns the completion outcome (its ReachedPushedPR is the success signal) and
 	// attempted=true ONLY when there was such a committed-but-no-PR state to finish;
 	// attempted=false means there is nothing to recover (a genuine OOM/crash/empty-diff
-	// no-PR run), so the loop falls through to the normal release. A nil func disables
-	// recovery entirely — every no-PR run is released as before. Host-side (push + open
-	// PR), never the loop reimplementing the review machinery; a completion failure just
-	// falls through to the release, so a flaky push can't strand the ticket In Progress.
-	RecoverCommittedFix func(identifier string) (outcome TicketOutcome, attempted bool)
-	// ListInProgressClaims returns the agent-claimed In Progress tickets the reaper
-	// evaluates each pass (BEH-677). A nil func disables reaping entirely — the loop
-	// makes no reaper query at all. A list error is warned and swallowed (best-effort,
-	// never fatal): the reaper is host-side cleanup, never a ticket outcome.
-	ListInProgressClaims func() ([]StaleClaim, error)
-	// TicketHasRemoteBranch reports whether a branch was pushed for the ticket — the
-	// second "has work in flight" signal (alongside StaleClaim.HasLinkedPR) that spares
-	// a claim from reaping. It must fail SAFE toward true (don't reap on a flaky read).
-	// A nil func treats every claim as having no branch, so the linked-PR signal alone
-	// decides — sound because the harness pushes branch+PR together, but wiring it makes
-	// the "no branch AND no PR" acceptance faithful.
-	TicketHasRemoteBranch func(identifier string) bool
-	// ClaimTTL is the grace period past a claim's StartedAt before a no-branch/no-PR
-	// claim is reaped back to Todo. It must comfortably clear the claim→first-push
-	// window so a healthy mid-work agent is never mistaken for a dead one. A
-	// non-positive value disables reaping.
-	ClaimTTL time.Duration
-	// Sleep waits for d, broken by the caller into short ticks so a stop landing
-	// during an idle wait is observed within one TickInterval, not one PollInterval.
-	Sleep func(d time.Duration)
+	// no-PR run), so the loop falls through to the normal release. Host-side (push +
+	// open PR), never the loop reimplementing the review machinery; a completion
+	// failure just falls through to the release, so a flaky push can't strand the
+	// ticket In Progress.
+	RecoverCommittedFix(identifier string) (outcome TicketOutcome, attempted bool)
+
+	// FreeDisk reports the bytes available on the worktrees volume via a cheap statfs;
+	// it gates the reclaim step so a healthy disk triggers no shell-out / gh calls. A
+	// statfs error disables reclaim defensively — a disk check must never block the
+	// daemon.
+	FreeDisk() (uint64, error)
+	// PruneMergedWorktrees removes the worktrees whose PR has merged and whose tree is
+	// clean, and returns how many it removed. The merged/clean classification lives in
+	// the Consumer-side prune script (single source of truth); the loop never
+	// reimplements it. A failure is non-fatal (ADR-0005).
+	PruneMergedWorktrees() (removed int, err error)
+	// CachePrune runs the Consumer's declared cache-reclaim command (`cache.prune_command`
+	// — `pnpm store prune`, `go clean -modcache`, …): a cheap, non-destructive,
+	// network-free secondary reclaim, run only when free disk is STILL below the
+	// threshold after the worktree prune. A Consumer that declares no prune command
+	// makes it a no-op; a failure is non-fatal.
+	CachePrune() error
+	// DockerPrune reclaims Docker build cache + unreferenced images — usually the
+	// harness's biggest disk hog (it runs `docker run --rm` sandboxes, so stale build
+	// cache and dangling images accrete on the Docker volume) and the one the worktree
+	// / cache prunes never touch. Run as the LAST reclaim step, only when the cheaper
+	// prunes left free disk still below the threshold. A failure is non-fatal
+	// (ADR-0005). The removed image self-heals: Preflight rebuilds or pulls the
+	// sandbox image on the next launch (resolve-on-miss).
+	DockerPrune() error
+}
+
+// Limits are the daemon's operator-facing knobs: the cadences it waits on, the
+// ceilings it winds down at, and the thresholds that switch the two optional
+// between-ticket chores on. They are values, not behaviour — which is the point.
+// Every "is this feature on?" question the daemon answers is answered here, by a
+// number an operator sets (DESIGN.md §cmd/loop config knobs), never by whether
+// some func happened to be wired at the composition root.
+type Limits struct {
 	// PollInterval is how long to idle before re-polling an empty queue.
 	PollInterval time.Duration
 	// TickInterval is the granularity the idle wait is broken into so stop stays
 	// responsive during the idle window.
 	TickInterval time.Duration
+	// CapBackoff is how long the daemon sleeps after a spending-cap abort before
+	// re-polling — long enough to let the external cap window reset, auto-resuming
+	// once it does (DESIGN.md §Spending-cap abort backoff). Broken into the same
+	// TickInterval chunks as the idle wait, so a stop landing mid-backoff is honoured
+	// within one tick rather than ~45 minutes later.
+	CapBackoff time.Duration
 	// CapBackoffHeartbeat is how often the cap-abort backoff emits a "still capped,
 	// re-poll ~HH:MMZ" heartbeat so a long (default 45m) backoff stays observable
 	// rather than a black hole (BEH-605). It is coarser than TickInterval to avoid
@@ -163,42 +220,16 @@ type Deps struct {
 	// last one. A non-positive value emits no intermediate heartbeats — only the entry
 	// and wake records bookend the wait.
 	CapBackoffHeartbeat time.Duration
-	// CapBackoff is how long the daemon sleeps after a spending-cap abort before
-	// re-polling — long enough to let the external cap window reset, auto-resuming
-	// once it does (DESIGN.md §Spending-cap abort backoff). Broken into the same
-	// TickInterval chunks as the idle wait, so a stop landing mid-backoff is honoured
-	// within one tick rather than ~45 minutes later.
-	CapBackoff time.Duration
+	// ClaimTTL is the grace period past a claim's StartedAt before a no-branch/no-PR
+	// claim is reaped back to Todo. It must comfortably clear the claim→first-push
+	// window so a healthy mid-work agent is never mistaken for a dead one. A
+	// non-positive value disables reaping — the loop makes no reaper query at all.
+	ClaimTTL time.Duration
 	// DiskReclaimThreshold is the soft free-disk floor (bytes) below which the loop
 	// proactively reclaims host disk between tickets, BEFORE the hard 5 GiB sandbox
 	// preflight floor would refuse a launch (ADR-0005). Zero disables reclaim entirely
 	// — the loop then makes no statfs/prune calls at all.
 	DiskReclaimThreshold uint64
-	// FreeDisk reports the bytes available on the worktrees volume via a cheap statfs;
-	// it gates the reclaim step so a healthy disk triggers no shell-out / gh calls. A
-	// nil FreeDisk (or a statfs error) disables reclaim defensively — a disk check
-	// must never block the daemon.
-	FreeDisk func() (uint64, error)
-	// PruneMergedWorktrees shells out to scripts/prune-merged-worktrees.sh --yes — the
-	// existing, tested, squash-merge-aware reclaimer that removes only worktrees whose
-	// PR has merged and whose tree is clean — and returns how many it removed. The
-	// merged/clean classification lives entirely in the script (single source of
-	// truth); the loop never reimplements it. A failure is non-fatal (ADR-0005).
-	PruneMergedWorktrees func() (removed int, err error)
-	// CachePrune runs the Consumer's declared cache-reclaim command (`cache.prune_command`
-	// — `pnpm store prune`, `go clean -modcache`, …): a cheap, non-destructive,
-	// network-free secondary reclaim, run only when free disk is STILL below the
-	// threshold after the worktree prune. Nil — which is what a Consumer that declares
-	// no prune command produces — skips the secondary step; a failure is non-fatal.
-	CachePrune func() error
-	// DockerPrune reclaims Docker build cache + unreferenced images — usually the
-	// harness's biggest disk hog (it runs `docker run --rm` sandboxes, so stale build
-	// cache and dangling images accrete on the Docker volume) and the one the worktree
-	// / store prunes never touch. Run as the LAST reclaim step, only when the cheaper
-	// prunes left free disk still below the threshold. A nil DockerPrune skips it; a
-	// failure is non-fatal (ADR-0005). The removed image self-heals: Preflight rebuilds
-	// or pulls the sandbox image on the next launch (resolve-on-miss).
-	DockerPrune func() error
 	// MaxConsecutiveFailures is the circuit-breaker threshold: after this many
 	// consecutive tickets fail to reach a pushed PR, the daemon trips and winds down
 	// (DESIGN.md §Circuit breaker). A non-positive value disables the breaker.
@@ -212,9 +243,18 @@ type Deps struct {
 	// this long, it winds down on the clean stop path at the next between-ticket
 	// checkpoint. Zero or negative means unlimited (DESIGN.md §cmd/loop config knobs).
 	MaxRuntime time.Duration
-	// Now reports the current time for the MaxRuntime ceiling; injected so the ceiling
-	// is testable without real time. A nil Now defaults to time.Now.
-	Now func() time.Time
+}
+
+// Deps are the loop's injectable dependencies: the host it acts through, the
+// knobs it acts by, the clock it waits on, and the sink it narrates to
+// (ADR-0014).
+type Deps struct {
+	// Host is every operation that leaves the process.
+	Host Host
+	// Limits are the cadences, ceilings and thresholds.
+	Limits Limits
+	// Clock is the time seam; unset means [SystemClock].
+	Clock Clock
 	// Log is the narration sink.
 	Log Narrator
 }
@@ -227,32 +267,29 @@ type Deps struct {
 func Run(d Deps) int {
 	// Startup: clear any stale STOP left by a prior run BEFORE the first stop-check,
 	// so a leftover sentinel can't abort a fresh daemon before it does any work.
-	if err := d.ClearStopFile(); err != nil {
+	if err := d.Host.ClearStopFile(); err != nil {
 		d.Log.Event("loop … warning: could not clear stale STOP sentinel: " + err.Error())
 	}
-	if err := d.FetchMain(); err != nil {
+	if err := d.Host.FetchMain(); err != nil {
 		d.Log.Event("loop … warning: could not fast-forward origin/main at startup: " + err.Error())
 	}
 
-	now := d.Now
-	if now == nil {
-		now = time.Now
-	}
-	start := now()
+	clock := d.clock()
+	start := clock.Now()
 
-	b := newBreaker(d.MaxConsecutiveFailures)
+	b := newBreaker(d.Limits.MaxConsecutiveFailures)
 	attempted := 0
 	for {
 		// Stop only ever lands BETWEEN tickets — a graceful, per-ticket checkpoint
 		// (DESIGN.md "Stop control"): stopping mid-ticket would strand a worktree.
-		if d.StopRequested() {
+		if d.Host.StopRequested() {
 			return d.stopped("stop requested")
 		}
 
 		// Optional AFK wall-clock ceiling: once the daemon has run for MaxRuntime, wind
 		// down on the same clean stop path between tickets — a deliberate stop, not a
 		// failure (DESIGN.md §cmd/loop config knobs). Zero/negative = unlimited.
-		if d.MaxRuntime > 0 && now().Sub(start) >= d.MaxRuntime {
+		if d.Limits.MaxRuntime > 0 && clock.Now().Sub(start) >= d.Limits.MaxRuntime {
 			return d.stopped("max runtime reached")
 		}
 
@@ -260,7 +297,7 @@ func Run(d Deps) int {
 		// on the same clean stop path as STOP — a deliberate stop, not a failure
 		// (DESIGN.md §cmd/loop config knobs). Checked here, between tickets, so the
 		// (N+1)th ticket is never even selected. Zero/negative = unlimited.
-		if d.MaxTickets > 0 && attempted >= d.MaxTickets {
+		if d.Limits.MaxTickets > 0 && attempted >= d.Limits.MaxTickets {
 			return d.stopped("max tickets reached")
 		}
 
@@ -276,7 +313,7 @@ func Run(d Deps) int {
 		// a failed list/release is narrated and swallowed, never a ticket outcome.
 		d.reapStaleClaims()
 
-		identifier, ok := d.ResolveNext()
+		identifier, ok := d.Host.ResolveNext()
 		if !ok {
 			// The daemon difference from `pipeline --next`: an empty queue is a
 			// normal steady state, so the loop idles for PollInterval and re-polls
@@ -290,7 +327,7 @@ func Run(d Deps) int {
 		// Run the full pipeline over the claimed ticket. Count it as attempted before
 		// any outcome branching — a cap-aborted run was still an attempt, so it counts
 		// toward the MaxTickets ceiling like any other.
-		outcome := d.RunPipeline(identifier)
+		outcome := d.Host.RunPipeline(identifier)
 		attempted++
 
 		// A spending-cap abort is a control-flow signal, NOT a ticket verdict
@@ -303,7 +340,7 @@ func Run(d Deps) int {
 		// PR, it's a success, so fall through to the normal after-ticket fold.
 		if outcome.SpendingCapAbort && !outcome.ReachedPushedPR {
 			d.Log.Structured(loopstream.Record{Kind: loopstream.KindCapAbort, Ticket: identifier, Message: "loop — spending-cap abort on " + identifier + "; releasing to Todo"})
-			if err := d.ReleaseTicket(identifier); err != nil {
+			if err := d.Host.ReleaseTicket(identifier); err != nil {
 				d.Log.Event("loop … warning: could not release " + identifier + " to Todo after cap abort: " + err.Error())
 			}
 			d.comment(identifier, "Autonomous run aborted by the Anthropic spending cap before it could ship — released back to Todo. The daemon backs off and auto-resumes once the cap window resets, so this should retry on its own.")
@@ -325,13 +362,13 @@ func Run(d Deps) int {
 		if outcome.PreflightAbort && !outcome.ReachedPushedPR {
 			d.Log.Structured(loopstream.Record{Kind: loopstream.KindTicketReleased, Ticket: identifier, Message: "loop — Docker preflight abort on " + identifier + " (environmental: full disk / daemon down); reclaiming disk and backing off before re-poll — breaker-neutral"})
 			d.reclaimDisk()
-			d.interruptibleSleep(d.PollInterval)
+			d.interruptibleSleep(d.Limits.PollInterval)
 			continue
 		}
 
 		// Fetch main again — "pull main after every session" keeps the next ticket's
 		// merge-base honest across the loop's long run.
-		if err := d.FetchMain(); err != nil {
+		if err := d.Host.FetchMain(); err != nil {
 			d.Log.Event("loop … warning: could not fast-forward origin/main after ticket: " + err.Error())
 		}
 
@@ -346,8 +383,8 @@ func Run(d Deps) int {
 		// for a cap abort (already handled + continued above) and a recommend-close (a
 		// genuine no-op, not an unshipped fix). A completion that still can't reach a PR, or
 		// nothing to recover, falls through to the normal release below.
-		if !outcome.ReachedPushedPR && !outcome.RecommendClose && d.RecoverCommittedFix != nil {
-			if completed, attempted := d.RecoverCommittedFix(identifier); attempted {
+		if !outcome.ReachedPushedPR && !outcome.RecommendClose {
+			if completed, attempted := d.Host.RecoverCommittedFix(identifier); attempted {
 				if completed.ReachedPushedPR {
 					d.Log.Structured(loopstream.Record{
 						Kind:    loopstream.KindPROpened,
@@ -399,7 +436,7 @@ func Run(d Deps) int {
 			// exit (CI red after the auto-fix budget). Best-effort: a Linear hiccup here is
 			// warned, never fatal — the daemon must keep running.
 			d.Log.Structured(loopstream.Record{Kind: loopstream.KindTicketReleased, Ticket: identifier, Message: "loop — " + identifier + " produced no PR; releasing back to Todo so it isn't stranded In Progress (BEH-590)"})
-			if err := d.ReleaseTicket(identifier); err != nil {
+			if err := d.Host.ReleaseTicket(identifier); err != nil {
 				d.Log.Event("loop … warning: could not release " + identifier + " to Todo after a no-PR run: " + err.Error())
 			}
 			d.comment(identifier, "Autonomous run finished with no PR for this ticket — released back to Todo so a later run can re-grab it. Repeated occurrences here mean the ticket keeps failing to ship; see the run logs for the cause.")
@@ -431,29 +468,23 @@ func (d Deps) stopped(reason string) int {
 	return 0
 }
 
-// comment posts a best-effort breadcrumb on a released ticket (BEH-590). It is a
-// no-op when no CommentTicket is wired, and a post failure is narrated rather than
-// fatal — the release already happened, and a missing breadcrumb must never sink
-// the daemon (mirrors AddComment's best-effort contract).
+// comment posts a best-effort breadcrumb on a released ticket (BEH-590). A post
+// failure is narrated rather than fatal — the release already happened, and a
+// missing breadcrumb must never sink the daemon (mirrors AddComment's best-effort
+// contract).
 func (d Deps) comment(identifier, body string) {
-	if d.CommentTicket == nil {
-		return
-	}
-	if err := d.CommentTicket(identifier, body); err != nil {
+	if err := d.Host.CommentTicket(identifier, body); err != nil {
 		d.Log.Event("loop … warning: could not comment on " + identifier + " after release: " + err.Error())
 	}
 }
 
 // closeTicket moves a recommend-close ticket to the terminal canceled state (BEH-682)
-// and reports whether it succeeded. It is best-effort like comment: a nil CloseTicket
-// (no adapter wired) or a close failure degrades to false, and the caller falls back
-// to the pre-BEH-682 disposition (keep In Progress for a human to close) rather than
-// crashing the daemon — a tracker hiccup must never sink the loop.
+// and reports whether it succeeded. It is best-effort like comment: a close failure
+// degrades to false, and the caller falls back to the pre-BEH-682 disposition (keep
+// In Progress for a human to close) rather than crashing the daemon — a tracker
+// hiccup must never sink the loop.
 func (d Deps) closeTicket(identifier string) bool {
-	if d.CloseTicket == nil {
-		return false
-	}
-	if err := d.CloseTicket(identifier); err != nil {
+	if err := d.Host.CloseTicket(identifier); err != nil {
 		d.Log.Event("loop … warning: could not close " + identifier + " as superseded (leaving it In Progress for a human): " + err.Error())
 		return false
 	}
@@ -463,12 +494,13 @@ func (d Deps) closeTicket(identifier string) bool {
 // reclaimDisk proactively frees host disk between tickets when free space has
 // fallen below the soft DiskReclaimThreshold, BEFORE the hard MinFreeDiskBytes
 // sandbox floor would refuse a launch (ADR-0005). The named goal is dead worktrees,
-// so the squash-merge-aware prune script runs first; if free space is still below
-// the threshold afterwards, `pnpm store prune` is a cheap, non-destructive follow-up.
+// so the squash-merge-aware worktree prune runs first; if free space is still below
+// the threshold afterwards, the Consumer's cache prune is a cheap, non-destructive
+// follow-up.
 //
 // Three invariants, all from ADR-0005:
-//   - Gated on a cheap statfs: a healthy disk (or a disabled threshold / missing
-//     statfs) makes no prune / gh / shell calls at all.
+//   - Gated on a cheap statfs: a healthy disk (or a zero threshold, or an
+//     unreadable statfs) makes no prune / gh / shell calls at all.
 //   - Never a ticket outcome: a failed statfs/prune is narrated and swallowed; the
 //     loop continues and the circuit breaker is never touched (the breaker keys only
 //     on "did the ticket reach a pushed PR?", ADR-0004).
@@ -476,25 +508,25 @@ func (d Deps) closeTicket(identifier string) bool {
 //     removed a worktree or moved free disk up; a healthy or no-op iteration is silent.
 //
 // The reclaims escalate cheapest-first, each gated on free disk STILL being below the
-// threshold: merged worktrees, then `pnpm store prune`, then the Docker build-cache /
-// image prune last (usually the biggest win but the heaviest step, and the one the
+// threshold: merged worktrees, then the Consumer's cache prune, then the Docker
+// build-cache / image prune last (usually the biggest win but the heaviest step, and the one the
 // other two never touch — ADR-0005 / the DiskReclaimHint ordering).
 func (d Deps) reclaimDisk() {
-	if d.DiskReclaimThreshold == 0 || d.FreeDisk == nil {
+	if d.Limits.DiskReclaimThreshold == 0 {
 		return // reclaim disabled
 	}
-	before, err := d.FreeDisk()
+	before, err := d.Host.FreeDisk()
 	if err != nil {
 		// A statfs error must never block the loop — degrade to a warning and carry on,
 		// the same way the sandbox preflight treats an unreadable statfs as non-blocking.
 		d.Log.Event("loop … warning: could not statfs worktrees volume for disk reclaim (skipping): " + err.Error())
 		return
 	}
-	if before >= d.DiskReclaimThreshold {
+	if before >= d.Limits.DiskReclaimThreshold {
 		return // disk healthy — silent, no shell-out
 	}
 
-	removed, perr := d.PruneMergedWorktrees()
+	removed, perr := d.Host.PruneMergedWorktrees()
 	if perr != nil {
 		d.Log.Event("loop … warning: pruning merged worktrees failed during disk reclaim (continuing): " + perr.Error())
 	}
@@ -503,30 +535,30 @@ func (d Deps) reclaimDisk() {
 	// reclaims only while free disk stays below the threshold. Track the latest reading
 	// so the narration can report the bytes freed.
 	after := before
-	if mid, merr := d.FreeDisk(); merr == nil {
+	if mid, merr := d.Host.FreeDisk(); merr == nil {
 		after = mid
 	}
 	// Secondary: the Consumer's cheap, non-destructive cache prune.
-	if after < d.DiskReclaimThreshold && d.CachePrune != nil {
-		if serr := d.CachePrune(); serr != nil {
+	if after < d.Limits.DiskReclaimThreshold {
+		if serr := d.Host.CachePrune(); serr != nil {
 			d.Log.Event("loop … warning: cache prune failed during disk reclaim (continuing): " + serr.Error())
-		} else if final, ferr := d.FreeDisk(); ferr == nil {
+		} else if final, ferr := d.Host.FreeDisk(); ferr == nil {
 			after = final
 		}
 	}
 	// Tertiary: the Docker build-cache/image prune — usually the harness's biggest
 	// disk hog and the one the worktree/store prunes can't reach, but the heaviest
 	// step, so it runs last and only when the cheaper prunes didn't clear the floor.
-	if after < d.DiskReclaimThreshold && d.DockerPrune != nil {
-		if derr := d.DockerPrune(); derr != nil {
+	if after < d.Limits.DiskReclaimThreshold {
+		if derr := d.Host.DockerPrune(); derr != nil {
 			d.Log.Event("loop … warning: docker prune failed during disk reclaim (continuing): " + derr.Error())
-		} else if final, ferr := d.FreeDisk(); ferr == nil {
+		} else if final, ferr := d.Host.FreeDisk(); ferr == nil {
 			after = final
 		}
 	}
 
 	// Narrate only when a reclaim actually acted (ADR-0005): a worktree was removed, or
-	// a store/Docker prune moved free disk up. A no-op iteration stays silent.
+	// a cache/Docker prune moved free disk up. A no-op iteration stays silent.
 	if removed > 0 || after > before {
 		var msg string
 		if removed > 0 {
@@ -553,27 +585,27 @@ func (d Deps) reclaimDisk() {
 // alone would kill live work (the BEH-447 race). The TTL is the only thing that tells
 // them apart, so it is never skipped.
 //
-// Best-effort, never a ticket outcome (like reclaimDisk): a nil lister or non-positive
-// TTL disables it silently; a list/release failure is narrated and swallowed so a
+// Best-effort, never a ticket outcome (like reclaimDisk): a non-positive TTL
+// disables it silently; a list/release failure is narrated and swallowed so a
 // Linear hiccup can never crash the daemon.
 func (d Deps) reapStaleClaims() {
-	if d.ListInProgressClaims == nil || d.ClaimTTL <= 0 {
+	if d.Limits.ClaimTTL <= 0 {
 		return // reaping disabled
 	}
-	claims, err := d.ListInProgressClaims()
+	claims, err := d.Host.ListInProgressClaims()
 	if err != nil {
 		d.Log.Event("loop … warning: could not list In Progress claims for reaping (skipping): " + err.Error())
 		return
 	}
-	now := d.clock()()
+	now := d.clock().Now()
 	for _, c := range claims {
-		if now.Sub(c.StartedAt) < d.ClaimTTL {
+		if now.Sub(c.StartedAt) < d.Limits.ClaimTTL {
 			continue // inside the grace window — a healthy agent may still be mid-work
 		}
 		if c.HasLinkedPR {
 			continue // shipped or mid-review — there is work to show for the claim
 		}
-		if d.TicketHasRemoteBranch != nil && d.TicketHasRemoteBranch(c.Identifier) {
+		if d.Host.TicketHasRemoteBranch(c.Identifier) {
 			continue // a branch is in flight even without a PR yet
 		}
 		d.Log.Structured(loopstream.Record{
@@ -581,7 +613,7 @@ func (d Deps) reapStaleClaims() {
 			Ticket:  c.Identifier,
 			Message: "loop — reaping stale claim " + c.Identifier + " (In Progress past TTL with no branch/PR); releasing to Todo (BEH-677)",
 		})
-		if err := d.ReleaseTicket(c.Identifier); err != nil {
+		if err := d.Host.ReleaseTicket(c.Identifier); err != nil {
 			d.Log.Event("loop … warning: could not reap stale claim " + c.Identifier + " to Todo: " + err.Error())
 			continue
 		}
@@ -594,16 +626,15 @@ func (d Deps) reapStaleClaims() {
 // uses the same tick-and-re-check-stop mechanism with CapBackoff, additionally
 // narrating its progress, so a stop is honoured within one tick during either wait
 // (DESIGN.md §The loop, §Spending-cap abort backoff).
-func (d Deps) idleWait() { d.interruptibleSleep(d.PollInterval) }
+func (d Deps) idleWait() { d.interruptibleSleep(d.Limits.PollInterval) }
 
-// clock returns the injected Now (for the cap-backoff wake-time narration), falling
-// back to time.Now when none was wired — mirroring Run's own nil-Now default so the
-// daemon and its helpers agree on the clock.
-func (d Deps) clock() func() time.Time {
-	if d.Now == nil {
-		return time.Now
+// clock returns the injected Clock, falling back to real time and real sleeping
+// when none was wired, so the daemon and its helpers always agree on one clock.
+func (d Deps) clock() Clock {
+	if d.Clock == nil {
+		return SystemClock{}
 	}
-	return d.Now
+	return d.Clock
 }
 
 // capBackoffWait sleeps out the post-cap-abort backoff like interruptibleSleep, but
@@ -617,7 +648,7 @@ func (d Deps) clock() func() time.Time {
 // the top-of-loop wind-down narration takes over). A non-positive TickInterval
 // degrades to a single silent total sleep, like interruptibleSleep.
 func (d Deps) capBackoffWait(identifier string, resetTime time.Time) {
-	now := d.clock()()
+	now := d.clock().Now()
 	total := d.capBackoffDuration(now, resetTime)
 	wake := now.Add(total)
 	wakeStr := wake.UTC().Format("15:04Z")
@@ -627,23 +658,23 @@ func (d Deps) capBackoffWait(identifier string, resetTime time.Time) {
 		Message: fmt.Sprintf("loop — capped; backing off %s, next re-poll ~%s", total, wakeStr),
 	})
 
-	if d.TickInterval <= 0 {
-		d.Sleep(total)
+	if d.Limits.TickInterval <= 0 {
+		d.clock().Sleep(total)
 		d.Log.Structured(loopstream.Record{Kind: loopstream.KindCapBackoff, Ticket: identifier, Message: "loop — cap backoff elapsed; re-polling for " + identifier})
 		return
 	}
 
 	var sinceBeat time.Duration
-	for waited := time.Duration(0); waited < total; waited += d.TickInterval {
-		if d.StopRequested() {
+	for waited := time.Duration(0); waited < total; waited += d.Limits.TickInterval {
+		if d.Host.StopRequested() {
 			return // stop wins; the top-of-loop wind-down narrates the exit, not a wake record
 		}
-		d.Sleep(d.TickInterval)
-		sinceBeat += d.TickInterval
+		d.clock().Sleep(d.Limits.TickInterval)
+		sinceBeat += d.Limits.TickInterval
 		// Heartbeat only between ticks, never on the final one (it coincides with the
 		// wake record below), so the bookends never double up.
-		if d.CapBackoffHeartbeat > 0 && sinceBeat >= d.CapBackoffHeartbeat && waited+d.TickInterval < total {
-			remaining := total - (waited + d.TickInterval)
+		if d.Limits.CapBackoffHeartbeat > 0 && sinceBeat >= d.Limits.CapBackoffHeartbeat && waited+d.Limits.TickInterval < total {
+			remaining := total - (waited + d.Limits.TickInterval)
 			d.Log.Structured(loopstream.Record{
 				Kind:    loopstream.KindCapBackoff,
 				Ticket:  identifier,
@@ -677,11 +708,11 @@ const maxCapResetBackoff = 6 * time.Hour
 // (> maxCapResetBackoff — a mis-resolved parse).
 func (d Deps) capBackoffDuration(now, resetTime time.Time) time.Duration {
 	if resetTime.IsZero() {
-		return d.CapBackoff
+		return d.Limits.CapBackoff
 	}
 	wait := resetTime.Sub(now) + capResetMargin
 	if wait <= 0 || wait > maxCapResetBackoff {
-		return d.CapBackoff
+		return d.Limits.CapBackoff
 	}
 	return wait
 }
@@ -693,14 +724,14 @@ func (d Deps) capBackoffDuration(now, resetTime time.Time) time.Duration {
 // (ADR-0004) depends on. A non-positive TickInterval degrades to a single total
 // sleep so a misconfigured tick can't spin.
 func (d Deps) interruptibleSleep(total time.Duration) {
-	if d.TickInterval <= 0 {
-		d.Sleep(total)
+	if d.Limits.TickInterval <= 0 {
+		d.clock().Sleep(total)
 		return
 	}
-	for waited := time.Duration(0); waited < total; waited += d.TickInterval {
-		if d.StopRequested() {
+	for waited := time.Duration(0); waited < total; waited += d.Limits.TickInterval {
+		if d.Host.StopRequested() {
 			return
 		}
-		d.Sleep(d.TickInterval)
+		d.clock().Sleep(d.Limits.TickInterval)
 	}
 }
