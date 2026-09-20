@@ -22,6 +22,30 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 HARNESS_DIR="$(dirname "$SCRIPT_DIR")"
 
+# Where the daemon binary is depends on how the harness was installed, and the
+# shipped launcher has to work for every shape:
+#
+#   $HARNESS_DIR/bin/loop   a source checkout after `make build`
+#   $HARNESS_DIR/loop       a release archive, which lays the binaries at its root
+#   $(command -v loop)      the documented install: binaries on PATH, no archive kept
+#
+# Looking only in bin/ made the launcher shipped IN the archive fail on the
+# archive's own layout, and tell the operator to run `make build` — a target a
+# release user does not have.
+if [ -z "${LOOP_BIN:-}" ]; then
+    for loop_candidate in "$HARNESS_DIR/bin/loop" "$HARNESS_DIR/loop"; do
+        if [ -x "$loop_candidate" ]; then
+            LOOP_BIN="$loop_candidate"
+            break
+        fi
+    done
+fi
+if [ -z "${LOOP_BIN:-}" ]; then
+    # `command -v` resolves the PATH without running anything.
+    LOOP_BIN="$(command -v loop 2>/dev/null || true)"
+fi
+# Keep the bin/ path as the value reported when nothing resolved, so the error
+# below names a concrete place rather than an empty string.
 LOOP_BIN="${LOOP_BIN:-$HARNESS_DIR/bin/loop}"
 
 # The pidfile and the daemon log are PER-CONSUMER runtime state, so they default
@@ -103,7 +127,12 @@ fi
 # Fail loud if the binary isn't built, rather than nohup'ing a non-existent path
 # (which would write a pidfile for an instantly-dead process).
 if [ ! -x "$LOOP_BIN" ]; then
-    echo "loop binary not found or not executable at $LOOP_BIN — run 'make build' first" >&2
+    {
+        echo "loop binary not found or not executable at $LOOP_BIN."
+        echo "  from a source checkout: run 'make build'"
+        echo "  from a release archive: run it from the unpacked directory, or put the binaries on your PATH"
+        echo "  or set LOOP_BIN to the binary explicitly"
+    } >&2
     exit 1
 fi
 
