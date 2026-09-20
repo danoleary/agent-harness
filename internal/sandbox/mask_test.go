@@ -149,21 +149,20 @@ func TestBuildDockerRunArgsMasksTheCredentialFile(t *testing.T) {
 	}
 }
 
-// The gate, install and post_create containers mount the same checkout, so they
-// need the same mask even though they carry no secrets of their own: the file is
-// in the tree, not in their environment.
+// The gate and post_create containers mount the same checkout, so they need the
+// same mask even though they carry no secrets of their own: the file is in the
+// tree, not in their environment. They are one builder differing only in the
+// command, so the mask is applied to whatever command runs there.
 func TestWorktreeContainersMaskTheCredentialFile(t *testing.T) {
 	restore := stubCredentialMask(t, []MaskMount{{Source: "/tmp/empty", Target: "/src/p/.agent-harness/.env"}})
 	defer restore()
 
 	gc := GateConfig{Image: "img", ProjectPath: "/src/p", WorktreePath: "/src/p/wt"}
 	want := "/tmp/empty:/src/p/.agent-harness/.env:ro"
-	for name, args := range map[string][]string{
-		"gate":        BuildGateRunArgs(gc, "true"),
-		"post_create": BuildPostCreateRunArgs(gc, "true"),
-	} {
+	for _, command := range []string{"pnpm run check", "pnpm install --frozen-lockfile"} {
+		args := BuildWorktreeCommandArgs(gc, command)
 		if !hasVolume(args, want) {
-			t.Errorf("%s args missing mask mount %q:\n%v", name, want, args)
+			t.Errorf("worktree container running %q missing mask mount %q:\n%v", command, want, args)
 		}
 	}
 }

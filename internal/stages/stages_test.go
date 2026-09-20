@@ -13,6 +13,7 @@ import (
 
 	"github.com/danoleary/agent-harness/internal/ci"
 	"github.com/danoleary/agent-harness/internal/config"
+	"github.com/danoleary/agent-harness/internal/hostio"
 	"github.com/danoleary/agent-harness/internal/runlog"
 	"github.com/danoleary/agent-harness/internal/sandbox"
 	"github.com/danoleary/agent-harness/internal/session"
@@ -33,21 +34,8 @@ func TestFixSessionErrorSpendingCapTakesPrecedence(t *testing.T) {
 	}
 }
 
-// provisionSpy records which halves of provisioning ran, so the tests below can
-// assert the create/post_create split without a real git repo or docker daemon.
-type provisionSpy struct {
-	created     bool
-	postCreated bool
-	createErr   error
-}
-
-func (s *provisionSpy) create(_, _, _ string) error {
-	s.created = true
-	return s.createErr
-}
-
-func (s *provisionSpy) postCreate(_ string) { s.postCreated = true }
-
+// newProvisionLog opens a real runlog over a temp dir, so the narration the
+// provisioning path emits has somewhere to go.
 func newProvisionLog(t *testing.T, identifier string) *runlog.Logger {
 	t.Helper()
 	log, err := runlog.New(t.TempDir(), identifier)
@@ -61,47 +49,43 @@ func newProvisionLog(t *testing.T, identifier string) *runlog.Logger {
 // absent, but it runs post_create EVERY time — including on a worktree that already
 // exists. Skipping post_create on the existing path (the original BEH-636 shape) hands
 // the session a tree whose deps are absent: the successful-handoff strip (BEH-412)
-// removes web/node_modules, and an OOM-killed install (BEH-523) never wrote it. Worse,
-// a worktree created by new-worktree.sh still carries its .worktree-ready sentinel,
-// which asserts readiness the tree no longer has (BEH-549 defines it as "the run
+// removes the Consumer's build artifacts, and an OOM-killed install (BEH-523) never
+// wrote them. Worse, such a worktree still carries any readiness sentinel a prior run
+// left, which asserts readiness the tree no longer has (BEH-549 defines it as "the run
 // finished", not "the install succeeded"), so the session only discovers the gap on its
 // first failed test. Re-running post_create is safe because a Consumer's toolchain hook
-// is required to be idempotent (herd's is `ln -sf` + a frozen install + a no-op browser
-// install).
+// is required to be idempotent.
 func TestProvisionWorktreeReprovisionsExistingWorktree(t *testing.T) {
-	herdPath := t.TempDir()
-	slug := "beh-796-x"
-	if err := os.MkdirAll(filepath.Join(herdPath, ".claude", "worktrees", slug), 0o755); err != nil {
-		t.Fatalf("seed worktree dir: %v", err)
-	}
-	spy := &provisionSpy{}
-	cfg := config.Config{ProjectPath: herdPath, BranchPrefix: "feat", PostCreate: "cd web && pnpm install"}
+	h := hostio.NewFake()
+	h.Exists = true
+	cfg := config.Config{BranchPrefix: "feat", PostCreate: "cd web && pnpm install"}
 
-	if err := provisionWorktreeWith(cfg, slug, newProvisionLog(t, "BEH-796"), spy.create, spy.postCreate); err != nil {
+	if err := provisionWorktree(h, cfg, "beh-796-x", newProvisionLog(t, "BEH-796")); err != nil {
 		t.Fatalf("provisionWorktree on an existing worktree: %v", err)
 	}
-	if spy.created {
-		t.Error("an existing worktree must not be re-created")
+	if len(h.Shells) != 1 || h.Shells[0].Label != postCreateStep {
+		t.Errorf("post_create must re-run on an existing worktree — a resumed tree can be stripped of its deps (BEH-796); shells = %+v", h.Shells)
 	}
-	if !spy.postCreated {
-		t.Error("post_create must re-run on an existing worktree — a resumed tree can be stripped of its deps (BEH-796)")
+	for _, c := range h.Calls {
+		if strings.HasPrefix(c, "create-worktree") {
+			t.Error("an existing worktree must not be re-created")
+		}
 	}
 }
 
 // The fresh-ticket path is unchanged by BEH-796: an absent worktree is created
 // host-side and then provisioned, in that order.
 func TestProvisionWorktreeCreatesThenProvisionsFreshWorktree(t *testing.T) {
-	spy := &provisionSpy{}
-	cfg := config.Config{ProjectPath: t.TempDir(), BranchPrefix: "feat", PostCreate: "cd web && pnpm install"}
+	h := hostio.NewFake()
+	h.Exists = false
+	cfg := config.Config{BranchPrefix: "feat", PostCreate: "cd web && pnpm install"}
 
-	if err := provisionWorktreeWith(cfg, "beh-796-fresh", newProvisionLog(t, "BEH-796"), spy.create, spy.postCreate); err != nil {
+	if err := provisionWorktree(h, cfg, "beh-796-fresh", newProvisionLog(t, "BEH-796")); err != nil {
 		t.Fatalf("provisionWorktree on a fresh worktree: %v", err)
 	}
-	if !spy.created {
-		t.Error("an absent worktree must be created host-side")
-	}
-	if !spy.postCreated {
-		t.Error("a freshly-created worktree must run post_create")
+	want := []string{"create-worktree beh-796-fresh", "shell " + postCreateStep}
+	if !reflect.DeepEqual(h.Calls, want) {
+		t.Errorf("calls = %v, want the worktree created host-side and then provisioned, in that order (%v)", h.Calls, want)
 	}
 }
 
@@ -110,18 +94,20 @@ func TestProvisionWorktreeCreatesThenProvisionsFreshWorktree(t *testing.T) {
 // error under a container failure. This is the edge the BEH-796 restructure could
 // regress — post_create is no longer nested under the creation branch.
 func TestProvisionWorktreeSkipsPostCreateWhenCreationFails(t *testing.T) {
-	spy := &provisionSpy{createErr: errors.New("git worktree add: boom")}
-	cfg := config.Config{ProjectPath: t.TempDir(), BranchPrefix: "feat", PostCreate: "cd web && pnpm install"}
+	h := hostio.NewFake()
+	h.Exists = false
+	h.CreateErr = errors.New("git worktree add: boom")
+	cfg := config.Config{BranchPrefix: "feat", PostCreate: "cd web && pnpm install"}
 
-	err := provisionWorktreeWith(cfg, "beh-796-broken", newProvisionLog(t, "BEH-796"), spy.create, spy.postCreate)
+	err := provisionWorktree(h, cfg, "beh-796-broken", newProvisionLog(t, "BEH-796"))
 	if err == nil {
 		t.Fatal("a failed worktree creation must be fatal")
 	}
 	if !strings.Contains(err.Error(), "git worktree add: boom") {
 		t.Errorf("err = %v, want it to wrap the underlying creation failure", err)
 	}
-	if spy.postCreated {
-		t.Error("post_create must not run when there is no worktree to provision")
+	if len(h.Shells) != 0 {
+		t.Errorf("post_create must not run when there is no worktree to provision, got %+v", h.Shells)
 	}
 }
 
@@ -129,53 +115,18 @@ func TestProvisionWorktreeSkipsPostCreateWhenCreationFails(t *testing.T) {
 // BEH-796 restructure lifted that guard out from under the creation branch — so pin
 // it: an unconfigured hook must still be skipped on both provisioning paths.
 func TestProvisionWorktreeSkipsUnconfiguredPostCreate(t *testing.T) {
-	spy := &provisionSpy{}
-	cfg := config.Config{ProjectPath: t.TempDir(), BranchPrefix: "feat"}
+	h := hostio.NewFake()
+	h.Exists = false
+	cfg := config.Config{BranchPrefix: "feat"}
 
-	if err := provisionWorktreeWith(cfg, "beh-796-nohook", newProvisionLog(t, "BEH-796"), spy.create, spy.postCreate); err != nil {
+	if err := provisionWorktree(h, cfg, "beh-796-nohook", newProvisionLog(t, "BEH-796")); err != nil {
 		t.Fatalf("provisionWorktree with no post_create: %v", err)
 	}
-	if !spy.created {
-		t.Error("an absent worktree must still be created when there is no post_create hook")
+	if len(h.Calls) != 1 || h.Calls[0] != "create-worktree beh-796-nohook" {
+		t.Errorf("an absent worktree must still be created when there is no post_create hook; calls = %v", h.Calls)
 	}
-	if spy.postCreated {
-		t.Error("an empty post_create must not be run")
-	}
-}
-
-// BEH-640: newUpstream builds the opt-in public-harness-repo sink from config.
-// off (the default) yields a nil sink so harness findings stay local; github
-// yields a sink bound to the configured public repo, carrying the reporting
-// project name for provenance.
-func TestNewUpstreamOffYieldsNilSink(t *testing.T) {
-	if up := newUpstream(config.Config{Feedback: config.FeedbackConfig{Upstream: "off"}}); up != nil {
-		t.Errorf("newUpstream(off) = %+v, want nil (local sink)", up)
-	}
-	if up := newUpstream(config.Config{}); up != nil {
-		t.Errorf("newUpstream(zero) = %+v, want nil", up)
-	}
-}
-
-func TestNewUpstreamGitHubBuildsRepoBoundSink(t *testing.T) {
-	cfg := config.Config{
-		GitHubToken: "gh-token",
-		Feedback: config.FeedbackConfig{
-			Upstream: "github", Repo: "example-org/agent-harness",
-			FindingsLabel: "harness-finding", Project: "herd",
-		},
-	}
-	up := newUpstream(cfg)
-	if up == nil {
-		t.Fatal("newUpstream(github) = nil, want a sink")
-	}
-	if up.Container != "example-org/agent-harness" {
-		t.Errorf("Container = %q, want the upstream repo slug", up.Container)
-	}
-	if up.Project != "herd" {
-		t.Errorf("Project = %q, want the reporting-project name", up.Project)
-	}
-	if up.Filer == nil || up.Searcher == nil || up.Recorder == nil {
-		t.Errorf("upstream sink must wire filer/searcher/recorder, got %+v", up)
+	if len(h.Shells) != 0 {
+		t.Errorf("an empty post_create must not be run, got %+v", h.Shells)
 	}
 }
 
@@ -575,12 +526,10 @@ func TestRetrospectiveSkipsWhenNoPipelineInputs(t *testing.T) {
 	}
 	log := &runlog.Logger{Dir: logDir}
 
-	res := Retrospective(
-		config.Config{ProjectPath: herd},
-		log,
-		"20260625-195129",
-		Args{Identifier: "BEH-318"},
-	)
+	h := hostio.NewFake()
+	h.BranchThere = false // no feat/ branch: the /tdd step produced nothing
+
+	res := Retrospective(h, config.Config{ProjectPath: herd}, log, Args{Identifier: "BEH-318"})
 
 	if res.Err != nil {
 		t.Fatalf("a clean skip must not surface a hard error, got %v", res.Err)

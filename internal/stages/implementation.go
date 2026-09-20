@@ -3,20 +3,17 @@ package stages
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/danoleary/agent-harness/internal/config"
 	"github.com/danoleary/agent-harness/internal/filing"
-	gitpkg "github.com/danoleary/agent-harness/internal/git"
+	"github.com/danoleary/agent-harness/internal/hostio"
 	"github.com/danoleary/agent-harness/internal/loopstream"
 	"github.com/danoleary/agent-harness/internal/prompt"
 	"github.com/danoleary/agent-harness/internal/runlog"
-	"github.com/danoleary/agent-harness/internal/sandbox"
 	"github.com/danoleary/agent-harness/internal/session"
 	"github.com/danoleary/agent-harness/internal/ticket"
-	"github.com/danoleary/agent-harness/internal/trackers"
 	"github.com/danoleary/agent-harness/internal/verify"
 )
 
@@ -35,9 +32,13 @@ func tddCap(cfg config.Config, t ticket.Ticket) time.Duration {
 // the ticket's log dir (DESIGN.md "Logging": logs/BEH-NNN/<session>-<run-id>.jsonl).
 const implementationSession = "implementation"
 
-// claimReleaser is the slice of the Linear client the implementation stage's
+// postCreateStep labels the throwaway container that runs the Consumer's
+// post_create hook after the host creates the worktree.
+const postCreateStep = "postcreate"
+
+// claimReleaser is the slice of the tracker the implementation stage's
 // claim/release path needs. An interface keeps the PreClaimed branching (ADR-0003)
-// unit-testable without a live Linear.
+// unit-testable without a live tracker.
 type claimReleaser interface {
 	MoveToInProgress(identifier string) error
 	ReleaseToTodo(identifier string) error
@@ -106,26 +107,9 @@ func retryableEnvCrash(outcome session.Outcome, capAborted bool) bool {
 // gate fails it even though the diff is genuine. Re-launching can never escape
 // this — no in-sandbox work changes the branch's root commit — so the harness
 // instead re-grafts the branch's content diff onto a fresh base off origin/main
-// (RegraftOntoBase) and re-verifies, rather than discarding the run and re-running
-// the same doomed pipeline. It must NOT fire on the ordinary failure shapes (no
+// (Regraft) and re-verifies, rather than discarding the run and re-running the
+// same doomed pipeline. It must NOT fire on the ordinary failure shapes (no
 // worktree, empty diff, or a healthy branch that failed for another reason).
-// sourceRoots resolves the Consumer's declared source roots (checkout-relative,
-// e.g. "src" or "web/src") to absolute paths for the resolved-symbol advisory.
-// An empty declaration yields no roots, which disables the advisory rather than
-// scanning a guessed directory (BEH-641).
-func sourceRoots(cfg config.Config) []string {
-	if len(cfg.SourceRoots) == 0 {
-		return nil
-	}
-	roots := make([]string, 0, len(cfg.SourceRoots))
-	for _, r := range cfg.SourceRoots {
-		if r = strings.TrimSpace(r); r != "" {
-			roots = append(roots, filepath.Join(cfg.ProjectPath, r))
-		}
-	}
-	return roots
-}
-
 func disjointWorkTrapped(truth verify.GroundTruth) bool {
 	return truth.WorktreeExists && truth.CommitsAhead > 0 && truth.DisjointHistory
 }
@@ -133,44 +117,28 @@ func disjointWorkTrapped(truth verify.GroundTruth) bool {
 // provisionWorktree creates the feature worktree + canonical branch host-side and
 // runs the Consumer's post_create toolchain hook in it (ADR-0008/BEH-636), retiring
 // the coupling where the sandboxed agent ran new-worktree.sh and the host depended
-// on its output. A CreateWorktree failure is fatal (there is nothing to run the
+// on its output. A worktree-creation failure is fatal (there is nothing to run the
 // session against); a post_create failure is warn-only, mirroring review's install
 // degradation (BEH-490): the session can still install toolchain deps itself.
-func provisionWorktree(cfg config.Config, slug, runID string, args Args, log *runlog.Logger) error {
-	return provisionWorktreeWith(cfg, slug, log, gitpkg.CreateWorktree, func(worktreePath string) {
-		runPostCreate(cfg, worktreePath, runID, args, log)
-	})
-}
-
-// provisionWorktreeWith is provisionWorktree with its two side-effecting halves
-// injected, so the create/post_create split is testable without a git repo or a
-// docker daemon.
 //
 // Only the git creation is conditional on the worktree's absence; post_create runs
 // on EVERY provisioning pass, including for a worktree that already exists. That
 // existing-worktree path is not the already-provisioned state it looks like: a
-// successful handoff strips web/node_modules so the (possibly non-Linux) reviewer
-// installs for their own platform (BEH-412), and an OOM-killed install (BEH-523)
-// never wrote it at all — yet a tree created by new-worktree.sh keeps its
-// .worktree-ready sentinel, which by design means "the run finished", not "the
+// successful handoff strips the Consumer's build artifacts so the (possibly
+// non-Linux) reviewer installs for their own platform (BEH-412), and an OOM-killed
+// install (BEH-523) never wrote them at all — yet the tree keeps any readiness
+// sentinel a prior run left, which by design means "the run finished", not "the
 // install succeeded" (BEH-549). Skipping post_create there handed the session a tree
 // that advertised readiness it did not have, and it only surfaced on the first failed
 // test (BEH-796). Re-running is cheap and safe because a Consumer's post_create is
-// required to be idempotent — herd's is `ln -sf` + a frozen install + an already-
-// installed browser check, all near-no-ops on a provisioned tree.
-func provisionWorktreeWith(
-	cfg config.Config,
-	slug string,
-	log *runlog.Logger,
-	createWorktree func(herdPath, branchPrefix, slug string) error,
-	postCreate func(worktreePath string),
-) error {
-	worktreePath := gitpkg.WorktreePath(cfg.ProjectPath, slug)
-	if _, err := os.Stat(worktreePath); err != nil {
-		if cErr := createWorktree(cfg.ProjectPath, cfg.BranchPrefix, slug); cErr != nil {
-			return fmt.Errorf("creating worktree %s: %w", worktreePath, cErr)
+// required to be idempotent.
+func provisionWorktree(h hostio.Host, cfg config.Config, slug string, log *runlog.Logger) error {
+	worktreePath := h.WorktreePath(slug)
+	if !h.WorktreeExists(slug) {
+		if err := h.CreateWorktree(slug); err != nil {
+			return fmt.Errorf("creating worktree %s: %w", worktreePath, err)
 		}
-		log.Event("created worktree " + worktreePath + " on " + gitpkg.BranchName(cfg.BranchPrefix, slug) + " (host-side)")
+		log.Event("created worktree " + worktreePath + " on " + h.BranchName(slug) + " (host-side)")
 	} else {
 		reused := "reusing existing worktree " + worktreePath
 		if cfg.PostCreate != "" {
@@ -179,55 +147,39 @@ func provisionWorktreeWith(
 		log.Event(reused)
 	}
 	if cfg.PostCreate != "" {
-		postCreate(worktreePath)
+		runPostCreate(h, cfg, slug, log)
 	}
 	return nil
 }
 
 // runPostCreate runs the Consumer's post_create command in the provisioned
-// worktree via a secret-free container (BuildPostCreateRunArgs). It retries an
-// OOM-kill (exit 137) — the same transient host-memory-pressure class the review
-// prep-install rides out (BEH-524) — and degrades to a warning on a persistent
-// non-zero exit rather than failing the run, so a flaky toolchain install doesn't
-// strand an otherwise-workable ticket.
-func runPostCreate(cfg config.Config, worktreePath, runID string, args Args, log *runlog.Logger) {
-	base := fmt.Sprintf("%s%s-%d-postcreate", sandbox.ContainerPrefix(cfg.ProjectPath), runID, os.Getpid())
-	gc := sandbox.GateConfig{
-		Image:          cfg.Image,
-		ProjectPath:    cfg.ProjectPath,
-		WorktreePath:   worktreePath,
-		CacheVolume:    cfg.CacheVolume,
-		CacheMountPath: cfg.CacheMountPath,
-	}
+// worktree via a secret-free container. It retries an OOM-kill (exit 137) — the
+// same transient host-memory-pressure class the review prep-install rides out
+// (BEH-524) — and degrades to a warning on a persistent non-zero exit rather than
+// failing the run, so a flaky toolchain install doesn't strand an otherwise-workable
+// ticket.
+func runPostCreate(h hostio.Host, cfg config.Config, slug string, log *runlog.Logger) {
 	log.Event("provisioning worktree — running post_create toolchain setup")
-	outcome, _ := session.RetryTransient(oomMaxAttempts, session.ConstantBackoff(oomRetryBackoff), time.Sleep, func(attempt int) session.Outcome {
-		name := base
-		transcript := runlog.StepLogName("postcreate", runID)
-		if attempt > 1 {
-			name = fmt.Sprintf("%s-retry%d", base, attempt)
-			transcript = runlog.StepLogName(fmt.Sprintf("postcreate-retry%d", attempt), runID)
-			log.Event(fmt.Sprintf(
-				"tdd ↻ post_create OOM-killed (exit 137) — retry %d/%d after %s (BEH-524)",
-				attempt-1, oomMaxAttempts-1, oomRetryBackoff,
-			))
-		}
-		c := gc
-		c.ContainerName = name
-		out := session.Run(sandbox.BuildPostCreateRunArgs(c, cfg.PostCreate), session.Options{
-			ContainerName:  name,
-			TranscriptFile: transcript,
-			Timeout:        cfg.TddTimeout,
-			IdleTimeout:    cfg.SessionIdleTimeout,
-			Verbose:        args.Verbose,
-			Log:            log,
-		})
-		log.TeeLine(transcript, runlog.StepFooter(out.ExitCode))
-		return out
+	res := h.Shell(hostio.ShellRun{
+		Label:        postCreateStep,
+		Command:      cfg.PostCreate,
+		WorktreePath: h.WorktreePath(slug),
+		Cap:          cfg.TddTimeout,
+		Retry: hostio.Retry{
+			MaxAttempts: oomMaxAttempts,
+			Backoff:     session.ConstantBackoff(oomRetryBackoff),
+			Notify: func(attempt int, waited time.Duration) {
+				log.Event(fmt.Sprintf(
+					"tdd ↻ post_create OOM-killed (exit 137) — retry %d/%d after %s (BEH-524)",
+					attempt-1, oomMaxAttempts-1, waited,
+				))
+			},
+		},
 	})
-	if outcome.ExitCode != 0 {
+	if res.ExitCode != 0 {
 		log.Event(fmt.Sprintf(
 			"⚠ post_create exited %d — the worktree may lack toolchain deps; the session must install them before the gates run",
-			outcome.ExitCode,
+			res.ExitCode,
 		))
 	}
 }
@@ -235,18 +187,18 @@ func runPostCreate(cfg config.Config, worktreePath, runID string, args Args, log
 // Implementation runs the first stage: fetch + claim one ticket, run only the
 // /tdd session in a Docker sandbox, verify the worktree + handoff commit by
 // ground truth, and file any dropped findings. No push, no PR (review owns
-// those). It is the extracted body of cmd/implementation's run() — the wrapper
-// supplies cfg/log/runID/args so the pipeline can share one config load + runlog.
-func Implementation(cfg config.Config, log *runlog.Logger, runID string, args Args) Result {
+// those). Every host-side effect goes through h, so the whole body is reachable
+// from a test with hostio.NewFake().
+func Implementation(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Result {
 	slug := strings.ToLower(args.Identifier)
 
 	dry := ""
 	if args.DryRun {
 		dry = " (dry-run)"
 	}
-	log.Structured(loopstream.Record{Kind: loopstream.KindStageStart, Ticket: args.Identifier, Stage: "implementation", Message: fmt.Sprintf("run %s — implementation %s%s", runID, args.Identifier, dry)})
+	log.Structured(loopstream.Record{Kind: loopstream.KindStageStart, Ticket: args.Identifier, Stage: "implementation", Message: fmt.Sprintf("run %s — implementation %s%s", h.RunID(), args.Identifier, dry)})
 
-	client, err := trackers.New(cfg.Tracker, trackers.Secrets{LinearKey: cfg.LinearAPIKey, GitHubToken: cfg.GitHubToken, JiraBaseURL: cfg.JiraBaseURL, JiraEmail: cfg.JiraEmail, JiraToken: cfg.JiraAPIToken})
+	client, err := h.Tracker()
 	if err != nil {
 		return Result{Err: err}
 	}
@@ -268,9 +220,8 @@ func Implementation(cfg config.Config, log *runlog.Logger, runID string, args Ar
 	// exact-key skip below, the symbol signal is heuristic (a cited symbol can be
 	// absent because the ticket asks to *create* it), so it only surfaces for the
 	// human + the in-session agent (steered by premiseCheckSteer) to act on —
-	// never drops the dispatch itself. A Consumer that declares no `source_roots`
-	// gets no advisory rather than a scan of a guessed path (BEH-641).
-	if adv := gitpkg.ResolvedAdvisory(sourceRoots(cfg), t.Identifier, t.Description); adv != "" {
+	// never drops the dispatch itself.
+	if adv := h.ResolvedAdvisory(t.Identifier, t.Description); adv != "" {
 		log.Event(adv)
 	}
 
@@ -283,7 +234,7 @@ func Implementation(cfg config.Config, log *runlog.Logger, runID string, args Ar
 	// incomplete work) — instead we steer the session to verify-and-handoff over
 	// re-implementing by swapping in BuildTddResumedBranch.
 	p := prompt.BuildTdd(t, slug, cfg.BranchPrefix, cfg.Prompts.Implement)
-	if adv := gitpkg.ResumedBranchAdvisory(cfg.ProjectPath, cfg.BranchPrefix, slug, t.Identifier); adv != "" {
+	if adv := h.ResumedBranchAdvisory(slug, t.Identifier); adv != "" {
 		log.Event(adv)
 		p = prompt.BuildTddResumedBranch(t, slug, cfg.BranchPrefix, cfg.Prompts.Implement)
 	}
@@ -303,32 +254,19 @@ func Implementation(cfg config.Config, log *runlog.Logger, runID string, args Ar
 		return Result{Err: err}
 	}
 
-	// runID is second-resolution; include the pid so two runs started in the same
-	// second still get distinct container names (and distinct `docker kill` targets).
-	containerName := fmt.Sprintf("%s%s-%d-%s", sandbox.ContainerPrefix(cfg.ProjectPath), runID, os.Getpid(), implementationSession)
-	// A closure so a retry (BEH-389) can re-launch under a distinct --name and a
-	// resume prompt: the name must match Options.ContainerName for the timeout
-	// `docker kill` to hit the right container, and the retry prompt differs from
-	// the first attempt's (it resumes the existing worktree rather than creating one).
-	buildArgs := func(name, prmpt string) []string {
-		return sandbox.BuildDockerRunArgs(sandbox.Config{
-			Image:          cfg.Image,
-			ProjectPath:    cfg.ProjectPath,
-			FindingsDir:    findingsDir,
-			CacheVolume:    cfg.CacheVolume,
-			CacheMountPath: cfg.CacheMountPath,
-			Prompt:         prmpt,
-			Model:          cfg.Model,
-			ContainerName:  name,
-		})
-	}
-	dockerArgs := buildArgs(containerName, p)
+	// A multi-file extract-and-rewire refactor gets a larger active-time cap: it is
+	// inherently sequential (extract N modules, then rewire N call sites) and
+	// overran the ordinary cap mid-surgery, leaving an uncompilable checkpoint
+	// (BEH-441, BEH-688 Symptom 2).
+	sessionCap := tddCap(cfg, t)
 
 	if args.DryRun {
 		log.Event("dry-run — not claiming the ticket, not launching the container")
 		fmt.Printf(
 			"\n--- prompt ---\n%s\n\n--- docker command ---\ndocker %s\n",
-			p, strings.Join(dockerArgs, " "),
+			p, strings.Join(h.AgentPreview(hostio.AgentRun{
+				Label: implementationSession, Prompt: p, FindingsDir: findingsDir, Cap: sessionCap,
+			}), " "),
 		)
 		return Result{OK: true}
 	}
@@ -340,7 +278,7 @@ func Implementation(cfg config.Config, log *runlog.Logger, runID string, args Ar
 	// --force overrides for the rare false positive — a key that only coincidentally
 	// appears in an unrelated downstream commit. (Deliberately after the dry-run
 	// branch above: --dry-run stays a pure prompt/command inspector.)
-	if !args.Force && gitpkg.TicketAlreadyOnMain(cfg.ProjectPath, args.Identifier) {
+	if !args.Force && h.TicketAlreadyOnMain(args.Identifier) {
 		log.Event(fmt.Sprintf(
 			"skipped %s — already merged on main (a recent commit references it); re-run with --force to dispatch anyway",
 			args.Identifier,
@@ -354,7 +292,7 @@ func Implementation(cfg config.Config, log *runlog.Logger, runID string, args Ar
 	// the ticket was already claimed during selection (ADR-0003), so a preflight
 	// failure means we dequeued a ticket we can't work: release it back to Todo
 	// rather than strand it In Progress (a no-op on the hand-passed path).
-	if err := sandbox.Preflight(sandbox.PreflightFor(cfg.Image, cfg.ProjectPath, cfg.Dockerfile)); err != nil {
+	if err := h.Preflight(); err != nil {
 		releaseIfPreClaimed(client, args.Identifier, args.PreClaimed, log)
 		// PreflightAbort marks this as environmental (full disk / daemon down), not a
 		// ticket failure, so the loop reclaims disk + backs off and the breaker stays
@@ -370,12 +308,11 @@ func Implementation(cfg config.Config, log *runlog.Logger, runID string, args Ar
 	}
 
 	// Create the worktree + branch host-side and run the Consumer's post_create
-	// toolchain hook before launching the session (ADR-0008/BEH-636). This retires
-	// the coupling where the sandboxed agent ran new-worktree.sh and the host
-	// depended on its output. A failure means there is no worktree to run against, so
-	// release the claim (best-effort) and surface it as a retryable env failure — the
-	// same class as a launch crash that left no worktree (BEH-543).
-	if err := provisionWorktree(cfg, slug, runID, args, log); err != nil {
+	// toolchain hook before launching the session (ADR-0008/BEH-636). A failure means
+	// there is no worktree to run against, so release the claim (best-effort) and
+	// surface it as a retryable env failure — the same class as a launch crash that
+	// left no worktree (BEH-543).
+	if err := provisionWorktree(h, cfg, slug, log); err != nil {
 		log.Event("tdd ✗ host-side worktree provisioning failed: " + err.Error())
 		if rErr := client.ReleaseToTodo(args.Identifier); rErr != nil {
 			log.Event("⚠ releasing the claim after a provisioning failure also failed (" + rErr.Error() + ") — move " + args.Identifier + " out of In Progress manually")
@@ -391,12 +328,6 @@ func Implementation(cfg config.Config, log *runlog.Logger, runID string, args Ar
 	// failure, a non-refusal error — is final on the first attempt.
 	const maxTddAttempts = 2
 
-	worktreePath := gitpkg.WorktreePath(cfg.ProjectPath, slug)
-	// A multi-file extract-and-rewire refactor gets a larger active-time cap: it is
-	// inherently sequential (extract N modules, then rewire N call sites) and
-	// overran the ordinary cap mid-surgery, leaving an uncompilable checkpoint
-	// (BEH-441, BEH-688 Symptom 2).
-	sessionCap := tddCap(cfg, t)
 	if sessionCap != cfg.TddTimeout {
 		log.Event(fmt.Sprintf(
 			"large extract-and-rewire refactor detected — granting a %d min active cap (vs the ordinary %d min) (BEH-688)",
@@ -410,14 +341,12 @@ func Implementation(cfg config.Config, log *runlog.Logger, runID string, args Ar
 		outcome    session.Outcome
 	)
 	for attempt := 1; attempt <= maxTddAttempts; attempt++ {
-		attemptContainer := containerName
 		attemptPrompt := p
 		attemptLabel := implementationSession
 		if attempt > 1 {
-			attemptContainer = fmt.Sprintf("%s-retry%d", containerName, attempt)
 			// The retry resumes the existing worktree (it already holds the surviving
 			// diff) rather than recreating it (BEH-389).
-			attemptPrompt = prompt.BuildTddResume(t, slug, worktreePath, cfg.BranchPrefix, cfg.Prompts.Implement)
+			attemptPrompt = prompt.BuildTddResume(t, slug, h.WorktreePath(slug), cfg.BranchPrefix, cfg.Prompts.Implement)
 			attemptLabel = fmt.Sprintf("%s-retry%d", implementationSession, attempt)
 			log.Event(fmt.Sprintf(
 				"tdd ↻ usage-policy refusal on attempt %d — retrying once on the same ticket (BEH-389); the worktree diff survives on disk",
@@ -430,36 +359,32 @@ func Implementation(cfg config.Config, log *runlog.Logger, runID string, args Ar
 		// OOM-kill) before it becomes the verdict (BEH-542). Such a crash at the
 		// worktree-creation step — the session's very first heavy host I/O — otherwise
 		// discards the whole ticket with no commit and strands it In Progress (BEH-543).
-		// Each launch retry uses a fresh --name (a wedged container's `--rm` teardown
-		// may have failed, leaving the old name taken) and re-runs the SAME prompt: a
-		// creation-time 125 left no worktree, so recreating is the correct recovery.
-		var attemptTranscript string
-		outcome, _ = session.RetryTransient(oomMaxAttempts, session.ConstantBackoff(oomRetryBackoff), time.Sleep, func(launch int) session.Outcome {
-			name, label := attemptContainer, attemptLabel
-			if launch > 1 {
-				name = fmt.Sprintf("%s-launch%d", attemptContainer, launch)
-				label = fmt.Sprintf("%s-launch%d", attemptLabel, launch)
-				log.Event(fmt.Sprintf(
-					"tdd ↻ transient launch failure — retry %d/%d after %s (BEH-542)",
-					launch-1, oomMaxAttempts-1, oomRetryBackoff,
-				))
-			}
-			attemptTranscript = runlog.TranscriptName(label, runID)
-			return session.Run(buildArgs(name, attemptPrompt), session.Options{
-				ContainerName:  name,
-				TranscriptFile: attemptTranscript,
-				Timeout:        sessionCap,
-				IdleTimeout:    cfg.SessionIdleTimeout,
-				Verbose:        args.Verbose,
-				Log:            log,
-			})
+		// Each launch retry re-runs the SAME prompt: a creation-time 125 left no
+		// worktree, so recreating is the correct recovery.
+		run := h.Agent(hostio.AgentRun{
+			Label:       attemptLabel,
+			Prompt:      attemptPrompt,
+			FindingsDir: findingsDir,
+			Cap:         sessionCap,
+			Retry: hostio.Retry{
+				MaxAttempts: oomMaxAttempts,
+				Backoff:     session.ConstantBackoff(oomRetryBackoff),
+				Suffix:      "launch",
+				Notify: func(launch int, waited time.Duration) {
+					log.Event(fmt.Sprintf(
+						"tdd ↻ transient launch failure — retry %d/%d after %s (BEH-542)",
+						launch-1, oomMaxAttempts-1, waited,
+					))
+				},
+			},
 		})
+		outcome = run.Outcome
 		log.Event(fmt.Sprintf(
-			"session exited (code %d) — transcript at logs/%s/%s", outcome.ExitCode, args.Identifier, attemptTranscript,
+			"session exited (code %d) — transcript at logs/%s/%s", outcome.ExitCode, args.Identifier, run.Transcript,
 		))
 
 		// Ground truth, never self-report.
-		truth = gitpkg.GatherTddGroundTruth(cfg.ProjectPath, cfg.BranchPrefix, slug)
+		truth = h.GroundTruth(slug)
 		result = verify.Tdd(truth)
 		capAborted = outcome.SpendingCapAbort
 
@@ -483,11 +408,11 @@ func Implementation(cfg config.Config, log *runlog.Logger, runID string, args Ar
 	// into a healthy, handoff-able branch. A regraft failure falls through to the
 	// existing failed-verdict handling, which keeps the worktree for manual recovery.
 	if !result.OK && !capAborted && disjointWorkTrapped(truth) {
-		if rErr := gitpkg.RegraftOntoBase(worktreePath, "origin/main"); rErr != nil {
+		if rErr := h.Regraft(slug); rErr != nil {
 			log.Event("⚠ disjoint branch detected but the regraft failed (" + rErr.Error() + ") — keeping the worktree for manual recovery (BEH-609)")
 		} else {
 			log.Event("↻ verified work was trapped on a disjoint branch — re-grafted its content diff onto a fresh base off origin/main (BEH-609)")
-			truth = gitpkg.GatherTddGroundTruth(cfg.ProjectPath, cfg.BranchPrefix, slug)
+			truth = h.GroundTruth(slug)
 			result = verify.Tdd(truth)
 		}
 	}
@@ -506,7 +431,7 @@ func Implementation(cfg config.Config, log *runlog.Logger, runID string, args Ar
 		// stage re-provisions the worktree via post_create instead (BEH-412/641).
 		// Warn-only: the handoff commit already landed and the stripped paths are
 		// all regenerable, so a strip failure must not fail the run.
-		if err := gitpkg.StripWorktreePaths(worktreePath, cfg.HandoffStripPaths); err != nil {
+		if err := h.StripHandoffPaths(slug); err != nil {
 			log.Event("⚠ could not strip " + strings.Join(cfg.HandoffStripPaths, ", ") + " from the worktree (" + err.Error() + ") — the reviewer should re-run the project's post_create")
 		}
 	} else {
@@ -536,14 +461,14 @@ func Implementation(cfg config.Config, log *runlog.Logger, runID string, args Ar
 		// work is unverified and the run still fails (exit 1); the checkpoint only
 		// makes recovery cheap. The commit subject loudly marks it a checkpoint so a
 		// reviewer never mistakes it for a verified handoff.
-		if truth.WorktreeExists && !gitpkg.WorktreeClean(worktreePath) {
+		if truth.WorktreeExists && !h.WorktreeClean(slug) {
 			// "tdd", not implementationSession: the checkpoint subject is reviewer-
 			// facing, so it uses this stage's human name (matching its "tdd ✓/✗" logs)
 			// rather than the machine identifier used for container/transcript names.
-			if cErr := gitpkg.CheckpointCommit(worktreePath, args.Identifier, "tdd"); cErr != nil {
-				log.Event("⚠ uncommitted work remains in the worktree at " + worktreePath + " and the recovery checkpoint commit failed (" + cErr.Error() + ") — recover it manually before re-running")
+			if cErr := h.Checkpoint(slug, args.Identifier, "tdd"); cErr != nil {
+				log.Event("⚠ uncommitted work remains in the worktree at " + h.WorktreePath(slug) + " and the recovery checkpoint commit failed (" + cErr.Error() + ") — recover it manually before re-running")
 			} else {
-				log.Event("✓ harness recovery checkpoint committed on " + gitpkg.BranchName(cfg.BranchPrefix, slug) + " — the session's uncommitted diff is preserved (unverified: finish or re-run, then amend, before opening a PR)")
+				log.Event("✓ harness recovery checkpoint committed on " + h.BranchName(slug) + " — the session's uncommitted diff is preserved (unverified: finish or re-run, then amend, before opening a PR)")
 			}
 		} else if retryableEnvCrash(outcome, capAborted) {
 			// The session crashed environmentally and left the pre-provisioned worktree
@@ -552,7 +477,7 @@ func Implementation(cfg config.Config, log *runlog.Logger, runID string, args Ar
 			// landed. There is no partial diff to salvage (the checkpoint branch above
 			// handles the uncommitted case), so leaving the ticket In Progress just
 			// strands it (BEH-543/BEH-707). Release the claim back to Todo so a later
-			// run re-grabs it instead. Best-effort: a Linear hiccup here must not crash
+			// run re-grabs it instead. Best-effort: a tracker hiccup here must not crash
 			// the stage — warn and leave it claimed. (The spending-cap abort is excluded:
 			// it's its own retry-after-reset class above.)
 			if rErr := client.ReleaseToTodo(args.Identifier); rErr != nil {
@@ -565,11 +490,11 @@ func Implementation(cfg config.Config, log *runlog.Logger, runID string, args Ar
 
 	// File any harness-improvement findings the session dropped (after every session, per ADR-0001).
 	// Dedup runs exact-match first, then a best-effort semantic pass; a match is
-	// recorded as a recurrence on the existing issue (client) instead of re-filed (BEH-573).
+	// recorded as a recurrence on the existing issue instead of re-filed (BEH-573).
 	// Only the retrospective classifies findings by audience (ADR-0011): the tdd
 	// dropbox protocol asks for harness/environment friction only and is not taught to
 	// classify, so it stays on the plain tracker filer rather than the audience router.
-	filing.File(findingsDir, t.TeamID, args.Identifier, client, client, newSemanticMatcher(cfg), client, log)
+	h.FileFindings(findingsDir, t.TeamID, args.Identifier)
 
 	// Surface an environmental no-worktree crash to the pipeline so it can
 	// re-attempt the whole stage once rather than discarding the slice (BEH-543).

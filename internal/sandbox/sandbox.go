@@ -328,46 +328,31 @@ type GateConfig struct {
 	ContainerName string
 }
 
-// BuildGateRunArgs builds the argv (everything after `docker`) for the throwaway
-// container that re-runs ONE config-declared named gate's `command` on the reviewed
-// branch. This is the harness's OWN ground truth — never the agent's self-report —
-// and the push gate (DESIGN.md). The container carries NO secrets at all (not even
-// the Claude credential): it runs no model, only the gate command, so nothing needs
-// to cross the boundary. It runs in the worktree (the branch under review), not the
-// main checkout.
+// BuildWorktreeCommandArgs builds the argv (everything after `docker`) for a
+// throwaway container that runs ONE command in the feature worktree: a
+// config-declared named gate, or the Consumer's `post_create` toolchain-setup
+// hook (ADR-0008/BEH-636). The two used to be separate exported wrappers whose
+// bodies were verified byte-identical; they differ only in which command the
+// caller passes, so there is one builder.
 //
-// The command is now the sole source of truth (BEH-634): the harness no longer
-// prepends a pnpm-specific `install && check && typecheck` — the worktree is
-// pre-provisioned by the separate post_create container (BEH-490/BEH-641),
-// and each gate command runs verbatim from config, so a Go (`go test ./...`) or
-// .NET (`dotnet test`) Consumer differs only in config. herd's `pnpm run check` /
-// `pnpm run typecheck` resolve from the worktree root via the committed root
-// package.json passthrough — no `cd web` needed. herd deliberately gates on
-// `typecheck` (tsgo --noEmit), NOT the full `pnpm run build`, whose vite bundling +
-// prerender crawl OOM-kills correct diffs in the sandbox (BEH-529; that guard now
-// lives in the Consumer's config, not here); CI's full build is the SSR-shell
-// backstop (the harness watches CI post-PR via ci.WatchAndFix).
-func BuildGateRunArgs(c GateConfig, command string) []string {
-	return buildWorktreeBashArgs(c, command)
-}
-
-// BuildPostCreateRunArgs builds the argv for the throwaway container that runs the
-// Consumer's `post_create` toolchain-setup command in a worktree the harness just
-// created host-side (ADR-0008/BEH-636). It replaces the retired coupling where the
-// sandbox agent ran `new-worktree.sh`: herd's env-file symlinks + `pnpm install` +
-// Playwright install now arrive as a config-declared command run here. Like the
-// gate/install containers it carries NO secrets (it runs no model) and runs in the
-// worktree; buildWorktreeBashArgs passes PROJECT_PATH so a Consumer's env-symlink step
-// can reference the main checkout. The command runs verbatim, so a Go/.NET Consumer
-// differs only in config.
-func BuildPostCreateRunArgs(c GateConfig, command string) []string {
-	return buildWorktreeBashArgs(c, command)
-}
-
-// buildWorktreeBashArgs is the shared skeleton for the throwaway worktree containers
-// (install prep + ground-truth gate): a secret-free container that bind-mounts the
-// checkout and the warm pnpm store and runs `command` in the worktree via bash.
-func buildWorktreeBashArgs(c GateConfig, command string) []string {
+// The container carries NO secrets at all (not even the Claude credential): it
+// runs no model, only the command, so nothing needs to cross the boundary. It
+// runs in the worktree (the branch under review), not the main checkout, and
+// PROJECT_PATH is passed so a Consumer's env-symlink step can reference the main
+// checkout.
+//
+// The command is the sole source of truth (BEH-634): the harness never prepends a
+// toolchain-specific `install && check && typecheck` — the worktree is
+// pre-provisioned by a separate post_create run (BEH-490/BEH-641), and each gate
+// command runs verbatim from config, so a Go (`go test ./...`) or .NET
+// (`dotnet test`) Consumer differs only in config. A Consumer that gates on a
+// cheap `typecheck` rather than a memory-heavy full build (herd does, after
+// BEH-529) expresses that in its own config, not here; CI's full build is the
+// backstop the harness watches post-PR via ci.WatchAndFix.
+//
+// For the gate case this is the harness's OWN ground truth — never the agent's
+// self-report — and the push gate (DESIGN.md).
+func BuildWorktreeCommandArgs(c GateConfig, command string) []string {
 	args := []string{"run", "--rm", "--init"}
 
 	if c.ContainerName != "" {

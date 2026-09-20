@@ -1014,9 +1014,10 @@ own namespace with no edit to the workflow.
     `retrospective BEH-NNN`, invoked separately, locate the implementation and
     review transcripts.
   - `.agent-harness/logs/BEH-NNN/<step>-<run-id>.log` — a **raw-stdout step log**
-    for the non-agent commands the review tool runs around the session: the
-    `install-…` worktree prep and the host-side `gate-…` re-run. These are piped
-    `pnpm` output (NOT a stream-json event stream), hence `.log`, never `.jsonl`,
+    for the non-agent commands the harness runs around a session: the
+    `postcreate-…`/`prep-…` worktree provisioning and the host-side
+    `gate-<name>-…` re-run, one per Consumer-declared gate. These are piped tool
+    output (NOT a stream-json event stream), hence `.log`, never `.jsonl`,
     so a reader doesn't expect parseable JSON. Each ends with a self-describing
     `-- step exited <code> … --` footer (`runlog.StepFooter`) so an OOM-kill is
     visible at the tail rather than an opaque truncation needing a `run.jsonl`
@@ -1061,6 +1062,16 @@ reader over a structured stream rather than a `--tui` flag on the daemon.
 
 ## Harness runtime (host side)
 
+- **One host port, two adapters** ([ADR-0013](adr/0013-stages-talk-to-the-host-through-one-port.md)). Everything a Stage does that leaves
+  the process — `docker run`, git, `gh`, the tracker — goes through the
+  `hostio.Host` it is handed, never through a package-level function. `hostio.Real`
+  is docker/git/gh/tracker; `hostio.Fake` is scripted outcomes, so the harness's
+  policy (which is nearly all of `internal/stages`) is testable without a daemon.
+  Behind it a `Runner` owns `{cfg, log, runID, prefix}` and is the only thing that
+  names a container: it mints the `--name`, the argv that carries it, the
+  `session.Options` the watchdog kills through, and the transcript filename, all
+  from one label — so "the name must match the argv or the timeout kill misses"
+  stops being a comment and becomes unrepresentable.
 - **Go 1.26+**, standard library only — zero module dependencies: `net/http`
   (Linear GraphQL), `os/exec` (driving `docker`), `os`/`encoding/json` (logs +
   stop file). No dep tree on purpose — this process holds real credentials.

@@ -766,7 +766,7 @@ func abortRebase(worktreePath string, run commandRunner) {
 //
 // --no-verify deliberately skips the host lefthook pre-push hook: the harness has
 // already independently re-run the full gate in a throwaway Linux container
-// (review/main.go BuildGateRunArgs) — that container's exit code is the sole
+// (review/main.go BuildWorktreeCommandArgs) — that container's exit code is the sole
 // authority for a push. The host hook is redundant duplication, and running it
 // here is actively wrong: the push happens from the main checkout (HEAD=main, not
 // the feature branch), so lefthook either silently skips every command (its
