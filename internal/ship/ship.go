@@ -117,8 +117,8 @@ func Recover(h hostio.Host, log EventSink, key string) Recovery {
 	if h.BranchDiffEmpty(slug) {
 		return Recovery{}
 	}
-	// A branch that already has an OPEN PR isn't stranded (its outcome would already
-	// carry ReachedPushedPR — belt-and-braces), so there is nothing to finish.
+	// A branch that already has an OPEN PR isn't stranded (its run would already be
+	// Shipped — belt-and-braces), so there is nothing to finish.
 	if h.OpenPRExists(slug) {
 		return Recovery{}
 	}

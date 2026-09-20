@@ -165,48 +165,43 @@ func (h *Real) TicketHasRemoteBranch(id string) bool {
 // The stage args carry PreClaimed=true because ResolveNext claimed the ticket on
 // selection, so the implementation stage skips its own claim and releases on a
 // preflight failure (ADR-0003).
-func (h *Real) RunPipeline(identifier string) loop.TicketOutcome {
+func (h *Real) RunPipeline(identifier string) stages.Result {
 	cfg, log, runID, err := stages.Setup(identifier)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		// A setup failure produced no PR; surface it as a plain no-PR outcome so the
 		// breaker counts it like any other failure to ship.
-		return loop.TicketOutcome{}
+		return stages.Result{}
 	}
 	args := stages.Args{Identifier: identifier, PreClaimed: true}
 	// One Host for the whole slice: the three stages share the run id it stamps into
 	// every container name and transcript, and the tracker client it resolves once.
 	host := hostio.New(cfg, log, runID, args.Verbose)
-	out := pipeline.Run(pipeline.Deps{
+	return pipeline.Run(pipeline.Deps{
 		FetchMain:      host.FetchMain,
 		Implementation: func() stages.Result { return stages.Implementation(host, cfg, log, args) },
 		Review:         func() stages.Result { return stages.Review(host, cfg, log, args) },
 		Retrospective:  func() stages.Result { return stages.Retrospective(host, cfg, log, args) },
 		Log:            log,
 	})
-	// Translate the pipeline's typed Outcome into the breaker's signals — the loop
-	// keys on "did it ship?", not the exit code.
-	return loop.TicketOutcome{
-		ReachedPushedPR:  out.ReachedPushedPR,
-		SpendingCapAbort: out.SpendingCapAbort,
-		CapResetTime:     out.SpendingCapResetTime,
-		RecommendClose:   out.RecommendClose,
-		PreflightAbort:   out.PreflightAbort,
-	}
 }
 
 // RecoverCommittedFix finishes a branch a previous run left committed, gate-green
 // and unpushed (BEH-713). The policy is ship.Recover — the same host-side "finish a
 // branch" the review stage ends on — run over a Host bound to this ticket. A setup
 // failure means there is nothing to recover: fall through to the normal release.
-func (h *Real) RecoverCommittedFix(identifier string) (loop.TicketOutcome, bool) {
+func (h *Real) RecoverCommittedFix(identifier string) (stages.Result, bool) {
 	cfg, log, runID, err := stages.Setup(identifier)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
-		return loop.TicketOutcome{}, false
+		return stages.Result{}, false
 	}
 	rec := ship.Recover(hostio.New(cfg, log, runID, false), h.log, identifier)
-	return loop.TicketOutcome{ReachedPushedPR: rec.Shipped}, rec.Attempted
+	out := stages.Result{}
+	if rec.Shipped {
+		out = stages.Result{OK: true, Disposition: stages.Shipped}
+	}
+	return out, rec.Attempted
 }
 
 // --- disk reclaim (ADR-0005) ------------------------------------------------

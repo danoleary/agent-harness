@@ -20,43 +20,8 @@ import (
 	"time"
 
 	"github.com/danoleary/agent-harness/internal/loopstream"
+	"github.com/danoleary/agent-harness/internal/stages"
 )
-
-// TicketOutcome is what the loop learns from running one ticket through the
-// pipeline: the breaker keys on these typed signals, NOT on the raw exit code
-// (DESIGN.md §Circuit breaker). A ticket that reached a pushed PR is a success even
-// if a later stage failed (retrospective-only failure, CI-red-after-budget); a
-// spending-cap abort is neither success nor failure — the breaker stays blind to it.
-type TicketOutcome struct {
-	// ReachedPushedPR is the breaker's success signal: implementation + review +
-	// push produced a PR. It resets the consecutive-failure counter.
-	ReachedPushedPR bool
-	// SpendingCapAbort marks a run an external Anthropic spending cap aborted before
-	// it could ship. It is neutral to the breaker (the cap runaway is the backoff's
-	// job, not the breaker's) unless a PR already shipped, in which case the PR wins.
-	SpendingCapAbort bool
-	// CapResetTime is the exact reset time the cap-abort message named ("resets 8:40am"),
-	// resolved to an absolute instant at detection (BEH-708). When set, the cap backoff
-	// waits until this time plus a margin rather than the fixed CapBackoff guess, so the
-	// daemon resumes right when the cap clears instead of churning re-dispatches. A zero
-	// value means the abort carried no parseable reset time — the fixed CapBackoff applies.
-	CapResetTime time.Time
-	// RecommendClose marks the BEH-603 no-op disposition: the review stage found the
-	// branch makes zero net change against origin/main and correctly concluded the
-	// ticket should be closed as a duplicate/superseded rather than opened as an
-	// empty-commit PR. It is a correct terminal outcome — neutral to the breaker (not
-	// a ship failure) — and the loop keeps the ticket In Progress for a human to close
-	// rather than releasing it to Todo, so it never re-loops into the same conclusion.
-	RecommendClose bool
-	// PreflightAbort marks a run the Docker sandbox preflight refused before any work —
-	// a full host disk or an unreachable daemon (the implementation stage already
-	// released the pre-claimed ticket back to Todo). It is environmental, not the
-	// ticket's fault, so — like a cap abort — the loop reclaims disk and backs off
-	// briefly before re-polling, and the breaker stays blind to it. Without this a
-	// poison top-of-queue ticket racks up identical ~2s preflight failures and trips
-	// the breaker in seconds, stopping the daemon until a human relaunches it.
-	PreflightAbort bool
-}
 
 // StaleClaim is one agent-claimed In Progress ticket the between-ticket reaper
 // evaluates (BEH-677): when it was claimed (StartedAt) and whether a PR is linked.
@@ -152,21 +117,21 @@ type Host interface {
 	TicketHasRemoteBranch(identifier string) bool
 
 	// RunPipeline runs the full implementation→review→retrospective pipeline over
-	// one ticket and returns the typed outcome the breaker keys on (did it reach a
-	// pushed PR?), not the opaque exit code.
-	RunPipeline(identifier string) TicketOutcome
+	// one ticket and returns the run's folded Result — the loop branches on its
+	// Disposition (did it ship? was it aborted?), never on the opaque exit code.
+	RunPipeline(identifier string) stages.Result
 	// RecoverCommittedFix attempts to FINISH a no-PR run whose fix was already
 	// committed on its branch but never pushed/PR'd — the recovered-checkpoint /
 	// verify-only state where the review stage left a gate-green, clean commit yet
 	// never reached a PR (BEH-713, the BEH-649 infinite Todo↔In-Progress bounce). It
-	// returns the completion outcome (its ReachedPushedPR is the success signal) and
+	// returns the completion outcome (a Shipped Disposition is the success signal) and
 	// attempted=true ONLY when there was such a committed-but-no-PR state to finish;
 	// attempted=false means there is nothing to recover (a genuine OOM/crash/empty-diff
 	// no-PR run), so the loop falls through to the normal release. Host-side (push +
 	// open PR), never the loop reimplementing the review machinery; a completion
 	// failure just falls through to the release, so a flaky push can't strand the
 	// ticket In Progress.
-	RecoverCommittedFix(identifier string) (outcome TicketOutcome, attempted bool)
+	RecoverCommittedFix(identifier string) (outcome stages.Result, attempted bool)
 
 	// FreeDisk reports the bytes available on the worktrees volume via a cheap statfs;
 	// it gates the reclaim step so a healthy disk triggers no shell-out / gh calls. A
@@ -336,15 +301,15 @@ func Run(d Deps) int {
 		// diff's fault. Release the ticket back to Todo (don't strand it In Progress),
 		// leave the breaker untouched (it stays blind to the cap runaway by design),
 		// and enter a long interruptible backoff before re-polling — auto-resuming once
-		// the cap window resets. A shipped PR wins: if the run still reached a pushed
-		// PR, it's a success, so fall through to the normal after-ticket fold.
-		if outcome.SpendingCapAbort && !outcome.ReachedPushedPR {
+		// the cap window resets. A shipped PR wins, and the pipeline's fold already
+		// settled that: a CapAborted run is one where nothing shipped.
+		if outcome.Disposition == stages.CapAborted {
 			d.Log.Structured(loopstream.Record{Kind: loopstream.KindCapAbort, Ticket: identifier, Message: "loop — spending-cap abort on " + identifier + "; releasing to Todo"})
 			if err := d.Host.ReleaseTicket(identifier); err != nil {
 				d.Log.Event("loop … warning: could not release " + identifier + " to Todo after cap abort: " + err.Error())
 			}
 			d.comment(identifier, "Autonomous run aborted by the Anthropic spending cap before it could ship — released back to Todo. The daemon backs off and auto-resumes once the cap window resets, so this should retry on its own.")
-			d.capBackoffWait(identifier, outcome.CapResetTime)
+			d.capBackoffWait(identifier, outcome.CapResetAt)
 			continue
 		}
 
@@ -356,10 +321,9 @@ func Run(d Deps) int {
 		// Docker build-cache/image prune) and back off briefly before re-polling. The
 		// breaker stays blind to it (breaker.record), so a poison top-of-queue ticket
 		// can't rack up identical ~2s preflight failures and trip the breaker in seconds
-		// — the pattern that was stopping the daemon and forcing a manual relaunch. A
-		// shipped PR wins (impossible here, but symmetric with the cap branch): fall
-		// through to the normal fold if one somehow reached a PR.
-		if outcome.PreflightAbort && !outcome.ReachedPushedPR {
+		// — the pattern that was stopping the daemon and forcing a manual relaunch. Like
+		// a cap abort, the disposition already settles that nothing shipped.
+		if outcome.Disposition == stages.PreflightAborted {
 			d.Log.Structured(loopstream.Record{Kind: loopstream.KindTicketReleased, Ticket: identifier, Message: "loop — Docker preflight abort on " + identifier + " (environmental: full disk / daemon down); reclaiming disk and backing off before re-poll — breaker-neutral"})
 			d.reclaimDisk()
 			d.interruptibleSleep(d.Limits.PollInterval)
@@ -378,20 +342,21 @@ func Run(d Deps) int {
 		// stage never pushed (BEH-713). Releasing it to Todo just re-grabs it to the same
 		// no-verdict conclusion forever (the BEH-649 infinite bounce). So before treating a
 		// no-PR run as a failure, try to FINISH it host-side — push + open the PR. A
-		// successful completion is folded in as the ship it is (ReachedPushedPR), so the
-		// switch below skips the release and the breaker records a success (reset). Skipped
-		// for a cap abort (already handled + continued above) and a recommend-close (a
-		// genuine no-op, not an unshipped fix). A completion that still can't reach a PR, or
-		// nothing to recover, falls through to the normal release below.
-		if !outcome.ReachedPushedPR && !outcome.RecommendClose {
+		// successful completion is folded in as the ship it is (Shipped), so the
+		// switch below skips the release and the breaker records a success (reset). Only a
+		// NoPR run qualifies: a cap abort was handled + continued above, a ship has nothing
+		// to finish, and a recommend-close is a genuine no-op rather than an unshipped fix.
+		// A completion that still can't reach a PR, or nothing to recover, falls through to
+		// the normal release below.
+		if outcome.Disposition == stages.NoPR {
 			if completed, attempted := d.Host.RecoverCommittedFix(identifier); attempted {
-				if completed.ReachedPushedPR {
+				if completed.Disposition == stages.Shipped {
 					d.Log.Structured(loopstream.Record{
 						Kind:    loopstream.KindPROpened,
 						Ticket:  identifier,
 						Message: "loop — " + identifier + " had a committed, gate-green fix that was never pushed; completed it (pushed + opened PR) instead of releasing (BEH-713)",
 					})
-					outcome.ReachedPushedPR = true
+					outcome.Disposition = stages.Shipped
 				} else {
 					d.Log.Event("loop … " + identifier + " committed-fix recovery did not reach a PR; falling through to the no-PR release")
 				}
@@ -410,8 +375,8 @@ func Run(d Deps) int {
 		// breadcrumb recommending exactly that (distinct from the generic "released to Todo"
 		// note, which would mislead). It is breaker-neutral (handled in b.record), so it
 		// falls through to the normal after-ticket fold below.
-		switch {
-		case outcome.RecommendClose:
+		switch outcome.Disposition {
+		case stages.RecommendClose:
 			closed := d.closeTicket(identifier)
 			msg := "loop — " + identifier + " makes no net change against main; closing it as a duplicate/superseded (BEH-682)"
 			// The breadcrumb must reflect what actually happened: only claim the ticket was
@@ -424,7 +389,7 @@ func Run(d Deps) int {
 			}
 			d.Log.Structured(loopstream.Record{Kind: loopstream.KindRecommendClose, Ticket: identifier, Message: msg})
 			d.comment(identifier, "Autonomous run found this branch makes zero net change against `main` (an empty diff) — there is nothing to ship. "+note+" If a PR was already opened (the branch only became a no-op after the pre-push rebase) it is a no-op and should be closed too. It was deliberately NOT released to Todo so it won't be re-picked and re-run to the same conclusion. See the run logs for the cause.")
-		case !outcome.ReachedPushedPR:
+		case stages.NoPR:
 			// Release-on-no-PR (BEH-590): a run that finished WITHOUT opening a pushed PR —
 			// any non-cap failure mode: OOM, sandbox crash, a review stage that died before
 			// pushing, an empty-diff verification failure — left the ticket claimed In
@@ -432,7 +397,7 @@ func Run(d Deps) int {
 			// unless we undo the claim the board reads as "in flight" forever and the
 			// dispatch guard never re-grabs it. The cap-abort branch above already released
 			// (and continued), so this only fires for the non-cap no-PR case. A shipped PR
-			// (ReachedPushedPR) is the success signal — never released, even on a non-zero
+			// (a Shipped disposition) is the success signal — never released, even on a non-zero
 			// exit (CI red after the auto-fix budget). Best-effort: a Linear hiccup here is
 			// warned, never fatal — the daemon must keep running.
 			d.Log.Structured(loopstream.Record{Kind: loopstream.KindTicketReleased, Ticket: identifier, Message: "loop — " + identifier + " produced no PR; releasing back to Todo so it isn't stranded In Progress (BEH-590)"})

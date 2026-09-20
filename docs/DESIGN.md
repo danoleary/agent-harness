@@ -377,9 +377,14 @@ loop:
 
   if review OK -> git worktree remove <worktree-path>   // branch pushed + PR captures everything
 
+  // The run's one Disposition (stages.Disposition) decides everything below: the three
+  // stage results fold into exactly one of Shipped / RecommendClose / CapAborted /
+  // PreflightAborted / NoPR, in that precedence — a stage that reached a verdict (shipped,
+  // or "this branch is a no-op") outranks a later stage's environmental abort.
+
   // SPENDING-CAP ABORT is a control-flow signal, NOT a ticket failure (see invariant below).
-  // If ANY stage ended in an external Anthropic spending-cap abort:
-  if any stage SpendingCapAbort:
+  // Any stage aborted by an external Anthropic spending cap, with nothing shipped:
+  if Disposition == CapAborted:
     release ticket -> Todo            // no progress was made; don't strand it In Progress
     comment on ticket: cap-abort, auto-resumes after the cap resets (breadcrumb, BEH-590)
     do NOT touch the breaker counter  // not the diff's fault; breaker stays blind to it by design
@@ -388,7 +393,7 @@ loop:
 
   // DOCKER-PREFLIGHT ABORT is likewise environmental, NOT a ticket failure: the host
   // couldn't launch a sandbox (full disk / daemon down) BEFORE any work began.
-  if implementation PreflightAbort:
+  if Disposition == PreflightAborted:
     // ticket was already released -> Todo by the impl stage (releaseIfPreClaimed, ADR-0003)
     reclaim disk (incl. the Docker prune) // the usual cause — clear the floor for the retry
     short backoff sleep (interruptible by STOP; = pollInterval)   // don't spin re-selecting the same top-of-queue ticket
@@ -405,11 +410,11 @@ loop:
   // host-side: if the worktree is clean and the branch has a non-empty diff vs origin/main with
   // no open PR, rebase + push (force-with-lease; the remote may hold an older checkpoint tip) +
   // open the PR. Opening a PR is safe recovery, not a merge — CI + human review still gate it.
-  // A completion that ships folds in as ReachedPushedPR (breaker resets, no release); anything
+  // A completion that ships folds in as a Shipped disposition (breaker resets, no release); anything
   // that can't complete (conflict, empty-after-rebase, push/PR failure, or nothing to recover)
   // falls through to the normal release so a later run re-grabs — never worse than no attempt.
-  if NOT reached a pushed PR and NOT RecommendClose and there IS a committed-but-unpushed fix:
-    complete it host-side (rebase + push + PR); on success treat as reached-a-pushed-PR
+  if Disposition == NoPR and there IS a committed-but-unpushed fix:
+    complete it host-side (rebase + push + PR); on success the run becomes Shipped
 
   // RELEASE-ON-NO-PR (BEH-590): any non-cap run that did NOT reach a pushed PR — OOM,
   // sandbox crash, a review stage that died before pushing, an empty-diff verification
@@ -422,18 +427,18 @@ loop:
   // "nothing to ship" conclusion forever. CLOSE it — move it to Canceled (BEH-682) — so it
   // leaves the selection AND reaper pools for good; keeping it merely In Progress was defeated
   // by the reaper releasing it back to Todo past the claim TTL.
-  if RecommendClose:
+  if Disposition == RecommendClose:
     close ticket -> Canceled  // terminal; superseded/duplicate. Falls back to keeping In Progress
                               // if no closer is wired or the close fails (best-effort, never fatal)
     comment on ticket: empty diff, closed as duplicate/superseded (breadcrumb, BEH-682)
-  else if NOT reached a pushed PR:
+  else if Disposition == NoPR:
     release ticket -> Todo            // don't strand it In Progress; a later run re-grabs it
     comment on ticket: run produced no PR, released to Todo (breadcrumb, BEH-590)
 
-  // breaker signal = "did this ticket reach a PUSHED PR?", NOT the pipeline exit code
-  if ticket reached a pushed PR -> reset consecutive-failure counter to 0
-  else if SpendingCapAbort or PreflightAbort or RecommendClose -> neutral (neither increment nor reset)
-  else                          -> increment consecutive-failure counter
+  // breaker signal = the run's Disposition, NOT the pipeline exit code
+  if Disposition == Shipped    -> reset consecutive-failure counter to 0
+  else if Disposition in {CapAborted, PreflightAborted, RecommendClose} -> neutral (neither increment nor reset)
+  else /* NoPR */              -> increment consecutive-failure counter
   // a retrospective-only failure (PR shipped) and a CI-red-after-budget (a reviewable PR
   // exists) do NOT count as failures; only "never produced a PR" does.
   // a recommend-close (BEH-603) is a correct terminal no-op — neutral, like a cap abort.

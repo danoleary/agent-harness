@@ -108,5 +108,5 @@ func main() {
 		Retrospective:  func() stages.Result { return stages.Retrospective(host, cfg, log, args) },
 		Log:            log,
 	})
-	os.Exit(outcome.ExitCode)
+	os.Exit(outcome.ExitCode())
 }

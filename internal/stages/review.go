@@ -375,7 +375,7 @@ func Review(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Res
 	// it), so there is nothing uncommitted to recover.
 	if result.RecommendClose {
 		log.Event("review ⊘ " + result.Reason + " — keeping worktree, nothing pushed; recommending close (BEH-603)")
-		return Result{OK: false, RecommendClose: true}
+		return Result{OK: false, Disposition: RecommendClose}
 	}
 	if !result.OK {
 		// A review killed mid-edit (spending cap / OOM) leaves its in-progress fixes
@@ -406,7 +406,7 @@ func Review(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Res
 			gateClause = fmt.Sprintf(" [gate %q]", gateRes.FailedGate)
 		}
 		log.Event(fmt.Sprintf("review ✗ %s (gate exit %d)%s — keeping worktree, nothing pushed", result.Reason, gateExit, gateClause))
-		return Result{OK: false, SpendingCapAbort: reviewOutcome.SpendingCapAbort, SpendingCapResetTime: reviewOutcome.SpendingCapResetTime}
+		return capFailure(reviewOutcome)
 	}
 	log.Event("review ✓ " + result.Reason)
 
@@ -471,7 +471,7 @@ func Review(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Res
 	// nothing, and let the loop flag the ticket for a human to close as superseded.
 	if postRebase := verify.PostRebasePush(h.BranchDiffEmpty(slug)); postRebase.RecommendClose {
 		log.Event("review ⊘ " + postRebase.Reason + " — keeping worktree, nothing pushed; recommending close (BEH-680)")
-		return Result{OK: false, RecommendClose: true}
+		return Result{OK: false, Disposition: RecommendClose}
 	}
 
 	// Push and open the PR through the one host-side "finish a branch" implementation
@@ -508,17 +508,22 @@ func Review(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Res
 	// couldn't see), so the PR is open but there is nothing for CI to validate. Honour
 	// the recommend-close disposition rather than burn the poll budget — keep the PR +
 	// worktree and let the loop flag the ticket for a human to close as superseded.
+	// Recommend-close outranks the open PR here: a no-op PR is not a ship, and the
+	// loop's close breadcrumb already covers the already-opened case.
 	if ciResult.RecommendClose {
 		log.Event("review ⊘ " + ciResult.Reason + " — keeping PR + worktree; recommending close (BEH-602)")
-		return Result{OK: false, ReachedPushedPR: true, RecommendClose: true}
+		return Result{OK: false, Disposition: RecommendClose}
 	}
 	if ciResult.SpendingCapAbort {
 		// The auto-fix session hit an active spending cap — not a code defect or
 		// unfixable CI, just a billing window that resets. Name the retry-after-reset
 		// class (↻) so a re-dispatch after the cap resets lands the fix, instead of a
 		// spurious "CI did not go green" failure (BEH-571). PR + worktree are kept.
+		// The disposition is Shipped, not CapAborted: the branch is already pushed and
+		// the PR open, and a shipped PR outranks a cap abort for both the loop (which
+		// never releases a shipped ticket) and the breaker (which counts it a success).
 		log.Event("review ↻ CI auto-fix deferred — spending cap reached, retry after reset (BEH-494) — keeping PR + worktree")
-		return Result{OK: false, ReachedPushedPR: true, SpendingCapAbort: true}
+		return Result{OK: false, Disposition: Shipped}
 	}
 	if !ciResult.OK {
 		log.Event("review ✗ CI did not go green: " + ciResult.Reason + " — keeping PR + worktree")
@@ -527,11 +532,11 @@ func Review(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Res
 		}
 		// CI red after the auto-fix budget still leaves a reviewable PR for a human to
 		// take over — NOT a ship failure, so the breaker must not count it.
-		return Result{OK: false, ReachedPushedPR: true}
+		return Result{OK: false, Disposition: Shipped}
 	}
 	log.Event("review ✓ " + ciResult.Reason)
 
-	return Result{OK: true, ReachedPushedPR: true}
+	return Result{OK: true, Disposition: Shipped}
 }
 
 // ciFixRunner returns the CI watch's fix callback: it launches a sandboxed Claude

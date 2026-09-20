@@ -3,6 +3,8 @@ package loop
 import (
 	"fmt"
 	"strings"
+
+	"github.com/danoleary/agent-harness/internal/stages"
 )
 
 // breaker is the daemon's runaway guard: it counts consecutive tickets that
@@ -21,26 +23,19 @@ type breaker struct {
 
 func newBreaker(threshold int) *breaker { return &breaker{threshold: threshold} }
 
-// record folds one finished ticket into the counter. ReachedPushedPR wins over
-// everything — a shipped PR is a success even if a later stage cap-aborted — and
-// resets the streak; a spending-cap abort with no PR is neutral (the breaker is
-// deliberately blind to the cap runaway, which the backoff handles); a Docker
-// preflight abort is likewise neutral (an environmental full-disk/daemon-down abort
-// before any work, which the loop's disk-reclaim + backoff handles — never the
-// ticket's fault); a recommend-close is likewise neutral (a correct terminal no-op,
-// neither a ship nor a failure — BEH-603); anything else is a no-PR failure that
-// extends the streak.
-func (b *breaker) record(identifier string, o TicketOutcome) {
-	switch {
-	case o.ReachedPushedPR:
+// record folds one finished ticket into the counter, as a match on the run's one
+// Disposition. Only a no-PR run extends the streak: a ship resets it, and the three
+// control signals are neutral by design — a cap abort is the backoff's business,
+// not the breaker's; a preflight abort is an environmental full-disk/daemon-down
+// refusal before any ticket work (so a poison top-of-queue ticket can't trip the
+// breaker in seconds on identical 2s failures); and a recommend-close is a correct
+// terminal no-op, neither a ship nor a failure (BEH-603).
+func (b *breaker) record(identifier string, o stages.Result) {
+	switch o.Disposition {
+	case stages.Shipped:
 		b.streak = nil
-	case o.SpendingCapAbort:
+	case stages.CapAborted, stages.PreflightAborted, stages.RecommendClose:
 		// neutral — blind by design
-	case o.PreflightAbort:
-		// neutral — an environmental preflight abort (full disk / daemon down) did no
-		// ticket work; the loop reclaims disk + backs off rather than counting it
-	case o.RecommendClose:
-		// neutral — a correct terminal no-op (BEH-603), not a ship failure
 	default:
 		b.streak = append(b.streak, identifier)
 	}

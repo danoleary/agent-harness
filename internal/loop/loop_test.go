@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/danoleary/agent-harness/internal/loopstream"
+
+	"github.com/danoleary/agent-harness/internal/stages"
 )
 
 // recorder captures the order of injected calls and the narration emitted, so a
@@ -71,9 +73,9 @@ func TestStartupClearsStaleStopThenFetchesMain(t *testing.T) {
 			fetchMain:     func() error { r.order = append(r.order, "fetch-main"); return nil },
 			stopRequested: func() bool { return true }, // stop already requested at the first checkpoint
 			resolveNext:   func() (string, bool) { r.order = append(r.order, "resolve"); return "", false },
-			runPipeline: func(string) TicketOutcome {
+			runPipeline: func(string) stages.Result {
 				r.order = append(r.order, "pipeline")
-				return TicketOutcome{ReachedPushedPR: true}
+				return stages.Result{Disposition: stages.Shipped}
 			},
 		},
 		Limits: Limits{
@@ -109,9 +111,9 @@ func TestEmptyQueueIdlesThenRePollsNotExit(t *testing.T) {
 			fetchMain:     func() error { return nil },
 			stopRequested: stopAfter(6), // 1 checkpoint + 5 idle-tick checks pass, then stop at the next checkpoint
 			resolveNext:   func() (string, bool) { r.order = append(r.order, "resolve"); return "", false },
-			runPipeline: func(string) TicketOutcome {
+			runPipeline: func(string) stages.Result {
 				r.order = append(r.order, "pipeline")
-				return TicketOutcome{ReachedPushedPR: true}
+				return stages.Result{Disposition: stages.Shipped}
 			},
 		},
 		Limits: Limits{
@@ -165,10 +167,10 @@ func TestTicketRunsPipelineThenFetchesMainAndContinues(t *testing.T) {
 			fetchMain:     func() error { fetches++; r.order = append(r.order, "fetch"); return nil },
 			stopRequested: stopAfter(1), // run one ticket, then stop at the 2nd checkpoint
 			resolveNext:   func() (string, bool) { r.order = append(r.order, "resolve"); return "BEH-100", true },
-			runPipeline: func(id string) TicketOutcome {
+			runPipeline: func(id string) stages.Result {
 				r.order = append(r.order, "pipeline")
 				ranWith = id
-				return TicketOutcome{ReachedPushedPR: true}
+				return stages.Result{Disposition: stages.Shipped}
 			},
 		},
 		Limits: Limits{
@@ -209,7 +211,7 @@ func TestGracefulStopBetweenTicketsRunsTwoThenStops(t *testing.T) {
 			fetchMain:     func() error { return nil },
 			stopRequested: stopAfter(2), // two tickets, stop at the 3rd checkpoint
 			resolveNext:   func() (string, bool) { return "BEH-1", true },
-			runPipeline:   func(string) TicketOutcome { ran++; return TicketOutcome{ReachedPushedPR: true} },
+			runPipeline:   func(string) stages.Result { ran++; return stages.Result{Disposition: stages.Shipped} },
 		},
 		Limits: Limits{
 			PollInterval: time.Minute,
@@ -245,7 +247,7 @@ func TestBreakerTripsAndExitsAfterThreeNoPRTickets(t *testing.T) {
 			fetchMain:     func() error { return nil },
 			stopRequested: func() bool { return false }, // never stopped — only the breaker can end this
 			resolveNext:   func() (string, bool) { return "BEH-99", true },
-			runPipeline:   func(string) TicketOutcome { ran++; return TicketOutcome{ReachedPushedPR: false} },
+			runPipeline:   func(string) stages.Result { ran++; return stages.Result{Disposition: stages.NoPR} },
 			release:       func(id string) error { released = append(released, id); return nil },
 		},
 		Limits: Limits{
@@ -298,8 +300,8 @@ func TestNoPRRunReleasesTicketBackToTodo(t *testing.T) {
 			fetchMain:     func() error { return nil },
 			stopRequested: stopAfter(1), // one ticket, then stop at the 2nd checkpoint
 			resolveNext:   func() (string, bool) { return "BEH-42", true },
-			runPipeline: func(string) TicketOutcome {
-				return TicketOutcome{ReachedPushedPR: false} // ran, but no PR (not a cap abort)
+			runPipeline: func(string) stages.Result {
+				return stages.Result{Disposition: stages.NoPR} // ran, but no PR (not a cap abort)
 			},
 			release: func(id string) error { released = append(released, id); return nil },
 		},
@@ -346,7 +348,7 @@ func TestNoPRRunCommentsOnRelease(t *testing.T) {
 			fetchMain:     func() error { return nil },
 			stopRequested: stopAfter(1),
 			resolveNext:   func() (string, bool) { return "BEH-42", true },
-			runPipeline:   func(string) TicketOutcome { return TicketOutcome{ReachedPushedPR: false} },
+			runPipeline:   func(string) stages.Result { return stages.Result{Disposition: stages.NoPR} },
 			release:       func(string) error { return nil },
 			comment:       c.post,
 		},
@@ -384,8 +386,8 @@ func TestRecommendCloseThatCannotCloseFallsBackToKeepingInProgress(t *testing.T)
 			fetchMain:     func() error { return nil },
 			stopRequested: stopAfter(1),
 			resolveNext:   func() (string, bool) { return "BEH-365", true },
-			runPipeline: func(string) TicketOutcome {
-				return TicketOutcome{ReachedPushedPR: false, RecommendClose: true}
+			runPipeline: func(string) stages.Result {
+				return stages.Result{Disposition: stages.RecommendClose}
 			}, // No CloseTicket wired — exercises the nil-closer fallback path.
 			release: func(id string) error { released = append(released, id); return nil },
 		},
@@ -420,8 +422,8 @@ func TestRecommendCloseRunClosesTicket(t *testing.T) {
 			fetchMain:     func() error { return nil },
 			stopRequested: stopAfter(1),
 			resolveNext:   func() (string, bool) { return "BEH-365", true },
-			runPipeline: func(string) TicketOutcome {
-				return TicketOutcome{ReachedPushedPR: false, RecommendClose: true}
+			runPipeline: func(string) stages.Result {
+				return stages.Result{Disposition: stages.RecommendClose}
 			},
 			closeTicket: func(id string) error { closed = append(closed, id); return nil },
 			release:     func(id string) error { released = append(released, id); return nil },
@@ -445,47 +447,6 @@ func TestRecommendCloseRunClosesTicket(t *testing.T) {
 	}
 }
 
-// TestRecommendCloseAfterPushedPRClosesTicket is the BEH-602 post-PR disposition: the
-// CI watch can recommend-close a branch that became a no-op only AFTER the pre-push
-// rebase, so the PR is already open — the outcome carries BOTH RecommendClose AND
-// ReachedPushedPR. The loop switch orders RecommendClose first precisely so this combo
-// still closes the ticket (BEH-682) rather than folding it into the normal shipped-PR
-// path. Guards against a reorder that would let a no-op PR look like a clean ship and
-// bounce the ticket on — and confirms it is closed, never released to Todo.
-func TestRecommendCloseAfterPushedPRClosesTicket(t *testing.T) {
-	r := &recorder{}
-	var closed, released []string
-	code := Run(Deps{
-		Host: &fakeHost{
-			clearStop:     func() error { return nil },
-			fetchMain:     func() error { return nil },
-			stopRequested: stopAfter(1),
-			resolveNext:   func() (string, bool) { return "BEH-365", true },
-			runPipeline: func(string) TicketOutcome {
-				return TicketOutcome{ReachedPushedPR: true, RecommendClose: true}
-			},
-			closeTicket: func(id string) error { closed = append(closed, id); return nil },
-			release:     func(id string) error { released = append(released, id); return nil },
-		},
-		Limits: Limits{
-			PollInterval:           time.Minute,
-			TickInterval:           2 * time.Second,
-			MaxConsecutiveFailures: 3,
-		},
-		Clock: testClock{sleep: func(time.Duration) {}},
-		Log:   r,
-	})
-	if code != 0 {
-		t.Errorf("exit code = %d, want 0 (a recommend-close run then stop is a clean exit)", code)
-	}
-	if want := []string{"BEH-365"}; !reflect.DeepEqual(closed, want) {
-		t.Errorf("closed = %v, want %v (a no-op PR combo must still close the ticket, not fold into the shipped path)", closed, want)
-	}
-	if len(released) != 0 {
-		t.Errorf("released = %v, want none (a recommend-close ticket is closed even when a no-op PR was opened, not bounced back to Todo)", released)
-	}
-}
-
 // TestRecommendCloseRunCommentsRecommendingClose proves the recommend-close path
 // leaves a distinct breadcrumb advising the human to close the ticket, rather than
 // the generic "released back to Todo" no-PR comment (which would mislead — the ticket
@@ -499,7 +460,7 @@ func TestRecommendCloseRunCommentsRecommendingClose(t *testing.T) {
 			fetchMain:     func() error { return nil },
 			stopRequested: stopAfter(1),
 			resolveNext:   func() (string, bool) { return "BEH-365", true },
-			runPipeline:   func(string) TicketOutcome { return TicketOutcome{RecommendClose: true} },
+			runPipeline:   func(string) stages.Result { return stages.Result{Disposition: stages.RecommendClose} },
 			closeTicket:   func(string) error { return nil },
 			release:       func(string) error { return nil },
 			comment:       c.post,
@@ -540,7 +501,7 @@ func TestRecommendCloseFailedCloseCommentsInProgressNotCanceled(t *testing.T) {
 			fetchMain:     func() error { return nil },
 			stopRequested: stopAfter(1),
 			resolveNext:   func() (string, bool) { return "BEH-365", true },
-			runPipeline:   func(string) TicketOutcome { return TicketOutcome{RecommendClose: true} },
+			runPipeline:   func(string) stages.Result { return stages.Result{Disposition: stages.RecommendClose} },
 			closeTicket:   func(string) error { return errors.New("tracker hiccup") },
 			release:       func(string) error { return nil },
 			comment:       c.post,
@@ -581,7 +542,7 @@ func TestCapAbortReleaseCommentsWithReason(t *testing.T) {
 			fetchMain:     func() error { return nil },
 			stopRequested: stopAfter(6), // 1 top checkpoint + 5 backoff ticks, then stop
 			resolveNext:   func() (string, bool) { return "BEH-7", true },
-			runPipeline:   func(string) TicketOutcome { return TicketOutcome{SpendingCapAbort: true} },
+			runPipeline:   func(string) stages.Result { return stages.Result{Disposition: stages.CapAborted} },
 			release:       func(string) error { return nil },
 			comment:       c.post,
 		},
@@ -626,9 +587,9 @@ func TestSpendingCapAbortReleasesTicketBacksOffAndLeavesBreakerNeutral(t *testin
 			fetchMain:     func() error { return nil },
 			stopRequested: stopAfter(6),
 			resolveNext:   func() (string, bool) { return "BEH-7", true },
-			runPipeline: func(string) TicketOutcome {
+			runPipeline: func(string) stages.Result {
 				ran++
-				return TicketOutcome{SpendingCapAbort: true}
+				return stages.Result{Disposition: stages.CapAborted}
 			},
 			release: func(id string) error { released = append(released, id); return nil },
 		},
@@ -689,9 +650,9 @@ func TestPreflightAbortReclaimsBacksOffAndLeavesBreakerNeutral(t *testing.T) {
 			fetchMain:     func() error { return nil },
 			stopRequested: stopAfter(6),
 			resolveNext:   func() (string, bool) { return "BEH-7", true },
-			runPipeline: func(string) TicketOutcome {
+			runPipeline: func(string) stages.Result {
 				ran++
-				return TicketOutcome{PreflightAbort: true}
+				return stages.Result{Disposition: stages.PreflightAborted}
 			}, // The impl stage owns the release on a preflight abort; a loop-level release here
 			// would be a wrong double-move, so fail loudly if the loop ever calls it.
 			release: func(id string) error {
@@ -736,7 +697,7 @@ func TestPreflightAbortReclaimsBacksOffAndLeavesBreakerNeutral(t *testing.T) {
 }
 
 // TestCapBackoffWaitsUntilParsedResetTime proves the loop honours the exact reset time
-// the abort message carried (BEH-708): when the cap outcome carries a CapResetTime, the
+// the abort message carried (BEH-708): when the cap outcome carries a CapResetAt, the
 // backoff waits until that reset plus the margin — resuming right when the cap clears —
 // instead of the fixed CapBackoff guess. The fixed CapBackoff is set SHORTER than the
 // reset-derived wait, so a regression that ignored the reset time would re-poll early and
@@ -754,9 +715,9 @@ func TestCapBackoffWaitsUntilParsedResetTime(t *testing.T) {
 			fetchMain:     func() error { return nil }, // 1 top checkpoint + 75 backoff ticks elapse, then stop at the next top checkpoint.
 			stopRequested: stopAfter(76),
 			resolveNext:   func() (string, bool) { return "BEH-7", true },
-			runPipeline: func(string) TicketOutcome {
+			runPipeline: func(string) stages.Result {
 				ran++
-				return TicketOutcome{SpendingCapAbort: true, CapResetTime: reset}
+				return stages.Result{Disposition: stages.CapAborted, CapResetAt: reset}
 			},
 			release: func(string) error { return nil },
 		},
@@ -784,7 +745,7 @@ func TestCapBackoffWaitsUntilParsedResetTime(t *testing.T) {
 }
 
 // TestCapBackoffFallsBackToFixedWhenResetImplausible proves the sanity ceiling: a
-// CapResetTime that resolves further out than maxCapResetBackoff (a timezone-skewed or
+// CapResetAt that resolves further out than maxCapResetBackoff (a timezone-skewed or
 // wrapped-to-tomorrow parse) is not trusted, so the loop uses the fixed CapBackoff
 // instead of sleeping for an absurd stretch (BEH-708).
 func TestCapBackoffFallsBackToFixedWhenResetImplausible(t *testing.T) {
@@ -798,7 +759,7 @@ func TestCapBackoffFallsBackToFixedWhenResetImplausible(t *testing.T) {
 			fetchMain:     func() error { return nil },
 			stopRequested: stopAfter(6), // 1 top + 5 fixed-backoff ticks (10s/2s), then stop
 			resolveNext:   func() (string, bool) { return "BEH-7", true },
-			runPipeline:   func(string) TicketOutcome { return TicketOutcome{SpendingCapAbort: true, CapResetTime: reset} },
+			runPipeline:   func(string) stages.Result { return stages.Result{Disposition: stages.CapAborted, CapResetAt: reset} },
 			release:       func(string) error { return nil },
 		},
 		Limits: Limits{
@@ -836,7 +797,7 @@ func TestCapBackoffNarratesEntryAndWake(t *testing.T) {
 			fetchMain:     func() error { return nil },
 			stopRequested: stopAfter(6), // 1 top checkpoint + 5 backoff ticks elapse, then stop
 			resolveNext:   func() (string, bool) { return "BEH-7", true },
-			runPipeline:   func(string) TicketOutcome { return TicketOutcome{SpendingCapAbort: true} },
+			runPipeline:   func(string) stages.Result { return stages.Result{Disposition: stages.CapAborted} },
 			release:       func(string) error { return nil },
 		},
 		Limits: Limits{
@@ -883,7 +844,7 @@ func TestCapBackoffEmitsPeriodicHeartbeat(t *testing.T) {
 			fetchMain:     func() error { return nil },
 			stopRequested: stopAfter(6), // 1 top checkpoint + 5 backoff ticks elapse, then stop
 			resolveNext:   func() (string, bool) { return "BEH-7", true },
-			runPipeline:   func(string) TicketOutcome { return TicketOutcome{SpendingCapAbort: true} },
+			runPipeline:   func(string) stages.Result { return stages.Result{Disposition: stages.CapAborted} },
 			release:       func(string) error { return nil },
 		},
 		Limits: Limits{
@@ -920,7 +881,7 @@ func TestCapBackoffEmitsNoHeartbeatWhenCadenceUnset(t *testing.T) {
 			fetchMain:     func() error { return nil },
 			stopRequested: stopAfter(6),
 			resolveNext:   func() (string, bool) { return "BEH-7", true },
-			runPipeline:   func(string) TicketOutcome { return TicketOutcome{SpendingCapAbort: true} },
+			runPipeline:   func(string) stages.Result { return stages.Result{Disposition: stages.CapAborted} },
 			release:       func(string) error { return nil },
 		},
 		Limits: Limits{
@@ -965,7 +926,7 @@ func TestCapBackoffIsInterruptibleByStop(t *testing.T) {
 			fetchMain:     func() error { return nil },
 			stopRequested: stop,
 			resolveNext:   func() (string, bool) { return "BEH-7", true },
-			runPipeline:   func(string) TicketOutcome { return TicketOutcome{SpendingCapAbort: true} },
+			runPipeline:   func(string) stages.Result { return stages.Result{Disposition: stages.CapAborted} },
 			release:       func(string) error { return nil },
 		},
 		Limits: Limits{
@@ -1015,13 +976,13 @@ func TestCapAbortThenNormalRunAutoResumes(t *testing.T) {
 				}
 				return "BEH-B", true
 			},
-			runPipeline: func(id string) TicketOutcome {
+			runPipeline: func(id string) stages.Result {
 				run++
 				ranWith = append(ranWith, id)
 				if id == "BEH-A" {
-					return TicketOutcome{SpendingCapAbort: true} // first run: capped
+					return stages.Result{Disposition: stages.CapAborted} // first run: capped
 				}
-				return TicketOutcome{ReachedPushedPR: true} // auto-resumed run: ships normally
+				return stages.Result{Disposition: stages.Shipped} // auto-resumed run: ships normally
 			},
 			release: func(id string) error { released = append(released, id); return nil },
 		},
@@ -1063,7 +1024,7 @@ func TestBreakerDoesNotTripWhenTicketsKeepShipping(t *testing.T) {
 			fetchMain:     func() error { return nil },
 			stopRequested: stopAfter(5), // five shipped tickets, then stop
 			resolveNext:   func() (string, bool) { return "BEH-1", true },
-			runPipeline:   func(string) TicketOutcome { ran++; return TicketOutcome{ReachedPushedPR: true} },
+			runPipeline:   func(string) stages.Result { ran++; return stages.Result{Disposition: stages.Shipped} },
 		},
 		Limits: Limits{
 			PollInterval:           time.Minute,
@@ -1097,7 +1058,7 @@ func TestMaxTicketsStopsCleanlyAfterCeiling(t *testing.T) {
 			fetchMain:     func() error { return nil },
 			stopRequested: func() bool { return false }, // never stopped — only the ceiling ends this
 			resolveNext:   func() (string, bool) { return "BEH-1", true },
-			runPipeline:   func(string) TicketOutcome { ran++; return TicketOutcome{ReachedPushedPR: true} },
+			runPipeline:   func(string) stages.Result { ran++; return stages.Result{Disposition: stages.Shipped} },
 		},
 		Limits: Limits{
 			PollInterval:           time.Minute,
@@ -1131,7 +1092,7 @@ func TestMaxTicketsZeroIsUnlimited(t *testing.T) {
 			fetchMain:     func() error { return nil },
 			stopRequested: stopAfter(5), // five tickets, then stop — not the ceiling
 			resolveNext:   func() (string, bool) { return "BEH-1", true },
-			runPipeline:   func(string) TicketOutcome { ran++; return TicketOutcome{ReachedPushedPR: true} },
+			runPipeline:   func(string) stages.Result { ran++; return stages.Result{Disposition: stages.Shipped} },
 		},
 		Limits: Limits{
 			PollInterval:           time.Minute,
@@ -1184,7 +1145,7 @@ func TestMaxRuntimeStopsCleanlyAfterCeiling(t *testing.T) {
 			fetchMain:     func() error { return nil },
 			stopRequested: func() bool { return false },
 			resolveNext:   func() (string, bool) { return "BEH-1", true },
-			runPipeline:   func(string) TicketOutcome { ran++; return TicketOutcome{ReachedPushedPR: true} },
+			runPipeline:   func(string) stages.Result { ran++; return stages.Result{Disposition: stages.Shipped} },
 		},
 		Limits: Limits{
 			PollInterval:           time.Minute,
@@ -1219,7 +1180,7 @@ func TestMaxRuntimeZeroIsUnlimited(t *testing.T) {
 			fetchMain:     func() error { return nil },
 			stopRequested: stopAfter(3),
 			resolveNext:   func() (string, bool) { return "BEH-1", true },
-			runPipeline:   func(string) TicketOutcome { ran++; return TicketOutcome{ReachedPushedPR: true} },
+			runPipeline:   func(string) stages.Result { ran++; return stages.Result{Disposition: stages.Shipped} },
 		},
 		Limits: Limits{
 			PollInterval:           time.Minute,
@@ -1268,9 +1229,9 @@ func TestIdleSleepIsBrokenIntoTicksAndStopsEarly(t *testing.T) {
 			fetchMain:     func() error { return nil },
 			stopRequested: stop,
 			resolveNext:   func() (string, bool) { return "", false }, // always empty → idle
-			runPipeline: func(string) TicketOutcome {
+			runPipeline: func(string) stages.Result {
 				t.Fatal("RunPipeline must not run on an empty queue")
-				return TicketOutcome{}
+				return stages.Result{}
 			},
 		},
 		Limits: Limits{
@@ -1329,7 +1290,7 @@ func TestDiskReclaimPrunesBelowThresholdBeforeSelecting(t *testing.T) {
 			pruneWorktrees: func() (int, error) { r.order = append(r.order, "prune"); return 2, nil },
 			cachePrune:     func() error { cachePruned = true; return nil },
 			resolveNext:    func() (string, bool) { r.order = append(r.order, "resolve"); return "", false },
-			runPipeline:    func(string) TicketOutcome { return TicketOutcome{ReachedPushedPR: true} },
+			runPipeline:    func(string) stages.Result { return stages.Result{Disposition: stages.Shipped} },
 		},
 		Limits: Limits{
 			DiskReclaimThreshold: 8 * gib,
@@ -1383,7 +1344,7 @@ func TestDiskReclaimSilentAtOrAboveThreshold(t *testing.T) {
 			pruneWorktrees: func() (int, error) { pruned = true; return 0, nil },
 			cachePrune:     func() error { cachePruned = true; return nil },
 			resolveNext:    func() (string, bool) { return "", false },
-			runPipeline:    func(string) TicketOutcome { return TicketOutcome{ReachedPushedPR: true} },
+			runPipeline:    func(string) stages.Result { return stages.Result{Disposition: stages.Shipped} },
 		},
 		Limits: Limits{
 			DiskReclaimThreshold: 8 * gib,
@@ -1423,7 +1384,7 @@ func TestDiskReclaimZeroThresholdDisables(t *testing.T) {
 			freeDisk:       func() (uint64, error) { statfsCalls++; return 0, nil },
 			pruneWorktrees: func() (int, error) { t.Fatal("prune must not run when reclaim is disabled"); return 0, nil },
 			resolveNext:    func() (string, bool) { return "", false },
-			runPipeline:    func(string) TicketOutcome { return TicketOutcome{ReachedPushedPR: true} },
+			runPipeline:    func(string) stages.Result { return stages.Result{Disposition: stages.Shipped} },
 		},
 		Limits: Limits{
 			DiskReclaimThreshold: 0, // disabled
@@ -1455,7 +1416,7 @@ func TestDiskReclaimRunsCachePruneWhenStillBelowAfterWorktreePrune(t *testing.T)
 			pruneWorktrees: func() (int, error) { r.order = append(r.order, "prune"); return 1, nil },
 			cachePrune:     func() error { r.order = append(r.order, "cache-prune"); return nil },
 			resolveNext:    func() (string, bool) { return "", false },
-			runPipeline:    func(string) TicketOutcome { return TicketOutcome{ReachedPushedPR: true} },
+			runPipeline:    func(string) stages.Result { return stages.Result{Disposition: stages.Shipped} },
 		},
 		Limits: Limits{
 			DiskReclaimThreshold: 8 * gib, // Below at the gate, and STILL below after the worktree prune → store prune runs.
@@ -1495,7 +1456,7 @@ func TestDiskReclaimRunsDockerPruneWhenStillBelowAfterCachePrune(t *testing.T) {
 			cachePrune:     func() error { r.order = append(r.order, "cache-prune"); return nil },
 			dockerPrune:    func() error { r.order = append(r.order, "docker-prune"); return nil },
 			resolveNext:    func() (string, bool) { return "", false },
-			runPipeline:    func(string) TicketOutcome { return TicketOutcome{ReachedPushedPR: true} },
+			runPipeline:    func(string) stages.Result { return stages.Result{Disposition: stages.Shipped} },
 		},
 		Limits: Limits{
 			DiskReclaimThreshold: 8 * gib,
@@ -1536,7 +1497,7 @@ func TestDiskReclaimSkipsDockerPruneOnceCheaperPrunesClearTheFloor(t *testing.T)
 			cachePrune:     func() error { cachePruned = true; return nil },
 			dockerPrune:    func() error { dockerPruned = true; return nil },
 			resolveNext:    func() (string, bool) { return "", false },
-			runPipeline:    func(string) TicketOutcome { return TicketOutcome{ReachedPushedPR: true} },
+			runPipeline:    func(string) stages.Result { return stages.Result{Disposition: stages.Shipped} },
 		},
 		Limits: Limits{
 			DiskReclaimThreshold: 8 * gib,
@@ -1581,7 +1542,7 @@ func TestDiskReclaimPruneFailureIsSwallowedAndBreakerUntouched(t *testing.T) {
 			pruneWorktrees: func() (int, error) { return 0, stubErr("gh unreachable") },
 			cachePrune:     func() error { return nil },
 			resolveNext:    func() (string, bool) { return "BEH-1", true },
-			runPipeline:    func(string) TicketOutcome { ran++; return TicketOutcome{ReachedPushedPR: true} },
+			runPipeline:    func(string) stages.Result { ran++; return stages.Result{Disposition: stages.Shipped} },
 		},
 		Limits: Limits{
 			DiskReclaimThreshold:   8 * gib,
@@ -1637,7 +1598,7 @@ func TestStopRequestedEmitsTerminalLoopStoppedRecord(t *testing.T) {
 			fetchMain:     func() error { return nil },
 			stopRequested: func() bool { return true },
 			resolveNext:   func() (string, bool) { return "", false },
-			runPipeline:   func(string) TicketOutcome { return TicketOutcome{} },
+			runPipeline:   func(string) stages.Result { return stages.Result{} },
 		},
 		Limits: Limits{
 			PollInterval: time.Minute,
@@ -1661,7 +1622,7 @@ func TestMaxTicketsEmitsTerminalLoopStoppedRecord(t *testing.T) {
 			fetchMain:     func() error { return nil },
 			stopRequested: func() bool { return false },
 			resolveNext:   func() (string, bool) { return "BEH-1", true },
-			runPipeline:   func(string) TicketOutcome { return TicketOutcome{ReachedPushedPR: true} },
+			runPipeline:   func(string) stages.Result { return stages.Result{Disposition: stages.Shipped} },
 		},
 		Limits: Limits{
 			PollInterval:           time.Minute,
@@ -1688,7 +1649,7 @@ func TestMaxRuntimeEmitsTerminalLoopStoppedRecord(t *testing.T) {
 			fetchMain:     func() error { return nil },
 			stopRequested: func() bool { return false },
 			resolveNext:   func() (string, bool) { return "BEH-1", true },
-			runPipeline:   func(string) TicketOutcome { return TicketOutcome{ReachedPushedPR: true} },
+			runPipeline:   func(string) stages.Result { return stages.Result{Disposition: stages.Shipped} },
 		},
 		Limits: Limits{
 			PollInterval:           time.Minute,
@@ -1716,7 +1677,7 @@ func TestBreakerTripEmitsTerminalLoopStoppedRecord(t *testing.T) {
 			fetchMain:     func() error { return nil },
 			stopRequested: func() bool { return false },
 			resolveNext:   func() (string, bool) { return "BEH-99", true },
-			runPipeline:   func(string) TicketOutcome { return TicketOutcome{ReachedPushedPR: false} },
+			runPipeline:   func(string) stages.Result { return stages.Result{Disposition: stages.NoPR} },
 			release:       func(string) error { return nil },
 		},
 		Limits: Limits{
@@ -1753,12 +1714,12 @@ func TestCommittedFixIsCompletedNotReleased(t *testing.T) {
 			fetchMain:     func() error { return nil },
 			stopRequested: stopAfter(1), // one ticket, then stop at the 2nd checkpoint
 			resolveNext:   func() (string, bool) { return "BEH-649", true },
-			runPipeline: func(string) TicketOutcome {
-				return TicketOutcome{ReachedPushedPR: false} // ran, committed, but never pushed
+			runPipeline: func(string) stages.Result {
+				return stages.Result{Disposition: stages.NoPR} // ran, committed, but never pushed
 			},
-			recoverFix: func(id string) (TicketOutcome, bool) {
+			recoverFix: func(id string) (stages.Result, bool) {
 				recovered = append(recovered, id)
-				return TicketOutcome{ReachedPushedPR: true}, true // there WAS a committed fix; completing it opened a PR
+				return stages.Result{Disposition: stages.Shipped}, true // there WAS a committed fix; completing it opened a PR
 			},
 			release: func(id string) error { released = append(released, id); return nil },
 		},
@@ -1801,8 +1762,8 @@ func TestNothingToRecoverFallsThroughToRelease(t *testing.T) {
 			fetchMain:     func() error { return nil },
 			stopRequested: stopAfter(1),
 			resolveNext:   func() (string, bool) { return "BEH-42", true },
-			runPipeline:   func(string) TicketOutcome { return TicketOutcome{ReachedPushedPR: false} }, // Nothing to recover: no committed-but-unpushed fix on the branch.
-			recoverFix:    func(string) (TicketOutcome, bool) { return TicketOutcome{}, false },
+			runPipeline:   func(string) stages.Result { return stages.Result{Disposition: stages.NoPR} }, // Nothing to recover: no committed-but-unpushed fix on the branch.
+			recoverFix:    func(string) (stages.Result, bool) { return stages.Result{}, false },
 			release:       func(id string) error { released = append(released, id); return nil },
 		},
 		Limits: Limits{
@@ -1823,7 +1784,7 @@ func TestNothingToRecoverFallsThroughToRelease(t *testing.T) {
 
 // TestFailedCompletionFallsThroughToRelease guards the completion-failure path: recovery
 // found a committed fix (attempted=true) but the push/PR could not be completed
-// (ReachedPushedPR=false — a flaky push, gh outage). Rather than strand the ticket In
+// (the completion is not Shipped — a flaky push, gh outage). Rather than strand the ticket In
 // Progress, the loop must fall through to the normal no-PR release so a later run can
 // re-grab it. A completion attempt that fails must never be worse than no attempt.
 func TestFailedCompletionFallsThroughToRelease(t *testing.T) {
@@ -1835,8 +1796,8 @@ func TestFailedCompletionFallsThroughToRelease(t *testing.T) {
 			fetchMain:     func() error { return nil },
 			stopRequested: stopAfter(1),
 			resolveNext:   func() (string, bool) { return "BEH-42", true },
-			runPipeline:   func(string) TicketOutcome { return TicketOutcome{ReachedPushedPR: false} }, // Found a committed fix, but completing it (push/PR) failed.
-			recoverFix:    func(string) (TicketOutcome, bool) { return TicketOutcome{ReachedPushedPR: false}, true },
+			runPipeline:   func(string) stages.Result { return stages.Result{Disposition: stages.NoPR} }, // Found a committed fix, but completing it (push/PR) failed.
+			recoverFix:    func(string) (stages.Result, bool) { return stages.Result{Disposition: stages.NoPR}, true },
 			release:       func(id string) error { released = append(released, id); return nil },
 		},
 		Limits: Limits{
@@ -1872,10 +1833,10 @@ func TestRepeatedCommittedFixCompletionsNeverTripBreaker(t *testing.T) {
 			fetchMain:     func() error { return nil },
 			stopRequested: stopAfter(5), // five committed-but-unpushed runs, then stop — NOT the breaker
 			resolveNext:   func() (string, bool) { return "BEH-649", true },
-			runPipeline:   func(string) TicketOutcome { return TicketOutcome{ReachedPushedPR: false} },
-			recoverFix: func(id string) (TicketOutcome, bool) {
+			runPipeline:   func(string) stages.Result { return stages.Result{Disposition: stages.NoPR} },
+			recoverFix: func(id string) (stages.Result, bool) {
 				completed = append(completed, id)
-				return TicketOutcome{ReachedPushedPR: true}, true
+				return stages.Result{Disposition: stages.Shipped}, true
 			},
 			release: func(id string) error { released = append(released, id); return nil },
 		},
@@ -1910,7 +1871,7 @@ func TestFailedCommentIsWarnedNotFatal(t *testing.T) {
 		Host: &fakeHost{
 			stopRequested: stopAfter(1),
 			resolveNext:   func() (string, bool) { return "BEH-42", true },
-			runPipeline:   func(string) TicketOutcome { return TicketOutcome{} },
+			runPipeline:   func(string) stages.Result { return stages.Result{} },
 			comment:       func(string, string) error { return errors.New("tracker 503") },
 		},
 		Limits: Limits{PollInterval: time.Minute, TickInterval: 2 * time.Second},

@@ -108,7 +108,7 @@ func TestImplementationPreflightFailureReleasesAPreClaimedTicket(t *testing.T) {
 
 	res := Implementation(h, stageCfg(), stageLog(t, "PROJ-2"), Args{Identifier: "PROJ-2", PreClaimed: true})
 
-	if res.Err == nil || !res.PreflightAbort {
+	if res.Err == nil || res.Disposition != PreflightAborted {
 		t.Fatalf("a refused preflight is an environmental abort, got %+v", res)
 	}
 	if got := h.Trk.Released; len(got) != 1 || got[0] != "PROJ-2" {

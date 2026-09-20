@@ -57,6 +57,15 @@ _Avoid_: check, test (those name specific gates, not the concept).
 A host-side, tracker-agnostic git assertion (worktree exists, commits ahead of
 base, clean tree) the harness verifies independently of what the sandbox reported.
 
+**Disposition**:
+A run's one terminal verdict — **Shipped**, **RecommendClose**, **CapAborted**,
+**PreflightAborted** or **NoPR** (`stages.Disposition`). Exactly one holds per
+stage and, folded across the three, per ticket; it is the only thing the loop
+branches on and the breaker counts. Distinct from a Stage's **OK**, which asks
+only "did this stage do its job?" — a Shipped run can be not-OK (CI red after the
+auto-fix budget) and an OK implementation is still NoPR (it never pushes).
+_Avoid_: outcome, signal, status.
+
 ### Sandbox
 
 **Sandbox base image**:

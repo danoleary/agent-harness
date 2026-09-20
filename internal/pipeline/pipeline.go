@@ -37,40 +37,7 @@ type Deps struct {
 	Log            Narrator
 }
 
-// Outcome is the pipeline's typed result. It carries the process ExitCode (what
-// the standalone cmd wrapper exits with) plus the two signals the autonomous loop's
-// circuit breaker keys on — ReachedPushedPR (the ticket shipped) and
-// SpendingCapAbort (a retry-after-reset control signal) — so the loop never has to
-// infer "did this ticket ship?" from the opaque exit code (DESIGN.md §Circuit
-// breaker).
-type Outcome struct {
-	// ExitCode is 0 iff every stage that ran succeeded, 1 otherwise.
-	ExitCode int
-	// ReachedPushedPR is true iff the review stage pushed the branch and opened a
-	// PR — the breaker's success signal, decoupled from ExitCode (a PR can exist on
-	// a non-zero exit, e.g. CI red after the auto-fix budget).
-	ReachedPushedPR bool
-	// SpendingCapAbort is true iff any stage was aborted by an external spending cap
-	// before finishing — the breaker stays blind to it (retry after the cap resets).
-	SpendingCapAbort bool
-	// SpendingCapResetTime is the exact reset instant a cap-aborting stage parsed from
-	// its abort message (BEH-708), taken from the first stage that carried one. Zero
-	// when no stage cap-aborted with a parseable reset time. The loop backs off until
-	// this instant rather than a fixed guess.
-	SpendingCapResetTime time.Time
-	// RecommendClose is true iff the review stage concluded the branch makes zero net
-	// change and the ticket should be closed as a duplicate/superseded rather than
-	// shipped (BEH-603). The loop keeps it In Progress for a human; breaker-neutral.
-	RecommendClose bool
-	// PreflightAbort is true iff the implementation stage's Docker preflight refused to
-	// launch (full disk / daemon down) before any work — an environmental abort. The
-	// loop reclaims disk + backs off and the breaker stays blind to it (like a cap
-	// abort). Only implementation preflights, so it comes from impl alone.
-	PreflightAbort bool
-}
-
-// Run executes the pipeline and returns the process exit code: 0 iff every stage
-// that *ran* succeeded, 1 otherwise. The order and skip rules (DESIGN.md):
+// Run executes the pipeline. The order and skip rules (DESIGN.md):
 //
 //   - fetch + fast-forward origin/main once, at the top (warn-only on failure —
 //     the stages still run; a stale main only risks a noisier merge-base check);
@@ -80,10 +47,12 @@ type Outcome struct {
 //     is exactly the run worth mining for findings (the one deliberate divergence
 //     from the loop's "if not OK -> skip rest").
 //
-// It returns a typed Outcome (not a bare exit code) so the autonomous loop can read
-// the breaker signals — did the ticket reach a pushed PR, was it cap-aborted —
-// without parsing logs or inferring them from ExitCode.
-func Run(d Deps) Outcome {
+// It returns the slice's folded [stages.Result] (not a bare exit code) so the
+// autonomous loop can read the run's Disposition — did the ticket ship, was it
+// cap-aborted — without parsing logs or inferring it from an exit code. OK is the
+// whole slice's verdict, so Result.ExitCode is the process exit code the standalone
+// wrapper exits with.
+func Run(d Deps) stages.Result {
 	// Fast-forward main once for the whole run: the three stages run seconds apart,
 	// so main won't meaningfully move mid-pipeline (DESIGN.md). A fetch failure is
 	// not fatal — keep going and let the stages' own checks surface any staleness.
@@ -122,24 +91,35 @@ func Run(d Deps) Outcome {
 	retro := d.Retrospective()
 	narrateErr(d.Log, "retrospective", retro)
 
-	ok := impl.OK && (!reviewRan || review.OK) && retro.OK
-	exit := 1
-	if ok {
-		exit = 0
+	// One folded Result for the whole slice: OK iff every stage that *ran* did its
+	// job, and one Disposition for the loop to act on.
+	return stages.Result{
+		OK:          impl.OK && (!reviewRan || review.OK) && retro.OK,
+		Disposition: fold(impl, review, retro),
+		CapResetAt:  firstResetTime(impl, review, retro),
 	}
-	// Breaker signals, decoupled from the exit code: only review pushes, so
-	// ReachedPushedPR comes from it alone; a cap abort anywhere in the chain is
-	// retry-after-reset.
-	return Outcome{
-		ExitCode:             exit,
-		ReachedPushedPR:      review.ReachedPushedPR,
-		SpendingCapAbort:     impl.SpendingCapAbort || review.SpendingCapAbort || retro.SpendingCapAbort,
-		SpendingCapResetTime: firstResetTime(impl, review, retro),
-		RecommendClose:       review.RecommendClose,
-		// Only the implementation stage runs the Docker preflight, so a preflight abort
-		// comes from it alone — never review/retro, which run after a green preflight.
-		PreflightAbort: impl.PreflightAbort,
+}
+
+// fold reduces the three stage dispositions to the run's one, in strict
+// precedence order. Only review can ship or recommend-close and only
+// implementation can preflight-abort, so at most one stage carries any given
+// value; the order is what decides between *different* stages disagreeing — a
+// retrospective that cap-aborts after a review that already shipped (or already
+// concluded the branch is a no-op) does not undo the review's verdict, while a cap
+// abort anywhere else is the run's story. PreflightAborted sits last of the
+// signals because a preflight abort skips review entirely, so it only ever
+// competes with a retrospective abort, which the loop has always let win.
+func fold(stagesInOrder ...stages.Result) stages.Disposition {
+	for _, want := range []stages.Disposition{
+		stages.Shipped, stages.RecommendClose, stages.CapAborted, stages.PreflightAborted,
+	} {
+		for _, s := range stagesInOrder {
+			if s.Disposition == want {
+				return want
+			}
+		}
 	}
+	return stages.NoPR
 }
 
 // firstResetTime returns the reset instant of the first stage (in run order) that
@@ -147,8 +127,8 @@ func Run(d Deps) Outcome {
 // Zero when no stage parsed a reset time — the loop then falls back to its fixed backoff.
 func firstResetTime(stagesInOrder ...stages.Result) time.Time {
 	for _, s := range stagesInOrder {
-		if !s.SpendingCapResetTime.IsZero() {
-			return s.SpendingCapResetTime
+		if !s.CapResetAt.IsZero() {
+			return s.CapResetAt
 		}
 	}
 	return time.Time{}

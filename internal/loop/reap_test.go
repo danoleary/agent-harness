@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/danoleary/agent-harness/internal/loopstream"
+
+	"github.com/danoleary/agent-harness/internal/stages"
 )
 
 // fixedNow is a stable clock for reaper tests so a claim's age is deterministic.
@@ -21,7 +23,7 @@ func reaperDeps(r *recorder, claims []StaleClaim, released *[]string) (Deps, *fa
 		fetchMain:     func() error { return nil },
 		stopRequested: stopAfter(1),
 		resolveNext:   func() (string, bool) { return "", false },
-		runPipeline:   func(string) TicketOutcome { return TicketOutcome{} },
+		runPipeline:   func(string) stages.Result { return stages.Result{} },
 		release:       func(id string) error { *released = append(*released, id); return nil },
 		claims:        func() ([]StaleClaim, error) { return claims, nil },
 	}

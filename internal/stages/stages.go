@@ -26,6 +26,7 @@ import (
 	"github.com/danoleary/agent-harness/internal/config"
 	"github.com/danoleary/agent-harness/internal/runlog"
 	"github.com/danoleary/agent-harness/internal/sandbox"
+	"github.com/danoleary/agent-harness/internal/session"
 )
 
 var ticketRE = regexp.MustCompile(`^[A-Z]+-\d+$`)
@@ -162,13 +163,76 @@ func ParseArgs(tool string, argv []string, allowNext bool) (Args, error) {
 	return a, nil
 }
 
-// Result is a stage's typed outcome. It is richer than a bare exit code so the
-// pipeline can sequence on OK (and the loop, later, can read structured results
-// instead of opaque codes). OK == true implies Err == nil.
+// Disposition is the terminal verdict of a stage, and — folded by the pipeline —
+// of a whole ticket run: the single signal the loop branches on and the circuit
+// breaker counts. The five values are exhaustive and mutually exclusive, which is
+// the point: they replaced four independent booleans that spelled 16 states of
+// which only these 5 were legal, with ~40 lines of prose forbidding the rest. The
+// compiler now forbids them.
+//
+// NoPR is the zero value deliberately: every bare `Result{}` / `Result{Err: err}`
+// return is a run that shipped nothing, so a stage that never thinks about its
+// disposition gets the right one.
+type Disposition int
+
+const (
+	// NoPR — the run produced no pushed PR and no control signal: a crash, an OOM,
+	// a red gate, an empty-diff verification failure, a hard setup error. The loop
+	// releases the ticket back to Todo and the breaker counts it as a failure to
+	// ship. On a stage that never ships (implementation, retrospective) it is also
+	// the ordinary success disposition — "nothing to say about shipping", with the
+	// stage's own verdict carried by OK.
+	NoPR Disposition = iota
+	// Shipped — the review stage pushed the branch and opened a PR. It is the
+	// breaker's success signal and is deliberately decoupled from OK: a PR can exist
+	// on a not-OK review (CI red after the auto-fix budget), which the breaker must
+	// NOT count as a failure (DESIGN.md §Circuit breaker).
+	Shipped
+	// CapAborted — an external Anthropic spending cap killed the session before it
+	// could finish (BEH-494). A retry-after-reset control signal, not a ticket
+	// verdict: the loop releases the ticket, backs off until CapResetAt and
+	// re-polls, and the breaker stays blind to it.
+	CapAborted
+	// PreflightAborted — the Docker sandbox preflight refused before any work began
+	// (a full host disk, an unreachable daemon). Only the implementation stage can
+	// produce it (it owns the preflight). Like a cap abort it is environmental: the
+	// loop reclaims disk and backs off, and the breaker stays blind to it so a
+	// poison top-of-queue ticket can't rack up identical 2s failures and trip it.
+	PreflightAborted
+	// RecommendClose — the branch makes zero net change against origin/main, so the
+	// review stage declined to open an empty-commit PR and recommends the ticket be
+	// closed as a duplicate/superseded (BEH-603/680/602). Only the review stage
+	// produces it. A correct terminal no-op: the loop closes the ticket rather than
+	// releasing it (releasing would re-run it to the same conclusion forever) and
+	// the breaker treats it as neutral.
+	RecommendClose
+)
+
+func (d Disposition) String() string {
+	switch d {
+	case Shipped:
+		return "shipped"
+	case CapAborted:
+		return "cap-aborted"
+	case PreflightAborted:
+		return "preflight-aborted"
+	case RecommendClose:
+		return "recommend-close"
+	default:
+		return "no-pr"
+	}
+}
+
+// Result is a stage's typed outcome — and, folded across the three stages, the
+// pipeline's. It is richer than a bare exit code so the pipeline can sequence on
+// OK and the loop can branch on Disposition instead of parsing logs or inferring
+// from an opaque exit code. OK == true implies Err == nil.
 type Result struct {
-	// OK is the ground-truth verdict: did this stage do its job?
+	// OK is the ground-truth verdict: did this stage do its job? Orthogonal to
+	// Disposition — a Shipped review can be not-OK (CI red after the auto-fix
+	// budget) and an OK implementation is still NoPR (it never pushes).
 	OK bool
-	// Err is a hard setup/IO error (config load, Linear fetch, Docker preflight)
+	// Err is a hard setup/IO error (config load, tracker fetch, Docker preflight)
 	// that the standalone wrapper prints to stderr before exiting 1. For the
 	// pipeline it is simply folded into "not OK".
 	Err error
@@ -178,34 +242,35 @@ type Result struct {
 	// later run, or a healthy host, may get further); the pipeline re-attempts the
 	// stage once when it is set (BEH-543). Never set when OK is true.
 	Retryable bool
-	// ReachedPushedPR marks that this stage pushed the branch and opened a PR. Only
-	// the review stage sets it. It is the loop circuit breaker's success signal —
-	// "did the ticket ship?" — and is deliberately decoupled from OK: a PR can exist
-	// (ReachedPushedPR true) on a not-OK review (CI red after the auto-fix budget),
-	// which the breaker must NOT count as a failure (DESIGN.md §Circuit breaker).
-	ReachedPushedPR bool
-	// SpendingCapAbort marks a stage an external Anthropic spending cap aborted
-	// before it could finish its work. The loop treats it as a retry-after-reset
-	// control signal, not a ticket failure, so the breaker stays blind to it.
-	SpendingCapAbort bool
-	// PreflightAbort marks a stage the Docker sandbox preflight refused before any
-	// work began — a full host disk or an unreachable daemon, not the ticket's fault.
-	// Only the implementation stage sets it (it owns the preflight). Like a cap abort
-	// it is an environmental control signal: the loop reclaims disk + backs off and
-	// the breaker stays blind to it, so a poison top-of-queue ticket can't rack up
-	// identical preflight failures and trip the breaker in seconds.
-	PreflightAbort bool
-	// SpendingCapResetTime is the exact reset instant the cap-abort message named,
-	// resolved at detection (BEH-708). Zero unless this stage cap-aborted with a
-	// parseable reset time. The pipeline folds it onto its Outcome so the loop backs
-	// off until the cap clears rather than a fixed guess.
-	SpendingCapResetTime time.Time
-	// RecommendClose marks the BEH-603 no-op disposition: the review stage found the
-	// branch makes zero net change against origin/main and declined to open an
-	// empty-commit PR, recommending the ticket be closed as a duplicate/superseded.
-	// Only the review stage sets it. The loop keeps such a ticket In Progress for a
-	// human to close (never released to Todo) and the breaker treats it as neutral.
-	RecommendClose bool
+	// Disposition is what the loop acts on: did this ship, abort, or produce
+	// nothing? See [Disposition].
+	Disposition Disposition
+	// CapResetAt is the exact reset instant the cap-abort message named, resolved at
+	// detection (BEH-708). Zero unless Disposition is CapAborted with a parseable
+	// reset time, in which case the loop backs off until then rather than a fixed
+	// guess.
+	CapResetAt time.Time
+}
+
+// ExitCode is the process exit code this Result means: 0 iff the work it reports
+// on did its job. cmd/pipeline exits with it, so the run's verdict and the
+// process's agree by construction.
+func (r Result) ExitCode() int {
+	if r.OK {
+		return 0
+	}
+	return 1
+}
+
+// capFailure is the "this stage failed, and an external spending cap may be why"
+// Result — the shape the review and retrospective stages end on when their session
+// produced no usable work. Keeping the conditional in one place is what stops the
+// cap disposition being re-derived (and mis-derived) at each return site.
+func capFailure(o session.Outcome) Result {
+	if !o.SpendingCapAbort {
+		return Result{OK: false}
+	}
+	return Result{OK: false, Disposition: CapAborted, CapResetAt: o.SpendingCapResetTime}
 }
 
 // LoadConfig loads the harness config: .env first (best-effort), then the
