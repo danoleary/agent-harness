@@ -5,8 +5,6 @@ package linear
 import (
 	"encoding/json"
 	"fmt"
-	"regexp"
-	"strconv"
 	"strings"
 
 	"github.com/danoleary/agent-harness/internal/findings"
@@ -16,63 +14,6 @@ import (
 
 // Client is the Linear adapter behind the host-side tracker port (ADR-0010).
 var _ tracker.Tracker = (*Client)(nil)
-
-// findingKeyRe matches the machine-readable dedup marker embedded in a filed
-// finding's body: `<!-- finding-key: <key> -->`. The harness writes it on filing
-// and reads it back on search, so dedup is an exact-key lookup, not fuzzy text.
-var findingKeyRe = regexp.MustCompile(`<!--\s*finding-key:\s*(\S+)\s*-->`)
-
-// ExtractFindingKey pulls the dedup key out of a filed finding's body, or "" when
-// the body carries no marker.
-func ExtractFindingKey(body string) string {
-	m := findingKeyRe.FindStringSubmatch(body)
-	if m == nil {
-		return ""
-	}
-	return m[1]
-}
-
-// findingKeyMarker renders the body marker for a dedup key.
-func findingKeyMarker(key string) string {
-	return "<!-- finding-key: " + key + " -->"
-}
-
-// occurrenceRe matches the occurrence-count marker a recurrence bump writes into a
-// filed finding's body: `<!-- occurrences: <n> -->`. Like the finding-key marker
-// it's machine-readable and invisible in rendered Markdown, so the count survives
-// round-trips without cluttering the human-facing issue.
-var occurrenceRe = regexp.MustCompile(`<!--\s*occurrences:\s*(\d+)\s*-->`)
-
-// occurrenceMarker renders the body marker for an occurrence count.
-func occurrenceMarker(n int) string {
-	return fmt.Sprintf("<!-- occurrences: %d -->", n)
-}
-
-// extractOccurrences reads the occurrence count from a finding body, defaulting
-// to 1 (the original filing) when the body carries no marker yet.
-func extractOccurrences(body string) int {
-	m := occurrenceRe.FindStringSubmatch(body)
-	if m == nil {
-		return 1
-	}
-	n, err := strconv.Atoi(m[1])
-	if err != nil || n < 1 {
-		return 1
-	}
-	return n
-}
-
-// withOccurrences returns body with its occurrence marker set to n — replacing an
-// existing marker in place, or appending one when the body has none.
-func withOccurrences(body string, n int) string {
-	if occurrenceRe.MatchString(body) {
-		return occurrenceRe.ReplaceAllString(body, occurrenceMarker(n))
-	}
-	if strings.TrimSpace(body) == "" {
-		return occurrenceMarker(n)
-	}
-	return body + "\n\n" + occurrenceMarker(n)
-}
 
 // Transport sends a GraphQL operation and returns the `data` payload as raw JSON
 // (the transport handles auth + transport-level errors).
@@ -415,7 +356,7 @@ func (c *Client) FileFinding(f findings.Finding, opts tracker.FileFindingOptions
 		kindLine, f.Body, opts.RelatedKey,
 	)
 	if key := strings.TrimSpace(f.Key); key != "" {
-		description += "\n\n" + findingKeyMarker(key)
+		description += "\n\n" + findings.KeyMarker(key)
 	}
 
 	// Always carry the agent-harness label, added alongside (not in place of)
@@ -526,7 +467,7 @@ func (c *Client) SearchFindings(teamID string) ([]tracker.ExistingFinding, error
 		out = append(out, tracker.ExistingFinding{
 			Identifier: n.Identifier,
 			Title:      n.Title,
-			Key:        ExtractFindingKey(n.Description),
+			Key:        findings.ExtractKey(n.Description),
 			Closed:     isClosedStateType(n.State.Type),
 		})
 	}
@@ -567,10 +508,10 @@ func (c *Client) RecordOccurrence(identifier, relatedIdentifier string) (int, er
 		return 0, fmt.Errorf("Linear issue not found: %s", identifier)
 	}
 
-	next := extractOccurrences(ctx.Issue.Description) + 1
+	next := findings.ExtractOccurrences(ctx.Issue.Description) + 1
 	if _, err := c.transport(updateDescriptionMutation, map[string]any{
 		"id":          ctx.Issue.ID,
-		"description": withOccurrences(ctx.Issue.Description, next),
+		"description": findings.WithOccurrences(ctx.Issue.Description, next),
 	}); err != nil {
 		return 0, err
 	}
