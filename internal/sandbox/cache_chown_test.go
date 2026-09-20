@@ -88,7 +88,6 @@ func TestPassesCachePathToEntrypointInWorktreeContainers(t *testing.T) {
 		args []string
 	}{
 		{"gate", BuildGateRunArgs(c, "true")},
-		{"install", BuildInstallRunArgs(c)},
 		{"post_create", BuildPostCreateRunArgs(c, "true")},
 	} {
 		if got := envValue(tc.args, "HARNESS_CACHE_PATH"); got != c.CacheMountPath {

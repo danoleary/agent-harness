@@ -857,17 +857,43 @@ func BranchPushed(herdPath, branchPrefix, slug string) bool {
 	return err == nil
 }
 
-// StripWorktreeNodeModules removes `web/node_modules` from the worktree the
-// implementation tool hands back. The sandbox builds the worktree on linux-arm64
-// (ADR-0002), so that tree carries Linux-only native bindings (`@oxlint/...`,
-// `@oxfmt/...`, `@rolldown/...`); a reviewer running the gates on a non-Linux host
-// hits a cryptic `MODULE_NOT_FOUND` and `pnpm install --frozen-lockfile` won't
-// repair it (the platform-conditional optional deps look satisfied). Stripping the
-// tree means the reviewer always installs fresh for their own platform — the
-// review-worktree skill already treats a missing `node_modules` as "run install
-// first" (BEH-412). Idempotent: a no-op when the dir is already absent.
-func StripWorktreeNodeModules(worktreePath string) error {
-	return os.RemoveAll(filepath.Join(worktreePath, "web", "node_modules"))
+// StripWorktreePaths removes the Consumer-declared handoff-strip paths from the
+// worktree the implementation tool hands back. The sandbox builds the worktree on
+// linux-arm64 (ADR-0002), so a dependency tree installed in there carries
+// Linux-only native bindings; a reviewer running the gates on a non-Linux host
+// hits a cryptic load failure that a frozen re-install won't repair (the
+// platform-conditional optional deps look satisfied). Stripping those paths means
+// the reviewer always installs fresh for their own platform, and the Consumer's
+// post_create re-provisions them before the review session (BEH-412).
+//
+// Which paths those are is a Consumer choice, not a harness fact: `web/node_modules`
+// for a pnpm monorepo, `obj/` + `bin/` for .NET, nothing at all for Go (BEH-641).
+// Paths are relative to the worktree root; an absolute or parent-escaping path is
+// refused so a stray config value can never delete outside the worktree.
+// Idempotent: a no-op when a path is already absent, and when none are declared.
+func StripWorktreePaths(worktreePath string, paths []string) error {
+	for _, rel := range paths {
+		rel = strings.TrimSpace(rel)
+		if rel == "" {
+			continue
+		}
+		if filepath.IsAbs(rel) {
+			return fmt.Errorf("handoff_strip_paths entry %q must be relative to the worktree", rel)
+		}
+		target := filepath.Join(worktreePath, rel)
+		// filepath.Join cleans the path, so a `../` escape shows up here as a target
+		// that is no longer under the worktree.
+		if target != worktreePath && !strings.HasPrefix(target, worktreePath+string(filepath.Separator)) {
+			return fmt.Errorf("handoff_strip_paths entry %q escapes the worktree", rel)
+		}
+		if target == worktreePath {
+			return fmt.Errorf("handoff_strip_paths entry %q resolves to the worktree root", rel)
+		}
+		if err := os.RemoveAll(target); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // CheckpointCommit captures whatever uncommitted work a finished session left in

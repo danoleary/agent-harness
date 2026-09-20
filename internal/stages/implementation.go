@@ -109,6 +109,23 @@ func retryableEnvCrash(outcome session.Outcome, capAborted bool) bool {
 // (RegraftOntoBase) and re-verifies, rather than discarding the run and re-running
 // the same doomed pipeline. It must NOT fire on the ordinary failure shapes (no
 // worktree, empty diff, or a healthy branch that failed for another reason).
+// sourceRoots resolves the Consumer's declared source roots (checkout-relative,
+// e.g. "src" or "web/src") to absolute paths for the resolved-symbol advisory.
+// An empty declaration yields no roots, which disables the advisory rather than
+// scanning a guessed directory (BEH-641).
+func sourceRoots(cfg config.Config) []string {
+	if len(cfg.SourceRoots) == 0 {
+		return nil
+	}
+	roots := make([]string, 0, len(cfg.SourceRoots))
+	for _, r := range cfg.SourceRoots {
+		if r = strings.TrimSpace(r); r != "" {
+			roots = append(roots, filepath.Join(cfg.ProjectPath, r))
+		}
+	}
+	return roots
+}
+
 func disjointWorkTrapped(truth verify.GroundTruth) bool {
 	return truth.WorktreeExists && truth.CommitsAhead > 0 && truth.DisjointHistory
 }
@@ -245,13 +262,15 @@ func Implementation(cfg config.Config, log *runlog.Logger, runID string, args Ar
 	log.Event(fmt.Sprintf("fetched %s (%s) — %s", t.Identifier, priority, t.Title))
 
 	// Advisory only: warn (don't skip) when the ticket cites code symbols that no
-	// longer exist in web/src — the BEH-544 signal that the work likely already
-	// merged, often under a *sibling* ticket the own-key TicketAlreadyOnMain scan
-	// can't catch. Unlike that high-confidence exact-key skip below, the symbol
-	// signal is heuristic (a cited symbol can be absent because the ticket asks to
-	// *create* it), so it only surfaces for the human + the in-session agent
-	// (steered by premiseCheckSteer) to act on — never drops the dispatch itself.
-	if adv := gitpkg.ResolvedAdvisory(filepath.Join(cfg.ProjectPath, "web", "src"), t.Identifier, t.Description); adv != "" {
+	// longer exist under the Consumer's declared source roots — the BEH-544 signal
+	// that the work likely already merged, often under a *sibling* ticket the
+	// own-key TicketAlreadyOnMain scan can't catch. Unlike that high-confidence
+	// exact-key skip below, the symbol signal is heuristic (a cited symbol can be
+	// absent because the ticket asks to *create* it), so it only surfaces for the
+	// human + the in-session agent (steered by premiseCheckSteer) to act on —
+	// never drops the dispatch itself. A Consumer that declares no `source_roots`
+	// gets no advisory rather than a scan of a guessed path (BEH-641).
+	if adv := gitpkg.ResolvedAdvisory(sourceRoots(cfg), t.Identifier, t.Description); adv != "" {
 		log.Event(adv)
 	}
 
@@ -482,12 +501,13 @@ func Implementation(cfg config.Config, log *runlog.Logger, runID string, args Ar
 			"tdd ✓ %s (%d commit%s ahead)", result.Reason, truth.CommitsAhead, plural,
 		))
 		// The worktree now goes to a (possibly non-Linux) reviewer. Strip the
-		// sandbox-built `web/node_modules` so its Linux-only native bindings don't
-		// crash the reviewer's gates — they install fresh for their own platform
-		// (BEH-412). Warn-only: the handoff commit already landed, and a leftover
-		// node_modules is recoverable, so a strip failure must not fail the run.
-		if err := gitpkg.StripWorktreeNodeModules(worktreePath); err != nil {
-			log.Event("⚠ could not strip web/node_modules from the worktree (" + err.Error() + ") — reviewer should `rm -rf web/node_modules && pnpm install`")
+		// Consumer-declared build artifacts the sandbox produced, so their
+		// platform-specific contents don't crash the reviewer's gates — the review
+		// stage re-provisions the worktree via post_create instead (BEH-412/641).
+		// Warn-only: the handoff commit already landed and the stripped paths are
+		// all regenerable, so a strip failure must not fail the run.
+		if err := gitpkg.StripWorktreePaths(worktreePath, cfg.HandoffStripPaths); err != nil {
+			log.Event("⚠ could not strip " + strings.Join(cfg.HandoffStripPaths, ", ") + " from the worktree (" + err.Error() + ") — the reviewer should re-run the project's post_create")
 		}
 	} else {
 		// A spending-cap abort (BEH-494) killed the session before it did any work,

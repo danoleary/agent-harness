@@ -103,7 +103,13 @@ func Plan(cfg config.Config, identifier string) string {
 		Model:          cfg.Model,
 		ContainerName:  name("review"),
 	})
-	installDocker := sandbox.BuildInstallRunArgs(withName("install"))
+	// The pre-session prep is the Consumer's post_create (BEH-641); a Consumer
+	// that declares none gets no prep container, and the plan must say so rather
+	// than print a container the run will not launch.
+	prepLine := "(none — the Consumer declares no post_create)"
+	if cfg.PostCreate != "" {
+		prepLine = dockerLine(sandbox.BuildPostCreateRunArgs(withName("prep"), cfg.PostCreate))
+	}
 	// One gate container per config-declared named gate, run in order (BEH-634).
 	gateLines := make([]string, 0, len(cfg.Gates))
 	for _, g := range cfg.Gates {
@@ -111,8 +117,8 @@ func Plan(cfg config.Config, identifier string) string {
 		gateLines = append(gateLines, fmt.Sprintf("# gate %q\n%s", g.Name, dockerLine(gateDocker)))
 	}
 	fmt.Fprintf(&b,
-		"\n=== stage 2: review (only if implementation succeeded) ===\n--- prompt ---\n%s\n\n--- install docker command ---\n%s\n\n--- review docker command ---\n%s\n\n--- gate docker commands ---\n%s\n",
-		reviewPrompt, dockerLine(installDocker), dockerLine(reviewDocker), strings.Join(gateLines, "\n\n"),
+		"\n=== stage 2: review (only if implementation succeeded) ===\n--- prompt ---\n%s\n\n--- prep docker command ---\n%s\n\n--- review docker command ---\n%s\n\n--- gate docker commands ---\n%s\n",
+		reviewPrompt, prepLine, dockerLine(reviewDocker), strings.Join(gateLines, "\n\n"),
 	)
 
 	// --- retrospective ---

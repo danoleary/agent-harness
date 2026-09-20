@@ -22,8 +22,10 @@ func testProjectConfig() ProjectConfig {
 			{Name: "typecheck", Command: "pnpm run typecheck"},
 		},
 		Tracker: TrackerConfig{
-			Kind: "linear", FindingsLabelID: "788a5654-a4b3-4ac2-8483-a4d50408ebc0",
-			ReadyLabel: "ready-for-agent", BlockedLabel: "Blocked",
+			Kind: "linear", TeamKey: "BEH",
+			FindingsLabelID: "788a5654-a4b3-4ac2-8483-a4d50408ebc0",
+			FindingsLabel:   "agent-harness",
+			ReadyLabel:      "ready-for-agent", BlockedLabel: "Blocked",
 		},
 	}
 }
@@ -114,6 +116,7 @@ post_create = "cd web && pnpm install --frozen-lockfile"
 
 [tracker]
 kind = "linear"
+team_key = "BEH"
 findings_label_id = "788a5654-a4b3-4ac2-8483-a4d50408ebc0"
 ready_label = "ready-for-agent"
 blocked_label = "Blocked"
@@ -188,6 +191,8 @@ func TestLoadProjectRequiredFieldsError(t *testing.T) {
 		"missing image": `
 [tracker]
 kind = "linear"
+team_key = "BEH"
+ready_label = "ready-for-agent"
 [[gates]]
 name = "check"
 command = "c"
@@ -202,11 +207,15 @@ command = "c"
 image = "x"
 [tracker]
 kind = "linear"
+team_key = "BEH"
+ready_label = "ready-for-agent"
 `,
 		"gate missing command": `
 image = "x"
 [tracker]
 kind = "linear"
+team_key = "BEH"
+ready_label = "ready-for-agent"
 [[gates]]
 name = "check"
 `,
@@ -214,6 +223,8 @@ name = "check"
 image = "x"
 [tracker]
 kind = "linear"
+team_key = "BEH"
+ready_label = "ready-for-agent"
 [[gates]]
 command = "c"
 `,
@@ -238,6 +249,8 @@ func TestLoadProjectAcceptsDockerfileWithoutImage(t *testing.T) {
 dockerfile = ".agent-harness/Dockerfile"
 [tracker]
 kind = "linear"
+team_key = "BEH"
+ready_label = "ready-for-agent"
 [[gates]]
 name = "check"
 command = "c"
@@ -260,6 +273,8 @@ func TestLoadProjectRequiresImageOrDockerfile(t *testing.T) {
 	writeProjectConfig(t, dir, `
 [tracker]
 kind = "linear"
+team_key = "BEH"
+ready_label = "ready-for-agent"
 [[gates]]
 name = "check"
 command = "c"
@@ -285,6 +300,8 @@ volume = "myproj-nuget"
 path = "/root/.nuget/packages"
 [tracker]
 kind = "linear"
+team_key = "BEH"
+ready_label = "ready-for-agent"
 [[gates]]
 name = "check"
 command = "c"
@@ -308,6 +325,8 @@ image = "x"
 pnpm_store_volume = "myproject-cache"
 [tracker]
 kind = "linear"
+team_key = "BEH"
+ready_label = "ready-for-agent"
 [[gates]]
 name = "check"
 command = "c"
@@ -332,6 +351,8 @@ image = "x"
 volume = "v"
 [tracker]
 kind = "linear"
+team_key = "BEH"
+ready_label = "ready-for-agent"
 [[gates]]
 name = "check"
 command = "c"
@@ -349,6 +370,8 @@ func TestLoadProjectCacheOptional(t *testing.T) {
 image = "x"
 [tracker]
 kind = "linear"
+team_key = "BEH"
+ready_label = "ready-for-agent"
 [[gates]]
 name = "check"
 command = "c"
@@ -368,6 +391,8 @@ func TestLoadProjectBranchPrefixDefaultsToFeat(t *testing.T) {
 image = "x"
 [tracker]
 kind = "linear"
+team_key = "BEH"
+ready_label = "ready-for-agent"
 [[gates]]
 name = "check"
 command = "c"
@@ -395,6 +420,8 @@ findings_label = "harness-finding"
 project = "myproject"
 [tracker]
 kind = "linear"
+team_key = "BEH"
+ready_label = "ready-for-agent"
 [[gates]]
 name = "check"
 command = "c"
@@ -425,6 +452,8 @@ func TestLoadProjectFeedbackDefaultsToOff(t *testing.T) {
 image = "x"
 [tracker]
 kind = "linear"
+team_key = "BEH"
+ready_label = "ready-for-agent"
 [[gates]]
 name = "check"
 command = "c"
@@ -446,6 +475,8 @@ func TestLoadProjectFeedbackValidation(t *testing.T) {
 image = "x"
 [tracker]
 kind = "linear"
+team_key = "BEH"
+ready_label = "ready-for-agent"
 [[gates]]
 name = "check"
 command = "c"
@@ -486,6 +517,8 @@ image = "x"
 upstream = "off"
 [tracker]
 kind = "linear"
+team_key = "BEH"
+ready_label = "ready-for-agent"
 [[gates]]
 name = "check"
 command = "c"
@@ -569,5 +602,106 @@ func TestLoadRejectsAMalformedPin(t *testing.T) {
 func TestLoadAcceptsNoPin(t *testing.T) {
 	if _, err := Load(fullEnv(nil), WithHarnessVersion("0.2.0")); err != nil {
 		t.Fatalf("Load without a pin: %v", err)
+	}
+}
+
+// --- Linear's per-kind required fields (BEH-641) ---
+//
+// Until the extraction the Linear adapter read its team key and ready label from
+// package constants, so a Consumer that declared neither silently inherited the
+// harness author's own workspace. They are now Consumer config, and neither has
+// a defensible default: an empty team key queries every team the credential can
+// see, and an empty ready label drops the human-applied blast-radius gate. Both
+// must fail loud at load rather than at the first poll.
+
+func TestLoadProjectLinearRequiresTeamKeyAndReadyLabel(t *testing.T) {
+	cases := map[string]struct {
+		body string
+		want string
+	}{
+		"missing team key": {body: `
+image = "x"
+[tracker]
+kind = "linear"
+ready_label = "ready-for-agent"
+[[gates]]
+name = "check"
+command = "c"
+`, want: "team_key"},
+		"missing ready label": {body: `
+image = "x"
+[tracker]
+kind = "linear"
+team_key = "BEH"
+[[gates]]
+name = "check"
+command = "c"
+`, want: "ready_label"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeProjectConfig(t, dir, tc.body)
+			_, err := LoadProject(dir)
+			if err == nil {
+				t.Fatalf("want an error for %s, got nil", name)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("error should name the missing %s field, got: %v", tc.want, err)
+			}
+		})
+	}
+}
+
+// The two fields are linear-only: GitHub scopes by repo and Jira by project key,
+// so requiring a Linear team key of them would be a new barrier to the very
+// Consumers the Tracker port exists to serve.
+func TestLoadProjectNonLinearKindsNeedNoTeamKey(t *testing.T) {
+	for _, kind := range []string{"github", "jira"} {
+		t.Run(kind, func(t *testing.T) {
+			dir := t.TempDir()
+			writeProjectConfig(t, dir, `
+image = "x"
+[tracker]
+kind = "`+kind+`"
+[[gates]]
+name = "check"
+command = "c"
+`)
+			if _, err := LoadProject(dir); err != nil {
+				t.Errorf("kind=%s must not require a Linear team key, got: %v", kind, err)
+			}
+		})
+	}
+}
+
+// The Linear adapter needs the findings label in both spellings — a UUID for the
+// create API, a name for the issue filter — so both must survive the load.
+func TestLoadProjectReadsBothFindingsLabelSpellings(t *testing.T) {
+	dir := t.TempDir()
+	writeProjectConfig(t, dir, `
+image = "x"
+[tracker]
+kind = "linear"
+team_key = "BEH"
+ready_label = "ready-for-agent"
+findings_label_id = "788a5654-a4b3-4ac2-8483-a4d50408ebc0"
+findings_label = "agent-harness"
+[[gates]]
+name = "check"
+command = "c"
+`)
+	pc, err := LoadProject(dir)
+	if err != nil {
+		t.Fatalf("LoadProject: %v", err)
+	}
+	if pc.Tracker.FindingsLabelID != "788a5654-a4b3-4ac2-8483-a4d50408ebc0" {
+		t.Errorf("FindingsLabelID = %q", pc.Tracker.FindingsLabelID)
+	}
+	if pc.Tracker.FindingsLabel != "agent-harness" {
+		t.Errorf("FindingsLabel = %q", pc.Tracker.FindingsLabel)
+	}
+	if pc.Tracker.TeamKey != "BEH" {
+		t.Errorf("TeamKey = %q", pc.Tracker.TeamKey)
 	}
 }

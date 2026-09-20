@@ -99,15 +99,17 @@ const MinFreeDiskBytes = 5 << 30 // 5 GiB
 // for the harness: it launches `docker run` sandboxes, so stale build cache and
 // unreferenced images accrete on the Docker volume and are frequently the
 // largest consumer — yet a real incident (BEH-433, 3.6 GiB free) showed the
-// pnpm/worktree reclaims recovered almost nothing while `docker builder prune
-// -af` recovered 6.6 GB. The pnpm store + merged-worktree prunes follow as the
-// cheaper, non-destructive fallbacks. (Worktree node_modules are hardlinks into
-// the pnpm store, so pruning worktrees only orphans store content — a follow-up
-// `pnpm store prune` is what actually reclaims it.)
+// toolchain-cache/worktree reclaims recovered almost nothing while `docker
+// builder prune -af` recovered 6.6 GB. The Consumer's own cache prune and the
+// merged-worktree prune follow as the cheaper, non-destructive fallbacks.
+//
+// The two Docker commands are harness facts, so they are named literally. The
+// cache prune is a Consumer fact — it was a hardcoded `pnpm store prune` here
+// until BEH-641, printed to operators of projects that have never used pnpm —
+// so it points at the Consumer's own declared command instead.
 const DiskReclaimHint = "reclaim Docker space with `docker builder prune -af` / `docker system prune -af` " +
 	"(build cache and unreferenced images are often the largest consumer for the harness), " +
-	"or free space with `pnpm store prune` and by pruning merged worktrees " +
-	"(`scripts/prune-merged-worktrees.sh --yes`)"
+	"or free space by running your project's `cache.prune_command` and pruning merged worktrees"
 
 // FreeDiskBytes reports the bytes available to an unprivileged writer on the
 // filesystem holding path, via statfs (Bavail × Bsize). It is the production
@@ -326,13 +328,6 @@ type GateConfig struct {
 	ContainerName string
 }
 
-// installCommand is the pre-session prep the review tool runs to repopulate the
-// worktree's web/node_modules — stripped on handoff (BEH-412) — against the warm
-// pnpm store, mirroring new-worktree.sh. A frozen install only, so the cold review
-// SESSION finds node_modules present instead of paying it mid-gate (BEH-490). Run
-// from `web/`, the source of truth for the pnpm scripts (see herd CLAUDE.md).
-const installCommand = "cd web && pnpm install --frozen-lockfile"
-
 // BuildGateRunArgs builds the argv (everything after `docker`) for the throwaway
 // container that re-runs ONE config-declared named gate's `command` on the reviewed
 // branch. This is the harness's OWN ground truth — never the agent's self-report —
@@ -342,8 +337,8 @@ const installCommand = "cd web && pnpm install --frozen-lockfile"
 // main checkout.
 //
 // The command is now the sole source of truth (BEH-634): the harness no longer
-// prepends a pnpm-specific `install && check && typecheck` — node_modules is
-// pre-populated by the separate install container (BEH-490, BuildInstallRunArgs),
+// prepends a pnpm-specific `install && check && typecheck` — the worktree is
+// pre-provisioned by the separate post_create container (BEH-490/BEH-641),
 // and each gate command runs verbatim from config, so a Go (`go test ./...`) or
 // .NET (`dotnet test`) Consumer differs only in config. herd's `pnpm run check` /
 // `pnpm run typecheck` resolve from the worktree root via the committed root
@@ -354,17 +349,6 @@ const installCommand = "cd web && pnpm install --frozen-lockfile"
 // backstop (the harness watches CI post-PR via ci.WatchAndFix).
 func BuildGateRunArgs(c GateConfig, command string) []string {
 	return buildWorktreeBashArgs(c, command)
-}
-
-// BuildInstallRunArgs builds the argv for the throwaway container that pre-populates
-// the worktree's web/node_modules before the cold review session. The implementation
-// tool strips node_modules on handoff (BEH-412) so a non-Linux host reviewer installs
-// fresh; in the always-Linux review sandbox that strip just means the session would
-// otherwise pay `pnpm install` mid-gate (BEH-490). This runs the install up front —
-// install ONLY (the later gate container owns check/build) — so the session opens
-// onto a ready worktree. Like the gate it carries NO secrets and runs in the worktree.
-func BuildInstallRunArgs(c GateConfig) []string {
-	return buildWorktreeBashArgs(c, installCommand)
 }
 
 // BuildPostCreateRunArgs builds the argv for the throwaway container that runs the

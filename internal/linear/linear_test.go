@@ -11,6 +11,19 @@ import (
 	"github.com/danoleary/agent-harness/internal/tracker"
 )
 
+// testOptions is the selection surface the adapter's tests run against — the
+// values that were hardcoded constants before BEH-641 made them Consumer config,
+// so the existing expectations keep asserting the same queries and labels.
+func testOptions() Options {
+	return Options{
+		TeamKey:         "BEH",
+		Ready:           "ready-for-agent",
+		Blocked:         "Blocked",
+		FindingsLabelID: "788a5654-a4b3-4ac2-8483-a4d50408ebc0",
+		FindingsLabel:   "agent-harness",
+	}
+}
+
 // fakeTransport returns the given data payload (marshalled) for every call,
 // recording the operations it saw.
 type call struct {
@@ -44,7 +57,7 @@ func TestFetchTicketParsesIssue(t *testing.T) {
 		},
 	})
 
-	got, err := NewClient(tr).FetchTicket("BEH-362")
+	got, err := NewClient(tr, testOptions()).FetchTicket("BEH-362")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -80,7 +93,7 @@ func TestFetchTicketParsesSubIssues(t *testing.T) {
 		},
 	})
 
-	got, err := NewClient(tr).FetchTicket("BEH-520")
+	got, err := NewClient(tr, testOptions()).FetchTicket("BEH-520")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -109,7 +122,7 @@ func TestFetchTicketNoSubIssues(t *testing.T) {
 		},
 	})
 
-	got, err := NewClient(tr).FetchTicket("BEH-362")
+	got, err := NewClient(tr, testOptions()).FetchTicket("BEH-362")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -121,7 +134,7 @@ func TestFetchTicketNoSubIssues(t *testing.T) {
 func TestFetchTicketNotFound(t *testing.T) {
 	tr, _ := transportReturning(t, map[string]any{"issue": nil})
 
-	_, err := NewClient(tr).FetchTicket("BEH-999")
+	_, err := NewClient(tr, testOptions()).FetchTicket("BEH-999")
 	if err == nil || !strings.Contains(err.Error(), "BEH-999") {
 		t.Errorf("expected not-found error mentioning BEH-999, got %v", err)
 	}
@@ -150,7 +163,7 @@ func TestMoveToInProgress(t *testing.T) {
 		return json.Marshal(map[string]any{"issueUpdate": map[string]any{"success": true}})
 	}
 
-	if err := NewClient(tr).MoveToInProgress("BEH-362"); err != nil {
+	if err := NewClient(tr, testOptions()).MoveToInProgress("BEH-362"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -220,7 +233,7 @@ func TestReleaseToTodo(t *testing.T) {
 		return json.Marshal(map[string]any{"issueUpdate": map[string]any{"success": true}})
 	}
 
-	if err := NewClient(tr).ReleaseToTodo("BEH-324"); err != nil {
+	if err := NewClient(tr, testOptions()).ReleaseToTodo("BEH-324"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -266,7 +279,7 @@ func TestMoveToCanceled(t *testing.T) {
 		return json.Marshal(map[string]any{"issueUpdate": map[string]any{"success": true}})
 	}
 
-	if err := NewClient(tr).MoveToCanceled("BEH-682"); err != nil {
+	if err := NewClient(tr, testOptions()).MoveToCanceled("BEH-682"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -304,7 +317,7 @@ func TestSearchFindingsParsesIssuesAndKeys(t *testing.T) {
 		},
 	})
 
-	got, err := NewClient(tr).SearchFindings("team-uuid")
+	got, err := NewClient(tr, testOptions()).SearchFindings("team-uuid")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -371,7 +384,7 @@ func fileFindingTransport(t *testing.T, captured *map[string]any) Transport {
 
 func TestFileFinding(t *testing.T) {
 	var captured map[string]any
-	created, err := NewClient(fileFindingTransport(t, &captured)).FileFinding(
+	created, err := NewClient(fileFindingTransport(t, &captured), testOptions()).FileFinding(
 		findings.Finding{Title: "tokens:build missing", Body: "Storybook died", Kind: "setup"},
 		tracker.FileFindingOptions{TeamID: "team-uuid", RelatedKey: "BEH-362"},
 	)
@@ -402,8 +415,8 @@ func TestFileFinding(t *testing.T) {
 
 	// Filed findings must carry the agent-harness label so SearchFindings can find them.
 	labelIDs, _ := input["labelIds"].([]string)
-	if len(labelIDs) != 1 || labelIDs[0] != agentHarnessLabelID {
-		t.Errorf("labelIds = %v, want [%s]", input["labelIds"], agentHarnessLabelID)
+	if len(labelIDs) != 1 || labelIDs[0] != testOptions().FindingsLabelID {
+		t.Errorf("labelIds = %v, want [%s]", input["labelIds"], testOptions().FindingsLabelID)
 	}
 }
 
@@ -411,7 +424,7 @@ func TestFileFinding(t *testing.T) {
 // later run can dedup on an exact-key lookup.
 func TestFileFindingEmbedsKeyMarker(t *testing.T) {
 	var captured map[string]any
-	_, err := NewClient(fileFindingTransport(t, &captured)).FileFinding(
+	_, err := NewClient(fileFindingTransport(t, &captured), testOptions()).FileFinding(
 		findings.Finding{Title: "Playwright missing", Body: "no deps", Key: "sandbox-playwright-missing-deps"},
 		tracker.FileFindingOptions{TeamID: "team-uuid", RelatedKey: "BEH-394"},
 	)
@@ -438,7 +451,7 @@ func TestFileFindingLabelsWithAgentHarness(t *testing.T) {
 		})
 	}
 
-	_, err := NewClient(tr).FileFinding(
+	_, err := NewClient(tr, testOptions()).FileFinding(
 		findings.Finding{Title: "x", Body: "y"},
 		tracker.FileFindingOptions{TeamID: "team-uuid", RelatedKey: "BEH-362"},
 	)
@@ -447,8 +460,8 @@ func TestFileFindingLabelsWithAgentHarness(t *testing.T) {
 	}
 
 	input, _ := captured["input"].(map[string]any)
-	if !labelIDsContain(input["labelIds"], agentHarnessLabelID) {
-		t.Errorf("labelIds = %v, want it to contain agent-harness label %q", input["labelIds"], agentHarnessLabelID)
+	if !labelIDsContain(input["labelIds"], testOptions().FindingsLabelID) {
+		t.Errorf("labelIds = %v, want it to contain agent-harness label %q", input["labelIds"], testOptions().FindingsLabelID)
 	}
 }
 
@@ -466,7 +479,7 @@ func TestFileFindingAddsAgentHarnessAlongsideFindingLabels(t *testing.T) {
 		})
 	}
 
-	_, err := NewClient(tr).FileFinding(
+	_, err := NewClient(tr, testOptions()).FileFinding(
 		findings.Finding{Title: "x", Body: "y", LabelIDs: []string{"own-label-uuid"}},
 		tracker.FileFindingOptions{TeamID: "team-uuid", RelatedKey: "BEH-362"},
 	)
@@ -478,7 +491,7 @@ func TestFileFindingAddsAgentHarnessAlongsideFindingLabels(t *testing.T) {
 	if !labelIDsContain(input["labelIds"], "own-label-uuid") {
 		t.Errorf("labelIds = %v, want it to keep the finding's own label", input["labelIds"])
 	}
-	if !labelIDsContain(input["labelIds"], agentHarnessLabelID) {
+	if !labelIDsContain(input["labelIds"], testOptions().FindingsLabelID) {
 		t.Errorf("labelIds = %v, want it to also contain agent-harness label", input["labelIds"])
 	}
 }
@@ -515,7 +528,7 @@ func TestRecordOccurrenceBumpsCountAndComments(t *testing.T) {
 		"AddComment":        map[string]any{"commentCreate": map[string]any{"success": true}},
 	})
 
-	count, err := NewClient(tr).RecordOccurrence("BEH-405", "BEH-370")
+	count, err := NewClient(tr, testOptions()).RecordOccurrence("BEH-405", "BEH-370")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -560,7 +573,7 @@ func TestRecordOccurrenceIncrementsExistingMarker(t *testing.T) {
 		"AddComment":        map[string]any{"commentCreate": map[string]any{"success": true}},
 	})
 
-	count, err := NewClient(tr).RecordOccurrence("BEH-405", "BEH-370")
+	count, err := NewClient(tr, testOptions()).RecordOccurrence("BEH-405", "BEH-370")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -585,7 +598,7 @@ func TestRecordOccurrenceErrorsWhenIssueMissing(t *testing.T) {
 	tr, _ := routingTransport(t, map[string]any{
 		"OccurrenceContext": map[string]any{"issue": nil},
 	})
-	if _, err := NewClient(tr).RecordOccurrence("BEH-405", "BEH-370"); err == nil {
+	if _, err := NewClient(tr, testOptions()).RecordOccurrence("BEH-405", "BEH-370"); err == nil {
 		t.Error("expected an error when the issue is not found, got nil")
 	}
 }
@@ -641,7 +654,7 @@ func TestAddCommentResolvesIDThenComments(t *testing.T) {
 		return json.RawMessage(`{"commentCreate":{"success":true}}`), nil
 	}
 
-	if err := NewClient(tr).AddComment("BEH-581", "branch needs a manual rebase"); err != nil {
+	if err := NewClient(tr, testOptions()).AddComment("BEH-581", "branch needs a manual rebase"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(calls) != 2 {
@@ -670,7 +683,86 @@ func TestAddCommentErrorsWhenIssueNotFound(t *testing.T) {
 	tr := func(string, map[string]any) (json.RawMessage, error) {
 		return json.RawMessage(`{"issue":null}`), nil
 	}
-	if err := NewClient(tr).AddComment("BEH-404", "x"); err == nil {
+	if err := NewClient(tr, testOptions()).AddComment("BEH-404", "x"); err == nil {
 		t.Error("expected an error when the issue does not resolve")
+	}
+}
+
+// --- Consumer-configured findings label (BEH-641) ---
+
+// Linear's create API takes a label UUID while its issue filter matches labels
+// by name, so the adapter carries both spellings. Filing must use the Consumer's
+// UUID, not the workspace UUID that used to be a package constant.
+func TestFileFindingUsesTheConfiguredLabelID(t *testing.T) {
+	var captured map[string]any
+	opts := Options{TeamKey: "PROJ", Ready: "agent-ready", FindingsLabelID: "consumer-label-uuid"}
+
+	if _, err := NewClient(fileFindingTransport(t, &captured), opts).FileFinding(
+		findings.Finding{Title: "t", Body: "b", Kind: "setup"},
+		tracker.FileFindingOptions{TeamID: "team-uuid", RelatedKey: "PROJ-1"},
+	); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	input, _ := captured["input"].(map[string]any)
+	labelIDs, _ := input["labelIds"].([]string)
+	if len(labelIDs) != 1 || labelIDs[0] != "consumer-label-uuid" {
+		t.Errorf("labelIds = %v, want [consumer-label-uuid]", input["labelIds"])
+	}
+}
+
+// Filing is best-effort by contract (ADR-0001), so an unconfigured label files
+// the finding unlabelled rather than refusing it or sending an empty label id.
+func TestFileFindingWithNoLabelConfiguredFilesUnlabelled(t *testing.T) {
+	var captured map[string]any
+	opts := Options{TeamKey: "PROJ", Ready: "agent-ready"}
+
+	if _, err := NewClient(fileFindingTransport(t, &captured), opts).FileFinding(
+		findings.Finding{Title: "t", Body: "b", Kind: "setup"},
+		tracker.FileFindingOptions{TeamID: "team-uuid", RelatedKey: "PROJ-1"},
+	); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	input, _ := captured["input"].(map[string]any)
+	if labelIDs, _ := input["labelIds"].([]string); len(labelIDs) != 0 {
+		t.Errorf("labelIds = %v, want none — an unset label must not send an empty id", labelIDs)
+	}
+}
+
+func TestSearchFindingsScopesToTheConfiguredLabelName(t *testing.T) {
+	tr, calls := transportReturning(t, map[string]any{"issues": map[string]any{"nodes": []any{}}})
+	opts := Options{TeamKey: "PROJ", Ready: "agent-ready", FindingsLabel: "consumer-findings"}
+
+	if _, err := NewClient(tr, opts).SearchFindings("team-uuid"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(*calls) == 0 {
+		t.Fatal("no GraphQL call recorded")
+	}
+	filter, _ := (*calls)[0].variables["filter"].(map[string]any)
+	labels, _ := filter["labels"].(map[string]any)
+	name, _ := labels["name"].(map[string]any)
+	if name["eq"] != "consumer-findings" {
+		t.Errorf("labels.name.eq = %v, want consumer-findings", name["eq"])
+	}
+}
+
+// With no findings label the dedup search must return nothing rather than widen
+// to the whole team: a duplicate filed finding is a smaller harm than
+// mis-deduping a real one against an unrelated issue.
+func TestSearchFindingsWithNoLabelConfiguredReturnsNothing(t *testing.T) {
+	tr, calls := transportReturning(t, map[string]any{"issues": map[string]any{"nodes": []any{}}})
+	opts := Options{TeamKey: "PROJ", Ready: "agent-ready"}
+
+	got, err := NewClient(tr, opts).SearchFindings("team-uuid")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("got %d findings, want none", len(got))
+	}
+	if len(*calls) != 0 {
+		t.Errorf("an unscoped dedup search must not query Linear at all, saw %d call(s)", len(*calls))
 	}
 }

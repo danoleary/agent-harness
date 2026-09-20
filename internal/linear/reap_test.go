@@ -45,7 +45,7 @@ func claimNode(id, startedAt string, attachmentURLs ...string) map[string]any {
 // raw signal the reaper needs to decide strandedness.
 func TestListInProgressClaimsParsesStartedAtAndNoPR(t *testing.T) {
 	tr, _ := inProgressTransport(t, claimNode("BEH-451", "2026-07-03T21:34:00Z"))
-	claims, err := NewClient(tr).ListInProgressClaims()
+	claims, err := NewClient(tr, testOptions()).ListInProgressClaims()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -69,7 +69,7 @@ func TestListInProgressClaimsParsesStartedAtAndNoPR(t *testing.T) {
 // reaper leaves it alone (the work shipped, or is mid-review).
 func TestListInProgressClaimsDetectsLinkedPR(t *testing.T) {
 	tr, _ := inProgressTransport(t, claimNode("BEH-633", "2026-07-03T20:00:00Z", "https://github.com/example-org/example-repo/pull/733"))
-	claims, err := NewClient(tr).ListInProgressClaims()
+	claims, err := NewClient(tr, testOptions()).ListInProgressClaims()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -81,7 +81,7 @@ func TestListInProgressClaimsDetectsLinkedPR(t *testing.T) {
 // A non-PR attachment (e.g. a bare Linear/doc link) does not count as a linked PR.
 func TestListInProgressClaimsIgnoresNonPRAttachment(t *testing.T) {
 	tr, _ := inProgressTransport(t, claimNode("BEH-451", "2026-07-03T21:34:00Z", "https://linear.app/example-workspace/issue/BEH-451"))
-	claims, err := NewClient(tr).ListInProgressClaims()
+	claims, err := NewClient(tr, testOptions()).ListInProgressClaims()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -95,7 +95,7 @@ func TestListInProgressClaimsIgnoresNonPRAttachment(t *testing.T) {
 // and ready-for-agent. Reaping must never touch a human's claim.
 func TestListInProgressClaimsScopesToAgentClaims(t *testing.T) {
 	tr, calls := inProgressTransport(t, claimNode("BEH-451", "2026-07-03T21:34:00Z"))
-	if _, err := NewClient(tr).ListInProgressClaims(); err != nil {
+	if _, err := NewClient(tr, testOptions()).ListInProgressClaims(); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(*calls) != 1 {

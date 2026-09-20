@@ -67,12 +67,12 @@ const capBackoffHeartbeat = time.Minute
 // hang the exit path (BEH-388) — the second Ctrl-C must always terminate promptly.
 const killDockerTimeout = 10 * time.Second
 
-// pruneTimeout / storePruneTimeout bound the disk-reclaim shell-outs (ADR-0005) so a
+// pruneTimeout / cachePruneTimeout bound the disk-reclaim shell-outs (ADR-0005) so a
 // stalled `gh`/network or a wedged pnpm can't hang the between-ticket reclaim. The
 // prune script makes one `gh pr view` per worktree, so it gets the more generous cap.
 const (
 	pruneTimeout      = 5 * time.Minute
-	storePruneTimeout = 2 * time.Minute
+	cachePruneTimeout = 2 * time.Minute
 	// dockerPruneTimeout bounds the Docker build-cache/image prune. It gets the more
 	// generous cap because a large build cache can take a while to walk and delete, and
 	// a wedged daemon must not hang the between-ticket reclaim.
@@ -83,7 +83,7 @@ const (
 // input — so it shares nothing with stages.Usage beyond the shape.
 const usage = `usage: loop [--help] [--version]
 
-Works the ready-for-agent queue unattended, one ticket at a time: implementation,
+Works the tracker's ready queue unattended, one ticket at a time: implementation,
 review and retrospective per ticket, then a PR. Takes no arguments.
 
 Configuration is read from the environment, filled in from the first of:
@@ -204,7 +204,7 @@ func main() {
 		DiskReclaimThreshold: cfg.LoopDiskReclaimThreshold,
 		FreeDisk:             func() (uint64, error) { return sandbox.FreeDiskBytes(cfg.ProjectPath) },
 		PruneMergedWorktrees: func() (int, error) { return pruneMergedWorktrees(cfg.ProjectPath) },
-		StorePrune:           func() error { return storePrune(cfg.ProjectPath) },
+		CachePrune:           cachePruneFor(cfg),
 		DockerPrune:          func() error { return dockerPrune(cfg.ProjectPath) },
 		Log:                  log,
 	})
@@ -381,15 +381,33 @@ func pruneMergedWorktrees(herdPath string) (int, error) {
 	return parsePrunedCount(string(out)), nil
 }
 
-// storePrune runs `pnpm store prune` — the cheap, non-destructive, network-free
-// secondary reclaim (ADR-0005) — bounded so a wedged pnpm can't hang the loop. The
-// global store is shared regardless of cwd; herdPath is used only to anchor the call.
-func storePrune(herdPath string) error {
-	out, err := proc.CombinedOutputInDir(storePruneTimeout, herdPath, "pnpm", "store", "prune")
+// cachePrune runs the Consumer's declared `cache.prune_command` — the cheap,
+// non-destructive, network-free secondary reclaim (ADR-0005) — bounded so a
+// wedged package manager can't hang the loop. It was a hardcoded `pnpm store
+// prune` until BEH-641; the cache itself has been Consumer-declared since
+// BEH-635, and this is the missing third piece of that surface.
+//
+// Shell-interpreted (`sh -c`) because a Consumer writes a command line, not an
+// argv, and run on the HOST rather than in a sandbox: the caches it reclaims are
+// the host's, the same reason the worktree and Docker prunes run host-side.
+// projectPath anchors the call; a toolchain whose cache is global ignores cwd.
+func cachePrune(projectPath, command string) error {
+	out, err := proc.CombinedOutputInDir(cachePruneTimeout, projectPath, "sh", "-c", command)
 	if err != nil {
 		return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+// cachePruneFor returns the loop's cache-prune thunk, or nil when the Consumer
+// declared no `cache.prune_command`. Nil is the loop's own "skip this rung"
+// signal, so a Go Consumer with nothing to prune simply drops the step instead
+// of running someone else's package manager.
+func cachePruneFor(cfg config.Config) func() error {
+	if cfg.CachePruneCommand == "" {
+		return nil
+	}
+	return func() error { return cachePrune(cfg.ProjectPath, cfg.CachePruneCommand) }
 }
 
 // dockerPrune reclaims the harness's usual disk hog — Docker build cache and

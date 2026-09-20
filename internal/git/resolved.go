@@ -186,14 +186,28 @@ func inAddContext(preceding string) bool {
 	return false
 }
 
-// symbolPresent reports whether srcRoot contains a whole-word occurrence of the
-// symbol. `-w` is the precision knob: `syncLog` must not match `syncLogger`, so
-// a member whose container survives but whose own definition was deleted still
-// reads as absent. `-F` treats the symbol as a literal (camelCase identifiers
-// carry no regex metachars, but it costs nothing and documents intent). A
-// missing srcRoot or a grep that errors is treated as "present" so the advisory
-// fails QUIET — it must never imply a ticket is resolved off a broken read.
-func symbolPresent(srcRoot, symbol string) bool {
+// symbolPresent reports whether ANY declared source root contains a whole-word
+// occurrence of the symbol. Any-root rather than all-roots keeps the fail-quiet
+// contract: a symbol found anywhere in the Consumer's source is present, so a
+// second root can only ever suppress the advisory, never manufacture one.
+func symbolPresent(srcRoots []string, symbol string) bool {
+	for _, root := range srcRoots {
+		if symbolPresentIn(root, symbol) {
+			return true
+		}
+	}
+	return false
+}
+
+// symbolPresentIn reports whether one srcRoot contains a whole-word occurrence
+// of the symbol. `-w` is the precision knob: `syncLog` must not match
+// `syncLogger`, so a member whose container survives but whose own definition
+// was deleted still reads as absent. `-F` treats the symbol as a literal
+// (camelCase identifiers carry no regex metachars, but it costs nothing and
+// documents intent). A missing srcRoot or a grep that errors is treated as
+// "present" so the advisory fails QUIET — it must never imply a ticket is
+// resolved off a broken read.
+func symbolPresentIn(srcRoot, symbol string) bool {
 	err := exec.Command("grep", "-rwqF", "--", symbol, srcRoot).Run()
 	if err == nil {
 		return true
@@ -228,12 +242,19 @@ func symbolPresent(srcRoot, symbol string) bool {
 // premise" note that never says "recommend close" — that dangerous verdict on a
 // to-be-added symbol (`beforeSend` in BEH-626) is exactly backwards and could get
 // a valid, unstarted ticket wrongly closed.
-func ResolvedAdvisory(srcRoot, identifier, description string) string {
+func ResolvedAdvisory(srcRoots []string, identifier, description string) string {
+	// No declared source root means no signal to read: skip the advisory rather
+	// than scan a guessed path. Omitting `source_roots` disables the check, the
+	// safe direction — a missed nudge costs a session, a wrong one risks closing a
+	// valid ticket (BEH-641).
+	if len(srcRoots) == 0 {
+		return ""
+	}
 	cited := classifyCitedSymbols(description)
 	missing := func(syms []string) []string {
 		var out []string
 		for _, sym := range syms {
-			if !symbolPresent(srcRoot, sym) {
+			if !symbolPresent(srcRoots, sym) {
 				out = append(out, sym)
 			}
 		}

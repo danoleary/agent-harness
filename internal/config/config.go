@@ -44,6 +44,9 @@ type Config struct {
 	// CacheMountPath is the in-container path CacheVolume mounts at (Consumer-
 	// declared; BEH-635). Only meaningful when CacheVolume is set.
 	CacheMountPath string
+	// CachePruneCommand is the Consumer's host-side cache-reclaim command, run by
+	// the loop between tickets (ADR-0005). Empty skips that reclaim rung.
+	CachePruneCommand string
 	// TddTimeout is the hard cap for the tdd (implementation) session, enforced on
 	// ACTIVE (monotonic) in-sandbox time — host sleep is excluded (BEH-608), and it is
 	// NOT the total wall-clock the session's claude `duration_ms` reports (that also
@@ -170,6 +173,12 @@ type Config struct {
 	// DocsOnlyExcludedRoots are the Consumer's directory prefixes whose contents
 	// are never inert prose. Empty disables the docs-only short-circuit entirely.
 	DocsOnlyExcludedRoots []string
+	// HandoffStripPaths are the worktree-relative paths the implementation stage
+	// deletes on handoff (Consumer-declared; empty strips nothing).
+	HandoffStripPaths []string
+	// SourceRoots are the checkout-relative directories the resolved-symbol
+	// dispatch advisory greps (Consumer-declared; empty disables the advisory).
+	SourceRoots []string
 	// Tracker holds the project config's non-secret tracker selection names
 	// (label ids, ready/blocked labels). The tracker credential stays env-only.
 	Tracker TrackerConfig
@@ -286,10 +295,13 @@ func Load(get Getenv, opts ...Option) (Config, error) {
 		return Config{}, err
 	}
 
-	linearKey, err := requireEnv(get, "LINEAR_API_KEY")
-	if err != nil {
-		return Config{}, err
-	}
+	// The tracker credential is NOT required here: which one is needed depends on
+	// the Consumer's `tracker.kind`, which lives in the project config loaded
+	// below. Requiring LINEAR_API_KEY unconditionally meant a Jira- or
+	// GitHub-Issues-only Consumer could not start the harness at all (BEH-641).
+	// trackers.New owns the per-kind check, alongside the Jira triple's.
+	linearKey := get("LINEAR_API_KEY")
+
 	herdPath, err := requireEnv(get, "PROJECT_PATH")
 	if err != nil {
 		return Config{}, err
@@ -372,6 +384,7 @@ func Load(get Getenv, opts ...Option) (Config, error) {
 		Dockerfile:              project.Dockerfile,
 		CacheVolume:             cacheVolume,
 		CacheMountPath:          cachePath,
+		CachePruneCommand:       project.Cache.PruneCommand,
 		TddTimeout:              parseTimeout(get("TDD_TIMEOUT_MS"), defaultTddTimeout),
 		TddLargeRefactorTimeout: parseTimeout(get("TDD_LARGE_REFACTOR_TIMEOUT_MS"), defaultTddLargeCap),
 		ReviewTimeout:           parseTimeout(get("REVIEW_TIMEOUT_MS"), defaultReviewTimeout),
@@ -402,6 +415,8 @@ func Load(get Getenv, opts ...Option) (Config, error) {
 		PostCreate:            project.PostCreate,
 		Gates:                 project.Gates,
 		DocsOnlyExcludedRoots: project.DocsOnlyExcludedRoots,
+		HandoffStripPaths:     project.HandoffStripPaths,
+		SourceRoots:           project.SourceRoots,
 		Tracker:               project.Tracker,
 		Feedback:              project.Feedback,
 		Prompts:               prompts,

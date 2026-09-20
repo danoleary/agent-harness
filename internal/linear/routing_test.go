@@ -19,7 +19,7 @@ func TestSelectNextTicketSkipsTelemetryRemeasureGatedTicket(t *testing.T) {
 	}
 	ready := eligibleNode("BEH-WORKABLE", 4)
 	tr, _ := selectTransport(t, remeasure, ready)
-	got, ok, err := NewClient(tr).SelectNextTicket()
+	got, ok, err := NewClient(tr, testOptions()).SelectNextTicket()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

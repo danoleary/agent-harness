@@ -41,13 +41,24 @@ type Secrets struct {
 // New returns the tracker adapter for the configured kind, holding the host-only
 // credential from secrets (ADR-0001). Linear uses LinearKey; GitHub uses
 // GitHubToken (the host's existing GH_TOKEN); Jira uses the Basic-auth triple. An
-// unsupported kind — a github selection missing its repo, or a jira selection
-// missing its auth — is a loud error: the harness refuses to run against a tracker
-// it can't address.
+// unsupported kind — or any selection missing its credential or its addressing
+// (a github selection with no repo, a linear one with no API key, a jira one with
+// no auth triple) — is a loud error: the harness refuses to run against a tracker
+// it can't address. The credential check lives here rather than in config.Load
+// because WHICH credential is required depends on the kind (BEH-641).
 func New(tc config.TrackerConfig, secrets Secrets) (tracker.Tracker, error) {
 	switch tc.Kind {
 	case "linear":
-		return linear.NewClient(linear.NewTransport(secrets.LinearKey)), nil
+		if secrets.LinearKey == "" {
+			return nil, fmt.Errorf("kind=linear requires the host-only secret LINEAR_API_KEY")
+		}
+		return linear.NewClient(linear.NewTransport(secrets.LinearKey), linear.Options{
+			TeamKey:         tc.TeamKey,
+			Ready:           tc.ReadyLabel,
+			Blocked:         tc.BlockedLabel,
+			FindingsLabelID: tc.FindingsLabelID,
+			FindingsLabel:   tc.FindingsLabel,
+		}), nil
 	case "github":
 		owner, repo, err := splitRepo(tc.Repo)
 		if err != nil {

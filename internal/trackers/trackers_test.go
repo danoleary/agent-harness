@@ -106,3 +106,34 @@ func TestNewRejectsUnknownKind(t *testing.T) {
 		t.Errorf("error should name the unsupported kind, got: %v", err)
 	}
 }
+
+// --- per-kind credential checks (BEH-641) ---
+//
+// config.Load used to require LINEAR_API_KEY unconditionally, which meant a
+// Jira- or GitHub-only Consumer could not start the harness. The requirement
+// moved here, where the kind is known, joining the Jira triple's existing check.
+
+func TestNewLinearRequiresItsAPIKey(t *testing.T) {
+	_, err := New(config.TrackerConfig{Kind: "linear"}, Secrets{GitHubToken: "gh_token"})
+	if err == nil {
+		t.Fatal("expected an error for kind=linear with no LINEAR_API_KEY, got nil")
+	}
+	if !strings.Contains(err.Error(), "LINEAR_API_KEY") {
+		t.Errorf("error should name the missing credential, got: %v", err)
+	}
+}
+
+// The converse is the point of the change: the non-Linear adapters must build
+// with no Linear key present at all.
+func TestNewNonLinearKindsNeedNoLinearKey(t *testing.T) {
+	if _, err := New(config.TrackerConfig{
+		Kind: "github", Repo: "acme/widgets",
+	}, Secrets{GitHubToken: "gh_token"}); err != nil {
+		t.Errorf("kind=github must not require a Linear key, got: %v", err)
+	}
+	if _, err := New(config.TrackerConfig{
+		Kind: "jira", ProjectKey: "PROJ",
+	}, Secrets{JiraBaseURL: "https://acme.atlassian.net", JiraEmail: "bot@acme.co", JiraToken: "tok"}); err != nil {
+		t.Errorf("kind=jira must not require a Linear key, got: %v", err)
+	}
+}
