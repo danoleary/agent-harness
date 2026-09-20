@@ -67,7 +67,7 @@ func Plan(cfg config.Config, identifier string) string {
 	worktreeCreate := fmt.Sprintf("host-side: git worktree add -b %s %s (based on origin/main)", gitpkg.BranchName(cfg.BranchPrefix, slug), worktreePath)
 	postCreateLine := "(none — no post_create hook configured)"
 	if cfg.PostCreate != "" {
-		postCreateLine = dockerLine(sandbox.BuildPostCreateRunArgs(sandbox.GateConfig{
+		postCreateLine = dockerLine(sandbox.BuildWorktreeCommandArgs(sandbox.GateConfig{
 			Image:          cfg.Image,
 			ProjectPath:    cfg.ProjectPath,
 			WorktreePath:   worktreePath,
@@ -108,12 +108,12 @@ func Plan(cfg config.Config, identifier string) string {
 	// than print a container the run will not launch.
 	prepLine := "(none — the Consumer declares no post_create)"
 	if cfg.PostCreate != "" {
-		prepLine = dockerLine(sandbox.BuildPostCreateRunArgs(withName("prep"), cfg.PostCreate))
+		prepLine = dockerLine(sandbox.BuildWorktreeCommandArgs(withName("prep"), cfg.PostCreate))
 	}
 	// One gate container per config-declared named gate, run in order (BEH-634).
 	gateLines := make([]string, 0, len(cfg.Gates))
 	for _, g := range cfg.Gates {
-		gateDocker := sandbox.BuildGateRunArgs(withName("gate-"+g.Name), g.Command)
+		gateDocker := sandbox.BuildWorktreeCommandArgs(withName("gate-"+g.Name), g.Command)
 		gateLines = append(gateLines, fmt.Sprintf("# gate %q\n%s", g.Name, dockerLine(gateDocker)))
 	}
 	fmt.Fprintf(&b,

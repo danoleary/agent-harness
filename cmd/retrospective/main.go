@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/danoleary/agent-harness/internal/hostio"
 	"github.com/danoleary/agent-harness/internal/stages"
 	"github.com/danoleary/agent-harness/internal/version"
 )
@@ -43,7 +44,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		os.Exit(1)
 	}
-	res := stages.Retrospective(cfg, log, runID, args)
+	res := stages.Retrospective(hostio.New(cfg, log, runID, args.Verbose), cfg, log, args)
 	if res.Err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", res.Err)
 		os.Exit(1)

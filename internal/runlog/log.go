@@ -63,15 +63,11 @@ func TranscriptName(session, runID string) string {
 // tool stdout (pnpm install / pnpm check), NOT a stream-json event stream, so
 // they carry a ".log" suffix rather than ".jsonl": a reader who sees ".jsonl"
 // expects parseable JSON and wastes turns discovering it is plain text (BEH-537).
-// Naming is step-prefixed and run-id-suffixed, non-clobbering like TranscriptName.
+// Naming is step-prefixed and run-id-suffixed, non-clobbering like TranscriptName —
+// and it is now the ONE rule for every step log the harness writes, including the
+// host-side gate re-runs, which used to carry a bespoke gate-<runID>-<gate> shape.
 func StepLogName(step, runID string) string {
 	return step + "-" + runID + ".log"
-}
-
-// GateTranscriptName is the filename for the review tool's host-side gate re-run
-// log — a raw-stdout step log (see StepLogName).
-func GateTranscriptName(runID string) string {
-	return StepLogName("gate", runID)
 }
 
 // StepFooter is the self-describing terminal line appended to a raw-stdout step

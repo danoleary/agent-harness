@@ -4,6 +4,13 @@
 // retrospective) stay behaviourally identical to their pre-extraction form; the
 // pipeline composes them, sharing one config load and one runlog (DESIGN.md
 // "The pipeline").
+//
+// This package is policy, not plumbing. Every host-side effect a Stage has —
+// Docker, git, gh, the tracker — goes through the hostio.Host it is handed, so
+// the composition that assembles the pure decisions in internal/verify and acts
+// on them is reachable from a test (hostio.NewFake) rather than only from a live
+// Docker daemon. The cmd/ entrypoints and cmd/pipeline are the composition root
+// that builds the real one.
 package stages
 
 import (
@@ -17,54 +24,11 @@ import (
 	"time"
 
 	"github.com/danoleary/agent-harness/internal/config"
-	"github.com/danoleary/agent-harness/internal/filing"
-	"github.com/danoleary/agent-harness/internal/github"
 	"github.com/danoleary/agent-harness/internal/runlog"
 	"github.com/danoleary/agent-harness/internal/sandbox"
-	"github.com/danoleary/agent-harness/internal/semdedup"
 )
 
 var ticketRE = regexp.MustCompile(`^[A-Z]+-\d+$`)
-
-// newSemanticMatcher builds the host-side semantic dedup matcher for filing
-// findings (BEH-573), or returns a nil filing.SemanticMatcher when no Anthropic
-// API key is available — only a subscription OAuth token, which the x-api-key
-// header rejects (BEH-316). filing.File treats a nil matcher as "skip the
-// semantic pass", degrading to exact key/title dedup. Returning the interface
-// (not the concrete *semdedup.Matcher) keeps the no-key result a true nil
-// interface so that nil check fires.
-func newSemanticMatcher(cfg config.Config) filing.SemanticMatcher {
-	if cfg.AnthropicAPIKey == "" {
-		return nil
-	}
-	return semdedup.New(semdedup.NewAnthropicComplete(cfg.AnthropicAPIKey, cfg.DedupModel))
-}
-
-// newUpstream builds the opt-in public-harness-repo sink for harness findings
-// (ADR-0011/BEH-640), or nil when feedback.upstream is off (the default) — the
-// nil case keeps harness findings in the local artifact dir. github mode binds a
-// GitHub adapter to the configured public repo using the host's GH_TOKEN (a
-// public repo needs only public_repo scope, and the token attributes the issue to
-// the reporting project as provenance). The repo shape is validated at config
-// load, so a malformed value never reaches here; a defensive split failure still
-// degrades to nil (local sink) rather than filing nowhere.
-func newUpstream(cfg config.Config) *filing.Upstream {
-	if cfg.Feedback.Upstream != "github" {
-		return nil
-	}
-	owner, repo, err := config.SplitOwnerRepo(cfg.Feedback.Repo)
-	if err != nil {
-		return nil
-	}
-	client := github.NewClient(
-		github.NewTransport(cfg.GitHubToken), owner, repo,
-		github.Options{Findings: cfg.Feedback.FindingsLabel},
-	)
-	return &filing.Upstream{
-		Filer: client, Searcher: client, Recorder: client,
-		Container: cfg.Feedback.Repo, Project: cfg.Feedback.Project,
-	}
-}
 
 // isDiskFull reports whether err is the host-disk-full ENOSPC — surfaced when a
 // findings-dir mkdir fails because the disk filled (BEH-540: the BEH-336

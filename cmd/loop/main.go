@@ -36,6 +36,7 @@ import (
 
 	"github.com/danoleary/agent-harness/internal/config"
 	gitpkg "github.com/danoleary/agent-harness/internal/git"
+	"github.com/danoleary/agent-harness/internal/hostio"
 	"github.com/danoleary/agent-harness/internal/loop"
 	"github.com/danoleary/agent-harness/internal/loopstream"
 	"github.com/danoleary/agent-harness/internal/pipeline"
@@ -246,11 +247,14 @@ func runPipeline(cfg config.Config, identifier string) loop.TicketOutcome {
 		return loop.TicketOutcome{}
 	}
 	args := stages.Args{Identifier: identifier, PreClaimed: true}
+	// One Host for the whole slice: the three stages share the run id it stamps into
+	// every container name and transcript, and the tracker client it resolves once.
+	host := hostio.New(cfg, log, runID, args.Verbose)
 	out := pipeline.Run(pipeline.Deps{
-		FetchMain:      func() error { return gitpkg.FetchMain(cfg.ProjectPath) },
-		Implementation: func() stages.Result { return stages.Implementation(cfg, log, runID, args) },
-		Review:         func() stages.Result { return stages.Review(cfg, log, runID, args) },
-		Retrospective:  func() stages.Result { return stages.Retrospective(cfg, log, runID, args) },
+		FetchMain:      host.FetchMain,
+		Implementation: func() stages.Result { return stages.Implementation(host, cfg, log, args) },
+		Review:         func() stages.Result { return stages.Review(host, cfg, log, args) },
+		Retrospective:  func() stages.Result { return stages.Retrospective(host, cfg, log, args) },
 		Log:            log,
 	})
 	// Translate the pipeline's typed Outcome into the breaker's signals — the loop

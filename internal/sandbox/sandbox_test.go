@@ -126,7 +126,7 @@ func TestMountsFindingsWhenFindingsDirGiven(t *testing.T) {
 // not the main checkout. BEH-634 makes the command a parameter (was a hardcoded
 // `pnpm check && pnpm typecheck`), so a Go/.NET Consumer differs only in config.
 func TestGateRunArgsCarryNoSecretsAndRunGateCommandInWorktree(t *testing.T) {
-	args := BuildGateRunArgs(GateConfig{
+	args := BuildWorktreeCommandArgs(GateConfig{
 		Image:          "herd-agent-harness:latest",
 		ProjectPath:    "/Users/dan/herd",
 		WorktreePath:   "/Users/dan/herd/.claude/worktrees/beh-371",
@@ -178,7 +178,7 @@ func TestGateRunArgsMountCheckoutAndPnpmStore(t *testing.T) {
 		CacheVolume:    "herd-pnpm-store",
 		CacheMountPath: "/pnpm-store",
 	}
-	mounts := valuesForFlag(BuildGateRunArgs(c, "pnpm run check"), "-v")
+	mounts := valuesForFlag(BuildWorktreeCommandArgs(c, "pnpm run check"), "-v")
 
 	// The whole checkout is bind-mounted at its real path so the worktree's
 	// absolute .git pointer resolves; the pnpm store keeps install near-instant.
@@ -193,7 +193,7 @@ func TestGateRunArgsMountCheckoutAndPnpmStore(t *testing.T) {
 }
 
 func TestGateRunArgsNameContainerForKill(t *testing.T) {
-	args := BuildGateRunArgs(GateConfig{ContainerName: "example-harness-gate-1"}, "pnpm run check")
+	args := BuildWorktreeCommandArgs(GateConfig{ContainerName: "example-harness-gate-1"}, "pnpm run check")
 	if !slices.Contains(valuesForFlag(args, "--name"), "example-harness-gate-1") {
 		t.Error("gate container must be nameable so the harness can kill it on timeout")
 	}
@@ -202,7 +202,7 @@ func TestGateRunArgsNameContainerForKill(t *testing.T) {
 // the main checkout (herd's post_create symlinks web/.env.local from $PROJECT_PATH).
 func TestPostCreateRunArgsRunCommandInWorktreeWithProjectPathNoSecrets(t *testing.T) {
 	postCreate := `for f in .env.local; do ln -sf "$PROJECT_PATH/web/$f" "web/$f"; done; cd web && pnpm install --frozen-lockfile`
-	args := BuildPostCreateRunArgs(GateConfig{
+	args := BuildWorktreeCommandArgs(GateConfig{
 		Image:          "herd-agent-harness:latest",
 		ProjectPath:    "/Users/dan/herd",
 		WorktreePath:   "/Users/dan/herd/.claude/worktrees/beh-636",

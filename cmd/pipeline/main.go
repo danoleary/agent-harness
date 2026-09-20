@@ -20,7 +20,7 @@ import (
 	"fmt"
 	"os"
 
-	gitpkg "github.com/danoleary/agent-harness/internal/git"
+	"github.com/danoleary/agent-harness/internal/hostio"
 	"github.com/danoleary/agent-harness/internal/loopstream"
 	"github.com/danoleary/agent-harness/internal/pipeline"
 	"github.com/danoleary/agent-harness/internal/runlog"
@@ -95,13 +95,17 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Bind each stage to the shared cfg/log/runID/args (--verbose and PreClaimed
+	// One Host for the whole slice: the three stages share the run id it stamps into
+	// every container name and transcript, and the tracker client it resolves once.
+	host := hostio.New(cfg, log, runID, args.Verbose)
+
+	// Bind each stage to the shared host/cfg/log/args (--verbose and PreClaimed
 	// forward through args). The pipeline decides ordering; the stages do the work.
 	outcome := pipeline.Run(pipeline.Deps{
-		FetchMain:      func() error { return gitpkg.FetchMain(cfg.ProjectPath) },
-		Implementation: func() stages.Result { return stages.Implementation(cfg, log, runID, args) },
-		Review:         func() stages.Result { return stages.Review(cfg, log, runID, args) },
-		Retrospective:  func() stages.Result { return stages.Retrospective(cfg, log, runID, args) },
+		FetchMain:      host.FetchMain,
+		Implementation: func() stages.Result { return stages.Implementation(host, cfg, log, args) },
+		Review:         func() stages.Result { return stages.Review(host, cfg, log, args) },
+		Retrospective:  func() stages.Result { return stages.Retrospective(host, cfg, log, args) },
 		Log:            log,
 	})
 	os.Exit(outcome.ExitCode)

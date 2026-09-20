@@ -7,14 +7,11 @@ import (
 
 	"github.com/danoleary/agent-harness/internal/config"
 	"github.com/danoleary/agent-harness/internal/filing"
-	gitpkg "github.com/danoleary/agent-harness/internal/git"
+	"github.com/danoleary/agent-harness/internal/hostio"
 	"github.com/danoleary/agent-harness/internal/loopstream"
-	"github.com/danoleary/agent-harness/internal/pr"
 	"github.com/danoleary/agent-harness/internal/prompt"
 	"github.com/danoleary/agent-harness/internal/runlog"
 	"github.com/danoleary/agent-harness/internal/sandbox"
-	"github.com/danoleary/agent-harness/internal/session"
-	"github.com/danoleary/agent-harness/internal/trackers"
 	"github.com/danoleary/agent-harness/internal/verify"
 )
 
@@ -37,20 +34,22 @@ func toPromptFindings(prior []filing.PriorFinding) []prompt.FiledFinding {
 }
 
 // Retrospective runs the third and terminal stage: the /retrospective skill over
-// a ticket's prior session transcripts, then files whatever harness-improvement
-// findings the session dropped to Linear. Ground truth is the *presence* of
+// a ticket's prior session transcripts, then routes whatever harness-improvement
+// findings the session dropped by audience. Ground truth is the *presence* of
 // /findings/out.json (an empty `[]` is success; absent means it never ran). On a
 // fully clean ticket (branch pushed + findings filed) it tears the worktree down.
-func Retrospective(cfg config.Config, log *runlog.Logger, runID string, args Args) Result {
+// Every host-side effect goes through h, so the whole body is reachable from a
+// test with hostio.NewFake().
+func Retrospective(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Result {
 	slug := strings.ToLower(args.Identifier)
 
 	dry := ""
 	if args.DryRun {
 		dry = " (dry-run)"
 	}
-	log.Structured(loopstream.Record{Kind: loopstream.KindStageStart, Ticket: args.Identifier, Stage: "retrospective", Message: fmt.Sprintf("run %s — retrospective %s%s", runID, args.Identifier, dry)})
+	log.Structured(loopstream.Record{Kind: loopstream.KindStageStart, Ticket: args.Identifier, Stage: "retrospective", Message: fmt.Sprintf("run %s — retrospective %s%s", h.RunID(), args.Identifier, dry)})
 
-	// Skip a misscheduled retrospective host-side, before the Linear fetch and the
+	// Skip a misscheduled retrospective host-side, before the tracker fetch and the
 	// sandbox cap: a ticket whose upstream /tdd + /review steps produced neither a
 	// feature branch nor any session transcript has nothing to retrospect, so the
 	// session could only emit an empty [] that masks the misscheduling or manufacture
@@ -60,14 +59,14 @@ func Retrospective(cfg config.Config, log *runlog.Logger, runID string, args Arg
 	// transcripts but no branch — one real input is enough to proceed. A skip is a
 	// clean no-op, not a failure — return OK so it never reds the pipeline.
 	if pre := verify.RetrospectivePreconditions(verify.RetrospectiveInputs{
-		BranchExists:     gitpkg.BranchExists(cfg.ProjectPath, cfg.BranchPrefix, slug),
+		BranchExists:     h.BranchExists(slug),
 		PriorTranscripts: hasUpstreamTranscripts(log.Dir),
 	}); !pre.OK {
 		log.Event(fmt.Sprintf("retrospective ⊘ skipped %s — %s", args.Identifier, pre.Reason))
 		return Result{OK: true}
 	}
 
-	client, err := trackers.New(cfg.Tracker, trackers.Secrets{LinearKey: cfg.LinearAPIKey, GitHubToken: cfg.GitHubToken, JiraBaseURL: cfg.JiraBaseURL, JiraEmail: cfg.JiraEmail, JiraToken: cfg.JiraAPIToken})
+	client, err := h.Tracker()
 	if err != nil {
 		return Result{Err: err}
 	}
@@ -97,7 +96,7 @@ func Retrospective(cfg config.Config, log *runlog.Logger, runID string, args Arg
 	// open findings + this ticket's prior dropbox) so the session can treat them
 	// as settled instead of re-deriving them (BEH-539). MUST run before
 	// ClearDropbox, which is about to wipe that prior dropbox.
-	prior := filing.AlreadyFiled(findingsDir, t.TeamID, client, log)
+	prior := h.AlreadyFiled(findingsDir, t.TeamID)
 	if len(prior) > 0 {
 		log.Event(fmt.Sprintf("retrospective re-run: %d already-filed finding class(es) passed to the session as settled context", len(prior)))
 	}
@@ -111,47 +110,32 @@ func Retrospective(cfg config.Config, log *runlog.Logger, runID string, args Arg
 	}
 
 	p := prompt.BuildRetrospective(t, slug, toPromptFindings(prior), cfg.BranchPrefix, cfg.Prompts.Retro)
-
-	// runID is second-resolution; include the pid so two runs started in the same
-	// second still get distinct container names (and distinct `docker kill` targets).
-	containerName := fmt.Sprintf("%s%s-%d-%s", sandbox.ContainerPrefix(cfg.ProjectPath), runID, os.Getpid(), retrospectiveSession)
-	dockerArgs := sandbox.BuildDockerRunArgs(sandbox.Config{
-		Image:          cfg.Image,
-		ProjectPath:    cfg.ProjectPath,
-		FindingsDir:    findingsDir,
-		CacheVolume:    cfg.CacheVolume,
-		CacheMountPath: cfg.CacheMountPath,
-		Prompt:         p,
-		Model:          cfg.Model,
-		ContainerName:  containerName,
-	})
+	run := hostio.AgentRun{
+		Label:       retrospectiveSession,
+		Prompt:      p,
+		FindingsDir: findingsDir,
+		Cap:         cfg.RetrospectiveTimeout,
+	}
 
 	if args.DryRun {
 		log.Event("dry-run — not launching the container")
 		fmt.Printf(
 			"\n--- prompt ---\n%s\n\n--- docker command ---\ndocker %s\n",
-			p, strings.Join(dockerArgs, " "),
+			p, strings.Join(h.AgentPreview(run), " "),
 		)
 		return Result{OK: true}
 	}
 
 	// Fail fast if Docker can't run the container before launching the session.
-	if err := sandbox.Preflight(sandbox.PreflightFor(cfg.Image, cfg.ProjectPath, cfg.Dockerfile)); err != nil {
+	if err := h.Preflight(); err != nil {
 		return Result{Err: err}
 	}
 
-	transcriptFile := runlog.TranscriptName(retrospectiveSession, runID)
 	log.Structured(loopstream.Record{Kind: loopstream.KindSandboxLaunch, Ticket: args.Identifier, Stage: "retrospective", Message: fmt.Sprintf("launching sandbox (cap %d min active)", int(cfg.RetrospectiveTimeout.Minutes()))})
-	outcome := session.Run(dockerArgs, session.Options{
-		ContainerName:  containerName,
-		TranscriptFile: transcriptFile,
-		Timeout:        cfg.RetrospectiveTimeout,
-		IdleTimeout:    cfg.SessionIdleTimeout,
-		Verbose:        args.Verbose,
-		Log:            log,
-	})
+	res := h.Agent(run)
+	outcome := res.Outcome
 	log.Event(fmt.Sprintf(
-		"session exited (code %d) — transcript at logs/%s/%s", outcome.ExitCode, args.Identifier, transcriptFile,
+		"session exited (code %d) — transcript at logs/%s/%s", outcome.ExitCode, args.Identifier, res.Transcript,
 	))
 
 	// A spending-cap abort can fire after the skill wrote its up-front default `[]`
@@ -197,12 +181,12 @@ func Retrospective(cfg config.Config, log *runlog.Logger, runID string, args Arg
 	// Route whatever the session dropped by audience (ADR-0011): project findings
 	// file to the tracker (one issue per finding; `[]`/absent files nothing). Harness
 	// findings write to the local artifact dir by default, or — when the Consumer opts
-	// in with feedback.upstream = github — to the public harness repo (newUpstream,
-	// BEH-640), with cross-project key dedup and project-tagged recurrences. Safe to
-	// call even on failure — an absent dropbox routes nothing. Tracker dedup runs
-	// exact-match first, then a best-effort semantic pass; a match is recorded as a
-	// recurrence on the existing issue (client) instead of re-filed (BEH-573).
-	filing.Route(findingsDir, filing.HarnessFindingsDir(cfg.ProjectPath), t.TeamID, args.Identifier, client, client, newSemanticMatcher(cfg), client, newUpstream(cfg), log)
+	// in with feedback.upstream = github — to the public harness repo (BEH-640), with
+	// cross-project key dedup and project-tagged recurrences. Safe to call even on
+	// failure — an absent dropbox routes nothing. Tracker dedup runs exact-match first,
+	// then a best-effort semantic pass; a match is recorded as a recurrence on the
+	// existing issue instead of re-filed (BEH-573).
+	h.RouteFindings(findingsDir, t.TeamID, args.Identifier)
 
 	if !result.OK {
 		// Keep the worktree as a recoverable breadcrumb (DESIGN.md failure matrix).
@@ -216,16 +200,15 @@ func Retrospective(cfg config.Config, log *runlog.Logger, runID string, args Arg
 	// the branch has reached a PR (verify.WorktreeReap owns the rule and the why).
 	// The worktree tears down host-side; the real-path mount makes its .git pointer
 	// resolve from the main checkout.
-	branch := gitpkg.BranchName(cfg.BranchPrefix, slug)
-	pushed := gitpkg.BranchPushed(cfg.ProjectPath, cfg.BranchPrefix, slug)
+	pushed := h.BranchPushed(slug)
 	// && short-circuits, so an unpushed branch never spends the gh round-trip.
 	reap := verify.WorktreeReap(verify.WorktreeReapOutcome{
 		BranchPushed: pushed,
-		PRExists:     pushed && pr.Exists(cfg.ProjectPath, branch),
+		PRExists:     pushed && h.PRExists(slug),
 	})
 	if !reap.Reap {
 		log.Event("worktree kept — " + reap.Reason)
-	} else if err := gitpkg.RemoveWorktree(cfg.ProjectPath, slug); err != nil {
+	} else if err := h.RemoveWorktree(slug); err != nil {
 		log.Event("worktree kept — removal failed: " + err.Error())
 	} else {
 		log.Event("worktree removed — " + reap.Reason)

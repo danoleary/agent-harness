@@ -95,10 +95,13 @@ func TestStepLogNameIsLogNotJsonl(t *testing.T) {
 	}
 }
 
-// GateTranscriptName is a raw-stdout step log too — keep its .log naming.
-func TestGateTranscriptNameIsRunIDSuffixedLog(t *testing.T) {
-	if got := GateTranscriptName("20260611-140805"); got != "gate-20260611-140805.log" {
-		t.Errorf("GateTranscriptName = %q, want gate-20260611-140805.log", got)
+// A host-side gate re-run is a raw-stdout step log like any other: step-prefixed
+// (the gate's own name) and run-id-suffixed. It used to have a bespoke
+// gate-<runID>-<gate> shape of its own; the Runner now mints every step log the
+// same way, from the label that also names the container.
+func TestGateStepLogFollowsTheOneStepNamingRule(t *testing.T) {
+	if got := StepLogName("gate-check", "20260611-140805"); got != "gate-check-20260611-140805.log" {
+		t.Errorf("StepLogName = %q, want gate-check-20260611-140805.log", got)
 	}
 }
 

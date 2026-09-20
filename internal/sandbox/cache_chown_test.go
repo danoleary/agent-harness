@@ -36,8 +36,7 @@ func harnessRoot(t *testing.T) string {
 	}
 }
 
-// cacheGateConfig is a worktree-container config with a cache declared, for the
-// three builders that share buildWorktreeBashArgs.
+// cacheGateConfig is a worktree-container config with a cache declared.
 func cacheGateConfig() GateConfig {
 	return GateConfig{
 		Image:          "example-agent-harness:latest",
@@ -75,24 +74,18 @@ func TestPassesCachePathToEntrypointWhenCacheMounted(t *testing.T) {
 	}
 }
 
-// The gate, install-prep and post_create containers share buildWorktreeBashArgs and
-// mount the same volume, so they need the same chown. post_create is the one that
-// actually populates a cold cache, so a miss here is the likeliest failure.
+// The gate and post_create containers mount the same volume, so they need the same
+// chown — and since they are now the same builder differing only in the command,
+// that agreement is structural rather than a property two functions must maintain.
+// post_create is the one that actually populates a cold cache, so a miss here is
+// the likeliest failure.
 func TestPassesCachePathToEntrypointInWorktreeContainers(t *testing.T) {
 	c := cacheGateConfig()
 	c.CacheVolume = "myproj-nuget"
 	c.CacheMountPath = "/root/.nuget/packages"
 
-	for _, tc := range []struct {
-		name string
-		args []string
-	}{
-		{"gate", BuildGateRunArgs(c, "true")},
-		{"post_create", BuildPostCreateRunArgs(c, "true")},
-	} {
-		if got := envValue(tc.args, "HARNESS_CACHE_PATH"); got != c.CacheMountPath {
-			t.Errorf("%s container HARNESS_CACHE_PATH = %q, want %q", tc.name, got, c.CacheMountPath)
-		}
+	if got := envValue(BuildWorktreeCommandArgs(c, "true"), "HARNESS_CACHE_PATH"); got != c.CacheMountPath {
+		t.Errorf("worktree container HARNESS_CACHE_PATH = %q, want %q", got, c.CacheMountPath)
 	}
 }
 
@@ -109,7 +102,7 @@ func TestOmitsCachePathWhenNoCacheVolume(t *testing.T) {
 
 	g := cacheGateConfig()
 	g.CacheVolume = ""
-	if got := envValue(BuildGateRunArgs(g, "true"), "HARNESS_CACHE_PATH"); got != "" {
+	if got := envValue(BuildWorktreeCommandArgs(g, "true"), "HARNESS_CACHE_PATH"); got != "" {
 		t.Errorf("gate HARNESS_CACHE_PATH = %q, want unset when no cache volume is declared", got)
 	}
 }
