@@ -164,6 +164,7 @@ type Remote interface {
 	PushForceWithLease(slug string) error
 	CreatePR(slug, title, body string) (string, error)
 	PRExists(slug string) bool
+	OpenPRExists(slug string) bool
 	ChecksReadable() (bool, string)
 	WatchCI(CIWatch) ci.Outcome
 }

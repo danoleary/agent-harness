@@ -1072,6 +1072,15 @@ reader over a structured stream rather than a `--tui` flag on the daemon.
   `session.Options` the watchdog kills through, and the transcript filename, all
   from one label — so "the name must match the argv or the timeout kill misses"
   stops being a comment and becomes unrepresentable.
+- **The daemon takes the same shape** ([ADR-0014](adr/0014-the-daemon-takes-a-host-limits-and-a-clock.md)). `loop.Run` takes a
+  `loop.Host` (the STOP sentinel, the tracker queue, one ticket's pipeline run, the
+  between-ticket disk reclaim), a `loop.Limits` of cadences/ceilings/thresholds, a
+  `loop.Clock` and a narrator — four fields where there were 27, and no feature
+  switched on by a nil func. `loophost.Real` is the production adapter, so `cmd/loop`
+  is a composition root and nothing else. Both the review stage and the daemon's
+  committed-fix recovery finish a branch through the one `internal/ship` — push
+  force-with-lease, then the templated `gh pr create` — so the harness has a single
+  implementation of how it ships.
 - **Go 1.26+**, standard library only — zero module dependencies: `net/http`
   (Linear GraphQL), `os/exec` (driving `docker`), `os`/`encoding/json` (logs +
   stop file). No dep tree on purpose — this process holds real credentials.
