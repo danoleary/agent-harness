@@ -341,5 +341,65 @@ else
     echo -e "${GREEN}PASS${NC}"
 fi
 
+# --- the release-archive layout is found ----------------------------------
+#
+# The archive ships the binaries at its ROOT (`loop`, `pipeline`, …) with this
+# script under `scripts/`. Looking only in `bin/` made the shipped launcher fail
+# on the shipped layout, telling the operator to "run 'make build'" — a target a
+# release user does not have.
+echo -n "loop-start.sh finds a binary beside the archive root ... "
+ARCHIVE="$TEST_DIR/archive"
+mkdir -p "$ARCHIVE/scripts"
+cp "$SCRIPT_PATH" "$ARCHIVE/scripts/loop-start.sh"
+cp "$FAKE_BIN" "$ARCHIVE/loop"          # at the root, as the archive lays it out
+ARCHIVE_PROJ="$TEST_DIR/consumer-archive"
+mkdir -p "$ARCHIVE_PROJ"
+( cd "$TEST_DIR" && env -u PROJECT_PATH PROJECT_PATH="$ARCHIVE_PROJ" "$ARCHIVE/scripts/loop-start.sh" > /dev/null 2>&1 )
+archive_pid="$(cat "$ARCHIVE_PROJ/.agent-harness/loop.pid" 2>/dev/null || true)"
+STARTED_PIDS="$STARTED_PIDS $archive_pid"
+if [ -z "$archive_pid" ] || ! kill -0 "$archive_pid" 2>/dev/null; then
+    echo -e "${RED}FAIL${NC} - no live pidfile; the archive layout was not found"
+    exit 1
+else
+    echo -e "${GREEN}PASS${NC}"
+fi
+
+# --- a binary installed on PATH is found ----------------------------------
+#
+# The documented install puts the binaries on PATH and keeps no archive at all,
+# so `loop-start.sh` (itself copied somewhere) must fall back to the PATH.
+echo -n "loop-start.sh falls back to a loop on PATH ... "
+PATHONLY="$TEST_DIR/path-only"
+mkdir -p "$PATHONLY/scripts" "$TEST_DIR/fakebin"
+cp "$SCRIPT_PATH" "$PATHONLY/scripts/loop-start.sh"
+cp "$FAKE_BIN" "$TEST_DIR/fakebin/loop"
+PATH_PROJ="$TEST_DIR/consumer-path"
+mkdir -p "$PATH_PROJ"
+( cd "$TEST_DIR" && PATH="$TEST_DIR/fakebin:$PATH" PROJECT_PATH="$PATH_PROJ" "$PATHONLY/scripts/loop-start.sh" > /dev/null 2>&1 )
+path_pid="$(cat "$PATH_PROJ/.agent-harness/loop.pid" 2>/dev/null || true)"
+STARTED_PIDS="$STARTED_PIDS $path_pid"
+if [ -z "$path_pid" ] || ! kill -0 "$path_pid" 2>/dev/null; then
+    echo -e "${RED}FAIL${NC} - no live pidfile; a loop on PATH was not found"
+    exit 1
+else
+    echo -e "${GREEN}PASS${NC}"
+fi
+
+# --- the not-found message speaks to both kinds of operator ----------------
+echo -n "loop-start.sh explains how to get a binary, for source AND release users ... "
+NOBIN="$TEST_DIR/nobin"
+mkdir -p "$NOBIN/scripts"
+cp "$SCRIPT_PATH" "$NOBIN/scripts/loop-start.sh"
+nobin_out="$( ( cd "$TEST_DIR" && PATH="/usr/bin:/bin" PROJECT_PATH="$TEST_DIR" "$NOBIN/scripts/loop-start.sh" 2>&1 ) || true )"
+if ! printf '%s' "$nobin_out" | grep -q "make build"; then
+    echo -e "${RED}FAIL${NC} - message must still tell a from-source operator to build: $nobin_out"
+    exit 1
+elif ! printf '%s' "$nobin_out" | grep -qi "release\|PATH"; then
+    echo -e "${RED}FAIL${NC} - message must also tell a release operator where a binary comes from: $nobin_out"
+    exit 1
+else
+    echo -e "${GREEN}PASS${NC}"
+fi
+
 echo
 echo -e "${GREEN}All tests passed!${NC}"
