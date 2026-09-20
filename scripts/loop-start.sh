@@ -26,14 +26,21 @@ HARNESS_DIR="$(dirname "$SCRIPT_DIR")"
 # shipped launcher has to work for every shape:
 #
 #   $HARNESS_DIR/bin/loop   a source checkout after `make build`
-#   $HARNESS_DIR/loop       a release archive, which lays the binaries at its root
-#   $(command -v loop)      the documented install: binaries on PATH, no archive kept
+#   $HARNESS_DIR/loop       an older release archive, which laid the binaries at its root
+#   $SCRIPT_DIR/loop        the installed layout: <prefix>/libexec/agent-harness/, where
+#                           this script sits BESIDE the daemon it launches
+#   $(command -v loop)      a loop the operator put on PATH themselves
 #
 # Looking only in bin/ made the launcher shipped IN the archive fail on the
 # archive's own layout, and tell the operator to run `make build` — a target a
 # release user does not have.
+#
+# `agent-harness start` short-circuits all of this: the dispatcher already knows
+# which install it belongs to, so it exports LOOP_BIN before exec'ing this script
+# and the search below never runs. The search is what keeps the script working
+# when it is invoked directly.
 if [ -z "${LOOP_BIN:-}" ]; then
-    for loop_candidate in "$HARNESS_DIR/bin/loop" "$HARNESS_DIR/loop"; do
+    for loop_candidate in "$HARNESS_DIR/bin/loop" "$HARNESS_DIR/loop" "$SCRIPT_DIR/loop"; do
         if [ -x "$loop_candidate" ]; then
             LOOP_BIN="$loop_candidate"
             break
@@ -129,8 +136,9 @@ fi
 if [ ! -x "$LOOP_BIN" ]; then
     {
         echo "loop binary not found or not executable at $LOOP_BIN."
-        echo "  from a source checkout: run 'make build'"
-        echo "  from a release archive: run it from the unpacked directory, or put the binaries on your PATH"
+        echo "  installed with install.sh: run 'agent-harness start' instead of this script"
+        echo "  from a source checkout:    run 'make build'"
+        echo "  from a release archive:    run it from the unpacked directory"
         echo "  or set LOOP_BIN to the binary explicitly"
     } >&2
     exit 1

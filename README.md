@@ -15,7 +15,62 @@ GitHub). The sandbox only ever runs `claude`.
 > Full design, invariants and failure matrix are in
 > [`docs/DESIGN.md`](docs/DESIGN.md); decisions in [`docs/adr/`](docs/adr/).
 
-## Prerequisites
+## Install
+
+One command. It needs no Go toolchain, no checkout, and no `sudo`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/danoleary/agent-harness/main/install.sh | sh
+```
+
+That downloads the release built for your machine, checks it against the
+published sha256, and installs it under `~/.local`. One name lands on your
+`PATH` — `agent-harness` — and everything else lives beside it:
+
+```
+~/.local/bin/agent-harness         the command you run
+~/.local/libexec/agent-harness/    the six stage binaries, kept off your PATH
+~/.local/share/agent-harness/      .env.example, CONSUMER.md, README, LICENSE
+```
+
+The stage binaries are named for their role — `loop`, `watch`, `review`,
+`pipeline`, … — which are far too generic to put in a shared `bin` dir (`watch`
+alone would shadow `watch(1)`). `agent-harness <command>` dispatches to them, so
+the install adds exactly one name to your shell and shadows nothing (ADR-0012).
+
+```bash
+agent-harness --help       # every command, and what it does
+agent-harness --version
+```
+
+<details>
+<summary>Other ways to install</summary>
+
+```bash
+# A specific release, or a different prefix. Piped into a shell, flags need `sh -s --`:
+curl -fsSL https://raw.githubusercontent.com/danoleary/agent-harness/main/install.sh \
+  | sh -s -- --version v0.3.0 --prefix /opt/agent-harness
+
+# Remove it again. Named files only — it never rm -rf's your prefix.
+curl -fsSL https://raw.githubusercontent.com/danoleary/agent-harness/main/install.sh | sh -s -- --uninstall
+
+# From a checkout, into the same layout (Go 1.26+):
+make install                      # PREFIX=~/.local by default
+make build                        # or just build into ./bin
+
+# With a Go toolchain and no installer. Note this DOES put the generic names in
+# your GOBIN — `agent-harness` then dispatches to whichever it finds there.
+go install github.com/danoleary/agent-harness/cmd/agent-harness@latest
+go install github.com/danoleary/agent-harness/cmd/loop@latest   # and pipeline, watch, …
+```
+
+Or download an archive from [Releases](../../releases) and run `./agent-harness`
+straight out of the unpacked directory — the archive layout is the installed
+layout, so it works in place.
+
+</details>
+
+### Prerequisites
 
 On the host that runs the harness:
 
@@ -24,64 +79,21 @@ On the host that runs the harness:
 - `gh`
 - Go **1.26+** — only if you build from source
 
-## Install
+The installer warns about any of these that are missing; it does not install them
+for you.
 
-Download the archive for your platform from
-[Releases](../../releases) and put the binaries on your `PATH`. No Go toolchain
-needed.
+## Set it up
 
-With a Go toolchain, either of:
+Two things stand between a fresh install and a first run: credentials on the
+host, and an `.agent-harness/` directory in the project you point it at.
 
-```bash
-go install github.com/danoleary/agent-harness/cmd/loop@latest   # and pipeline, watch, …
-make build                                                       # from a checkout, into bin/
-```
-
-## Point it at a project
-
-The project needs an `.agent-harness/` directory — see
-[`docs/CONSUMER.md`](docs/CONSUMER.md) for the config, the prompt bodies, and how
-to build a sandbox image `FROM` the published base.
-
-The harness declares no skill of its own. Each of the three prompt bodies names
-the skill its stage invokes, and all three are required: a missing or blank body
-fails at config load rather than running a stage with nothing to invoke.
-
-Then set the host environment. The harness reads its credentials from the first
-of these that exists, so an operator with no checkout has a home for them:
-
-| Order | Path | Who it is for |
-|---|---|---|
-| 1 | `$HARNESS_ENV_FILE` | driving several projects, one credential set each |
-| 2 | `./.env` | running from a harness checkout (local beats global) |
-| 3 | `<project>/.agent-harness/.env` | **keeping credentials with the project** |
-| 4 | `${XDG_CONFIG_HOME:-~/.config}/agent-harness/.env` | one install, several projects |
+### 1. Credentials
 
 ```bash
-# With the project (found when you run the harness from it, or with
-# PROJECT_PATH exported). Gitignore it.
-cp .env.example /path/to/project/.agent-harness/.env
-
-# Operator-scoped, for an install that drives several projects:
 mkdir -p ~/.config/agent-harness
-cp .env.example ~/.config/agent-harness/.env   # the archive ships this file
+cp ~/.local/share/agent-harness/.env.example ~/.config/agent-harness/.env
+# then fill it in
 ```
-
-`<project>/.agent-harness/.env` sits **inside** the checkout that every stage
-bind-mounts into its sandbox, which would normally make it readable by the agent
-session — handing over the tracker and GitHub tokens the harness keeps host-side
-(ADR-0002). So the harness masks that exact path in every container it launches:
-the session, the gate, the install and the `post_create` container each mount an
-empty file over it. That mask is what makes the in-repo location safe, and it
-covers only that path — a credential file anywhere else in the checkout is
-readable, and the harness warns when it loads one.
-
-Exported variables win over the file, so `LINEAR_API_KEY=… loop` also works.
-
-The sandbox image builds (or pulls) itself on first run. To control when that
-~minutes-long build happens, pre-build it: `make image`.
-
-### Required secrets (`.env`)
 
 | Var | Purpose |
 |---|---|
@@ -98,45 +110,83 @@ compromised session cannot move your backlog or touch your remote.
 > read check runs**, so the post-PR CI watch can't observe CI.
 > See `.env.example` for every optional knob (timeouts, models, loop ceilings).
 
+The harness reads its credentials from the first of these that exists, so an
+operator with no checkout has a home for them:
+
+| Order | Path | Who it is for |
+|---|---|---|
+| 1 | `$HARNESS_ENV_FILE` | driving several projects, one credential set each |
+| 2 | `./.env` | running from a harness checkout (local beats global) |
+| 3 | `<project>/.agent-harness/.env` | **keeping credentials with the project** |
+| 4 | `${XDG_CONFIG_HOME:-~/.config}/agent-harness/.env` | **one install, several projects** |
+
+`<project>/.agent-harness/.env` sits **inside** the checkout that every stage
+bind-mounts into its sandbox, which would normally make it readable by the agent
+session — handing over the tracker and GitHub tokens the harness keeps host-side
+(ADR-0002). So the harness masks that exact path in every container it launches:
+the session, the gate, the install and the `post_create` container each mount an
+empty file over it. That mask is what makes the in-repo location safe, and it
+covers only that path — a credential file anywhere else in the checkout is
+readable, and the harness warns when it loads one. Gitignore whichever you pick.
+
+Exported variables win over the file, so `LINEAR_API_KEY=… agent-harness loop`
+also works.
+
+### 2. The project's `.agent-harness/` directory
+
+The project needs an `.agent-harness/` directory — its gates, its sandbox image,
+its prompts, its tracker. See
+[`docs/CONSUMER.md`](docs/CONSUMER.md) (installed at
+`~/.local/share/agent-harness/CONSUMER.md`) for the config, the prompt bodies, and
+how to build a sandbox image `FROM` the published base. There is a complete
+worked example in [`example/`](example/).
+
+The harness declares no skill of its own. Each of the three prompt bodies names
+the skill its stage invokes, and all three are required: a missing or blank body
+fails at config load rather than running a stage with nothing to invoke.
+
+The sandbox image builds (or pulls) itself on first run. To control when that
+~minutes-long build happens, pre-build it: `make base-image` from a checkout.
+
 ## Run it
 
-**Autonomous daemon** — works the whole queue and walks away. Detaches with
+Start with one ticket, watch it the whole way through:
+
+```bash
+agent-harness pipeline --next      # the next eligible ticket
+agent-harness pipeline BEH-362     # a specific one
+```
+
+That runs implementation → review → retrospective over a single ticket and
+exits. When you trust it, hand it the queue:
+
+**Autonomous daemon** — works the whole backlog and walks away. Detaches with
 `nohup`, logs to `loop.log`, writes its PID to `loop.pid`:
 
 ```bash
-./scripts/loop-start.sh
+agent-harness start
 ```
-
-Every command also takes `--help` and `--version`, both of which answer without
-needing a credential.
 
 **Watch it run** — a read-only live view of the current ticket and stage, tailing
 the global event stream (`logs/loop.jsonl`) the daemon and the pipeline write. It
 never controls the loop (Ctrl-C quits the viewer, not the daemon), and works
-against `make loop` **or** a single-shot `make pipeline`:
+against `agent-harness start`, a foreground `agent-harness loop`, **or** a
+single-shot `agent-harness pipeline`:
 
 ```bash
-make watch
+agent-harness watch
 ```
 
 If no daemon/pipeline is running it prints a clear "loop not running" line and
 keeps polling, so it picks up once one starts. See ADR-0005.
 
-**One ticket, start to finish** — implementation → review → retrospective, then
-exits. Pass a ticket id, or `--next` to auto-select and claim the top of queue:
-
-```bash
-make pipeline ARGS="BEH-362"     # a specific ticket
-make pipeline ARGS="--next"      # the next eligible ticket
-```
-
 **One stage at a time** — the three tools the pipeline chains, runnable by hand
 in this order. Each requires the previous one's worktree:
 
 ```bash
-make implementation ARGS="BEH-362"    # /tdd → leaves a worktree + commit (no push)
-make review ARGS="BEH-362"            # cold review, host re-runs gates, green → push + PR
-make retrospective ARGS="BEH-362"     # /retrospective over the transcripts, files findings
+agent-harness implementation BEH-362    # /tdd → leaves a worktree + commit (no push)
+agent-harness review BEH-362            # cold review, host re-runs gates, green → push + PR
+agent-harness retrospective BEH-362     # /retrospective over the transcripts, files findings
 ```
 
 Every command takes the same flags:
@@ -144,9 +194,10 @@ Every command takes the same flags:
 - `--verbose` — also stream the raw agent transcript to the console
 - `--dry-run` — print the prompt + docker command and exit (still reads `.env`
   and makes one read-only Linear call; claims nothing, launches no container)
+- `--help` and `--version` — both answer without needing a credential
 
-The compiled binaries (`bin/implementation`, `bin/pipeline`, …) and `go run
-./cmd/<tool>` work the same way as the `make` targets.
+From a checkout, the `make` targets do the same thing:
+`make pipeline ARGS="BEH-362"`, `make loop`, `make watch`, and so on.
 
 ### How a ticket is picked
 
@@ -157,8 +208,8 @@ harness decides *how*.
 
 ## Stopping the loop
 
-- **`touch .agent-harness/STOP`** — graceful: finishes the current ticket, then
-  exits. The way to wind down a detached `loop-start.sh` daemon.
+- **`touch $PROJECT_PATH/.agent-harness/STOP`** — graceful: finishes the current
+  ticket, then exits. The way to wind down a detached `agent-harness start` daemon.
 - **Ctrl-C** once — same graceful stop for a foreground run; twice — hard abort
   (kills the container now, keeps the worktree for review).
 - **`kill $(cat loop.pid)`** — hard kill of a detached daemon (escape hatch;
@@ -188,6 +239,7 @@ The console prints one concise line per harness event.
 ```bash
 make check     # fmt-check + vet + guards + test (the pre-push gate)
 make test      # go test ./...
+make install   # build and install into PREFIX (default ~/.local), like install.sh does
 ```
 
 Harness `scripts/*.sh` must run under macOS **bash 3.2** — no `declare -A`,
@@ -196,13 +248,17 @@ namerefs, `${var,,}`, or `mapfile`. `make check` enforces this (BEH-457).
 ## Layout
 
 ```
+install.sh         the one-command install (ADR-0012)
 cmd/
+  agent-harness/   the entrypoint on your PATH; dispatches to the tools below
   implementation/  /tdd → worktree + commit
   review/          cold review + host-side gate re-run + push/PR
   retrospective/   /retrospective, files findings, tears down a clean worktree
   pipeline/        chains the three over one ticket, then exits
   loop/            autonomous daemon over the agent-ready queue
+  watch/           read-only live viewer over the event stream
 internal/          config, tracker adapters, prompt, sandbox, session, verify, filing, git, …
+scripts/           loop-start.sh (the `start` launcher) + the make check guards
 Dockerfile.base    the published sandbox base image — the harness<->sandbox contract
 docs/CONSUMER.md   how a project adopts the harness
 ```

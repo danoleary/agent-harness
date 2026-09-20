@@ -21,7 +21,7 @@ import (
 
 // NotRunningMessage is shown when the stream file is absent — no daemon or
 // single-shot run has written it. It is a clear status line, not an error.
-const NotRunningMessage = "loop not running — no logs/loop.jsonl yet (start it with scripts/loop-start.sh, or run `make pipeline`)"
+const NotRunningMessage = "loop not running — no logs/loop.jsonl yet (start it with `agent-harness start`, or run `agent-harness pipeline --next`)"
 
 // describe maps a Kind to a short, fixed label used in the rendered line. It is
 // the closed-enum switch the viewer drives off (ADR-0005): every loopstream.Kind

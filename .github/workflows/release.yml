@@ -50,6 +50,19 @@ jobs:
         # The harness host needs docker, git and gh, which rules out a pure-Windows
         # host; darwin and linux on both architectures cover the real targets.
         # CGO_ENABLED=0 keeps each binary statically linked so it runs on any libc.
+        #
+        # The archive layout IS the installed layout (ADR-0012), and install.sh
+        # copies it across verbatim:
+        #
+        #   agent-harness                  the dispatcher — the one name that goes on PATH
+        #   libexec/agent-harness/<tool>   the six stage binaries, kept OFF the PATH
+        #   scripts/loop-start.sh          the detached-daemon launcher
+        #   README.md CONSUMER.md LICENSE .env.example
+        #
+        # The stage binaries are named for their role (loop, watch, review, …) and
+        # those words are far too generic for a shared bin dir — `watch` alone
+        # would shadow procps' watch(1). Keep them under libexec/; anything that
+        # moves one to the archive root puts it back on operators' PATH.
         run: |
           set -euo pipefail
           version="${{ github.event.inputs.tag || github.ref_name }}"
@@ -58,8 +71,14 @@ jobs:
             goos="${platform%/*}"
             goarch="${platform#*/}"
             stage="dist/agent-harness_${version}_${goos}_${goarch}"
-            mkdir -p "$stage"
-            for tool in implementation review retrospective pipeline loop watch; do
+            mkdir -p "$stage/libexec/agent-harness" "$stage/scripts"
+            for tool in agent-harness implementation review retrospective pipeline loop watch; do
+              # The dispatcher sits at the archive root; everything it dispatches
+              # to sits under libexec/.
+              case "$tool" in
+                agent-harness) out="$stage/agent-harness" ;;
+                *)             out="$stage/libexec/agent-harness/$tool" ;;
+              esac
               # -X stamps the release tag into internal/version, which `--version`
               # prints and a Consumer's `min_harness_version` pin is checked
               # against. Without it every release reports "dev" and the pin check
@@ -67,24 +86,45 @@ jobs:
               CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
                 go build -buildvcs=false -trimpath \
                 -ldflags "-s -w -X github.com/danoleary/agent-harness/internal/version.Version=${version}" \
-                -o "$stage/$tool" "./cmd/$tool"
+                -o "$out" "./cmd/$tool"
             done
             # Ship the Consumer-facing docs beside the binaries so an operator who
             # only ever downloads a tarball still has the adoption contract.
             #
-            # .env.example and loop-start.sh travel with them because the README
-            # instructs an operator to use BOTH — "cp .env.example .env" and
-            # "./scripts/loop-start.sh" — and a download-only operator has no
-            # checkout to find either in. Omitting them made the documented
-            # quickstart impossible to follow from a release archive.
+            # .env.example and loop-start.sh travel with them because the quickstart
+            # instructs an operator to use BOTH — "cp .env.example .env" and the
+            # detached launcher — and a download-only operator has no checkout to
+            # find either in. Omitting them made the documented quickstart
+            # impossible to follow from a release archive.
             cp README.md docs/CONSUMER.md LICENSE .env.example "$stage/"
-            mkdir -p "$stage/scripts"
             cp scripts/loop-start.sh "$stage/scripts/"
             tar -czf "${stage}.tar.gz" -C dist "$(basename "$stage")"
             rm -rf "$stage"
           done
           (cd dist && sha256sum ./*.tar.gz > checksums.txt)
           ls -la dist
+
+      - name: Check the archive against what install.sh expects
+        # install.sh unpacks these archives and refuses a partial one, so a layout
+        # drift here surfaces as a broken one-liner for every new operator, with
+        # nothing failing on our side. Assert the contract at the point it is
+        # produced. (scripts/test-install.sh covers the other direction: the
+        # installer against a fixture archive in this same shape.)
+        run: |
+          set -euo pipefail
+          version="${{ github.event.inputs.tag || github.ref_name }}"
+          probe="$(mktemp -d)"
+          tar -xzf "dist/agent-harness_${version}_linux_amd64.tar.gz" -C "$probe"
+          root="$probe/agent-harness_${version}_linux_amd64"
+          test -x "$root/agent-harness" || { echo "no dispatcher at the archive root"; exit 1; }
+          for tool in implementation review retrospective pipeline loop watch; do
+            test -x "$root/libexec/agent-harness/$tool" || { echo "missing libexec/agent-harness/$tool"; exit 1; }
+            test ! -e "$root/$tool" || { echo "$tool is at the archive root — it would land on operators' PATH"; exit 1; }
+          done
+          test -f "$root/scripts/loop-start.sh" || { echo "missing scripts/loop-start.sh"; exit 1; }
+          test -f "$root/.env.example" || { echo "missing .env.example"; exit 1; }
+          test -f "$root/CONSUMER.md" || { echo "missing CONSUMER.md"; exit 1; }
+          echo "archive layout OK"
 
       - name: Publish to GitHub Releases
         # `gh release` rather than a third-party action: one less trusted
@@ -97,7 +137,10 @@ jobs:
           if ! gh release view "$version" >/dev/null 2>&1; then
             gh release create "$version" --title "$version" --generate-notes
           fi
-          gh release upload "$version" dist/*.tar.gz dist/checksums.txt --clobber
+          # install.sh ships as a release asset as well as living on main, so an
+          # operator can pin the installer to the release it installs:
+          #   curl -fsSL https://github.com/danoleary/agent-harness/releases/download/<tag>/install.sh | sh
+          gh release upload "$version" dist/*.tar.gz dist/checksums.txt install.sh --clobber
 
   base-image:
     runs-on: ubuntu-latest

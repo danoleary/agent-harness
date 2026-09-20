@@ -385,6 +385,29 @@ else
     echo -e "${GREEN}PASS${NC}"
 fi
 
+# --- the installed libexec layout is found ---------------------------------
+#
+# install.sh puts this script and the daemon it launches side by side in
+# <prefix>/libexec/agent-harness/. Neither the bin/ nor the archive-root candidate
+# matches there, so a sibling lookup is what keeps a directly-invoked
+# loop-start.sh working for an operator who installed with the one-liner.
+echo -n "loop-start.sh finds a loop beside itself (the installed libexec layout) ... "
+LIBEXEC="$TEST_DIR/prefix/libexec/agent-harness"
+mkdir -p "$LIBEXEC"
+cp "$SCRIPT_PATH" "$LIBEXEC/loop-start.sh"
+cp "$FAKE_BIN" "$LIBEXEC/loop"
+LIBEXEC_PROJ="$TEST_DIR/consumer-libexec"
+mkdir -p "$LIBEXEC_PROJ"
+( cd "$TEST_DIR" && PATH="/usr/bin:/bin" PROJECT_PATH="$LIBEXEC_PROJ" "$LIBEXEC/loop-start.sh" > /dev/null 2>&1 )
+libexec_pid="$(cat "$LIBEXEC_PROJ/.agent-harness/loop.pid" 2>/dev/null || true)"
+STARTED_PIDS="$STARTED_PIDS $libexec_pid"
+if [ -z "$libexec_pid" ] || ! kill -0 "$libexec_pid" 2>/dev/null; then
+    echo -e "${RED}FAIL${NC} - no live pidfile; the sibling binary in libexec was not found"
+    exit 1
+else
+    echo -e "${GREEN}PASS${NC}"
+fi
+
 # --- the not-found message speaks to both kinds of operator ----------------
 echo -n "loop-start.sh explains how to get a binary, for source AND release users ... "
 NOBIN="$TEST_DIR/nobin"
@@ -396,6 +419,9 @@ if ! printf '%s' "$nobin_out" | grep -q "make build"; then
     exit 1
 elif ! printf '%s' "$nobin_out" | grep -qi "release\|PATH"; then
     echo -e "${RED}FAIL${NC} - message must also tell a release operator where a binary comes from: $nobin_out"
+    exit 1
+elif ! printf '%s' "$nobin_out" | grep -q "agent-harness start"; then
+    echo -e "${RED}FAIL${NC} - message must point an installed operator at the dispatcher: $nobin_out"
     exit 1
 else
     echo -e "${GREEN}PASS${NC}"
