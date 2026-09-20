@@ -99,7 +99,7 @@ func eligibleNode(id string, priority int) issueNode {
 func TestSelectNextTicketReturnsEligibleTicketWithoutClaiming(t *testing.T) {
 	tr, calls := selectTransport(t, eligibleNode("BEH-100", 1))
 
-	got, ok, err := NewClient(tr).SelectNextTicket()
+	got, ok, err := NewClient(tr, testOptions()).SelectNextTicket()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -126,7 +126,7 @@ func TestSelectNextTicketReturnsEligibleTicketWithoutClaiming(t *testing.T) {
 // An empty queue is a normal steady state, not an error: ok=false, no error.
 func TestSelectNextTicketEmptyQueueReturnsNotOK(t *testing.T) {
 	tr, _ := selectTransport(t)
-	_, ok, err := NewClient(tr).SelectNextTicket()
+	_, ok, err := NewClient(tr, testOptions()).SelectNextTicket()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -141,7 +141,7 @@ func TestSelectNextTicketEmptyQueueReturnsNotOK(t *testing.T) {
 // small human-gated set and ordering can't miss a higher-priority ticket beyond it.
 func TestSelectNextTicketQueryScopesTeamStateAssignee(t *testing.T) {
 	tr, calls := selectTransport(t, eligibleNode("BEH-1", 1))
-	if _, _, err := NewClient(tr).SelectNextTicket(); err != nil {
+	if _, _, err := NewClient(tr, testOptions()).SelectNextTicket(); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(*calls) != 1 {
@@ -165,7 +165,7 @@ func TestSelectNextTicketQueryScopesTeamStateAssignee(t *testing.T) {
 func TestSelectNextTicketSkipsTicketsWithoutAgentReady(t *testing.T) {
 	noLabel := issueNode{identifier: "BEH-2", priority: 1, labels: []string{"bug"}}
 	tr, _ := selectTransport(t, noLabel)
-	_, ok, err := NewClient(tr).SelectNextTicket()
+	_, ok, err := NewClient(tr, testOptions()).SelectNextTicket()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -180,7 +180,7 @@ func TestSelectNextTicketSkipsBlockedLabel(t *testing.T) {
 	blocked := issueNode{identifier: "BEH-3", priority: 1, labels: []string{"ready-for-agent", "Blocked"}}
 	ready := eligibleNode("BEH-4", 2)
 	tr, _ := selectTransport(t, blocked, ready)
-	got, ok, err := NewClient(tr).SelectNextTicket()
+	got, ok, err := NewClient(tr, testOptions()).SelectNextTicket()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -195,7 +195,7 @@ func TestSelectNextTicketSkipsTicketBlockedByOpenIssue(t *testing.T) {
 	blocked := issueNode{identifier: "BEH-5", priority: 1, labels: []string{"ready-for-agent"}, blockers: []string{"started"}}
 	ready := eligibleNode("BEH-6", 3)
 	tr, _ := selectTransport(t, blocked, ready)
-	got, ok, err := NewClient(tr).SelectNextTicket()
+	got, ok, err := NewClient(tr, testOptions()).SelectNextTicket()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -209,7 +209,7 @@ func TestSelectNextTicketSkipsTicketBlockedByOpenIssue(t *testing.T) {
 func TestSelectNextTicketIgnoresClosedBlockers(t *testing.T) {
 	wasBlocked := issueNode{identifier: "BEH-7", priority: 1, labels: []string{"ready-for-agent"}, blockers: []string{"completed"}}
 	tr, _ := selectTransport(t, wasBlocked)
-	got, ok, err := NewClient(tr).SelectNextTicket()
+	got, ok, err := NewClient(tr, testOptions()).SelectNextTicket()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -226,7 +226,7 @@ func TestSelectNextTicketSkipsUmbrellaWithOpenChild(t *testing.T) {
 	umbrella := issueNode{identifier: "BEH-UMB", priority: 1, labels: []string{"ready-for-agent"}, children: []string{"unstarted"}}
 	leaf := eligibleNode("BEH-LEAF", 3)
 	tr, _ := selectTransport(t, umbrella, leaf)
-	got, ok, err := NewClient(tr).SelectNextTicket()
+	got, ok, err := NewClient(tr, testOptions()).SelectNextTicket()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -240,7 +240,7 @@ func TestSelectNextTicketSkipsUmbrellaWithOpenChild(t *testing.T) {
 func TestSelectNextTicketAllowsIssueWithOnlyClosedChildren(t *testing.T) {
 	done := issueNode{identifier: "BEH-DONE", priority: 1, labels: []string{"ready-for-agent"}, children: []string{"completed", "canceled"}}
 	tr, _ := selectTransport(t, done)
-	got, ok, err := NewClient(tr).SelectNextTicket()
+	got, ok, err := NewClient(tr, testOptions()).SelectNextTicket()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -256,7 +256,7 @@ func TestSelectNextTicketOrdersByPriority(t *testing.T) {
 	low := eligibleNode("BEH-LOW", 4)
 	urgent := eligibleNode("BEH-URGENT", 1)
 	tr, _ := selectTransport(t, none, low, urgent)
-	got, ok, err := NewClient(tr).SelectNextTicket()
+	got, ok, err := NewClient(tr, testOptions()).SelectNextTicket()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -271,7 +271,7 @@ func TestSelectNextTicketNoPrioritySortsLast(t *testing.T) {
 	none := eligibleNode("BEH-NONE", 0)
 	low := eligibleNode("BEH-LOW", 4)
 	tr, _ := selectTransport(t, none, low)
-	got, _, err := NewClient(tr).SelectNextTicket()
+	got, _, err := NewClient(tr, testOptions()).SelectNextTicket()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -286,7 +286,7 @@ func TestSelectNextTicketTieBreaksBySortOrderThenCreatedAt(t *testing.T) {
 	first := issueNode{identifier: "BEH-A", priority: 2, sortOrder: 1.0, createdAt: "2026-01-01T00:00:00Z", labels: []string{"ready-for-agent"}}
 	lowerSort := issueNode{identifier: "BEH-B", priority: 2, sortOrder: 0.5, createdAt: "2026-02-01T00:00:00Z", labels: []string{"ready-for-agent"}}
 	tr, _ := selectTransport(t, first, lowerSort)
-	got, _, err := NewClient(tr).SelectNextTicket()
+	got, _, err := NewClient(tr, testOptions()).SelectNextTicket()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -298,11 +298,141 @@ func TestSelectNextTicketTieBreaksBySortOrderThenCreatedAt(t *testing.T) {
 	older := issueNode{identifier: "BEH-OLD", priority: 2, sortOrder: 1.0, createdAt: "2026-01-01T00:00:00Z", labels: []string{"ready-for-agent"}}
 	newer := issueNode{identifier: "BEH-NEW", priority: 2, sortOrder: 1.0, createdAt: "2026-03-01T00:00:00Z", labels: []string{"ready-for-agent"}}
 	tr2, _ := selectTransport(t, newer, older)
-	got2, _, err := NewClient(tr2).SelectNextTicket()
+	got2, _, err := NewClient(tr2, testOptions()).SelectNextTicket()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if got2.Identifier != "BEH-OLD" {
 		t.Errorf("selected = %q, want BEH-OLD (older createdAt wins when sortOrder ties)", got2.Identifier)
+	}
+}
+
+// --- Consumer-configured selection surface (BEH-641) ---
+//
+// Until the extraction these values were package constants carrying one
+// workspace's team key and labels, so `tracker.team_key`/`ready_label`/
+// `blocked_label` were dead config for kind=linear and a second Consumer would
+// have been served herd's backlog. Selection must key off Options instead.
+// Exercised through SelectNextTicket, the adapter's own interface, rather than
+// against the private predicate.
+
+// consumerOptions is a second Consumer's naming — deliberately sharing no value
+// with testOptions(), so a leftover constant fails rather than coincidentally
+// matching.
+func consumerOptions() Options {
+	return Options{TeamKey: "PROJ", Ready: "agent-ready", Blocked: "on-hold"}
+}
+
+// selectFilter digs the issues filter out of the recorded SelectNext call.
+func selectFilter(t *testing.T, calls *[]call) map[string]any {
+	t.Helper()
+	if len(*calls) == 0 {
+		t.Fatal("no GraphQL call recorded")
+	}
+	f, ok := (*calls)[0].variables["filter"].(map[string]any)
+	if !ok {
+		t.Fatalf("filter variable missing from %v", (*calls)[0].variables)
+	}
+	return f
+}
+
+// filterEq reads the `{"<field>": {"<key>": {"eq": v}}}` shape IssueFilter uses.
+func filterEq(t *testing.T, filter map[string]any, field, key string) any {
+	t.Helper()
+	outer, ok := filter[field].(map[string]any)
+	if !ok {
+		t.Fatalf("filter has no %q clause: %v", field, filter)
+	}
+	inner, ok := outer[key].(map[string]any)
+	if !ok {
+		t.Fatalf("filter.%s has no %q clause: %v", field, key, outer)
+	}
+	return inner["eq"]
+}
+
+func TestSelectNextTicketScopesToTheConfiguredTeamAndReadyLabel(t *testing.T) {
+	tr, calls := selectTransport(t)
+
+	if _, _, err := NewClient(tr, consumerOptions()).SelectNextTicket(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	filter := selectFilter(t, calls)
+	if got := filterEq(t, filter, "team", "key"); got != "PROJ" {
+		t.Errorf("team.key = %v, want PROJ — selection must scope to the Consumer's team, not a compiled-in one", got)
+	}
+	if got := filterEq(t, filter, "labels", "name"); got != "agent-ready" {
+		t.Errorf("labels.name = %v, want agent-ready — the ready gate is Consumer-named", got)
+	}
+}
+
+// The eligibility predicate re-checks both labels in Go as defensive depth, so
+// it must read the same Consumer names the GraphQL filter does.
+func TestSelectNextTicketEligibilityUsesTheConfiguredLabels(t *testing.T) {
+	ready := issueNode{identifier: "PROJ-1", labels: []string{"agent-ready"}}
+	tr, _ := selectTransport(t, ready)
+	got, ok, err := NewClient(tr, consumerOptions()).SelectNextTicket()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !ok || got.Identifier != "PROJ-1" {
+		t.Fatalf("a ticket carrying the configured ready label must be selected, got ok=%v %q", ok, got.Identifier)
+	}
+
+	blocked := issueNode{identifier: "PROJ-2", labels: []string{"agent-ready", "on-hold"}}
+	tr, _ = selectTransport(t, blocked)
+	if _, ok, err := NewClient(tr, consumerOptions()).SelectNextTicket(); err != nil || ok {
+		t.Errorf("the configured blocked label must screen a ticket out, got ok=%v err=%v", ok, err)
+	}
+}
+
+// The pre-extraction names must carry no meaning of their own once a Consumer
+// has named its own. Both directions matter: the old ready label must not make a
+// ticket eligible, and the old blocked label must not screen one out.
+func TestSelectNextTicketIgnoresThePreExtractionLabelNames(t *testing.T) {
+	stale := issueNode{identifier: "PROJ-3", labels: []string{"ready-for-agent"}}
+	tr, _ := selectTransport(t, stale)
+	if _, ok, err := NewClient(tr, consumerOptions()).SelectNextTicket(); err != nil || ok {
+		t.Errorf("the pre-extraction ready label must not make a ticket eligible under another Consumer's config, got ok=%v err=%v", ok, err)
+	}
+
+	staleBlocked := issueNode{identifier: "PROJ-4", labels: []string{"agent-ready", "Blocked"}}
+	tr, _ = selectTransport(t, staleBlocked)
+	got, ok, err := NewClient(tr, consumerOptions()).SelectNextTicket()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !ok || got.Identifier != "PROJ-4" {
+		t.Errorf("the pre-extraction blocked label must not screen out a ticket whose Consumer named it differently, got ok=%v %q", ok, got.Identifier)
+	}
+}
+
+// An unset blocked label disables the screen rather than matching the empty
+// label name that every unlabelled ticket would trivially satisfy.
+func TestSelectNextTicketWithNoBlockedLabelConfiguredDoesNotScreen(t *testing.T) {
+	n := issueNode{identifier: "PROJ-1", labels: []string{"agent-ready"}}
+	tr, _ := selectTransport(t, n)
+	opts := Options{TeamKey: "PROJ", Ready: "agent-ready"}
+	if _, ok, err := NewClient(tr, opts).SelectNextTicket(); err != nil || !ok {
+		t.Errorf("with no blocked label configured a ready ticket must stay eligible, got ok=%v err=%v", ok, err)
+	}
+}
+
+// The stale-claim reaper reads the same team + ready scope as selection, so it
+// must be Consumer-configured too — a compiled-in team key would have the reaper
+// releasing claims in a workspace the Consumer never named.
+func TestListInProgressClaimsScopesToTheConfiguredTeamAndReadyLabel(t *testing.T) {
+	tr, calls := transportReturning(t, map[string]any{"issues": map[string]any{"nodes": []any{}}})
+
+	if _, err := NewClient(tr, consumerOptions()).ListInProgressClaims(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	filter := selectFilter(t, calls)
+	if got := filterEq(t, filter, "team", "key"); got != "PROJ" {
+		t.Errorf("team.key = %v, want PROJ", got)
+	}
+	if got := filterEq(t, filter, "labels", "name"); got != "agent-ready" {
+		t.Errorf("labels.name = %v, want agent-ready", got)
 	}
 }

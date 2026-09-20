@@ -185,10 +185,12 @@ type Deps struct {
 	// merged/clean classification lives entirely in the script (single source of
 	// truth); the loop never reimplements it. A failure is non-fatal (ADR-0005).
 	PruneMergedWorktrees func() (removed int, err error)
-	// StorePrune runs `pnpm store prune` — a cheap, non-destructive, network-free
-	// secondary reclaim — only when free disk is STILL below the threshold after the
-	// worktree prune. A nil StorePrune skips the secondary step; a failure is non-fatal.
-	StorePrune func() error
+	// CachePrune runs the Consumer's declared cache-reclaim command (`cache.prune_command`
+	// — `pnpm store prune`, `go clean -modcache`, …): a cheap, non-destructive,
+	// network-free secondary reclaim, run only when free disk is STILL below the
+	// threshold after the worktree prune. Nil — which is what a Consumer that declares
+	// no prune command produces — skips the secondary step; a failure is non-fatal.
+	CachePrune func() error
 	// DockerPrune reclaims Docker build cache + unreferenced images — usually the
 	// harness's biggest disk hog (it runs `docker run --rm` sandboxes, so stale build
 	// cache and dangling images accrete on the Docker volume) and the one the worktree
@@ -504,10 +506,10 @@ func (d Deps) reclaimDisk() {
 	if mid, merr := d.FreeDisk(); merr == nil {
 		after = mid
 	}
-	// Secondary: the cheap, non-destructive `pnpm store prune`.
-	if after < d.DiskReclaimThreshold && d.StorePrune != nil {
-		if serr := d.StorePrune(); serr != nil {
-			d.Log.Event("loop … warning: pnpm store prune failed during disk reclaim (continuing): " + serr.Error())
+	// Secondary: the Consumer's cheap, non-destructive cache prune.
+	if after < d.DiskReclaimThreshold && d.CachePrune != nil {
+		if serr := d.CachePrune(); serr != nil {
+			d.Log.Event("loop … warning: cache prune failed during disk reclaim (continuing): " + serr.Error())
 		} else if final, ferr := d.FreeDisk(); ferr == nil {
 			after = final
 		}

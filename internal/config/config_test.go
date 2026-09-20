@@ -210,8 +210,12 @@ func TestLoadEnvCacheVolumeWithoutPathDefaultsMount(t *testing.T) {
 	}
 }
 
+// GH_TOKEN and PROJECT_PATH are required whatever the tracker is: the harness
+// pushes branches and opens PRs with `gh` regardless (ADR-0002), and it must know
+// which checkout it is working. The TRACKER credential is deliberately absent
+// from this list — see TestLoadDoesNotRequireATrackerCredential.
 func TestLoadMissingRequired(t *testing.T) {
-	for _, key := range []string{"GH_TOKEN", "LINEAR_API_KEY", "PROJECT_PATH"} {
+	for _, key := range []string{"GH_TOKEN", "PROJECT_PATH"} {
 		_, err := Load(fullEnv(map[string]string{key: ""}))
 		if err == nil {
 			t.Errorf("expected error when %s missing", key)
@@ -803,5 +807,33 @@ func TestEnvFileInsideProjectExemptsTheMaskedLocation(t *testing.T) {
 	}
 	if !EnvFileInsideProject("/src/herd/web/.env", "/src/herd") {
 		t.Error("a nested credential file is not masked and must warn")
+	}
+}
+
+// --- the tracker credential is per-kind (BEH-641) ---
+
+// Load required LINEAR_API_KEY unconditionally, so a Jira-only or
+// GitHub-Issues-only Consumer could not start the harness at all — the tracker
+// port (ADR-0010) offered three adapters that only one credential could reach.
+// Which credential is needed depends on `tracker.kind`, which lives in the
+// project config, so the check belongs to trackers.New, not here.
+func TestLoadDoesNotRequireATrackerCredential(t *testing.T) {
+	cfg, err := Load(fullEnv(map[string]string{"LINEAR_API_KEY": ""}))
+	if err != nil {
+		t.Fatalf("Load must not require a tracker credential of its own, got: %v", err)
+	}
+	if cfg.LinearAPIKey != "" {
+		t.Errorf("LinearAPIKey = %q, want empty", cfg.LinearAPIKey)
+	}
+}
+
+// It must still be carried through when set — trackers.New reads it from here.
+func TestLoadCarriesTheLinearKeyWhenSet(t *testing.T) {
+	cfg, err := Load(fullEnv(nil))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.LinearAPIKey == "" {
+		t.Error("LinearAPIKey must be carried through to trackers.New")
 	}
 }

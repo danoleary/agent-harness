@@ -159,20 +159,25 @@ func Review(cfg config.Config, log *runlog.Logger, runID string, args Args) Resu
 		c.ContainerName = name
 		return sandbox.BuildGateRunArgs(c, command)
 	}
-	buildInstallArgs := func(name string) []string {
+	// The pre-session worktree prep is the Consumer's own post_create hook
+	// (ADR-0008), not a harness-owned command. Its documented contract — run on
+	// every provisioning pass, including a resumed worktree whose dependencies are
+	// routinely missing, and therefore idempotent — is exactly this case (BEH-641).
+	buildPrepArgs := func(name string) []string {
 		c := gateConfig
 		c.ContainerName = name
-		return sandbox.BuildInstallRunArgs(c)
+		return sandbox.BuildPostCreateRunArgs(c, cfg.PostCreate)
 	}
 
 	gateName := fmt.Sprintf("%s%s-%d-gate", sandbox.ContainerPrefix(cfg.ProjectPath), runID, os.Getpid())
 
-	// The implementation tool strips web/node_modules on handoff (BEH-412), so the
-	// cold review session would otherwise discover it missing and pay a full
-	// `pnpm install` mid-gate (BEH-490). Pre-populate it with a throwaway install
-	// container before the session, mirroring new-worktree.sh.
-	installName := fmt.Sprintf("%s%s-%d-install", sandbox.ContainerPrefix(cfg.ProjectPath), runID, os.Getpid())
-	installArgs := buildInstallArgs(installName)
+	// The handoff strip (BEH-412) can leave the worktree without its installed
+	// dependencies, so the cold review session would otherwise discover them
+	// missing and pay a full toolchain install mid-gate (BEH-490). Re-provision it
+	// with a throwaway container before the session. A Consumer that declares no
+	// post_create gets no prep container at all.
+	prepName := fmt.Sprintf("%s%s-%d-prep", sandbox.ContainerPrefix(cfg.ProjectPath), runID, os.Getpid())
+	prepArgs := buildPrepArgs(prepName)
 
 	if args.DryRun {
 		log.Event("dry-run — not launching the install, review, or gate containers")
@@ -182,9 +187,13 @@ func Review(cfg config.Config, log *runlog.Logger, runID string, args Args) Resu
 			gateArgs := buildGateArgs(fmt.Sprintf("%s-%s", gateName, g.Name), g.Command)
 			gatePreviews = append(gatePreviews, fmt.Sprintf("# gate %q\ndocker %s", g.Name, strings.Join(gateArgs, " ")))
 		}
+		prepPreview := "(none — the Consumer declares no post_create)"
+		if cfg.PostCreate != "" {
+			prepPreview = "docker " + strings.Join(prepArgs, " ")
+		}
 		fmt.Printf(
-			"\n--- prompt ---\n%s\n\n--- install docker command ---\ndocker %s\n\n--- review docker command ---\ndocker %s\n\n--- gate docker commands ---\n%s\n",
-			p, strings.Join(installArgs, " "), strings.Join(dockerArgs, " "), strings.Join(gatePreviews, "\n\n"),
+			"\n--- prompt ---\n%s\n\n--- prep docker command ---\n%s\n\n--- review docker command ---\ndocker %s\n\n--- gate docker commands ---\n%s\n",
+			p, prepPreview, strings.Join(dockerArgs, " "), strings.Join(gatePreviews, "\n\n"),
 		)
 		return Result{OK: true}
 	}
@@ -212,52 +221,59 @@ func Review(cfg config.Config, log *runlog.Logger, runID string, args Args) Resu
 		fmt.Fprintln(os.Stderr, detail)
 	}
 
-	// --- prep: repopulate web/node_modules before the cold session (BEH-490) ---
-	// The handoff strip (BEH-412) leaves the worktree without node_modules; install
-	// it up front against the warm pnpm store so the session opens onto a ready
-	// worktree instead of paying it mid-gate. Warn-only: the review-worktree skill
-	// already treats a missing node_modules as "install first", so a transient prep
-	// failure degrades to the agent installing in-session rather than aborting.
+	// --- prep: re-provision the worktree before the cold session (BEH-490) ---
+	// The handoff strip (BEH-412) can leave the worktree without its installed
+	// dependencies; run the Consumer's post_create up front so the session opens
+	// onto a ready worktree instead of paying the install mid-gate. Warn-only: a
+	// review skill that finds missing dependencies installs them in-session, so a
+	// transient prep failure degrades rather than aborting.
 	//
 	// Retry on an OOM-kill (exit 137) before that fallback (BEH-524): under host
 	// memory pressure this install gets SIGKILLed, and degrading to warn-and-continue
 	// dumped the ~10-min recovery install into the capped review session, starving it
 	// of time to actually review. The OOM is transient (it succeeded in ~4s on a bare
 	// retry once memory freed), so a short backoff-and-retry recovers it up front.
-	installTranscript := runlog.StepLogName("install", runID)
-	log.Event("prepping worktree (pnpm install --frozen-lockfile) before the review session")
-	installOutcome, installAttempts := session.RetryTransient(oomMaxAttempts, session.ConstantBackoff(oomRetryBackoff), time.Sleep, func(attempt int) session.Outcome {
-		name, transcript := installName, installTranscript
-		if attempt > 1 {
-			name = fmt.Sprintf("%s-retry%d", installName, attempt)
-			transcript = runlog.StepLogName(fmt.Sprintf("install-retry%d", attempt), runID)
+	//
+	// A Consumer with no post_create declared has nothing to re-provision, so the
+	// container is skipped entirely rather than run with an empty command (BEH-641).
+	if cfg.PostCreate == "" {
+		log.Event("review — no post_create declared; skipping worktree prep")
+	} else {
+		prepTranscript := runlog.StepLogName("prep", runID)
+		log.Event("prepping worktree (post_create) before the review session")
+		prepOutcome, prepAttempts := session.RetryTransient(oomMaxAttempts, session.ConstantBackoff(oomRetryBackoff), time.Sleep, func(attempt int) session.Outcome {
+			name, transcript := prepName, prepTranscript
+			if attempt > 1 {
+				name = fmt.Sprintf("%s-retry%d", prepName, attempt)
+				transcript = runlog.StepLogName(fmt.Sprintf("prep-retry%d", attempt), runID)
+				log.Event(fmt.Sprintf(
+					"review ↻ worktree prep OOM-killed (exit 137) — retry %d/%d after %s (BEH-524)",
+					attempt-1, oomMaxAttempts-1, oomRetryBackoff,
+				))
+			}
+			out := session.Run(buildPrepArgs(name), session.Options{
+				ContainerName:  name,
+				TranscriptFile: transcript,
+				Timeout:        cfg.ReviewTimeout,
+				// A memory-pressured install thrashes silently before it 137s, so give the
+				// idle watchdog the same early-reap as the rest of the review family rather
+				// than waiting out the full hard cap (BEH-535).
+				IdleTimeout: cfg.SessionIdleTimeout,
+				Verbose:     args.Verbose,
+				Log:         log,
+			})
+			// This is a raw-stdout step log, not a stream-json transcript — the tool's
+			// output just stops at the kill point. Stamp the exit so a reader sees the
+			// verdict instead of an opaque truncation (BEH-537).
+			log.TeeLine(transcript, runlog.StepFooter(out.ExitCode))
+			return out
+		})
+		if prepOutcome.ExitCode != 0 {
 			log.Event(fmt.Sprintf(
-				"review ↻ prep install OOM-killed (exit 137) — retry %d/%d after %s (BEH-524)",
-				attempt-1, oomMaxAttempts-1, oomRetryBackoff,
+				"review … warning: worktree prep exited %d after %d attempt(s) — session will provision in-session if needed",
+				prepOutcome.ExitCode, prepAttempts,
 			))
 		}
-		out := session.Run(buildInstallArgs(name), session.Options{
-			ContainerName:  name,
-			TranscriptFile: transcript,
-			Timeout:        cfg.ReviewTimeout,
-			// A memory-pressured install thrashes silently before it 137s, so give the
-			// idle watchdog the same early-reap as the rest of the review family rather
-			// than waiting out the full hard cap (BEH-535).
-			IdleTimeout: cfg.SessionIdleTimeout,
-			Verbose:     args.Verbose,
-			Log:         log,
-		})
-		// This is a raw-stdout step log, not a stream-json transcript — pnpm output
-		// just stops at the kill point. Stamp the exit so a reader sees the verdict
-		// instead of an opaque truncation (BEH-537).
-		log.TeeLine(transcript, runlog.StepFooter(out.ExitCode))
-		return out
-	})
-	if installOutcome.ExitCode != 0 {
-		log.Event(fmt.Sprintf(
-			"review … warning: worktree prep install exited %d after %d attempt(s) — session will install in-session if needed",
-			installOutcome.ExitCode, installAttempts,
-		))
 	}
 
 	// --- review session (cold /review-worktree; fixes committed locally) ---

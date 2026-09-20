@@ -160,7 +160,6 @@ func TestWorktreeContainersMaskTheCredentialFile(t *testing.T) {
 	want := "/tmp/empty:/src/p/.agent-harness/.env:ro"
 	for name, args := range map[string][]string{
 		"gate":        BuildGateRunArgs(gc, "true"),
-		"install":     BuildInstallRunArgs(gc),
 		"post_create": BuildPostCreateRunArgs(gc, "true"),
 	} {
 		if !hasVolume(args, want) {

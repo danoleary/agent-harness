@@ -64,3 +64,37 @@ func TestExampleConsumerPromptsLoad(t *testing.T) {
 		}
 	}
 }
+
+// The two path-shaped Consumer declarations BEH-641 extracted from the harness.
+// Both default to "disabled" when omitted, so an example that failed to
+// demonstrate them would teach a Consumer to silently lose the behaviour.
+func TestExampleConsumerDeclaresTheExtractedPaths(t *testing.T) {
+	pc, err := LoadProject(exampleConsumer())
+	if err != nil {
+		t.Fatalf("example Consumer config failed to load: %v", err)
+	}
+	// Asserted through the LOADER for the same reason as docs_only_excluded_roots:
+	// both are bare keys, so writing them below a [table] header silently makes
+	// them members of that table and the loader sees nothing.
+	if len(pc.HandoffStripPaths) == 0 {
+		t.Error("example config must declare handoff_strip_paths ABOVE the first " +
+			"[table] header, or the handoff strip is silently disabled")
+	}
+	if len(pc.SourceRoots) == 0 {
+		t.Error("example config must declare source_roots ABOVE the first " +
+			"[table] header, or the resolved-symbol advisory is silently disabled")
+	}
+}
+
+// The cache's reclaim command, the third piece of the `[cache]` surface. Like
+// the volume and path before it, it was a hardcoded `pnpm store prune` until
+// BEH-641 — run against every Consumer whatever its toolchain.
+func TestExampleConsumerDeclaresACachePruneCommand(t *testing.T) {
+	pc, err := LoadProject(exampleConsumer())
+	if err != nil {
+		t.Fatalf("example Consumer config failed to load: %v", err)
+	}
+	if pc.Cache.PruneCommand == "" {
+		t.Error("example config must demonstrate cache.prune_command alongside volume + path")
+	}
+}

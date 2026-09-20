@@ -20,7 +20,7 @@ several projects.
 
 `.agent-harness/.env` is inside the checkout every stage bind-mounts into its
 sandbox, so the harness **masks that exact path** in every container — the
-session, the gate, the install and `post_create` each mount an empty file over
+session, the gate and `post_create` each mount an empty file over
 it. Gitignore it; the mask stops the sandbox reading it, not your git history.
 A credential file anywhere *else* in your repo is not masked and is readable by
 the agent session.
@@ -75,6 +75,15 @@ dotnet restore
 [cache]
 volume = "myproject-nuget"
 path = "/root/.nuget/packages"
+# How to reclaim that cache. The loop daemon runs this between tickets when free
+# disk is still below the threshold after pruning merged worktrees — the cheap,
+# non-destructive rung before it falls back to a Docker prune. Omitting it skips
+# that rung. `pnpm store prune`, `go clean -modcache`, and
+# `dotnet nuget locals all --clear` are the usual shapes.
+#
+# UNLIKE gates and post_create, this runs on the HOST, not in a sandbox — the
+# cache it reclaims is the host's. It is shell-interpreted.
+prune_command = "dotnet nuget locals all --clear"
 
 # The oldest harness this config is written for. Optional — set it when you start
 # relying on a key or behaviour a given release introduced. An older binary
@@ -94,6 +103,22 @@ ready_label = "ready-for-agent"
 blocked_label = "blocked"
 in_progress_label = "in-progress"
 
+# kind = "linear" instead reads:
+#
+#   [tracker]
+#   kind = "linear"
+#   team_key = "PROJ"                  # REQUIRED — the Linear team to select from
+#   ready_label = "ready-for-agent"    # REQUIRED — the human-applied gate
+#   blocked_label = "Blocked"
+#   findings_label_id = "<label-uuid>" # Linear's create API takes the label UUID
+#   findings_label = "agent-harness"   # ...and its issue filter takes the NAME
+#
+# Linear needs the findings label in both spellings because its create API and
+# its issue filter disagree about which one they take. `team_key` and
+# `ready_label` have no defensible default — an empty team key would query every
+# team your credential can see, and an empty ready label would drop the
+# blast-radius gate — so both are checked at startup.
+
 # Directory prefixes whose contents can feed a gate or a CI job whatever they look
 # like. The harness skips the review gate re-run and the CI poll when a branch's
 # whole diff is inert prose OUTSIDE these roots.
@@ -103,6 +128,27 @@ in_progress_label = "in-progress"
 # excluding too little means silently merging past a job that could go red. Keep it
 # a superset of every root your workflows' `on.pull_request.paths` trigger on.
 docs_only_excluded_roots = ["src/", "tests/", ".github/", "scripts/"]
+
+# Worktree-relative paths deleted when the implementation stage hands the worktree
+# over. The sandbox builds on linux-arm64, so anything it installed carries
+# platform-specific binaries that crash a reviewer's gates on another host; the
+# review stage re-provisions the worktree with your `post_create` instead.
+#
+# Declare only regenerable build output — a pnpm monorepo strips
+# `web/node_modules`, a .NET project `obj` and `bin`, a Go project usually
+# nothing. Omitting this strips nothing. Paths must stay inside the worktree; an
+# absolute or `../` entry is refused at handoff rather than followed.
+handoff_strip_paths = ["obj", "bin"]
+
+# Checkout-relative directories the dispatch advisory greps when a ticket cites
+# code symbols in backticks. When none of the cited symbols exist there the
+# harness warns that the work may have already merged under a sibling ticket.
+#
+# OMITTING this disables the advisory rather than guessing a path — the safe
+# direction. A missed nudge costs one session; scanning the wrong tree reports
+# every cited symbol absent and pushes a perfectly valid ticket toward
+# "recommend close".
+source_roots = ["src"]
 
 # Ordered, named gates. ALL must pass host-side before the harness pushes and
 # opens the PR. Language-agnostic — these are just shell commands.

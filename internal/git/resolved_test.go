@@ -25,7 +25,7 @@ func writeSrc(t *testing.T, content string) string {
 func TestResolvedAdvisoryWarnsWhenCitedSymbolAbsent(t *testing.T) {
 	root := writeSrc(t, "export function useLiveKitConnection() {}\n")
 
-	msg := ResolvedAdvisory(root, "BEH-315", "delete the dead `onParticipantConnected` prop")
+	msg := ResolvedAdvisory([]string{root}, "BEH-315", "delete the dead `onParticipantConnected` prop")
 	if msg == "" {
 		t.Fatal("expected an advisory for a cited symbol absent from source")
 	}
@@ -42,7 +42,7 @@ func TestResolvedAdvisoryWarnsWhenCitedSymbolAbsent(t *testing.T) {
 func TestResolvedAdvisorySilentWhenCitedSymbolPresent(t *testing.T) {
 	root := writeSrc(t, "function useLiveKitConnection() { onParticipantConnected() }\n")
 
-	if msg := ResolvedAdvisory(root, "BEH-315", "wire up `onParticipantConnected`"); msg != "" {
+	if msg := ResolvedAdvisory([]string{root}, "BEH-315", "wire up `onParticipantConnected`"); msg != "" {
 		t.Fatalf("present symbol must not warn, got: %s", msg)
 	}
 }
@@ -53,7 +53,7 @@ func TestResolvedAdvisorySilentWhenCitedSymbolPresent(t *testing.T) {
 // read. Without this the whole feature's safety asymmetry inverts: a refactor
 // that defaulted to "absent" would emit false advisories on every dispatch.
 func TestResolvedAdvisorySilentWhenSrcRootMissing(t *testing.T) {
-	if msg := ResolvedAdvisory(filepath.Join(t.TempDir(), "does-not-exist"), "BEH-315", "delete the dead `onParticipantConnected` prop"); msg != "" {
+	if msg := ResolvedAdvisory([]string{filepath.Join(t.TempDir(), "does-not-exist")}, "BEH-315", "delete the dead `onParticipantConnected` prop"); msg != "" {
 		t.Fatalf("a missing srcRoot must fail quiet (no advisory), got: %s", msg)
 	}
 }
@@ -63,7 +63,7 @@ func TestResolvedAdvisorySilentWhenSrcRootMissing(t *testing.T) {
 func TestResolvedAdvisorySilentWhenNoSymbolsCited(t *testing.T) {
 	root := writeSrc(t, "anything")
 
-	if msg := ResolvedAdvisory(root, "BEH-544", "tidy up the onboarding copy"); msg != "" {
+	if msg := ResolvedAdvisory([]string{root}, "BEH-544", "tidy up the onboarding copy"); msg != "" {
 		t.Fatalf("no cited symbols must not warn, got: %s", msg)
 	}
 }
@@ -123,7 +123,7 @@ func TestExtractCitedSymbolsKeepsPascalCaseLeadingCapital(t *testing.T) {
 func TestResolvedAdvisoryNamesPascalCaseSymbolUntruncated(t *testing.T) {
 	root := writeSrc(t, "export function useLiveKitConnection() {}\n")
 
-	msg := ResolvedAdvisory(root, "BEH-318", "the lazy `GiphyGrid` never renders")
+	msg := ResolvedAdvisory([]string{root}, "BEH-318", "the lazy `GiphyGrid` never renders")
 	if !strings.Contains(msg, "GiphyGrid") {
 		t.Fatalf("advisory must name the untruncated symbol GiphyGrid, got: %s", msg)
 	}
@@ -187,7 +187,7 @@ func TestClassifyCitedSymbolsSortsAddContextAsProposed(t *testing.T) {
 func TestResolvedAdvisoryDowngradesForProposedSymbols(t *testing.T) {
 	root := writeSrc(t, "export function useLiveKitConnection() {}\n")
 
-	msg := ResolvedAdvisory(root, "BEH-626", "Add a `beforeSend` guard")
+	msg := ResolvedAdvisory([]string{root}, "BEH-626", "Add a `beforeSend` guard")
 	if msg == "" {
 		t.Fatal("expected a soft advisory for a to-be-created symbol, got none")
 	}
@@ -205,7 +205,7 @@ func TestResolvedAdvisoryDowngradesForProposedSymbols(t *testing.T) {
 func TestResolvedAdvisoryKeepsStrongVerdictForMissingExpectedSymbol(t *testing.T) {
 	root := writeSrc(t, "export function useLiveKitConnection() {}\n")
 
-	msg := ResolvedAdvisory(root, "BEH-315", "delete the dead `onParticipantConnected`; then add a `beforeSend`")
+	msg := ResolvedAdvisory([]string{root}, "BEH-315", "delete the dead `onParticipantConnected`; then add a `beforeSend`")
 	if !strings.Contains(msg, "recommend close") {
 		t.Fatalf("a missing expected symbol must keep the strong recommend-close verdict, got: %s", msg)
 	}
@@ -228,7 +228,7 @@ func TestResolvedAdvisoryNoFalseRecommendCloseOnBeh626Body(t *testing.T) {
 		"Add a `beforeSend` guard that drops a TanStack `notFound` (`isNotFound: true`).\n" +
 		"Notes: issues don't auto-close without a `Fixes HERD-2T`."
 
-	msg := ResolvedAdvisory(root, "BEH-626", desc)
+	msg := ResolvedAdvisory([]string{root}, "BEH-626", desc)
 	if strings.Contains(msg, "recommend close") || strings.Contains(msg, "already resolved") {
 		t.Fatalf("valid ticket must not read as already resolved / recommend close, got: %s", msg)
 	}
@@ -256,7 +256,7 @@ func TestResolvedAdvisoryNoFalseRecommendCloseOnBeh448Refactor(t *testing.T) {
 		"* `handleNext`/`handlePrevious` mirror every setter into the broadcast — centralize.\n" +
 		"* `filteredStories` mapper is a 30-line field-by-field copy — simplify."
 
-	msg := ResolvedAdvisory(root, "BEH-448", desc)
+	msg := ResolvedAdvisory([]string{root}, "BEH-448", desc)
 	if strings.Contains(msg, "recommend close") || strings.Contains(msg, "already resolved") {
 		t.Fatalf("extraction-target symbols must not read as already resolved / recommend close, got: %s", msg)
 	}
@@ -284,4 +284,39 @@ func contains(xs []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// --- Consumer-declared source roots (BEH-641) ---
+
+// The scan root was `<checkout>/web/src`, compiled in. For any Consumer without
+// that layout the grep ran against a nonexistent directory, and symbolPresent's
+// fail-quiet contract turned every cited symbol into "present" — so the advisory
+// was silently inert rather than wrong. It is now Consumer-declared.
+func TestResolvedAdvisoryWithNoSourceRootsIsSkipped(t *testing.T) {
+	if msg := ResolvedAdvisory(nil, "BEH-315", "delete the dead `onParticipantConnected` prop"); msg != "" {
+		t.Errorf("no declared source roots must disable the advisory, got: %q", msg)
+	}
+	if msg := ResolvedAdvisory([]string{}, "BEH-315", "delete the dead `onParticipantConnected` prop"); msg != "" {
+		t.Errorf("an empty source-root list must disable the advisory, got: %q", msg)
+	}
+}
+
+// A symbol living in any one declared root is present: the advisory fires only
+// when it is missing from all of them, so adding a root can only ever quiet it.
+func TestResolvedAdvisoryScansEveryDeclaredRoot(t *testing.T) {
+	first, second := t.TempDir(), t.TempDir()
+	if err := os.WriteFile(
+		filepath.Join(second, "app.tsx"),
+		[]byte("export const onParticipantConnected = () => null"),
+		0o644,
+	); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	if msg := ResolvedAdvisory([]string{first, second}, "BEH-315", "delete the dead `onParticipantConnected` prop"); msg != "" {
+		t.Errorf("a symbol found in the second root must count as present, got: %q", msg)
+	}
+	if msg := ResolvedAdvisory([]string{first}, "BEH-315", "delete the dead `onParticipantConnected` prop"); msg == "" {
+		t.Error("a symbol in none of the declared roots must still raise the advisory")
+	}
 }

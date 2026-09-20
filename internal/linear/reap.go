@@ -37,10 +37,10 @@ const inProgressClaimsQuery = `
 // tickets so a human's In Progress work is never a candidate.
 func (c *Client) ListInProgressClaims() ([]tracker.InProgressClaim, error) {
 	filter := map[string]any{
-		"team":     map[string]any{"key": map[string]any{"eq": harnessTeamKey}},
+		"team":     map[string]any{"key": map[string]any{"eq": c.opts.TeamKey}},
 		"state":    map[string]any{"type": map[string]any{"eq": "started"}},
 		"assignee": map[string]any{"null": true},
-		"labels":   map[string]any{"name": map[string]any{"eq": agentReadyLabel}},
+		"labels":   map[string]any{"name": map[string]any{"eq": c.opts.Ready}},
 	}
 	data, err := c.transport(inProgressClaimsQuery, map[string]any{"filter": filter})
 	if err != nil {

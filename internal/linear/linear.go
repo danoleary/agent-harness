@@ -78,22 +78,47 @@ func withOccurrences(body string, n int) string {
 // (the transport handles auth + transport-level errors).
 type Transport func(query string, variables map[string]any) (json.RawMessage, error)
 
-// agentHarnessLabelID is the BeHerd "agent-harness" label (team BeHerd). Every
-// finding the harness files is, by construction, about the harness/environment
-// itself (ADR-0001), so it always belongs under this label. The create API
-// (IssueCreateInput.labelIds) takes a UUID, not a name — resolving the name at
-// file-time would add a GraphQL round-trip per finding plus a failure mode that
-// could silently drop the label — so we reference the id directly (BEH-409).
-const agentHarnessLabelID = "788a5654-a4b3-4ac2-8483-a4d50408ebc0"
+// Options is the non-secret selection surface the adapter keys queue + claim +
+// findings off, sourced from `.agent-harness/config` (ADR-0008) so a Consumer
+// can name its own team and labels. It is the Linear twin of the GitHub and Jira
+// adapters' Options; until BEH-641 these five values were hardcoded constants
+// carrying one workspace's team key and label UUID, which made the Tracker port
+// (ADR-0010) interchangeable for two of its three adapters but not this one.
+type Options struct {
+	// TeamKey scopes ticket selection and the stale-claim reap to one Linear team
+	// (filtered in GraphQL via team.key). Selection has no ticket to source a team
+	// UUID from, so the stable team key is the natural scope. Required.
+	TeamKey string
+	// Ready is the human-in-the-loop blast-radius gate: a person decides WHAT runs
+	// unattended by applying it; the harness decides HOW. Only labelled tickets are
+	// eligible for auto-selection (DESIGN.md "Ticket selection"). Required.
+	Ready string
+	// Blocked marks a ticket a human has flagged as blocked; it is never
+	// auto-selected even if nothing else blocks it. Empty disables the screen.
+	Blocked string
+	// FindingsLabelID is the label every filed finding carries. The create API
+	// (IssueCreateInput.labelIds) takes a UUID, not a name — resolving the name at
+	// file-time would add a GraphQL round-trip per finding plus a failure mode that
+	// could silently drop the label — so this is referenced directly (BEH-409).
+	// Empty files the finding with no harness label.
+	FindingsLabelID string
+	// FindingsLabel is the same label by NAME, used to scope the dedup search
+	// (IssueFilter matches labels by name, not id). Empty makes SearchFindings
+	// return nothing rather than searching the whole team: a duplicate filed
+	// finding is a smaller harm than mis-deduping against an unrelated issue.
+	FindingsLabel string
+}
 
 // Client wraps a Transport with the harness's Linear operations.
 type Client struct {
 	transport Transport
+	opts      Options
 }
 
-// NewClient builds a Client over the given transport.
-func NewClient(t Transport) *Client {
-	return &Client{transport: t}
+// NewClient builds a Client over the given transport with the Consumer's
+// selection surface.
+func NewClient(t Transport, opts Options) *Client {
+	return &Client{transport: t, opts: opts}
 }
 
 // fetchTicketQuery pulls the ticket plus its child sub-issues (BEH-619). An
@@ -202,11 +227,6 @@ const issueIDQuery = `
 		}
 	}
 `
-
-// findingsLabel scopes filing + dedup to harness-surfaced findings: filed issues
-// carry it and SearchFindings filters on it, so dedup never trips over unrelated
-// team issues.
-const findingsLabel = "agent-harness"
 
 // searchFindingsQuery lists this team's OPEN harness findings. The query excludes
 // terminal (completed/canceled) states so closed findings don't consume the result
@@ -402,7 +422,9 @@ func (c *Client) FileFinding(f findings.Finding, opts tracker.FileFindingOptions
 	// any future per-finding labels (BEH-409). Filing with this label is what lets
 	// SearchFindings (BEH-410) find these issues again to dedup re-runs.
 	labelIDs := append([]string{}, f.LabelIDs...)
-	labelIDs = append(labelIDs, agentHarnessLabelID)
+	if c.opts.FindingsLabelID != "" {
+		labelIDs = append(labelIDs, c.opts.FindingsLabelID)
+	}
 
 	data, err := c.transport(fileFindingMutation, map[string]any{
 		"input": map[string]any{
@@ -461,12 +483,19 @@ func (c *Client) AddComment(identifier, body string) error {
 }
 
 // SearchFindings lists the team's already-filed harness findings (scoped by the
-// agent-harness label), recovering each one's dedup key from its body marker and
-// whether it is closed. The caller decides the open/closed dedup policy.
+// configured findings label), recovering each one's dedup key from its body marker
+// and whether it is closed. The caller decides the open/closed dedup policy.
+//
+// With no findings label configured it returns nothing rather than searching the
+// whole team: filing is best-effort by contract (ADR-0001), so a duplicate finding
+// is a smaller harm than mis-deduping a real one against an unrelated issue.
 func (c *Client) SearchFindings(teamID string) ([]tracker.ExistingFinding, error) {
+	if c.opts.FindingsLabel == "" {
+		return nil, nil
+	}
 	filter := map[string]any{
 		"team":   map[string]any{"id": map[string]any{"eq": teamID}},
-		"labels": map[string]any{"name": map[string]any{"eq": findingsLabel}},
+		"labels": map[string]any{"name": map[string]any{"eq": c.opts.FindingsLabel}},
 		// Exclude terminal states so closed findings don't eat into the result
 		// window; the caller still skips any closed match defensively.
 		"state": map[string]any{"type": map[string]any{"nin": []string{"completed", "canceled"}}},

@@ -124,7 +124,7 @@ operator with no checkout has a home for them:
 bind-mounts into its sandbox, which would normally make it readable by the agent
 session — handing over the tracker and GitHub tokens the harness keeps host-side
 (ADR-0002). So the harness masks that exact path in every container it launches:
-the session, the gate, the install and the `post_create` container each mount an
+the session, the gate and the `post_create` container each mount an
 empty file over it. That mask is what makes the in-repo location safe, and it
 covers only that path — a credential file anywhere else in the checkout is
 readable, and the harness warns when it loads one. Gitignore whichever you pick.

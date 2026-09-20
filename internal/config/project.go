@@ -68,6 +68,19 @@ type ProjectConfig struct {
 	// merging past a job that could go red (see git.DocsOnlyPaths). Keep it a
 	// superset of every root your workflows' `on.pull_request.paths` trigger on.
 	DocsOnlyExcludedRoots []string `toml:"docs_only_excluded_roots"`
+	// HandoffStripPaths lists worktree-relative paths the implementation stage
+	// deletes on handoff, so a reviewer on a different platform never inherits the
+	// sandbox's linux-arm64 build artifacts (BEH-412). Which paths those are is a
+	// Consumer fact — `web/node_modules` for a pnpm monorepo, `obj`/`bin` for .NET,
+	// nothing at all for Go — so an empty list strips nothing (BEH-641). The
+	// Consumer's post_create re-provisions them before the review session.
+	HandoffStripPaths []string `toml:"handoff_strip_paths"`
+	// SourceRoots lists the checkout-relative directories the resolved-symbol
+	// dispatch advisory greps when a ticket cites code symbols (BEH-544). Omitting
+	// it DISABLES the advisory rather than guessing a path: a missed nudge costs
+	// one session, while scanning the wrong tree reports every cited symbol absent
+	// and pushes a valid ticket toward "recommend close" (BEH-641).
+	SourceRoots []string `toml:"source_roots"`
 
 	// MinHarnessVersion is the oldest harness this config is written for, e.g.
 	// "0.2". Optional, and most Consumers will not set it until a compatibility
@@ -123,6 +136,16 @@ const (
 type CacheConfig struct {
 	Volume string `toml:"volume"`
 	Path   string `toml:"path"`
+	// PruneCommand is the Consumer's cache-reclaim command, run between tickets by
+	// the loop daemon as the cheap non-destructive rung of the disk-reclaim ladder
+	// (ADR-0005) — `pnpm store prune`, `dotnet nuget locals all --clear`, `go clean
+	// -modcache`. It was a hardcoded `pnpm store prune` until BEH-641. Empty skips
+	// that rung entirely, leaving the worktree prune and the Docker prune.
+	//
+	// NOTE: unlike gates and post_create, this runs on the HOST, not in a sandbox
+	// — the caches it reclaims are the host's. It is shell-interpreted, so treat it
+	// with the same care as any command you would put in a Makefile.
+	PruneCommand string `toml:"prune_command"`
 }
 
 // Gate is one named host-side gate command.
@@ -140,6 +163,16 @@ type TrackerConfig struct {
 	// The Linear adapter reads it as a label UUID; the GitHub and Jira adapters read
 	// it as a label name (was linear.agentHarnessLabelID).
 	FindingsLabelID string `toml:"findings_label_id"`
+	// FindingsLabel is the same findings label by NAME, and is linear-only: the
+	// Linear create API takes a label UUID while its issue filter matches labels by
+	// name, so the adapter needs both spellings. GitHub and Jira read
+	// findings_label_id as a name already and ignore this. Empty disables the
+	// Linear dedup search rather than widening it to the whole team.
+	FindingsLabel string `toml:"findings_label"`
+	// TeamKey is the Linear team the selector and the stale-claim reaper are scoped
+	// to (e.g. "BEH"), and is linear-only — GitHub scopes by repo and Jira by
+	// project key. Required for kind=linear (was selection.harnessTeamKey).
+	TeamKey string `toml:"team_key"`
 	// ReadyLabel is the human-applied blast-radius gate label the selector
 	// requires (was selection.agentReadyLabel).
 	ReadyLabel string `toml:"ready_label"`
@@ -261,6 +294,18 @@ func (pc *ProjectConfig) validate() error {
 	}
 	if pc.Tracker.Kind == "" {
 		return fmt.Errorf("tracker.kind is required")
+	}
+	// Linear scopes selection by team key and gates it on the ready label. Neither
+	// has a defensible default — an empty team key would query every team the
+	// credential can see, and an empty ready label would drop the human-applied
+	// blast-radius gate — so both fail loud here rather than at the first poll.
+	if pc.Tracker.Kind == "linear" {
+		if pc.Tracker.TeamKey == "" {
+			return fmt.Errorf("tracker.team_key is required for kind=linear (the Linear team the selector is scoped to, e.g. \"BEH\")")
+		}
+		if pc.Tracker.ReadyLabel == "" {
+			return fmt.Errorf("tracker.ready_label is required for kind=linear (the human-applied gate that makes a ticket eligible for unattended work)")
+		}
 	}
 	if len(pc.Gates) == 0 {
 		return fmt.Errorf("at least one [[gates]] entry is required")

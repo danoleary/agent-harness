@@ -305,14 +305,22 @@ func assertCarriesBashQuirkSteer(t *testing.T, p, label string) {
 	}
 	// BEH-645: a FOURTH face — and the worst, because it makes a GREEN gate look
 	// RED. Chaining trailing statements onto a GATE command in one Bash call (e.g.
-	// `pnpm run check > log 2>&1; echo exit=$?; grep … | head`) can concatenate
-	// those statements as ARGUMENTS onto the gate's own command (the `oxfmt
-	// --check` inside `pnpm run check` receives them as file args), so the gate
-	// fails with `Expected at least one target file` and pnpm emits `[ELIFECYCLE]`
-	// — a spurious failure on a gate that actually PASSED. The steer must name that
-	// symptom and give the run-each-gate-as-its-own-call workaround.
-	if !regexp.MustCompile(`(?i)ELIFECYCLE|Expected at least one target file`).MatchString(p) {
-		t.Errorf("%s does not name the spurious gate false-red symptom (ELIFECYCLE / Expected at least one target file)", label)
+	// `<gate> > log 2>&1; echo exit=$?; grep … | head`) can concatenate those
+	// statements as ARGUMENTS onto the gate's own command, so the underlying tool
+	// receives them where it expected files or targets and fails — a spurious
+	// failure on a gate that actually PASSED. The steer must name that symptom and
+	// give the run-each-gate-as-its-own-call workaround.
+	//
+	// BEH-641: asserted as the symptom CLASS, not as herd's `[ELIFECYCLE]` /
+	// `Expected at least one target file` literals. The envelope is the harness's
+	// public API (ADR-0009) and goes to every Consumer, so naming one toolchain's
+	// error strings both leaked herd into a .NET Consumer's prompt and gave that
+	// Consumer's agent a symptom it will never see.
+	if !regexp.MustCompile(`(?i)argument|target`).MatchString(p) {
+		t.Errorf("%s does not name the spurious gate false-red symptom (the gate's tool receiving trailing statements as arguments/targets)", label)
+	}
+	if regexp.MustCompile(`(?i)pnpm|oxfmt|ELIFECYCLE`).MatchString(p) {
+		t.Errorf("%s names a specific Consumer toolchain — the envelope is harness-owned and ships to every Consumer (ADR-0009)", label)
 	}
 	if !regexp.MustCompile(`(?i)gate`).MatchString(p) {
 		t.Errorf("%s does not name the gate-command false-red case", label)

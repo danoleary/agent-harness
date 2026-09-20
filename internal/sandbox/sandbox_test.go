@@ -199,64 +199,6 @@ func TestGateRunArgsNameContainerForKill(t *testing.T) {
 	}
 }
 
-// The implementation tool strips web/node_modules from the worktree on handoff
-// (BEH-412), so the cold review SESSION would otherwise discover it missing and
-// pay a full `pnpm install` mid-gate (BEH-490). The harness pre-populates it with
-// a throwaway install container before the session: a frozen install in the
-// worktree against the warm pnpm store — install ONLY, no check/build (that's the
-// later ground-truth gate's job) — carrying no secrets.
-func TestInstallRunArgsRunsFrozenInstallOnlyInWorktree(t *testing.T) {
-	args := BuildInstallRunArgs(GateConfig{
-		Image:          "herd-agent-harness:latest",
-		ProjectPath:    "/Users/dan/herd",
-		WorktreePath:   "/Users/dan/herd/.claude/worktrees/beh-490",
-		CacheVolume:    "herd-pnpm-store",
-		CacheMountPath: "/pnpm-store",
-		ContainerName:  "example-harness-install-1",
-	})
-	joined := strings.Join(args, " ")
-
-	// A frozen install (reproducible, lockfile-pinned), mirroring new-worktree.sh.
-	if !strings.Contains(joined, "pnpm install --frozen-lockfile") {
-		t.Errorf("install args must run `pnpm install --frozen-lockfile`, got: %v", args)
-	}
-	// Install ONLY — check/build belong to the separate ground-truth gate, not the
-	// pre-session prep. Running them here would duplicate the slow gate needlessly.
-	if strings.Contains(joined, "pnpm run check") || strings.Contains(joined, "pnpm run build") {
-		t.Errorf("install prep must not run check/build, got: %v", args)
-	}
-	// No credential of any kind crosses into the prep container — it runs no model.
-	for _, secret := range []string{"ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "GH_TOKEN", "LINEAR"} {
-		if regexp.MustCompile(`(?i)` + secret).MatchString(joined) {
-			t.Errorf("install container must carry no secrets, but argv mentions %q: %v", secret, args)
-		}
-	}
-	// Installs into the worktree (the branch under review), not the main checkout.
-	workdirs := valuesForFlag(args, "-w")
-	if len(workdirs) == 0 || workdirs[len(workdirs)-1] != "/Users/dan/herd/.claude/worktrees/beh-490" {
-		t.Errorf("install must run in the worktree, got -w %v", workdirs)
-	}
-	// Mounts the checkout (so the worktree's .git pointer resolves) and the warm
-	// pnpm store (so the install is a near-instant hardlink op, not a fetch).
-	mounts := valuesForFlag(args, "-v")
-	for _, want := range []string{
-		"/Users/dan/herd:/Users/dan/herd",
-		"herd-pnpm-store:" + PnpmStoreMountPath,
-	} {
-		if !slices.Contains(mounts, want) {
-			t.Errorf("install mounts missing %q, got: %v", want, mounts)
-		}
-	}
-	// Nameable so the harness can kill it on timeout.
-	if !slices.Contains(valuesForFlag(args, "--name"), "example-harness-install-1") {
-		t.Error("install container must be nameable so the harness can kill it on timeout")
-	}
-}
-
-// BEH-636: after the harness creates the worktree host-side, it runs the
-// Consumer's `post_create` toolchain-setup command in that worktree. Like the
-// install/gate containers it is secret-free (it runs no model), runs in the
-// worktree, and carries PROJECT_PATH so a Consumer's env-symlink step can reference
 // the main checkout (herd's post_create symlinks web/.env.local from $PROJECT_PATH).
 func TestPostCreateRunArgsRunCommandInWorktreeWithProjectPathNoSecrets(t *testing.T) {
 	postCreate := `for f in .env.local; do ln -sf "$PROJECT_PATH/web/$f" "web/$f"; done; cd web && pnpm install --frozen-lockfile`
@@ -863,14 +805,20 @@ func TestPreflightDiskErrorIsActionable(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected a disk-floor error")
 	}
-	// The two pnpm/worktree reclaims are often NOT the real culprit for the
-	// harness — its `docker run` sandboxes accrete stale build cache /
-	// unreferenced images, which is frequently the largest consumer — so the hint
-	// must also point at the Docker reclaims (BEH-566).
-	for _, want := range []string{testContext, "MiB", "pnpm store prune", "prune-merged-worktrees", "docker builder prune", "docker system prune"} {
+	// The cache/worktree reclaims are often NOT the real culprit for the harness —
+	// its `docker run` sandboxes accrete stale build cache / unreferenced images,
+	// which is frequently the largest consumer — so the hint must also point at
+	// the Docker reclaims (BEH-566).
+	for _, want := range []string{testContext, "MiB", "cache.prune_command", "worktrees", "docker builder prune", "docker system prune"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("disk error should mention %q, got: %v", want, err)
 		}
+	}
+	// The Docker commands are harness facts and stay literal; the cache reclaim is
+	// a Consumer fact, so the hint must point at their declared command rather than
+	// print one toolchain's to every operator (BEH-641).
+	if strings.Contains(err.Error(), "pnpm") {
+		t.Errorf("the disk hint must not name one Consumer's toolchain, got: %v", err)
 	}
 }
 

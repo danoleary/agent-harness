@@ -88,3 +88,39 @@ func TestPlanUppercasesIdentifier(t *testing.T) {
 		t.Errorf("plan does not surface the uppercased identifier BEH-9:\n%s", plan)
 	}
 }
+
+// --- the review prep container is Consumer-declared (BEH-641) ---
+//
+// The prep that runs before the cold review session was a hardcoded
+// `cd web && pnpm install --frozen-lockfile` inside internal/sandbox — narrated
+// verbatim to a .NET Consumer, in a package CONTEXT.md says must never name
+// pnpm. It is the Consumer's post_create hook now, the same idempotent
+// provisioning the implementation stage runs.
+
+func TestPlanReviewPrepRunsTheConsumerPostCreate(t *testing.T) {
+	cfg := planCfg()
+	cfg.PostCreate = "dotnet restore"
+	plan := Plan(cfg, "PROJ-1")
+
+	if !strings.Contains(plan, "prep docker command") {
+		t.Fatalf("plan must show the review prep container:\n%s", plan)
+	}
+	if !strings.Contains(plan, "dotnet restore") {
+		t.Errorf("review prep must run the Consumer's post_create:\n%s", plan)
+	}
+	if strings.Contains(plan, "pnpm install") {
+		t.Errorf("no compiled-in pnpm install may survive in the plan:\n%s", plan)
+	}
+}
+
+// A Consumer with nothing to provision gets no prep container, and the plan must
+// say so rather than print one the run will never launch.
+func TestPlanReviewPrepSkippedWithNoPostCreate(t *testing.T) {
+	cfg := planCfg()
+	cfg.PostCreate = ""
+	plan := Plan(cfg, "PROJ-1")
+
+	if !strings.Contains(plan, "no post_create") {
+		t.Errorf("plan must say the prep container is skipped when no post_create is declared:\n%s", plan)
+	}
+}

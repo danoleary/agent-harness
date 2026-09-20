@@ -6,21 +6,6 @@ import (
 	"github.com/danoleary/agent-harness/internal/ticket"
 )
 
-// harnessTeamKey scopes ticket selection to the BeHerd backlog. The harness is
-// single-team (the agent-harness label UUID above is BeHerd's too), and selection
-// has no ticket to source a team UUID from, so the stable team key is the natural
-// scope. Filtered in GraphQL via team.key.
-const harnessTeamKey = "BEH"
-
-// agentReadyLabel is the human-in-the-loop blast-radius gate: a person decides
-// WHAT runs unattended by applying it; the harness decides HOW. Only labelled
-// tickets are eligible for auto-selection (DESIGN.md "Ticket selection").
-const agentReadyLabel = "ready-for-agent"
-
-// blockedLabel marks a ticket a human has flagged as blocked; it is never
-// auto-selected even if nothing else blocks it.
-const blockedLabel = "Blocked"
-
 // selectNextQuery lists the team's unassigned, Todo-type (unstarted), ready-for-agent
 // issues with the fields the eligibility predicate + ordering need: labels (to
 // re-check ready-for-agent and screen the Blocked label) and the inverse "blocks"
@@ -122,10 +107,10 @@ func (c *Client) SelectNextTicket() (ticket.Ticket, bool, error) {
 	// node would be silently skipped, since ordering is applied client-side over
 	// the fetched page. eligible() still re-checks the label as defensive depth.
 	filter := map[string]any{
-		"team":     map[string]any{"key": map[string]any{"eq": harnessTeamKey}},
+		"team":     map[string]any{"key": map[string]any{"eq": c.opts.TeamKey}},
 		"state":    map[string]any{"type": map[string]any{"eq": "unstarted"}},
 		"assignee": map[string]any{"null": true},
-		"labels":   map[string]any{"name": map[string]any{"eq": agentReadyLabel}},
+		"labels":   map[string]any{"name": map[string]any{"eq": c.opts.Ready}},
 	}
 	data, err := c.transport(selectNextQuery, map[string]any{"filter": filter})
 	if err != nil {
@@ -141,7 +126,7 @@ func (c *Client) SelectNextTicket() (ticket.Ticket, bool, error) {
 		return ticket.Ticket{}, false, err
 	}
 
-	best, ok := topEligible(resp.Issues.Nodes)
+	best, ok := topEligible(resp.Issues.Nodes, c.opts)
 	if !ok {
 		return ticket.Ticket{}, false, nil
 	}
@@ -168,11 +153,11 @@ func toTicket(s selectedIssue) ticket.Ticket {
 
 // topEligible returns the highest-priority eligible issue, or ok=false when none
 // is eligible.
-func topEligible(issues []selectedIssue) (selectedIssue, bool) {
+func topEligible(issues []selectedIssue, opts Options) (selectedIssue, bool) {
 	var best selectedIssue
 	found := false
 	for _, iss := range issues {
-		if !eligible(iss) {
+		if !eligible(iss, opts) {
 			continue
 		}
 		if !found || less(iss, best) {
@@ -189,11 +174,11 @@ func topEligible(issues []selectedIssue) (selectedIssue, bool) {
 // issue=A (the blocker), relatedIssue=B; from B that relation appears in
 // inverseRelations, so an open blocker of B is an inverse "blocks" relation whose
 // source issue is not yet completed/canceled.
-func eligible(s selectedIssue) bool {
-	if !hasLabel(s, agentReadyLabel) {
+func eligible(s selectedIssue, opts Options) bool {
+	if !hasLabel(s, opts.Ready) {
 		return false
 	}
-	if hasLabel(s, blockedLabel) {
+	if opts.Blocked != "" && hasLabel(s, opts.Blocked) {
 		return false
 	}
 	// A low-confidence perf watch item whose gating first AC is a Sentry

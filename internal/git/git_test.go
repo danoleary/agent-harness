@@ -1288,38 +1288,62 @@ func TestAbortRebaseAbortsBothRebaseAndCherryPick(t *testing.T) {
 	}
 }
 
-func TestStripWorktreeNodeModulesRemovesIt(t *testing.T) {
+func TestStripWorktreePathsRemovesEachDeclaredPath(t *testing.T) {
 	wt := t.TempDir()
-	binding := filepath.Join(wt, "web", "node_modules", "@oxlint", "binding-linux-arm64-gnu")
-	if err := os.MkdirAll(binding, 0o755); err != nil {
-		t.Fatalf("setup: %v", err)
+	for _, dir := range []string{
+		filepath.Join(wt, "web", "node_modules", "@oxlint", "binding-linux-arm64-gnu"),
+		filepath.Join(wt, "obj", "Debug"),
+	} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("setup: %v", err)
+		}
 	}
 
-	if err := StripWorktreeNodeModules(wt); err != nil {
+	if err := StripWorktreePaths(wt, []string{"web/node_modules", "obj"}); err != nil {
 		t.Fatalf("expected success, got %v", err)
 	}
 
-	if _, err := os.Stat(filepath.Join(wt, "web", "node_modules")); !os.IsNotExist(err) {
-		t.Fatalf("web/node_modules should be gone, stat err = %v", err)
+	for _, gone := range []string{"web/node_modules", "obj"} {
+		if _, err := os.Stat(filepath.Join(wt, gone)); !os.IsNotExist(err) {
+			t.Errorf("%s should be gone, stat err = %v", gone, err)
+		}
 	}
 }
 
-// Idempotent: a worktree that never ran `pnpm install` (or was already stripped)
-// must not be an error — the strip runs unconditionally on every handoff.
-func TestStripWorktreeNodeModulesIsNoOpWhenAbsent(t *testing.T) {
+// Idempotent: a worktree whose dependencies were never installed (or that was
+// already stripped) must not be an error — the strip runs unconditionally on
+// every handoff.
+func TestStripWorktreePathsIsNoOpWhenAbsent(t *testing.T) {
 	wt := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(wt, "web"), 0o755); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
 
-	if err := StripWorktreeNodeModules(wt); err != nil {
-		t.Fatalf("expected no error when node_modules is absent, got %v", err)
+	if err := StripWorktreePaths(wt, []string{"web/node_modules"}); err != nil {
+		t.Fatalf("expected no error when the path is absent, got %v", err)
 	}
 }
 
-// The strip is surgical: only `web/node_modules` goes — the committed source the
-// reviewer is here to read (including everything else under `web/`) stays put.
-func TestStripWorktreeNodeModulesLeavesSourceIntact(t *testing.T) {
+// A Consumer whose toolchain leaves nothing platform-specific behind (Go) declares
+// no strip paths, and the handoff must then touch the worktree at all (BEH-641).
+func TestStripWorktreePathsWithNoDeclarationStripsNothing(t *testing.T) {
+	wt := t.TempDir()
+	src := filepath.Join(wt, "main.go")
+	if err := os.WriteFile(src, []byte("package main"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	if err := StripWorktreePaths(wt, nil); err != nil {
+		t.Fatalf("expected no error with no declared paths, got %v", err)
+	}
+	if _, err := os.Stat(src); err != nil {
+		t.Fatalf("an empty declaration must strip nothing, stat err = %v", err)
+	}
+}
+
+// The strip is surgical: only the declared paths go — the committed source the
+// reviewer is here to read stays put.
+func TestStripWorktreePathsLeavesSourceIntact(t *testing.T) {
 	wt := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(wt, "web", "node_modules", "left-pad"), 0o755); err != nil {
 		t.Fatalf("setup: %v", err)
@@ -1332,12 +1356,49 @@ func TestStripWorktreeNodeModulesLeavesSourceIntact(t *testing.T) {
 		t.Fatalf("setup: %v", err)
 	}
 
-	if err := StripWorktreeNodeModules(wt); err != nil {
+	if err := StripWorktreePaths(wt, []string{"web/node_modules"}); err != nil {
 		t.Fatalf("expected success, got %v", err)
 	}
 
 	if _, err := os.Stat(src); err != nil {
 		t.Fatalf("web/src/app.tsx should survive the strip, stat err = %v", err)
+	}
+}
+
+// The paths are Consumer config, so a stray value must never reach outside the
+// worktree. An absolute path, a `../` escape, and a root-resolving entry are all
+// refused BEFORE any removal — this is an rm -rf driven by a committed file.
+func TestStripWorktreePathsRefusesPathsOutsideTheWorktree(t *testing.T) {
+	for name, rel := range map[string]string{
+		"absolute":      "/etc",
+		"parent escape": "../sibling",
+		"worktree root": ".",
+		"root via dots": "web/..",
+	} {
+		t.Run(name, func(t *testing.T) {
+			parent := t.TempDir()
+			wt := filepath.Join(parent, "wt")
+			sibling := filepath.Join(parent, "sibling")
+			for _, d := range []string{wt, sibling} {
+				if err := os.MkdirAll(d, 0o755); err != nil {
+					t.Fatalf("setup: %v", err)
+				}
+			}
+			canary := filepath.Join(wt, "keep.txt")
+			if err := os.WriteFile(canary, []byte("x"), 0o644); err != nil {
+				t.Fatalf("setup: %v", err)
+			}
+
+			if err := StripWorktreePaths(wt, []string{rel}); err == nil {
+				t.Errorf("StripWorktreePaths(%q) must be refused, got nil error", rel)
+			}
+			if _, err := os.Stat(sibling); err != nil {
+				t.Errorf("the sibling directory must survive, stat err = %v", err)
+			}
+			if _, err := os.Stat(canary); err != nil {
+				t.Errorf("the worktree must survive, stat err = %v", err)
+			}
+		})
 	}
 }
 

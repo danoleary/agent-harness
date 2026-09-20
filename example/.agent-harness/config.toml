@@ -38,12 +38,24 @@ dotnet restore
 # superset of every root your workflows' `on.pull_request.paths` trigger on.
 docs_only_excluded_roots = ["src/", "tests/", ".github/", "scripts/"]
 
+# Worktree-relative paths deleted on handoff, so a reviewer on another platform
+# never inherits the sandbox's linux-arm64 build output. The review stage
+# re-provisions the worktree with post_create. Omitting this strips nothing.
+handoff_strip_paths = ["obj", "bin"]
+
+# Checkout-relative roots the resolved-symbol dispatch advisory greps. Omitting
+# this disables the advisory rather than guessing a path.
+source_roots = ["src"]
+
 # Optional persistent toolchain cache, mounted into every sandbox and gate
 # container so the per-worktree restore is a local copy rather than a network
 # fetch. Omit the section entirely if your toolchain has no useful cache.
 [cache]
 volume = "example-nuget"
 path = "/root/.nuget/packages"
+# Host-side cache reclaim, run by the loop between tickets when free disk is low.
+# Omitting it skips that rung of the reclaim ladder.
+prune_command = "dotnet nuget locals all --clear"
 
 # Tracker selection plus its NON-SECRET names. The API credential is env-only.
 [tracker]

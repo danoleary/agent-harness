@@ -21,7 +21,7 @@ func TestClientSatisfiesTrackerPort(t *testing.T) {
 		},
 	})
 
-	var trk tracker.Tracker = NewClient(tr)
+	var trk tracker.Tracker = NewClient(tr, testOptions())
 
 	got, err := trk.FetchTicket("PROJ-7")
 	if err != nil {

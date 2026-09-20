@@ -647,7 +647,7 @@ func TestPreflightAbortReclaimsBacksOffAndLeavesBreakerNeutral(t *testing.T) {
 		DiskReclaimThreshold: 8 * gib,
 		FreeDisk:             func() (uint64, error) { return 1 * gib, nil }, // always under pressure
 		PruneMergedWorktrees: func() (int, error) { return 0, nil },
-		StorePrune:           func() error { return nil },
+		CachePrune:           func() error { return nil },
 		DockerPrune:          func() error { dockerPrunes++; return nil },
 		Sleep:                func(d time.Duration) { slept = append(slept, d) },
 		PollInterval:         10 * time.Second,
@@ -1213,11 +1213,11 @@ func freeDiskSeq(vals ...uint64) func() (uint64, error) {
 // ADR-0005: at the top of an iteration, when free disk is below the soft
 // DiskReclaimThreshold, the loop prunes merged worktrees BEFORE selecting the next
 // ticket. Here the first statfs reads below the threshold (→ prune) and the
-// re-check after the prune reads above it (→ no secondary store prune). Prune must
+// re-check after the prune reads above it (→ no secondary cache prune). Prune must
 // run, and it must run before ResolveNext.
 func TestDiskReclaimPrunesBelowThresholdBeforeSelecting(t *testing.T) {
 	r := &recorder{}
-	var storePruned bool
+	var cachePruned bool
 	code := Run(Deps{
 		ClearStopFile:        func() error { return nil },
 		FetchMain:            func() error { return nil },
@@ -1225,7 +1225,7 @@ func TestDiskReclaimPrunesBelowThresholdBeforeSelecting(t *testing.T) {
 		DiskReclaimThreshold: 8 * gib,
 		FreeDisk:             freeDiskSeq(1*gib, 9*gib), // below at the gate, healthy after the prune
 		PruneMergedWorktrees: func() (int, error) { r.order = append(r.order, "prune"); return 2, nil },
-		StorePrune:           func() error { storePruned = true; return nil },
+		CachePrune:           func() error { cachePruned = true; return nil },
 		ResolveNext:          func() (string, bool) { r.order = append(r.order, "resolve"); return "", false },
 		RunPipeline:          func(string) TicketOutcome { return TicketOutcome{ReachedPushedPR: true} },
 		Sleep:                func(time.Duration) {},
@@ -1243,8 +1243,8 @@ func TestDiskReclaimPrunesBelowThresholdBeforeSelecting(t *testing.T) {
 	if resolveIdx < 0 || pruneIdx > resolveIdx {
 		t.Errorf("prune must run before ticket selection; order = %v", r.order)
 	}
-	if storePruned {
-		t.Errorf("store prune must NOT run when the worktree prune already brought free disk above the threshold")
+	if cachePruned {
+		t.Errorf("cache prune must NOT run when the worktree prune already brought free disk above the threshold")
 	}
 	if !r.saw("reclaimed 2 merged worktree(s)") {
 		t.Errorf("expected a 'reclaimed 2 merged worktree(s)' narration; events = %v", r.events)
@@ -1266,7 +1266,7 @@ func indexOf(xs []string, want string) int {
 // reclaim narration — disk pressure self-heals only when there actually is pressure.
 func TestDiskReclaimSilentAtOrAboveThreshold(t *testing.T) {
 	r := &recorder{}
-	var pruned, storePruned bool
+	var pruned, cachePruned bool
 	var statfsCalls int
 	code := Run(Deps{
 		ClearStopFile:        func() error { return nil },
@@ -1275,7 +1275,7 @@ func TestDiskReclaimSilentAtOrAboveThreshold(t *testing.T) {
 		DiskReclaimThreshold: 8 * gib,
 		FreeDisk:             func() (uint64, error) { statfsCalls++; return 8 * gib, nil }, // exactly at the floor — healthy
 		PruneMergedWorktrees: func() (int, error) { pruned = true; return 0, nil },
-		StorePrune:           func() error { storePruned = true; return nil },
+		CachePrune:           func() error { cachePruned = true; return nil },
 		ResolveNext:          func() (string, bool) { return "", false },
 		RunPipeline:          func(string) TicketOutcome { return TicketOutcome{ReachedPushedPR: true} },
 		Sleep:                func(time.Duration) {},
@@ -1289,8 +1289,8 @@ func TestDiskReclaimSilentAtOrAboveThreshold(t *testing.T) {
 	if pruned {
 		t.Errorf("PruneMergedWorktrees ran with free disk at the threshold — the statfs gate must suppress all shell-out when disk is healthy")
 	}
-	if storePruned {
-		t.Errorf("StorePrune ran with free disk at the threshold")
+	if cachePruned {
+		t.Errorf("CachePrune ran with free disk at the threshold")
 	}
 	if statfsCalls != 1 {
 		t.Errorf("FreeDisk called %d times, want exactly 1 (the cheap gate check, nothing more) at/above the threshold", statfsCalls)
@@ -1327,10 +1327,10 @@ func TestDiskReclaimZeroThresholdDisables(t *testing.T) {
 	}
 }
 
-// TestDiskReclaimRunsStorePruneWhenStillBelowAfterWorktreePrune proves the secondary
+// TestDiskReclaimRunsCachePruneWhenStillBelowAfterWorktreePrune proves the secondary
 // reclaim is conditional: when the worktree prune leaves free disk STILL below the
-// threshold, the loop runs `pnpm store prune` as a cheap follow-up.
-func TestDiskReclaimRunsStorePruneWhenStillBelowAfterWorktreePrune(t *testing.T) {
+// threshold, the loop runs the Consumer's cache-prune command as a cheap follow-up.
+func TestDiskReclaimRunsCachePruneWhenStillBelowAfterWorktreePrune(t *testing.T) {
 	r := &recorder{}
 	code := Run(Deps{
 		ClearStopFile:        func() error { return nil },
@@ -1340,7 +1340,7 @@ func TestDiskReclaimRunsStorePruneWhenStillBelowAfterWorktreePrune(t *testing.T)
 		// Below at the gate, and STILL below after the worktree prune → store prune runs.
 		FreeDisk:             freeDiskSeq(1*gib, 2*gib, 3*gib),
 		PruneMergedWorktrees: func() (int, error) { r.order = append(r.order, "prune"); return 1, nil },
-		StorePrune:           func() error { r.order = append(r.order, "store-prune"); return nil },
+		CachePrune:           func() error { r.order = append(r.order, "cache-prune"); return nil },
 		ResolveNext:          func() (string, bool) { return "", false },
 		RunPipeline:          func(string) TicketOutcome { return TicketOutcome{ReachedPushedPR: true} },
 		Sleep:                func(time.Duration) {},
@@ -1351,22 +1351,22 @@ func TestDiskReclaimRunsStorePruneWhenStillBelowAfterWorktreePrune(t *testing.T)
 	if code != 0 {
 		t.Errorf("exit code = %d, want 0", code)
 	}
-	pruneIdx, storeIdx := indexOf(r.order, "prune"), indexOf(r.order, "store-prune")
+	pruneIdx, storeIdx := indexOf(r.order, "prune"), indexOf(r.order, "cache-prune")
 	if storeIdx < 0 {
-		t.Fatalf("StorePrune never ran though free disk stayed below the threshold after the worktree prune; order = %v", r.order)
+		t.Fatalf("CachePrune never ran though free disk stayed below the threshold after the worktree prune; order = %v", r.order)
 	}
 	if pruneIdx < 0 || pruneIdx > storeIdx {
-		t.Errorf("store prune must run AFTER the worktree prune; order = %v", r.order)
+		t.Errorf("cache prune must run AFTER the worktree prune; order = %v", r.order)
 	}
 }
 
-// TestDiskReclaimRunsDockerPruneWhenStillBelowAfterStorePrune proves the tertiary
-// escalation: when the worktree AND store prunes both leave free disk STILL below the
+// TestDiskReclaimRunsDockerPruneWhenStillBelowAfterCachePrune proves the tertiary
+// escalation: when the worktree AND cache prunes both leave free disk STILL below the
 // threshold, the loop runs the Docker build-cache/image prune last — the harness's
 // usual disk hog and the one the cheaper prunes can't reach. The freeDiskSeq stays
 // below the threshold through the worktree (2 GiB) and store (3 GiB) prunes, then the
 // Docker prune finally clears it (9 GiB).
-func TestDiskReclaimRunsDockerPruneWhenStillBelowAfterStorePrune(t *testing.T) {
+func TestDiskReclaimRunsDockerPruneWhenStillBelowAfterCachePrune(t *testing.T) {
 	r := &recorder{}
 	code := Run(Deps{
 		ClearStopFile:        func() error { return nil },
@@ -1375,7 +1375,7 @@ func TestDiskReclaimRunsDockerPruneWhenStillBelowAfterStorePrune(t *testing.T) {
 		DiskReclaimThreshold: 8 * gib,
 		FreeDisk:             freeDiskSeq(1*gib, 2*gib, 3*gib, 9*gib),
 		PruneMergedWorktrees: func() (int, error) { r.order = append(r.order, "prune"); return 1, nil },
-		StorePrune:           func() error { r.order = append(r.order, "store-prune"); return nil },
+		CachePrune:           func() error { r.order = append(r.order, "cache-prune"); return nil },
 		DockerPrune:          func() error { r.order = append(r.order, "docker-prune"); return nil },
 		ResolveNext:          func() (string, bool) { return "", false },
 		RunPipeline:          func(string) TicketOutcome { return TicketOutcome{ReachedPushedPR: true} },
@@ -1387,9 +1387,9 @@ func TestDiskReclaimRunsDockerPruneWhenStillBelowAfterStorePrune(t *testing.T) {
 	if code != 0 {
 		t.Errorf("exit code = %d, want 0", code)
 	}
-	storeIdx, dockerIdx := indexOf(r.order, "store-prune"), indexOf(r.order, "docker-prune")
+	storeIdx, dockerIdx := indexOf(r.order, "cache-prune"), indexOf(r.order, "docker-prune")
 	if dockerIdx < 0 {
-		t.Fatalf("DockerPrune never ran though free disk stayed below the threshold after the store prune; order = %v", r.order)
+		t.Fatalf("DockerPrune never ran though free disk stayed below the threshold after the cache prune; order = %v", r.order)
 	}
 	if storeIdx < 0 || storeIdx > dockerIdx {
 		t.Errorf("docker prune must run AFTER the cheaper store prune; order = %v", r.order)
@@ -1401,10 +1401,10 @@ func TestDiskReclaimRunsDockerPruneWhenStillBelowAfterStorePrune(t *testing.T) {
 
 // TestDiskReclaimSkipsDockerPruneOnceCheaperPrunesClearTheFloor proves the escalation
 // is conditional: when the worktree prune alone brings free disk back above the
-// threshold, neither the store prune NOR the heavier Docker prune runs.
+// threshold, neither the cache prune NOR the heavier Docker prune runs.
 func TestDiskReclaimSkipsDockerPruneOnceCheaperPrunesClearTheFloor(t *testing.T) {
 	r := &recorder{}
-	var storePruned, dockerPruned bool
+	var cachePruned, dockerPruned bool
 	code := Run(Deps{
 		ClearStopFile:        func() error { return nil },
 		FetchMain:            func() error { return nil },
@@ -1412,7 +1412,7 @@ func TestDiskReclaimSkipsDockerPruneOnceCheaperPrunesClearTheFloor(t *testing.T)
 		DiskReclaimThreshold: 8 * gib,
 		FreeDisk:             freeDiskSeq(1*gib, 9*gib), // worktree prune alone clears the floor
 		PruneMergedWorktrees: func() (int, error) { return 2, nil },
-		StorePrune:           func() error { storePruned = true; return nil },
+		CachePrune:           func() error { cachePruned = true; return nil },
 		DockerPrune:          func() error { dockerPruned = true; return nil },
 		ResolveNext:          func() (string, bool) { return "", false },
 		RunPipeline:          func(string) TicketOutcome { return TicketOutcome{ReachedPushedPR: true} },
@@ -1424,8 +1424,8 @@ func TestDiskReclaimSkipsDockerPruneOnceCheaperPrunesClearTheFloor(t *testing.T)
 	if code != 0 {
 		t.Errorf("exit code = %d, want 0", code)
 	}
-	if storePruned {
-		t.Errorf("store prune must NOT run once the worktree prune cleared the floor")
+	if cachePruned {
+		t.Errorf("cache prune must NOT run once the worktree prune cleared the floor")
 	}
 	if dockerPruned {
 		t.Errorf("the heavy Docker prune must NOT run once the worktree prune cleared the floor")
@@ -1454,7 +1454,7 @@ func TestDiskReclaimPruneFailureIsSwallowedAndBreakerUntouched(t *testing.T) {
 		DiskReclaimThreshold:   8 * gib,
 		FreeDisk:               func() (uint64, error) { return 1 * gib, nil }, // always under pressure
 		PruneMergedWorktrees:   func() (int, error) { return 0, stubErr("gh unreachable") },
-		StorePrune:             func() error { return nil },
+		CachePrune:             func() error { return nil },
 		ResolveNext:            func() (string, bool) { return "BEH-1", true },
 		RunPipeline:            func(string) TicketOutcome { ran++; return TicketOutcome{ReachedPushedPR: true} },
 		Sleep:                  func(time.Duration) {},
