@@ -8,7 +8,7 @@
 // It is best-effort by construction (ADR-0001): the model logic (prompt + parse)
 // is pure and unit-tested over an injected Complete func; the live Anthropic
 // transport is thin and kept out of the unit suite, mirroring linear.NewTransport.
-// Any transport error propagates to filing.File, which degrades to filing the
+// Any transport error propagates to filing.Router, which degrades to filing the
 // finding — the pre-semantic behaviour — never a crash.
 package semdedup
 

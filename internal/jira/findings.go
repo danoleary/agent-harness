@@ -4,72 +4,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
-	"regexp"
-	"strconv"
 	"strings"
 
 	"github.com/danoleary/agent-harness/internal/findings"
 	"github.com/danoleary/agent-harness/internal/tracker"
 )
-
-// The finding-key and occurrence markers are the harness's cross-adapter dedup
-// protocol: machine-readable HTML comments embedded in a filed finding's body,
-// invisible in rendered Markdown. The Linear and GitHub adapters carry identical
-// private copies; the shape is deliberately the same so a finding filed under one
-// tracker reads the same as under another. (A shared home for these is a
-// worthwhile future consolidation — see the handoff.)
-
-// findingKeyRe matches the dedup marker `<!-- finding-key: <key> -->`.
-var findingKeyRe = regexp.MustCompile(`<!--\s*finding-key:\s*(\S+)\s*-->`)
-
-// extractFindingKey pulls the dedup key out of a filed finding's body, or "" when
-// the body carries no marker.
-func extractFindingKey(body string) string {
-	m := findingKeyRe.FindStringSubmatch(body)
-	if m == nil {
-		return ""
-	}
-	return m[1]
-}
-
-// findingKeyMarker renders the body marker for a dedup key.
-func findingKeyMarker(key string) string {
-	return "<!-- finding-key: " + key + " -->"
-}
-
-// occurrenceRe matches the occurrence-count marker `<!-- occurrences: <n> -->`.
-var occurrenceRe = regexp.MustCompile(`<!--\s*occurrences:\s*(\d+)\s*-->`)
-
-// occurrenceMarker renders the body marker for an occurrence count.
-func occurrenceMarker(n int) string {
-	return fmt.Sprintf("<!-- occurrences: %d -->", n)
-}
-
-// extractOccurrences reads the occurrence count from a finding body, defaulting to
-// 1 (the original filing) when the body carries no marker yet.
-func extractOccurrences(body string) int {
-	m := occurrenceRe.FindStringSubmatch(body)
-	if m == nil {
-		return 1
-	}
-	n, err := strconv.Atoi(m[1])
-	if err != nil || n < 1 {
-		return 1
-	}
-	return n
-}
-
-// withOccurrences returns body with its occurrence marker set to n — replacing an
-// existing marker in place, or appending one when the body has none.
-func withOccurrences(body string, n int) string {
-	if occurrenceRe.MatchString(body) {
-		return occurrenceRe.ReplaceAllString(body, occurrenceMarker(n))
-	}
-	if strings.TrimSpace(body) == "" {
-		return occurrenceMarker(n)
-	}
-	return body + "\n\n" + occurrenceMarker(n)
-}
 
 // commentPath is the REST path for an issue's comments (v2, plain-string body).
 func (c *Client) commentPath(key string) string {
@@ -90,7 +29,7 @@ func (c *Client) FileFinding(f findings.Finding, opts tracker.FileFindingOptions
 		kindLine, f.Body, opts.RelatedKey,
 	)
 	if key := strings.TrimSpace(f.Key); key != "" {
-		desc += "\n\n" + findingKeyMarker(key)
+		desc += "\n\n" + findings.KeyMarker(key)
 	}
 
 	project := strings.TrimSpace(opts.TeamID)
@@ -151,7 +90,7 @@ func (c *Client) SearchFindings(teamID string) ([]tracker.ExistingFinding, error
 		out = append(out, tracker.ExistingFinding{
 			Identifier: iss.Key,
 			Title:      iss.Fields.Summary,
-			Key:        extractFindingKey(iss.Fields.Description),
+			Key:        findings.ExtractKey(iss.Fields.Description),
 			Closed:     false,
 		})
 	}
@@ -173,9 +112,9 @@ func (c *Client) RecordOccurrence(key, relatedKey string) (int, error) {
 		return 0, err
 	}
 
-	next := extractOccurrences(iss.Fields.Description) + 1
+	next := findings.ExtractOccurrences(iss.Fields.Description) + 1
 	if _, err := c.transport("PUT", "/rest/api/2/issue/"+url.PathEscape(key), map[string]any{
-		"fields": map[string]any{"description": withOccurrences(iss.Fields.Description, next)},
+		"fields": map[string]any{"description": findings.WithOccurrences(iss.Fields.Description, next)},
 	}); err != nil {
 		return 0, err
 	}

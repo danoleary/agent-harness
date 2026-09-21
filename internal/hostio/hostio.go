@@ -171,8 +171,9 @@ type Remote interface {
 
 // Findings is the tracker port plus the three findings-dropbox operations that
 // reach it. Keeping them here is what lets internal/stages stop constructing a
-// concrete GitHub client (and importing internal/github) for the ADR-0011
-// upstream sink.
+// tracker adapter of its own for the ADR-0011 upstream sink; the adapter itself
+// is selected in one place (internal/trackers), so neither the stage layer nor
+// this one names a concrete tracker.
 type Findings interface {
 	Tracker() (tracker.Tracker, error)
 	AlreadyFiled(findingsDir, teamID string) []filing.PriorFinding

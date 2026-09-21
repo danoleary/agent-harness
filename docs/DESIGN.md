@@ -699,7 +699,7 @@ The decision is the pure `verify.RetrospectivePreconditions`.
 **Audience routing + opt-in upstreaming (ADR-0011, BEH-639/640).** Every finding
 now carries an `audience` — `project` (about the Consumer's own codebase/tests/CI)
 or `harness` (about the harness/sandbox/contract itself), defaulting to `harness`
-when unclassified. `filing.Route` partitions on it: **project** findings file to
+when unclassified. `filing.Router.Route` partitions on it: **project** findings file to
 the Consumer's tracker through the same dedup pipeline; **harness** findings go to
 a **local artifact dir** (`.agent-harness/harness-findings/`) by default, so
 nothing leaves the repo. A Consumer opts into cross-project feedback with

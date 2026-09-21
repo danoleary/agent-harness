@@ -432,7 +432,7 @@ func TestFileFindingEmbedsKeyMarker(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	desc, _ := captured["input"].(map[string]any)["description"].(string)
-	if got := ExtractFindingKey(desc); got != "sandbox-playwright-missing-deps" {
+	if got := findings.ExtractKey(desc); got != "sandbox-playwright-missing-deps" {
 		t.Errorf("round-trip key = %q, want sandbox-playwright-missing-deps (desc: %q)", got, desc)
 	}
 }
@@ -600,26 +600,6 @@ func TestRecordOccurrenceErrorsWhenIssueMissing(t *testing.T) {
 	})
 	if _, err := NewClient(tr, testOptions()).RecordOccurrence("BEH-405", "BEH-370"); err == nil {
 		t.Error("expected an error when the issue is not found, got nil")
-	}
-}
-
-func TestExtractOccurrencesDefaultsToOne(t *testing.T) {
-	if got := extractOccurrences("a body with no marker"); got != 1 {
-		t.Errorf("extractOccurrences(no marker) = %d, want 1", got)
-	}
-	if got := extractOccurrences("x <!-- occurrences: 5 --> y"); got != 5 {
-		t.Errorf("extractOccurrences(marker 5) = %d, want 5", got)
-	}
-}
-
-func TestWithOccurrencesAppendsAndReplaces(t *testing.T) {
-	appended := withOccurrences("body", 2)
-	if !strings.Contains(appended, "body") || !strings.Contains(appended, "<!-- occurrences: 2 -->") {
-		t.Errorf("withOccurrences append = %q", appended)
-	}
-	replaced := withOccurrences("body <!-- occurrences: 2 -->", 3)
-	if strings.Count(replaced, "occurrences:") != 1 || !strings.Contains(replaced, "<!-- occurrences: 3 -->") {
-		t.Errorf("withOccurrences replace = %q", replaced)
 	}
 }
 

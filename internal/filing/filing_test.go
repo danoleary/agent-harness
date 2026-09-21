@@ -81,6 +81,29 @@ func (r *fakeRecorder) RecordOccurrence(identifier, relatedKey string) (int, err
 	return r.count, r.err
 }
 
+// fakeSink is a tracker.FindingsSink built from the three independently
+// scriptable halves above, so a test can still script (and assert on) filing,
+// searching and recurrence-recording separately while handing filing the single
+// port it now takes. A nil half is an inert default.
+type fakeSink struct {
+	*fakeFiler
+	*fakeSearcher
+	*fakeRecorder
+}
+
+func sink(f *fakeFiler, se *fakeSearcher, r *fakeRecorder) *fakeSink {
+	if f == nil {
+		f = &fakeFiler{}
+	}
+	if se == nil {
+		se = &fakeSearcher{}
+	}
+	if r == nil {
+		r = &fakeRecorder{}
+	}
+	return &fakeSink{f, se, r}
+}
+
 // recorder captures the narration events filing emits.
 type recorder struct{ events []string }
 
@@ -187,7 +210,7 @@ func TestRoutePartitionsByAudience(t *testing.T) {
 	filer := &fakeFiler{results: []fakeResult{{issue: tracker.CreatedIssue{Identifier: "BEH-900"}}}}
 	rec := &recorder{}
 
-	Route(dir, harnessDir, "team-uuid", "BEH-639", filer, noExisting(), nil, nil, nil, rec)
+	Router{Project: sink(filer, noExisting(), nil), HarnessDir: harnessDir, Log: rec}.Route(dir, "team-uuid", "BEH-639")
 
 	// project → tracker, and ONLY the project finding.
 	if len(filer.calls) != 1 || filer.calls[0].Title != "flaky spec" {
@@ -212,7 +235,7 @@ func TestRouteDefaultsUnclassifiedToLocalNotTracker(t *testing.T) {
 	filer := &fakeFiler{}
 	rec := &recorder{}
 
-	Route(dir, harnessDir, "team-uuid", "BEH-639", filer, noExisting(), nil, nil, nil, rec)
+	Router{Project: sink(filer, noExisting(), nil), HarnessDir: harnessDir, Log: rec}.Route(dir, "team-uuid", "BEH-639")
 
 	if len(filer.calls) != 0 {
 		t.Errorf("unclassified finding must NOT reach the tracker, got %+v", filer.calls)
@@ -238,10 +261,10 @@ func TestRouteUpstreamsHarnessFindingsToPublicRepo(t *testing.T) {
 	]`)
 	projectFiler := &fakeFiler{results: []fakeResult{{issue: tracker.CreatedIssue{Identifier: "BEH-900"}}}}
 	upstreamFiler := &fakeFiler{results: []fakeResult{{issue: tracker.CreatedIssue{Identifier: "#12"}}}}
-	up := &Upstream{Filer: upstreamFiler, Searcher: noExisting(), Container: "example-org/agent-harness", Project: "herd"}
+	up := &Upstream{Sink: sink(upstreamFiler, noExisting(), nil), Container: "example-org/agent-harness", Project: "herd"}
 	rec := &recorder{}
 
-	Route(dir, harnessDir, "team-uuid", "BEH-639", projectFiler, noExisting(), nil, nil, up, rec)
+	Router{Project: sink(projectFiler, noExisting(), nil), Upstream: up, HarnessDir: harnessDir, Log: rec}.Route(dir, "team-uuid", "BEH-639")
 
 	// harness finding → the upstream sink, NOT the local dir.
 	if len(upstreamFiler.calls) != 1 || upstreamFiler.calls[0].Title != "sandbox missing deps" {
@@ -263,9 +286,9 @@ func TestRouteUpstreamTagsFilingWithProject(t *testing.T) {
 	dir := t.TempDir()
 	writeDropbox(t, dir, `[{"title":"opaque crash","body":"x","key":"opaque-crash","audience":"harness"}]`)
 	upstreamFiler := &fakeFiler{results: []fakeResult{{issue: tracker.CreatedIssue{Identifier: "#12"}}}}
-	up := &Upstream{Filer: upstreamFiler, Searcher: noExisting(), Container: "example-org/agent-harness", Project: "herd"}
+	up := &Upstream{Sink: sink(upstreamFiler, noExisting(), nil), Container: "example-org/agent-harness", Project: "herd"}
 
-	Route(dir, filepath.Join(t.TempDir(), "hf"), "team-uuid", "BEH-639", &fakeFiler{}, noExisting(), nil, nil, up, &recorder{})
+	Router{Project: sink(&fakeFiler{}, noExisting(), nil), Upstream: up, HarnessDir: filepath.Join(t.TempDir(), "hf"), Log: &recorder{}}.Route(dir, "team-uuid", "BEH-639")
 
 	if len(upstreamFiler.opts) != 1 || upstreamFiler.opts[0].RelatedKey != "herd" {
 		t.Errorf("upstream FileFinding RelatedKey = %+v, want the project name \"herd\"", upstreamFiler.opts)
@@ -282,10 +305,10 @@ func TestRouteUpstreamDedupsByKeyAsProjectTaggedRecurrence(t *testing.T) {
 		{Identifier: "#7", Title: "Playwright deps", Key: "sandbox-deps"},
 	}}
 	rec2 := &fakeRecorder{count: 3}
-	up := &Upstream{Filer: upstreamFiler, Searcher: searcher, Recorder: rec2, Container: "example-org/agent-harness", Project: "herd"}
+	up := &Upstream{Sink: sink(upstreamFiler, searcher, rec2), Container: "example-org/agent-harness", Project: "herd"}
 	rec := &recorder{}
 
-	Route(dir, filepath.Join(t.TempDir(), "hf"), "team-uuid", "BEH-639", &fakeFiler{}, noExisting(), nil, nil, up, rec)
+	Router{Project: sink(&fakeFiler{}, noExisting(), nil), Upstream: up, HarnessDir: filepath.Join(t.TempDir(), "hf"), Log: rec}.Route(dir, "team-uuid", "BEH-639")
 
 	if len(upstreamFiler.calls) != 0 {
 		t.Fatalf("expected the recurring key deduped, but %d filed upstream", len(upstreamFiler.calls))
@@ -312,7 +335,7 @@ func TestFileFilesEachFindingAndNarrates(t *testing.T) {
 	}}
 	rec := &recorder{}
 
-	File(dir, "team-uuid", "BEH-370", filer, noExisting(), nil, nil, rec)
+	Router{Project: sink(filer, noExisting(), nil), Log: rec}.File(dir, "team-uuid", "BEH-370")
 
 	if len(filer.calls) != 2 {
 		t.Fatalf("expected 2 findings filed, got %d", len(filer.calls))
@@ -338,14 +361,14 @@ func TestFileSkipsFindingAlreadyTrackedByOpenIssue(t *testing.T) {
 	}}
 	rec := &recorder{}
 
-	File(dir, "team-uuid", "BEH-370", filer, searcher, nil, nil, rec)
+	Router{Project: sink(filer, searcher, &fakeRecorder{count: 2}), Log: rec}.File(dir, "team-uuid", "BEH-370")
 
 	if len(filer.calls) != 0 {
 		t.Fatalf("expected the duplicate to be skipped, but %d were filed", len(filer.calls))
 	}
 	joined := strings.Join(rec.events, "\n")
-	if !strings.Contains(joined, "already tracked") || !strings.Contains(joined, "BEH-405") {
-		t.Errorf("expected an 'already tracked' narration naming BEH-405, got: %q", joined)
+	if !strings.Contains(joined, "recurred (occurrence 2)") || !strings.Contains(joined, "BEH-405") {
+		t.Errorf("expected a recurrence narration naming BEH-405, got: %q", joined)
 	}
 }
 
@@ -361,7 +384,7 @@ func TestFileRefilesWhenOnlyMatchIsClosed(t *testing.T) {
 	}}
 	rec := &recorder{}
 
-	File(dir, "team-uuid", "BEH-370", filer, searcher, nil, nil, rec)
+	Router{Project: sink(filer, searcher, nil), Log: rec}.File(dir, "team-uuid", "BEH-370")
 
 	if len(filer.calls) != 1 {
 		t.Fatalf("expected the finding re-filed past the closed match, got %d filed", len(filer.calls))
@@ -383,14 +406,15 @@ func TestFileDedupsOnTitleWhenNoKey(t *testing.T) {
 		{Identifier: "BEH-407", Title: "build oom-killed at prerender  "},
 	}}
 	rec := &recorder{}
+	bumper := &fakeRecorder{count: 2}
 
-	File(dir, "team-uuid", "BEH-370", filer, searcher, nil, nil, rec)
+	Router{Project: sink(filer, searcher, bumper), Log: rec}.File(dir, "team-uuid", "BEH-370")
 
 	if len(filer.calls) != 0 {
 		t.Fatalf("expected the same-title finding deduped, got %d filed", len(filer.calls))
 	}
-	if !strings.Contains(strings.Join(rec.events, "\n"), "already tracked") {
-		t.Errorf("expected an 'already tracked' narration, got: %v", rec.events)
+	if len(bumper.bumped) != 1 || bumper.bumped[0] != "BEH-407" {
+		t.Errorf("expected a recurrence bump on BEH-407, got %+v", bumper.bumped)
 	}
 }
 
@@ -404,7 +428,7 @@ func TestFileFilesAllWhenSearchFails(t *testing.T) {
 	searcher := &fakeSearcher{err: errBoom}
 	rec := &recorder{}
 
-	File(dir, "team-uuid", "BEH-370", filer, searcher, nil, nil, rec)
+	Router{Project: sink(filer, searcher, nil), Log: rec}.File(dir, "team-uuid", "BEH-370")
 
 	if len(filer.calls) != 2 {
 		t.Fatalf("expected both findings filed despite the search failure, got %d", len(filer.calls))
@@ -425,14 +449,15 @@ func TestFileDedupsWithinASingleRun(t *testing.T) {
 
 	filer := &fakeFiler{results: []fakeResult{{issue: tracker.CreatedIssue{Identifier: "BEH-600"}}}}
 	rec := &recorder{}
+	bumper := &fakeRecorder{count: 2}
 
-	File(dir, "team-uuid", "BEH-370", filer, noExisting(), nil, nil, rec)
+	Router{Project: sink(filer, noExisting(), bumper), Log: rec}.File(dir, "team-uuid", "BEH-370")
 
 	if len(filer.calls) != 1 {
 		t.Fatalf("expected the two same-key findings collapsed to one filed, got %d", len(filer.calls))
 	}
-	if !strings.Contains(strings.Join(rec.events, "\n"), "already tracked") {
-		t.Errorf("expected the second to be narrated as already tracked, got: %v", rec.events)
+	if len(bumper.bumped) != 1 || bumper.bumped[0] != "BEH-600" {
+		t.Errorf("expected the second narrated as a recurrence on BEH-600, got %+v", bumper.bumped)
 	}
 }
 
@@ -441,7 +466,7 @@ func TestFileIsSilentWhenNoDropbox(t *testing.T) {
 	filer := &fakeFiler{}
 	rec := &recorder{}
 
-	File(t.TempDir(), "team-uuid", "BEH-370", filer, noExisting(), nil, nil, rec)
+	Router{Project: sink(filer, noExisting(), nil), Log: rec}.File(t.TempDir(), "team-uuid", "BEH-370")
 
 	if len(filer.calls) != 0 {
 		t.Errorf("expected nothing filed, got %d", len(filer.calls))
@@ -459,7 +484,7 @@ func TestFileSkipsWhenNoTeamID(t *testing.T) {
 	filer := &fakeFiler{}
 	rec := &recorder{}
 
-	File(dir, "", "BEH-370", filer, noExisting(), nil, nil, rec)
+	Router{Project: sink(filer, noExisting(), nil), Log: rec}.File(dir, "", "BEH-370")
 
 	if len(filer.calls) != 0 {
 		t.Errorf("expected nothing filed without a team id, got %d", len(filer.calls))
@@ -476,7 +501,7 @@ func TestFileNarratesUnreadableDropbox(t *testing.T) {
 	filer := &fakeFiler{}
 	rec := &recorder{}
 
-	File(dir, "team-uuid", "BEH-370", filer, noExisting(), nil, nil, rec)
+	Router{Project: sink(filer, noExisting(), nil), Log: rec}.File(dir, "team-uuid", "BEH-370")
 
 	if len(filer.calls) != 0 {
 		t.Errorf("expected nothing filed from a bad dropbox, got %d", len(filer.calls))
@@ -496,7 +521,7 @@ func TestFileContinuesPastAFilingError(t *testing.T) {
 	}}
 	rec := &recorder{}
 
-	File(dir, "team-uuid", "BEH-370", filer, noExisting(), nil, nil, rec)
+	Router{Project: sink(filer, noExisting(), nil), Log: rec}.File(dir, "team-uuid", "BEH-370")
 
 	if len(filer.calls) != 2 {
 		t.Fatalf("expected both findings attempted, got %d", len(filer.calls))
@@ -524,7 +549,7 @@ func TestClearDropboxPreventsRefilingStaleFindings(t *testing.T) {
 	// A second run that drops nothing must file nothing — not run 1's stale finding.
 	filer := &fakeFiler{}
 	rec := &recorder{}
-	File(dir, "team-uuid", "BEH-370", filer, noExisting(), nil, nil, rec)
+	Router{Project: sink(filer, noExisting(), nil), Log: rec}.File(dir, "team-uuid", "BEH-370")
 	if len(filer.calls) != 0 {
 		t.Errorf("expected nothing filed after clear, got %d", len(filer.calls))
 	}
@@ -618,7 +643,7 @@ func TestAlreadyFiledReturnsOpenFindingsSkippingClosed(t *testing.T) {
 	}}
 	rec := &recorder{}
 
-	got := AlreadyFiled(t.TempDir(), "team-uuid", searcher, rec)
+	got := Router{Project: sink(nil, searcher, nil), Log: rec}.AlreadyFiled(t.TempDir(), "team-uuid")
 
 	if len(got) != 1 {
 		t.Fatalf("expected only the open finding, got %d: %+v", len(got), got)
@@ -641,7 +666,7 @@ func TestAlreadyFiledMergesPriorDropboxAndDedupsByKey(t *testing.T) {
 		{Identifier: "BEH-529", Title: "Build OOMs", Key: "sandbox-build-oom"},
 	}}
 
-	got := AlreadyFiled(dir, "team-uuid", searcher, &recorder{})
+	got := Router{Project: sink(nil, searcher, nil), Log: &recorder{}}.AlreadyFiled(dir, "team-uuid")
 
 	keys := map[string]int{}
 	for _, f := range got {
@@ -666,7 +691,7 @@ func TestAlreadyFiledDegradesToDropboxWhenSearchFails(t *testing.T) {
 	searcher := &fakeSearcher{err: errBoom}
 	rec := &recorder{}
 
-	got := AlreadyFiled(dir, "team-uuid", searcher, rec)
+	got := Router{Project: sink(nil, searcher, nil), Log: rec}.AlreadyFiled(dir, "team-uuid")
 
 	if len(got) != 1 || got[0].Key != "sandbox-build-oom" {
 		t.Fatalf("expected the dropbox class despite the search failure, got %+v", got)
@@ -685,7 +710,7 @@ func TestAlreadyFiledSortsDeterministically(t *testing.T) {
 		{Identifier: "BEH-2", Title: "mmm title only"},
 	}}
 
-	got := AlreadyFiled(t.TempDir(), "team-uuid", searcher, &recorder{})
+	got := Router{Project: sink(nil, searcher, nil), Log: &recorder{}}.AlreadyFiled(t.TempDir(), "team-uuid")
 
 	gotKeys := make([]string, len(got))
 	for i, f := range got {
@@ -701,7 +726,7 @@ func TestAlreadyFiledSortsDeterministically(t *testing.T) {
 // First run: nothing filed and no prior dropbox → empty, no narration.
 func TestAlreadyFiledIsEmptyOnFirstRun(t *testing.T) {
 	rec := &recorder{}
-	got := AlreadyFiled(t.TempDir(), "team-uuid", noExisting(), rec)
+	got := Router{Project: sink(nil, noExisting(), nil), Log: rec}.AlreadyFiled(t.TempDir(), "team-uuid")
 	if len(got) != 0 {
 		t.Errorf("expected nothing already filed on a first run, got %+v", got)
 	}
@@ -725,7 +750,7 @@ func TestFileSemanticMatchBumpsInsteadOfFiling(t *testing.T) {
 	bumper := &fakeRecorder{count: 2}
 	rec := &recorder{}
 
-	File(dir, "team-uuid", "BEH-370", filer, searcher, matcher, bumper, rec)
+	Router{Project: sink(filer, searcher, bumper), Matcher: matcher, Log: rec}.File(dir, "team-uuid", "BEH-370")
 
 	if len(filer.calls) != 0 {
 		t.Fatalf("expected the reworded duplicate NOT filed, but %d were filed", len(filer.calls))
@@ -754,7 +779,7 @@ func TestFileExactMatchBumpsAndSkipsSemanticPass(t *testing.T) {
 	bumper := &fakeRecorder{count: 3}
 	rec := &recorder{}
 
-	File(dir, "team-uuid", "BEH-370", filer, searcher, matcher, bumper, rec)
+	Router{Project: sink(filer, searcher, bumper), Matcher: matcher, Log: rec}.File(dir, "team-uuid", "BEH-370")
 
 	if len(filer.calls) != 0 {
 		t.Fatalf("expected exact dup not filed, got %d filed", len(filer.calls))
@@ -781,7 +806,7 @@ func TestFileFilesNewWhenSemanticReturnsNoMatch(t *testing.T) {
 	bumper := &fakeRecorder{}
 	rec := &recorder{}
 
-	File(dir, "team-uuid", "BEH-370", filer, searcher, matcher, bumper, rec)
+	Router{Project: sink(filer, searcher, bumper), Matcher: matcher, Log: rec}.File(dir, "team-uuid", "BEH-370")
 
 	if len(filer.calls) != 1 {
 		t.Fatalf("expected the unmatched finding filed as new, got %d filed", len(filer.calls))
@@ -808,7 +833,7 @@ func TestFileFilesWhenSemanticMatcherErrors(t *testing.T) {
 	bumper := &fakeRecorder{}
 	rec := &recorder{}
 
-	File(dir, "team-uuid", "BEH-370", filer, searcher, matcher, bumper, rec)
+	Router{Project: sink(filer, searcher, bumper), Matcher: matcher, Log: rec}.File(dir, "team-uuid", "BEH-370")
 
 	if len(filer.calls) != 1 {
 		t.Fatalf("expected the finding filed despite the matcher error, got %d filed", len(filer.calls))
@@ -835,7 +860,7 @@ func TestFileSkipsWithoutRefilingWhenRecorderErrors(t *testing.T) {
 	bumper := &fakeRecorder{err: errBoom}
 	rec := &recorder{}
 
-	File(dir, "team-uuid", "BEH-370", filer, searcher, nil, bumper, rec)
+	Router{Project: sink(filer, searcher, bumper), Log: rec}.File(dir, "team-uuid", "BEH-370")
 
 	if len(filer.calls) != 0 {
 		t.Fatalf("expected no duplicate filed when the recorder errors, got %d filed", len(filer.calls))
@@ -859,7 +884,7 @@ func TestFilePassesOpenFindingsToMatcher(t *testing.T) {
 	matcher := &fakeMatcher{matchTo: ""}
 	rec := &recorder{}
 
-	File(dir, "team-uuid", "BEH-370", filer, searcher, matcher, &fakeRecorder{}, rec)
+	Router{Project: sink(filer, searcher, &fakeRecorder{}), Matcher: matcher, Log: rec}.File(dir, "team-uuid", "BEH-370")
 
 	if matcher.calls != 1 {
 		t.Fatalf("expected the matcher consulted once, got %d", matcher.calls)

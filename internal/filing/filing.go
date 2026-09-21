@@ -1,9 +1,15 @@
 // Package filing files the harness-improvement findings a session dropped into
-// its `/findings/out.json` dropbox to the tracker, through the FindingsSink port
-// (a Filer + Searcher; any tracker adapter satisfies it). It is the host-side step
-// that runs after a session returns (ADR-0010, retaining ADR-0001's invariant: the
-// harness owns all tracker I/O); the agent only writes the dropbox, never reaches
-// the tracker itself.
+// its `/findings/out.json` dropbox, through [tracker.FindingsSink] — layer 3 of
+// the Tracker port, which every adapter already implements. It is the host-side
+// step that runs after a session returns (ADR-0010, retaining ADR-0001's
+// invariant: the harness owns all tracker I/O); the agent only writes the
+// dropbox, never reaches the tracker itself.
+//
+// [Router] is the entry point: it holds the collaborators — the two sinks, the
+// semantic matcher, the local artifact dir, the narration log — and its methods
+// take only the per-session data. The sinks were three ad-hoc single-method
+// interfaces declared here (Filer, Searcher, OccurrenceRecorder) that restated,
+// one method each, what tracker.FindingsSink already names as a trio.
 package filing
 
 import (
@@ -20,17 +26,6 @@ import (
 // dropboxFile is the fixed filename the agent drops findings into, under the
 // session's findings dir (mounted at /findings in the sandbox).
 const dropboxFile = "out.json"
-
-// Filer files one finding to the tracker. Any tracker adapter satisfies it; tests pass a fake.
-type Filer interface {
-	FileFinding(f findings.Finding, opts tracker.FileFindingOptions) (tracker.CreatedIssue, error)
-}
-
-// Searcher lists already-filed harness findings for a team so File can skip
-// duplicates. Any tracker adapter satisfies it; tests pass a fake.
-type Searcher interface {
-	SearchFindings(teamID string) ([]tracker.ExistingFinding, error)
-}
 
 // ClearDropbox removes any stale dropbox left in findingsDir. The findings dir is
 // ticket+session keyed (not run-id keyed), so a re-run of the same ticket reuses
@@ -101,54 +96,67 @@ type SemanticMatcher interface {
 	MatchFinding(f findings.Finding, open []tracker.ExistingFinding) (identifier string, err error)
 }
 
-// OccurrenceRecorder records that an already-tracked finding recurred: it appends
-// an occurrence comment to the existing issue and bumps its occurrence count
-// (BEH-573), turning N duplicate files into one issue carrying N occurrences —
-// also a better prioritisation signal than N near-identical issues. It returns
-// the new count for narration. Best-effort (ADR-0001): the caller narrates a
-// failure and still skips the duplicate, never crashing or filing a dup.
-type OccurrenceRecorder interface {
-	RecordOccurrence(identifier, relatedIdentifier string) (count int, err error)
+// Router is the host-side findings step, holding the collaborators one run
+// files through: the Consumer's tracker, the optional upstream sink, the
+// best-effort semantic matcher, the local artifact dir, and the narration log.
+// Its methods take only the per-session data (which dropbox, which container,
+// which ticket), so adding a collaborator costs a field rather than another
+// positional parameter at every call site.
+type Router struct {
+	// Project is the Consumer's tracker — the sink for project-audience findings,
+	// and for every finding on the audience-blind [Router.File] path. Required.
+	Project tracker.FindingsSink
+	// Upstream is the opt-in public-harness-repo sink for harness-audience
+	// findings (ADR-0011). Nil — the default — writes them to HarnessDir instead,
+	// so nothing leaves the repo without the explicit opt-in.
+	Upstream *Upstream
+	// Matcher is the best-effort semantic dedup pass. Nil skips it, degrading to
+	// exact key/title dedup (the pre-BEH-573 behaviour).
+	Matcher SemanticMatcher
+	// HarnessDir is the local artifact dir harness findings land in when Upstream
+	// is nil. See [HarnessFindingsDir].
+	HarnessDir string
+	// Log receives the narration. Required: every failure degrades to a line here.
+	Log EventSink
 }
 
 // File reads the findings dropbox in findingsDir and files each finding to the
-// tracker, referencing relatedIdentifier (the worked ticket). It never returns an
-// error: every failure is degraded to a narration line, so one bad dropbox or a
-// transient tracker failure can't crash the run (ADR-0001: degraded, not broken).
+// Project sink, referencing relatedIdentifier (the worked ticket). It never
+// returns an error: every failure is degraded to a narration line, so one bad
+// dropbox or a transient tracker failure can't crash the run (ADR-0001:
+// degraded, not broken).
 //   - No dropbox file → nothing to file (the common, friction-free case).
 //   - Dropbox present but unreadable/malformed → one narration line, nothing filed.
 //   - Findings present but no team id resolved → one narration line, nothing filed.
 //
 // Dedup runs in two passes before filing: the fast exact key/title match
 // (matchKey), then — for anything that misses — a best-effort semantic pass via
-// matcher. A match (either pass) is recorded as a recurrence on the existing
-// issue (comment-and-bump) instead of filing a duplicate. matcher and recorder
-// are both optional: nil matcher skips the semantic pass, nil recorder degrades a
-// match to the pre-BEH-573 silent-skip narration — so a caller can opt into
-// either half independently and a failure of either degrades, never crashes.
-func File(findingsDir, teamID, relatedIdentifier string, filer Filer, searcher Searcher, matcher SemanticMatcher, recorder OccurrenceRecorder, log EventSink) {
-	parsed, ok := readDropbox(findingsDir, log)
+// Matcher. A match (either pass) is recorded as a recurrence on the existing
+// issue (comment-and-bump) instead of filing a duplicate.
+//
+// File is the audience-blind primitive: it files everything to the tracker. The
+// implementation stage uses it because its dropbox protocol asks for harness
+// friction only and never classifies; [Router.Route] is the audience-aware form.
+func (r Router) File(findingsDir, teamID, relatedIdentifier string) {
+	parsed, ok := r.readDropbox(findingsDir)
 	if !ok {
 		return
 	}
-	fileToTracker(parsed.Findings, teamID, relatedIdentifier, filer, searcher, matcher, recorder, log)
+	r.fileTo(r.Project, parsed.Findings, teamID, relatedIdentifier, r.Matcher)
 }
 
 // Upstream is the opt-in public-harness-repo sink for harness-audience findings
-// (ADR-0011/BEH-640). When wired, Route files harness findings to it — a GitHub
+// (ADR-0011/BEH-640). When wired, Route files harness findings to it — a tracker
 // adapter bound to the public repo, using the host's GH_TOKEN — instead of the
-// local artifact dir. It carries the same Filer/Searcher/OccurrenceRecorder trio
-// as the tracker path, so the shared fileToTracker dedup pipeline files them with
-// cross-project key dedup and project-tagged recurrences.
+// local artifact dir. Sink is the same [tracker.FindingsSink] the Consumer's own
+// tracker satisfies, so the shared dedup pipeline files them with cross-project
+// key dedup and project-tagged recurrences.
 type Upstream struct {
-	// Filer / Searcher / Recorder are the public repo's finding sink (a github
-	// adapter). Recorder may be nil — a match then degrades to a silent-skip.
-	Filer    Filer
-	Searcher Searcher
-	Recorder OccurrenceRecorder
+	// Sink is the public repo's finding sink (a github adapter through the port).
+	Sink tracker.FindingsSink
 	// Container is the upstream repo slug ("owner/name"), passed as the sink's
 	// teamID. The github adapter is repo-bound and ignores it, but it must be
-	// non-empty for fileToTracker's team-id guard to proceed.
+	// non-empty for the team-id guard in fileTo to proceed.
 	Container string
 	// Project is the reporting-project name stamped on every upstream filing and
 	// recurrence comment, so the public repo shows which project surfaced a finding
@@ -158,29 +166,29 @@ type Upstream struct {
 
 // Route reads the findings dropbox once and routes each finding by its audience
 // (ADR-0011): project findings file to the Consumer's tracker through the same
-// dedup pipeline File uses. Harness findings go to the local artifact dir
-// (harnessDir) by default, or — when upstream is wired (feedback.upstream =
+// dedup pipeline [Router.File] uses. Harness findings go to the local artifact
+// dir (HarnessDir) by default, or — when Upstream is wired (feedback.upstream =
 // github) — to the public harness repo with cross-project key dedup and
 // project-tagged recurrences. It is the audience-aware successor to File the
 // stages call; File remains the plain file-everything-to-the-tracker primitive.
 // Best-effort throughout (ADR-0001): every failure degrades to narration, never a
 // crash.
-func Route(findingsDir, harnessDir, teamID, relatedIdentifier string, filer Filer, searcher Searcher, matcher SemanticMatcher, recorder OccurrenceRecorder, upstream *Upstream, log EventSink) {
-	parsed, ok := readDropbox(findingsDir, log)
+func (r Router) Route(findingsDir, teamID, relatedIdentifier string) {
+	parsed, ok := r.readDropbox(findingsDir)
 	if !ok {
 		return
 	}
 	project, harness := partitionByAudience(parsed.Findings)
-	routeHarness(harness, harnessDir, relatedIdentifier, upstream, log)
-	fileToTracker(project, teamID, relatedIdentifier, filer, searcher, matcher, recorder, log)
+	r.routeHarness(harness, relatedIdentifier)
+	r.fileTo(r.Project, project, teamID, relatedIdentifier, r.Matcher)
 }
 
 // routeHarness sends the harness-audience findings to their configured sink: the
-// public harness repo when upstream is wired (project-tagged, deduped by key), or
+// public harness repo when Upstream is wired (project-tagged, deduped by key), or
 // the local artifact dir otherwise (the default — nothing leaves the repo).
-func routeHarness(harness []findings.Finding, harnessDir, relatedIdentifier string, upstream *Upstream, log EventSink) {
-	if upstream == nil {
-		WriteHarnessFindings(harnessDir, relatedIdentifier, harness, log)
+func (r Router) routeHarness(harness []findings.Finding, relatedIdentifier string) {
+	if r.Upstream == nil {
+		WriteHarnessFindings(r.HarnessDir, relatedIdentifier, harness, r.Log)
 		return
 	}
 	// Stamp the reporting project as the "related" tag so upstream filings read
@@ -188,24 +196,24 @@ func routeHarness(harness []findings.Finding, harnessDir, relatedIdentifier stri
 	// fall back to the worked ticket when no project name is configured. Dedup is
 	// by key only (nil matcher): cross-project semantic dedup against a public repo
 	// is out of scope — the AC is key-based dedup.
-	tag := upstream.Project
+	tag := r.Upstream.Project
 	if strings.TrimSpace(tag) == "" {
 		tag = relatedIdentifier
 	}
-	fileToTracker(harness, upstream.Container, tag, upstream.Filer, upstream.Searcher, nil, upstream.Recorder, log)
+	r.fileTo(r.Upstream.Sink, harness, r.Upstream.Container, tag, nil)
 }
 
 // readDropbox reads and parses the dropbox in findingsDir. ok is false — with a
 // narration only on a real parse error — when there is nothing to act on: an
 // absent file (the common, friction-free case) or a malformed one.
-func readDropbox(findingsDir string, log EventSink) (findings.Parsed, bool) {
+func (r Router) readDropbox(findingsDir string) (findings.Parsed, bool) {
 	text, err := os.ReadFile(filepath.Join(findingsDir, dropboxFile))
 	if err != nil {
 		return findings.Parsed{}, false // no dropbox file → nothing to file
 	}
 	parsed := findings.Parse(string(text))
 	if parsed.Error != "" {
-		log.Event("findings ✗ dropbox unreadable: " + parsed.Error)
+		r.Log.Event("findings ✗ dropbox unreadable: " + parsed.Error)
 		return findings.Parsed{}, false
 	}
 	return parsed, true
@@ -225,16 +233,18 @@ func partitionByAudience(fs []findings.Finding) (project, harness []findings.Fin
 	return project, harness
 }
 
-// fileToTracker files the given findings to the tracker with cross-run dedup. It
-// is the shared engine behind File (all findings) and Route (project findings
-// only). An empty set is a no-op; a non-empty set with no team id resolved is one
-// narration line and nothing filed.
-func fileToTracker(fs []findings.Finding, teamID, relatedIdentifier string, filer Filer, searcher Searcher, matcher SemanticMatcher, recorder OccurrenceRecorder, log EventSink) {
+// fileTo files the given findings to one sink with cross-run dedup. It is the
+// shared engine behind File (all findings, to Project), Route's project half
+// (Project), and Route's harness half (the Upstream sink) — which is why the
+// sink and the matcher are parameters rather than read off r: the upstream path
+// passes its own sink and a nil matcher. An empty set is a no-op; a non-empty
+// set with no team id resolved is one narration line and nothing filed.
+func (r Router) fileTo(sink tracker.FindingsSink, fs []findings.Finding, teamID, relatedIdentifier string, matcher SemanticMatcher) {
 	if len(fs) == 0 {
 		return
 	}
 	if teamID == "" {
-		log.Event(fmt.Sprintf(
+		r.Log.Event(fmt.Sprintf(
 			"findings ✗ %d dropped but no team id resolved for %s",
 			len(fs), relatedIdentifier,
 		))
@@ -245,29 +255,29 @@ func fileToTracker(fs []findings.Finding, teamID, relatedIdentifier string, file
 	// Best-effort (ADR-0001): a search failure degrades to filing everything (an
 	// empty tracked map AND no open set, so the semantic pass is also skipped) —
 	// the pre-dedup behaviour, never a crash.
-	tracked, open := openTracked(teamID, searcher, log)
+	tracked, open := r.openTracked(sink, teamID)
 
 	for _, f := range fs {
 		// 1. Exact match — the fast short-circuit, preserved ahead of the model.
 		if existing, ok := tracked[matchKey(f.Key, f.Title)]; ok {
-			recordRecurrence(existing, relatedIdentifier, recorder, log)
+			r.recordRecurrence(sink, existing, relatedIdentifier)
 			continue
 		}
 		// 2. Semantic match — best-effort; an error, a nil matcher, an empty open
 		// set, or an unrecognised id all fall through to filing as new.
-		if existing, ok := semanticMatch(f, open, matcher, log); ok {
-			recordRecurrence(existing, relatedIdentifier, recorder, log)
+		if existing, ok := r.semanticMatch(f, open, matcher); ok {
+			r.recordRecurrence(sink, existing, relatedIdentifier)
 			// Register so a later same-class finding in this dropbox also dedups
 			// against it (its exact key/title now points at the matched issue).
 			tracked[matchKey(f.Key, f.Title)] = existing
 			continue
 		}
 		// 3. No match — file a new issue.
-		created, err := filer.FileFinding(f, tracker.FileFindingOptions{
+		created, err := sink.FileFinding(f, tracker.FileFindingOptions{
 			TeamID: teamID, RelatedKey: relatedIdentifier,
 		})
 		if err != nil {
-			log.Event(fmt.Sprintf("finding ✗ failed to file %q: %s", f.Title, err.Error()))
+			r.Log.Event(fmt.Sprintf("finding ✗ failed to file %q: %s", f.Title, err.Error()))
 			continue
 		}
 		// Register what we just filed so a later finding in the same dropbox that
@@ -276,25 +286,23 @@ func fileToTracker(fs []findings.Finding, teamID, relatedIdentifier string, file
 		filed := tracker.ExistingFinding{Identifier: created.Identifier, Title: f.Title, Key: f.Key}
 		tracked[matchKey(f.Key, f.Title)] = filed
 		open = append(open, filed)
-		log.Event(fmt.Sprintf("finding filed: %s — %s", created.Identifier, f.Title))
+		r.Log.Event(fmt.Sprintf("finding filed: %s — %s", created.Identifier, f.Title))
 	}
 }
 
-// recordRecurrence handles a finding that matched an already-tracked issue:
-// comment-and-bump when a recorder is wired (BEH-573), else the pre-BEH-573
-// silent-skip narration. Best-effort: a recorder failure degrades to a skip
-// narration so a transient tracker error never files a duplicate or crashes.
-func recordRecurrence(existing tracker.ExistingFinding, relatedIdentifier string, recorder OccurrenceRecorder, log EventSink) {
-	if recorder == nil {
-		log.Event(fmt.Sprintf("finding ↩ already tracked: %s — %s", existing.Identifier, existing.Title))
-		return
-	}
-	count, err := recorder.RecordOccurrence(existing.Identifier, relatedIdentifier)
+// recordRecurrence handles a finding that matched an already-tracked issue: it
+// appends an occurrence comment to the existing issue and bumps its occurrence
+// count (BEH-573), turning N duplicate files into one issue carrying N
+// occurrences — a better prioritisation signal than N near-identical issues.
+// Best-effort (ADR-0001): a sink failure degrades to a skip narration, so a
+// transient tracker error never files a duplicate or crashes.
+func (r Router) recordRecurrence(sink tracker.FindingsSink, existing tracker.ExistingFinding, relatedIdentifier string) {
+	count, err := sink.RecordOccurrence(existing.Identifier, relatedIdentifier)
 	if err != nil {
-		log.Event(fmt.Sprintf("finding ⚠ recurrence not recorded on %s (skipped, not re-filed): %s", existing.Identifier, err.Error()))
+		r.Log.Event(fmt.Sprintf("finding ⚠ recurrence not recorded on %s (skipped, not re-filed): %s", existing.Identifier, err.Error()))
 		return
 	}
-	log.Event(fmt.Sprintf("finding ↩ recurred (occurrence %d): %s — %s", count, existing.Identifier, existing.Title))
+	r.Log.Event(fmt.Sprintf("finding ↩ recurred (occurrence %d): %s — %s", count, existing.Identifier, existing.Title))
 }
 
 // semanticMatch asks the matcher whether f duplicates one of the open findings,
@@ -302,13 +310,13 @@ func recordRecurrence(existing tracker.ExistingFinding, relatedIdentifier string
 // nil matcher, an empty open set, a model error, or an identifier not in the open
 // set all yield ok=false so the finding is filed as new (the pre-semantic
 // behaviour) rather than mis-deduped against an issue we can't verify.
-func semanticMatch(f findings.Finding, open []tracker.ExistingFinding, matcher SemanticMatcher, log EventSink) (tracker.ExistingFinding, bool) {
+func (r Router) semanticMatch(f findings.Finding, open []tracker.ExistingFinding, matcher SemanticMatcher) (tracker.ExistingFinding, bool) {
 	if matcher == nil || len(open) == 0 {
 		return tracker.ExistingFinding{}, false
 	}
 	id, err := matcher.MatchFinding(f, open)
 	if err != nil {
-		log.Event("finding ⚠ semantic dedup failed, filing without it: " + err.Error())
+		r.Log.Event("finding ⚠ semantic dedup failed, filing without it: " + err.Error())
 		return tracker.ExistingFinding{}, false
 	}
 	id = strings.TrimSpace(id)
@@ -322,7 +330,7 @@ func semanticMatch(f findings.Finding, open []tracker.ExistingFinding, matcher S
 	}
 	// The model named an id that isn't in the open set we gave it — don't trust a
 	// match we can't resolve; file as new.
-	log.Event("finding ⚠ semantic dedup returned unknown id " + id + ", filing as new")
+	r.Log.Event("finding ⚠ semantic dedup returned unknown id " + id + ", filing as new")
 	return tracker.ExistingFinding{}, false
 }
 
@@ -331,11 +339,11 @@ func semanticMatch(f findings.Finding, open []tracker.ExistingFinding, matcher S
 // the semantic pass), limited to OPEN issues — a closed/canceled match must not
 // suppress a re-file. A search failure is narrated once and degrades to an empty
 // map and nil slice (file all, no semantic pass).
-func openTracked(teamID string, searcher Searcher, log EventSink) (map[string]tracker.ExistingFinding, []tracker.ExistingFinding) {
+func (r Router) openTracked(sink tracker.FindingsSink, teamID string) (map[string]tracker.ExistingFinding, []tracker.ExistingFinding) {
 	tracked := map[string]tracker.ExistingFinding{}
-	existing, err := searcher.SearchFindings(teamID)
+	existing, err := sink.SearchFindings(teamID)
 	if err != nil {
-		log.Event("findings ⚠ dedup search failed, filing without dedup: " + err.Error())
+		r.Log.Event("findings ⚠ dedup search failed, filing without dedup: " + err.Error())
 		return tracked, nil
 	}
 	open := make([]tracker.ExistingFinding, 0, len(existing))
@@ -359,12 +367,12 @@ type PriorFinding struct {
 }
 
 // AlreadyFiled returns the deduped set of finding classes a retrospective re-run
-// should treat as settled (BEH-539): the team's OPEN filed findings, merged with
+// should treat as settled (BEH-539): the Project sink's OPEN filed findings, merged with
 // any classes left in this ticket's prior dropbox. It MUST be called before
 // ClearDropbox wipes that dropbox. Best-effort (ADR-0001): a tracker search
 // failure degrades to the dropbox classes alone and narrates, never crashes. The
 // result is sorted (key, then title) so the injected prompt is deterministic.
-func AlreadyFiled(findingsDir, teamID string, searcher Searcher, log EventSink) []PriorFinding {
+func (r Router) AlreadyFiled(findingsDir, teamID string) []PriorFinding {
 	seen := map[string]bool{}
 	out := []PriorFinding{}
 	add := func(key, title string) {
@@ -377,8 +385,8 @@ func AlreadyFiled(findingsDir, teamID string, searcher Searcher, log EventSink) 
 	}
 
 	// The team's open filed findings — the authoritative set of settled classes.
-	if existing, err := searcher.SearchFindings(teamID); err != nil {
-		log.Event("retrospective context ⚠ already-filed lookup failed, prior-finding context limited to the dropbox: " + err.Error())
+	if existing, err := r.Project.SearchFindings(teamID); err != nil {
+		r.Log.Event("retrospective context ⚠ already-filed lookup failed, prior-finding context limited to the dropbox: " + err.Error())
 	} else {
 		for _, e := range existing {
 			if e.Closed {

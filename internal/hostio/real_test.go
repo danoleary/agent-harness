@@ -79,13 +79,14 @@ func TestUpstreamGitHubBuildsRepoBoundSink(t *testing.T) {
 	if up.Project != "herd" {
 		t.Errorf("Project = %q, want the reporting-project name", up.Project)
 	}
-	if up.Filer == nil || up.Searcher == nil || up.Recorder == nil {
-		t.Errorf("upstream sink must wire filer/searcher/recorder, got %+v", up)
+	if up.Sink == nil {
+		t.Errorf("upstream must wire a findings sink, got %+v", up)
 	}
 }
 
-// A malformed repo never reaches here (config validates the shape), but a
-// defensive split failure degrades to the local sink rather than filing nowhere.
+// A malformed repo never reaches here (config validates the shape), and
+// trackers.New rejects it again; that defensive failure degrades to the local
+// sink rather than filing nowhere.
 func TestUpstreamMalformedRepoDegradesToTheLocalSink(t *testing.T) {
 	up := testReal(t, config.Config{Feedback: config.FeedbackConfig{Upstream: "github", Repo: "not-a-repo"}}).upstream()
 	if up != nil {

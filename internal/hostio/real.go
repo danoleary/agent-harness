@@ -11,7 +11,6 @@ import (
 	"github.com/danoleary/agent-harness/internal/config"
 	"github.com/danoleary/agent-harness/internal/filing"
 	gitpkg "github.com/danoleary/agent-harness/internal/git"
-	"github.com/danoleary/agent-harness/internal/github"
 	"github.com/danoleary/agent-harness/internal/pr"
 	"github.com/danoleary/agent-harness/internal/proc"
 	"github.com/danoleary/agent-harness/internal/runlog"
@@ -75,14 +74,33 @@ func (h *Real) Tracker() (tracker.Tracker, error) {
 	return h.client, h.clientErr
 }
 
+// router builds the findings router for this run: the Consumer's tracker as the
+// project sink, the ADR-0011 upstream sink (or nil for the local artifact dir),
+// the semantic matcher, and the run's narration log. ok is false when the
+// tracker could not be resolved — with no sink there is nothing to file to, and
+// a findings step is best-effort (ADR-0001), so the caller silently does nothing.
+func (h *Real) router() (filing.Router, bool) {
+	client, err := h.Tracker()
+	if err != nil {
+		return filing.Router{}, false
+	}
+	return filing.Router{
+		Project:    client,
+		Upstream:   h.upstream(),
+		Matcher:    h.matcher(),
+		HarnessDir: filing.HarnessFindingsDir(h.cfg.ProjectPath),
+		Log:        h.log,
+	}, true
+}
+
 // AlreadyFiled lists the finding classes a prior run already filed, so a re-run's
 // session treats them as settled instead of re-deriving them (BEH-539).
 func (h *Real) AlreadyFiled(findingsDir, teamID string) []filing.PriorFinding {
-	client, err := h.Tracker()
-	if err != nil {
+	r, ok := h.router()
+	if !ok {
 		return nil
 	}
-	return filing.AlreadyFiled(findingsDir, teamID, client, h.log)
+	return r.AlreadyFiled(findingsDir, teamID)
 }
 
 // FileFindings files everything in the dropbox to the Consumer's tracker. This is
@@ -90,29 +108,24 @@ func (h *Real) AlreadyFiled(findingsDir, teamID string) []filing.PriorFinding {
 // protocol asks for harness/environment friction only and is not taught to
 // classify, so it must not go through the audience router.
 func (h *Real) FileFindings(findingsDir, teamID, key string) {
-	client, err := h.Tracker()
-	if err != nil {
-		return
+	if r, ok := h.router(); ok {
+		r.File(findingsDir, teamID, key)
 	}
-	filing.File(findingsDir, teamID, key, client, client, h.matcher(), client, h.log)
 }
 
 // RouteFindings routes the dropbox by audience (ADR-0011): project findings to
 // the Consumer's tracker, harness findings to the local artifact dir or — when
 // the Consumer opted in — to the public harness repo.
 func (h *Real) RouteFindings(findingsDir, teamID, key string) {
-	client, err := h.Tracker()
-	if err != nil {
-		return
+	if r, ok := h.router(); ok {
+		r.Route(findingsDir, teamID, key)
 	}
-	filing.Route(findingsDir, filing.HarnessFindingsDir(h.cfg.ProjectPath), teamID, key,
-		client, client, h.matcher(), client, h.upstream(), h.log)
 }
 
 // matcher builds the host-side semantic dedup matcher for filing findings
 // (BEH-573), or returns a nil filing.SemanticMatcher when no Anthropic API key is
 // available — only a subscription OAuth token, which the x-api-key header rejects
-// (BEH-316). filing.File treats a nil matcher as "skip the semantic pass",
+// (BEH-316). filing.Router treats a nil matcher as "skip the semantic pass",
 // degrading to exact key/title dedup. Returning the interface (not the concrete
 // *semdedup.Matcher) keeps the no-key result a true nil interface so that nil
 // check fires.
@@ -128,24 +141,33 @@ func (h *Real) matcher() filing.SemanticMatcher {
 // nil case keeps harness findings in the local artifact dir. github mode binds a
 // GitHub adapter to the configured public repo using the host's GH_TOKEN (a
 // public repo needs only public_repo scope, and the token attributes the issue to
-// the reporting project as provenance). The repo shape is validated at config
-// load, so a malformed value never reaches here; a defensive split failure still
-// degrades to nil (local sink) rather than filing nowhere.
+// the reporting project as provenance). It goes through trackers.New like every
+// other adapter, so the upstream sink is a [tracker.Tracker] rather than a
+// hand-built client and nothing here has to import a concrete adapter. The repo
+// shape is validated at config load and again by trackers.New, so a malformed
+// value never reaches here; a defensive failure still degrades to nil (local
+// sink) rather than filing nowhere.
 func (h *Real) upstream() *filing.Upstream {
 	if h.cfg.Feedback.Upstream != "github" {
 		return nil
 	}
-	owner, repo, err := config.SplitOwnerRepo(h.cfg.Feedback.Repo)
+	sink, err := trackers.New(
+		config.TrackerConfig{
+			Kind: "github",
+			Repo: h.cfg.Feedback.Repo,
+			// The GitHub adapter reads findings_label_id as a label NAME, which is
+			// exactly what feedback.findings_label carries.
+			FindingsLabelID: h.cfg.Feedback.FindingsLabel,
+		},
+		trackers.Secrets{GitHubToken: h.cfg.GitHubToken},
+	)
 	if err != nil {
 		return nil
 	}
-	client := github.NewClient(
-		github.NewTransport(h.cfg.GitHubToken), owner, repo,
-		github.Options{Findings: h.cfg.Feedback.FindingsLabel},
-	)
 	return &filing.Upstream{
-		Filer: client, Searcher: client, Recorder: client,
-		Container: h.cfg.Feedback.Repo, Project: h.cfg.Feedback.Project,
+		Sink:      sink,
+		Container: h.cfg.Feedback.Repo,
+		Project:   h.cfg.Feedback.Project,
 	}
 }
 
