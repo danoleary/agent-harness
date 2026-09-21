@@ -109,7 +109,13 @@ func (h *Real) StopFile() string { return h.stopFile }
 
 // --- queue ------------------------------------------------------------------
 
-func (h *Real) FetchMain() error { return gitpkg.FetchMain(h.cfg.ProjectPath) }
+// checkout binds the Consumer's checkout and branch prefix to the git seam once,
+// so the daemon's two git reads name the ticket and nothing else.
+func (h *Real) checkout() gitpkg.Checkout {
+	return gitpkg.Open(h.cfg.ProjectPath, h.cfg.BranchPrefix)
+}
+
+func (h *Real) FetchMain() error { return h.checkout().FetchMain() }
 
 // ResolveNext selects and claims the top-of-queue ticket. It is always a real run,
 // never a dry-run: the loop claims-on-select (ADR-0003) so a concurrent selection
@@ -154,7 +160,7 @@ func (h *Real) ListInProgressClaims() ([]loop.StaleClaim, error) {
 // TicketHasRemoteBranch reads origin's heads for a branch naming the ticket. It
 // fails SAFE toward true (see gitpkg): a flaky read must never cost a live claim.
 func (h *Real) TicketHasRemoteBranch(id string) bool {
-	return gitpkg.TicketHasRemoteBranch(h.cfg.ProjectPath, id)
+	return h.checkout().TicketHasRemoteBranch(id)
 }
 
 // --- the work ---------------------------------------------------------------

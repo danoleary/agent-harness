@@ -126,9 +126,9 @@ type Sandbox interface {
 
 // Repo is the git-facing half: everything that reads or mutates the Consumer
 // checkout and one ticket's worktree. Every method is keyed by the ticket slug —
-// the adapter holds the checkout path and the branch prefix, so the
-// (herdPath, branchPrefix, slug) triple that internal/git threads through 19 call
-// sites in the review stage alone is bound once, here.
+// the adapter holds the checkout path and the branch prefix, so a Stage names the
+// ticket and nothing else. Below the adapter the slug becomes a [git.Worktree],
+// the value that carries the checkout, the branch and the worktree path together.
 type Repo interface {
 	WorktreePath(slug string) string
 	BranchName(slug string) string

@@ -28,7 +28,8 @@ func Plan(cfg config.Config, identifier string) string {
 	// Stub ticket: Linear is deliberately not fetched under dry-run, so the prompt
 	// bodies show structure with an empty title/description ("best computable").
 	t := ticket.Ticket{Identifier: id}
-	worktreePath := gitpkg.WorktreePath(cfg.ProjectPath, slug)
+	wt := gitpkg.Open(cfg.ProjectPath, cfg.BranchPrefix).Worktree(slug)
+	worktreePath := wt.Path()
 	logsRoot := filepath.Join(config.ProjectDir(cfg.ProjectPath), "logs")
 
 	name := func(session string) string {
@@ -64,7 +65,7 @@ func Plan(cfg config.Config, identifier string) string {
 	// The harness creates the worktree + canonical branch host-side, then runs the
 	// Consumer's post_create hook, BEFORE the session (BEH-636) — show both so the
 	// plan is honest about the full lifecycle, not just the model session.
-	worktreeCreate := fmt.Sprintf("host-side: git worktree add -b %s %s (based on origin/main)", gitpkg.BranchName(cfg.BranchPrefix, slug), worktreePath)
+	worktreeCreate := fmt.Sprintf("host-side: git worktree add -b %s %s (based on origin/main)", wt.Branch(), worktreePath)
 	postCreateLine := "(none — no post_create hook configured)"
 	if cfg.PostCreate != "" {
 		postCreateLine = dockerLine(sandbox.BuildWorktreeCommandArgs(sandbox.GateConfig{

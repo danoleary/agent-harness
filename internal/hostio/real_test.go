@@ -17,9 +17,9 @@ func testReal(t *testing.T, cfg config.Config) *Real {
 	return New(cfg, log, "20260920-101500", false)
 }
 
-// The adapter binds the checkout path and the branch prefix once, so the
-// (herdPath, branchPrefix, slug) triple internal/git threads through 19 call sites
-// in the review stage alone is never threaded by a Stage again.
+// The adapter binds the checkout path and the branch prefix once and mints one
+// [git.Worktree] per slug, so a Stage names the ticket and nothing else — the
+// checkout, the branch and the worktree path never travel as three loose strings.
 func TestRealBindsTheCheckoutAndBranchPrefix(t *testing.T) {
 	h := testReal(t, config.Config{ProjectPath: "/Users/dan/my-project", BranchPrefix: "feat"})
 
