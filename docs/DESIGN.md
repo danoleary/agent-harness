@@ -1086,6 +1086,13 @@ reader over a structured stream rather than a `--tui` flag on the daemon.
   committed-fix recovery finish a branch through the one `internal/ship` — push
   force-with-lease, then the templated `gh pr create` — so the harness has a single
   implementation of how it ships.
+- **The worktree is a type** ([ADR-0015](adr/0015-the-worktree-is-a-type.md)). Below the host port, the harness's central
+  noun has a name: `git.Open(checkout, branchPrefix).Worktree(slug)` carries the
+  checkout, the branch and the worktree path together, and creating, gating,
+  checkpointing, rebasing, pushing and tearing one down are its methods. One
+  unexported seam on that value replaced twelve exported/unexported twin pairs
+  whose tested half was never the half the harness ran — the mutating remote
+  operations, and with them the transient-retry budget, were the untested ones.
 - **Go 1.26+**, standard library only — zero module dependencies: `net/http`
   (Linear GraphQL), `os/exec` (driving `docker`), `os`/`encoding/json` (logs +
   stop file). No dep tree on purpose — this process holds real credentials.

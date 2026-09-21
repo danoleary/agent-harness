@@ -43,9 +43,10 @@ func commitCount(t *testing.T, dir string) int {
 }
 
 // newRepoWithWorktree creates a real git repo with one commit on main, then adds
-// a worktree on a fresh feature branch — the shape a tdd session leaves behind.
-// It returns (repoRoot, worktreePath).
-func newRepoWithWorktree(t *testing.T, slug string) (string, string) {
+// a worktree on a fresh feature branch — the shape an implementation session
+// leaves behind. It returns the worktree's path (for the test's own file writes
+// and git reads) and the [Worktree] the harness would hold for that ticket.
+func newRepoWithWorktree(t *testing.T, slug string) (string, Worktree) {
 	t.Helper()
 	repo := t.TempDir()
 	runGit(t, repo, "init", "-q", "-b", "main")
@@ -57,8 +58,8 @@ func newRepoWithWorktree(t *testing.T, slug string) (string, string) {
 	runGit(t, repo, "add", "-A")
 	runGit(t, repo, "commit", "-q", "-m", "init")
 	wt := filepath.Join(repo, "wt")
-	runGit(t, repo, "worktree", "add", "-q", "-b", BranchName("feat", slug), wt)
-	return repo, wt
+	runGit(t, repo, "worktree", "add", "-q", "-b", branchName(slug), wt)
+	return wt, realWorktree(repo, wt, slug)
 }
 
 // BEH-479: a tdd session that hits the wall-clock cap (or refuses) before reaching
@@ -67,7 +68,7 @@ func newRepoWithWorktree(t *testing.T, slug string) (string, string) {
 // recovery. CheckpointCommit captures it as a real commit on the feature branch so
 // the diff is recoverable, not discarded.
 func TestCheckpointCommitCapturesUncommittedWork(t *testing.T) {
-	_, wt := newRepoWithWorktree(t, "beh-479")
+	wt, w := newRepoWithWorktree(t, "beh-479")
 
 	// The session leaves uncommitted work (both a new file and a tracked edit).
 	feat := filepath.Join(wt, "src", "feature.ts")
@@ -82,12 +83,12 @@ func TestCheckpointCommitCapturesUncommittedWork(t *testing.T) {
 	}
 
 	before := commitCount(t, wt)
-	if err := CheckpointCommit(wt, "BEH-479", "tdd"); err != nil {
-		t.Fatalf("CheckpointCommit: %v", err)
+	if err := w.Checkpoint("BEH-479", "tdd"); err != nil {
+		t.Fatalf("Checkpoint: %v", err)
 	}
 
 	// The work is now committed (recoverable) and the worktree is clean.
-	if !WorktreeClean(wt) {
+	if !w.Clean() {
 		t.Fatalf("worktree should be clean after the checkpoint captured the diff")
 	}
 	if got := commitCount(t, wt); got != before+1 {
@@ -116,15 +117,15 @@ func commitIdentity(t *testing.T, dir string) string {
 // reaches PR history doesn't pollute `git blame`/contributor stats — even though
 // the surrounding repo config is the placeholder.
 func TestCheckpointCommitStampsHarnessIdentity(t *testing.T) {
-	_, wt := newRepoWithWorktree(t, "beh-579") // seeded with the Test placeholder config
+	wt, w := newRepoWithWorktree(t, "beh-579") // seeded with the Test placeholder config
 
 	feat := filepath.Join(wt, "feature.ts")
 	if err := os.WriteFile(feat, []byte("export const x = 1\n"), 0o644); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
 
-	if err := CheckpointCommit(wt, "BEH-579", "tdd"); err != nil {
-		t.Fatalf("CheckpointCommit: %v", err)
+	if err := w.Checkpoint("BEH-579", "tdd"); err != nil {
+		t.Fatalf("Checkpoint: %v", err)
 	}
 
 	want := HarnessAuthorName + "|" + HarnessAuthorEmail + "|" + HarnessAuthorName + "|" + HarnessAuthorEmail
@@ -137,11 +138,11 @@ func TestCheckpointCommitStampsHarnessIdentity(t *testing.T) {
 // there is nothing to recover, so the checkpoint must not manufacture an empty
 // commit that would pollute the branch and read as work that does not exist.
 func TestCheckpointCommitNoOpWhenClean(t *testing.T) {
-	_, wt := newRepoWithWorktree(t, "beh-479")
+	wt, w := newRepoWithWorktree(t, "beh-479")
 
 	before := commitCount(t, wt)
-	if err := CheckpointCommit(wt, "BEH-479", "tdd"); err != nil {
-		t.Fatalf("CheckpointCommit on a clean worktree should be a no-op success, got %v", err)
+	if err := w.Checkpoint("BEH-479", "tdd"); err != nil {
+		t.Fatalf("Checkpoint on a clean worktree should be a no-op success, got %v", err)
 	}
 
 	if got := commitCount(t, wt); got != before {
@@ -198,7 +199,7 @@ func TestCheckpointMessageNamesSession(t *testing.T) {
 // review's merge-base diff includes the started fix instead of the original
 // clean commit.
 func TestCheckpointCommitPreservesReviewEditsForResumedDiff(t *testing.T) {
-	_, wt := newRepoWithWorktree(t, "beh-559")
+	wt, w := newRepoWithWorktree(t, "beh-559")
 
 	// The implementation handoff: a committed file on the feature branch — the
 	// "original clean commit" the resumed review would otherwise re-judge.
@@ -215,8 +216,8 @@ func TestCheckpointCommitPreservesReviewEditsForResumedDiff(t *testing.T) {
 		t.Fatalf("review edit: %v", err)
 	}
 
-	if err := CheckpointCommit(wt, "BEH-559", "review"); err != nil {
-		t.Fatalf("CheckpointCommit: %v", err)
+	if err := w.Checkpoint("BEH-559", "review"); err != nil {
+		t.Fatalf("Checkpoint: %v", err)
 	}
 
 	// What review-2 (the resume) re-derives: the diff from the merge-base with
@@ -251,15 +252,16 @@ func TestCheckpointCommitStagesExcludesSentinelAndSkipsHooks(t *testing.T) {
 		}
 		return nil
 	}
-	if err := checkpointCommit("/wt", "msg", run); err != nil {
+	wt := dirtyWorktree(runners{run: run})
+	if err := wt.Checkpoint("BEH-612", "review"); err != nil {
 		t.Fatalf("expected success, got %v", err)
 	}
 
 	if len(calls) != 4 {
 		t.Fatalf("expected stage, unstage-sentinel, probe, commit — got %d calls: %v", len(calls), calls)
 	}
-	if add := strings.Join(calls[0], " "); add != "git -C /wt add -A" {
-		t.Fatalf("first call should stage everything, got %q", add)
+	if add, want := strings.Join(calls[0], " "), "git -C "+wt.Path()+" add -A"; add != want {
+		t.Fatalf("first call should stage everything (%q), got %q", want, add)
 	}
 	if reset := strings.Join(calls[1], " "); !strings.Contains(reset, "reset") || !strings.Contains(reset, WorktreeReadySentinel) {
 		t.Fatalf("second call should unstage the readiness sentinel, got %q", reset)
@@ -268,12 +270,20 @@ func TestCheckpointCommitStagesExcludesSentinelAndSkipsHooks(t *testing.T) {
 		t.Fatalf("third call should probe the staged diff, got %q", probe)
 	}
 	commit := strings.Join(calls[3], " ")
-	if !strings.Contains(commit, "-C /wt") || !strings.Contains(commit, "commit") {
+	if !strings.Contains(commit, "-C "+wt.Path()) || !strings.Contains(commit, "commit") {
 		t.Fatalf("fourth call should commit in the worktree, got %q", commit)
 	}
 	if !strings.Contains(commit, "--no-verify") {
 		t.Fatalf("commit must skip hooks, got %q", commit)
 	}
+}
+
+// dirtyWorktree is a scripted Worktree whose `git status --porcelain` reports an
+// uncommitted file, so Checkpoint's own clean-tree guard lets the staging path run
+// — the guard is part of the method now, not something a test can step around.
+func dirtyWorktree(r runners) Worktree {
+	r.output = func(string, ...string) ([]byte, error) { return []byte(" M src/app.ts\n"), nil }
+	return fakeWorktree("beh-612", r)
 }
 
 // containsArg reports whether argv contains the exact token — used to spot the
@@ -294,7 +304,7 @@ func containsArg(argv []string, token string) bool {
 // all-success runner makes `git diff --cached --quiet` report "no staged changes".
 func TestCheckpointCommitRefusesEmptyStagedCommit(t *testing.T) {
 	run, calls := scriptedRunner(0, nil)
-	if err := checkpointCommit("/wt", "msg", run); err != nil {
+	if err := dirtyWorktree(runners{run: run}).Checkpoint("BEH-612", "review"); err != nil {
 		t.Fatalf("expected a no-op success, got %v", err)
 	}
 	for _, c := range *calls {
@@ -309,14 +319,14 @@ func TestCheckpointCommitRefusesEmptyStagedCommit(t *testing.T) {
 // work to recover); when real work sits alongside it, the checkpoint commits the
 // work but leaves the sentinel out of the tree — so a PR can never ship it.
 func TestCheckpointCommitExcludesReadySentinel(t *testing.T) {
-	_, wt := newRepoWithWorktree(t, "beh-612")
+	wt, w := newRepoWithWorktree(t, "beh-612")
 
 	if err := os.WriteFile(filepath.Join(wt, WorktreeReadySentinel), nil, 0o644); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
 	before := commitCount(t, wt)
-	if err := CheckpointCommit(wt, "BEH-612", "review"); err != nil {
-		t.Fatalf("CheckpointCommit: %v", err)
+	if err := w.Checkpoint("BEH-612", "review"); err != nil {
+		t.Fatalf("Checkpoint: %v", err)
 	}
 	if got := commitCount(t, wt); got != before {
 		t.Fatalf("a sentinel-only worktree must not gain a checkpoint commit: before=%d after=%d", before, got)
@@ -326,8 +336,8 @@ func TestCheckpointCommitExcludesReadySentinel(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(wt, "real.ts"), []byte("x\n"), 0o644); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
-	if err := CheckpointCommit(wt, "BEH-612", "review"); err != nil {
-		t.Fatalf("CheckpointCommit: %v", err)
+	if err := w.Checkpoint("BEH-612", "review"); err != nil {
+		t.Fatalf("Checkpoint: %v", err)
 	}
 	if got := commitCount(t, wt); got != before+1 {
 		t.Fatalf("real work must produce exactly one checkpoint commit: before=%d after=%d", before, got)
@@ -345,7 +355,7 @@ func TestCheckpointCommitExcludesReadySentinel(t *testing.T) {
 // than silently believing the work is safe.
 func TestCheckpointCommitStopsAndReportsWhenStagingFails(t *testing.T) {
 	run, calls := scriptedRunner(1, errors.New("exit status 128"))
-	err := checkpointCommit("/wt", "msg", run)
+	err := dirtyWorktree(runners{run: run}).Checkpoint("BEH-479", "tdd")
 	if err == nil {
 		t.Fatalf("expected the staging failure to propagate")
 	}

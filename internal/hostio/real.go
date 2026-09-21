@@ -2,7 +2,6 @@ package hostio
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -173,88 +172,74 @@ func (h *Real) upstream() *filing.Upstream {
 
 // --- repo -------------------------------------------------------------------
 
-func (h *Real) WorktreePath(slug string) string { return gitpkg.WorktreePath(h.cfg.ProjectPath, slug) }
-func (h *Real) BranchName(slug string) string   { return gitpkg.BranchName(h.cfg.BranchPrefix, slug) }
+// checkout binds the Consumer's checkout path and branch prefix to internal/git
+// once. Every Repo/Remote method below names a ticket slug and nothing else — the
+// (herdPath, branchPrefix, slug) triple that used to travel to every git call is
+// now the [git.Worktree] value wt returns.
+func (h *Real) checkout() gitpkg.Checkout {
+	return gitpkg.Open(h.cfg.ProjectPath, h.cfg.BranchPrefix)
+}
+
+// wt is the ticket's worktree: the harness's central noun, minted on demand.
+func (h *Real) wt(slug string) gitpkg.Worktree { return h.checkout().Worktree(slug) }
+
+func (h *Real) WorktreePath(slug string) string { return h.wt(slug).Path() }
+func (h *Real) BranchName(slug string) string   { return h.wt(slug).Branch() }
 
 // WorktreeExists reports whether the ticket's worktree is on disk — the
 // implementation stage's "already provisioned?" check and the review stage's
 // precondition ("run `implementation <ticket>` first").
-func (h *Real) WorktreeExists(slug string) bool {
-	_, err := os.Stat(h.WorktreePath(slug))
-	return err == nil
-}
+func (h *Real) WorktreeExists(slug string) bool { return h.wt(slug).Exists() }
 
-func (h *Real) CreateWorktree(slug string) error {
-	return gitpkg.CreateWorktree(h.cfg.ProjectPath, h.cfg.BranchPrefix, slug)
-}
+func (h *Real) CreateWorktree(slug string) error { return h.wt(slug).Create() }
 
-func (h *Real) RemoveWorktree(slug string) error {
-	return gitpkg.RemoveWorktree(h.cfg.ProjectPath, slug)
-}
+func (h *Real) RemoveWorktree(slug string) error { return h.wt(slug).Remove() }
 
-func (h *Real) WorktreeClean(slug string) bool { return gitpkg.WorktreeClean(h.WorktreePath(slug)) }
+func (h *Real) WorktreeClean(slug string) bool { return h.wt(slug).Clean() }
 
 // StripHandoffPaths removes the Consumer-declared build artifacts the sandbox
 // produced before the worktree goes to a (possibly non-Linux) reviewer, so their
 // platform-specific contents don't crash the reviewer's gates (BEH-412/641).
 func (h *Real) StripHandoffPaths(slug string) error {
-	return gitpkg.StripWorktreePaths(h.WorktreePath(slug), h.cfg.HandoffStripPaths)
+	return h.wt(slug).StripPaths(h.cfg.HandoffStripPaths)
 }
 
 func (h *Real) Checkpoint(slug, key, stage string) error {
-	return gitpkg.CheckpointCommit(h.WorktreePath(slug), key, stage)
+	return h.wt(slug).Checkpoint(key, stage)
 }
 
-func (h *Real) HeadSHA(slug string) (string, error) { return gitpkg.HeadSHA(h.WorktreePath(slug)) }
+func (h *Real) HeadSHA(slug string) (string, error) { return h.wt(slug).HeadSHA() }
 
 func (h *Real) EnsureCIRerunCommit(slug, headBefore string) error {
-	return gitpkg.EnsureCIRerunCommit(h.WorktreePath(slug), headBefore)
+	return h.wt(slug).EnsureCIRerunCommit(headBefore)
 }
 
-func (h *Real) GroundTruth(slug string) verify.GroundTruth {
-	return gitpkg.GatherTddGroundTruth(h.cfg.ProjectPath, h.cfg.BranchPrefix, slug)
-}
+func (h *Real) GroundTruth(slug string) verify.GroundTruth { return h.wt(slug).GroundTruth() }
 
-func (h *Real) BranchDiffEmpty(slug string) bool {
-	return gitpkg.BranchDiffEmpty(h.WorktreePath(slug))
-}
+func (h *Real) BranchDiffEmpty(slug string) bool { return h.wt(slug).DiffEmpty() }
 
 func (h *Real) BranchDocsOnly(slug string) bool {
-	return gitpkg.BranchDocsOnly(h.WorktreePath(slug), h.cfg.DocsOnlyExcludedRoots)
+	return h.wt(slug).DocsOnly(h.cfg.DocsOnlyExcludedRoots)
 }
 
-func (h *Real) BranchExists(slug string) bool {
-	return gitpkg.BranchExists(h.cfg.ProjectPath, h.cfg.BranchPrefix, slug)
-}
+func (h *Real) BranchExists(slug string) bool { return h.wt(slug).BranchExists() }
 
-func (h *Real) BranchPushed(slug string) bool {
-	return gitpkg.BranchPushed(h.cfg.ProjectPath, h.cfg.BranchPrefix, slug)
-}
+func (h *Real) BranchPushed(slug string) bool { return h.wt(slug).BranchPushed() }
 
-func (h *Real) CommitSubjects(slug string) []string {
-	return gitpkg.CommitSubjects(h.cfg.ProjectPath, h.cfg.BranchPrefix, slug)
-}
+func (h *Real) CommitSubjects(slug string) []string { return h.wt(slug).CommitSubjects() }
 
-func (h *Real) Rebase(slug string) RebaseResult {
-	return gitpkg.RebaseOntoMain(h.WorktreePath(slug))
-}
+func (h *Real) Rebase(slug string) RebaseResult { return h.wt(slug).Rebase() }
 
-func (h *Real) AbortRebase(slug string) { gitpkg.AbortRebase(h.WorktreePath(slug)) }
+func (h *Real) AbortRebase(slug string) { h.wt(slug).AbortRebase() }
 
-func (h *Real) IsDisjoint(slug string) bool {
-	return gitpkg.IsDisjointFrom(h.WorktreePath(slug), baseRef)
-}
+func (h *Real) IsDisjoint(slug string) bool { return h.wt(slug).IsDisjointFrom(baseRef) }
 
-func (h *Real) IsRebased(slug string) bool {
-	return gitpkg.IsRebasedOnto(h.WorktreePath(slug), baseRef)
-}
+func (h *Real) IsRebased(slug string) bool { return h.wt(slug).IsRebasedOnto(baseRef) }
 
-func (h *Real) Regraft(slug string) error {
-	return gitpkg.RegraftOntoBase(h.WorktreePath(slug), baseRef)
-}
+func (h *Real) Regraft(slug string) error { return h.wt(slug).RegraftOntoBase(baseRef) }
 
 func (h *Real) TicketAlreadyOnMain(key string) bool {
-	return gitpkg.TicketAlreadyOnMain(h.cfg.ProjectPath, key)
+	return h.checkout().TicketAlreadyOnMain(key)
 }
 
 // ResolvedAdvisory warns when a ticket cites code symbols that no longer exist
@@ -266,7 +251,7 @@ func (h *Real) ResolvedAdvisory(key, description string) string {
 }
 
 func (h *Real) ResumedBranchAdvisory(slug, key string) string {
-	return gitpkg.ResumedBranchAdvisory(h.cfg.ProjectPath, h.cfg.BranchPrefix, slug, key)
+	return h.wt(slug).ResumedBranchAdvisory(key)
 }
 
 // sourceRoots resolves the Consumer's declared source roots (checkout-relative,
@@ -287,15 +272,11 @@ func (h *Real) sourceRoots() []string {
 
 // --- remote -----------------------------------------------------------------
 
-func (h *Real) FetchMain() error { return gitpkg.FetchMain(h.cfg.ProjectPath) }
+func (h *Real) FetchMain() error { return h.checkout().FetchMain() }
 
-func (h *Real) Push(slug string) error {
-	return gitpkg.Push(h.cfg.ProjectPath, h.cfg.BranchPrefix, slug)
-}
+func (h *Real) Push(slug string) error { return h.wt(slug).Push() }
 
-func (h *Real) PushForceWithLease(slug string) error {
-	return gitpkg.PushForceWithLease(h.cfg.ProjectPath, h.cfg.BranchPrefix, slug)
-}
+func (h *Real) PushForceWithLease(slug string) error { return h.wt(slug).PushForceWithLease() }
 
 // CreatePR opens the pull request from the main checkout with `gh`, which infers
 // the origin repo from the checkout. GH_TOKEN stays host-only (ADR-0002) — gh

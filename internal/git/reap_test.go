@@ -33,10 +33,10 @@ func TestTicketHasRemoteBranchFindsPushedBranch(t *testing.T) {
 	commitAndPush(t, author, "wip (BEH-677)")
 	runGit(t, author, "push", "-q", "origin", "feat/beh-677-reap-stale-claims")
 
-	if !TicketHasRemoteBranch(host, "BEH-677") {
+	if !Open(host, testPrefix).TicketHasRemoteBranch("BEH-677") {
 		t.Fatalf("BEH-677's branch was pushed to origin — should be found")
 	}
-	if TicketHasRemoteBranch(host, "BEH-999") {
+	if Open(host, testPrefix).TicketHasRemoteBranch("BEH-999") {
 		t.Fatalf("BEH-999 has no remote branch — must not be found")
 	}
 }
@@ -56,7 +56,7 @@ func TestTicketHasRemoteBranchFailsSafeWhenGitErrors(t *testing.T) {
 	runGit(t, repo, "commit", "-q", "-m", "init")
 
 	// No origin remote — ls-remote fails.
-	if !TicketHasRemoteBranch(repo, "BEH-677") {
+	if !Open(repo, testPrefix).TicketHasRemoteBranch("BEH-677") {
 		t.Fatalf("a git failure must fail safe (true), never let the reaper release a claim on doubt")
 	}
 }

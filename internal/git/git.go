@@ -1,20 +1,30 @@
-// Package git gathers the ground truth a finished tdd session leaves behind,
-// read from the host's primary checkout.
+// Package git is the harness's host-side git: one [Checkout] (the Consumer's
+// primary checkout) that mints one [Worktree] per ticket, and every operation the
+// harness performs on either as a method on those two types.
+//
+// Before this package had types it had thirty free functions, and "the worktree
+// for ticket X" — the harness's central noun — was three strings
+// (herdPath, branchPrefix, slug) re-derived at every call site. Twelve of those
+// functions came in exported/unexported twin pairs, the lowercase half taking an
+// injected runner so a test could reach it; the exported half, which is what the
+// harness actually calls, was the untested one. The mutating remote operations —
+// Push, PushForceWithLease, CreateWorktree — were on the untested side, and with
+// them the entire transient-failure retry ([withRetry], [nonTransient], the
+// budget) that decides whether a green, gate-passed branch reaches origin.
+//
+// The seam is now a single [runners] value the two types carry: every side effect
+// in the package goes through one of its five fields, and a test constructs a
+// Checkout over fakes and drives the real exported methods.
 package git
 
 import (
 	"bytes"
-	"fmt"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"regexp"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/danoleary/agent-harness/internal/proc"
-	"github.com/danoleary/agent-harness/internal/verify"
 )
 
 // commandRunner runs a command to completion, returning only its error.
@@ -23,19 +33,47 @@ import (
 type commandRunner func(name string, args ...string) error
 
 // outputRunner runs a command and returns its stdout + error — the output-capturing
-// sibling of commandRunner, so a path-classifying read (git diff --name-only) is
-// unit-testable with an injected fake. Production uses execOutput.
+// sibling of commandRunner, so a reading operation (git log, git status, git diff
+// --name-only) is unit-testable with an injected fake. Production uses execOutput.
 type outputRunner func(name string, args ...string) ([]byte, error)
+
+// pipeRunner runs a command with stdin fed from a byte slice, returning its
+// combined output — the one shape the other two can't express, needed by
+// [Worktree.RegraftOntoBase]'s `git apply --index`. Production uses execPipe.
+type pipeRunner func(stdin []byte, name string, args ...string) ([]byte, error)
+
+// runners is the package's single injection point: the three command shapes plus
+// the clock the remote-retry budget is measured against. [Checkout] and
+// [Worktree] carry one by value, so replacing it replaces the seam for every
+// operation either type performs — one hook where there were twelve twin pairs.
+type runners struct {
+	run    commandRunner
+	output outputRunner
+	pipe   pipeRunner
+	sleep  func(time.Duration)
+	now    func() time.Time
+}
+
+// execRunners is the production seam: the real git binary, the real clock.
+func execRunners() runners {
+	return runners{run: execRun, output: execOutput, pipe: execPipe, sleep: time.Sleep, now: time.Now}
+}
 
 func execOutput(name string, args ...string) ([]byte, error) {
 	return exec.Command(name, args...).Output()
 }
 
+func execPipe(stdin []byte, name string, args ...string) ([]byte, error) {
+	cmd := exec.Command(name, args...)
+	cmd.Stdin = bytes.NewReader(stdin)
+	return cmd.CombinedOutput()
+}
+
 // HarnessAuthorName / HarnessAuthorEmail are the dedicated bot identity the
 // harness stamps on every commit it is responsible for: the host-side recovery
-// (CheckpointCommit) and CI-rerun (EnsureCIRerunCommit) commits it makes
-// directly, the committer of the commits it rebases before pushing
-// (RebaseOntoMain), and — via sandbox.BuildDockerRunArgs' GIT_AUTHOR_*/
+// ([Worktree.Checkpoint]) and CI-rerun ([Worktree.EnsureCIRerunCommit]) commits it
+// makes directly, the committer of the commits it rebases before pushing
+// ([Worktree.Rebase]), and — via sandbox.BuildDockerRunArgs' GIT_AUTHOR_*/
 // GIT_COMMITTER_* env — the agent's in-container handoff commit. Without it the
 // sandbox checkout's placeholder `Test <test@example.com>` LOCAL git config —
 // which overrides the entrypoint's `git config --global` identity — leaks into
@@ -145,12 +183,13 @@ func nonTransient(err error) bool {
 // wall-clock budget is spent, returning nil on success else the last error. It
 // always makes at least one attempt, and never sleeps toward a deadline the next
 // attempt couldn't beat. A non-transient failure (a 401/403 auth rejection — see
-// nonTransient) short-circuits the budget: it can't be ridden out, so retrying it
-// is dead time that looks like a hang (BEH-475). The clock (now) and sleeper are
-// injected so the timing is exercised deterministically in tests with no real
-// waiting.
-func withRetry(op func() error, sleep func(time.Duration), now func() time.Time) error {
-	deadline := now().Add(remoteRetryBudget)
+// [nonTransient]) short-circuits the budget: it can't be ridden out, so retrying it
+// is dead time that looks like a hang (BEH-475). The clock and sleeper come from
+// the [runners] seam, so the timing is exercised deterministically in tests with no
+// real waiting — and, unlike the twin-pair arrangement this replaces, through the
+// same exported methods production calls.
+func (r runners) withRetry(op func() error) error {
+	deadline := r.now().Add(remoteRetryBudget)
 	delay := remoteBaseDelay
 	var err error
 	for {
@@ -164,10 +203,10 @@ func withRetry(op func() error, sleep func(time.Duration), now func() time.Time)
 		}
 		// Stop once the next backoff would carry us to/past the budget — no point
 		// sleeping toward a deadline the following attempt couldn't beat.
-		if !now().Add(delay).Before(deadline) {
+		if !r.now().Add(delay).Before(deadline) {
 			return err
 		}
-		sleep(delay)
+		r.sleep(delay)
 		if delay < remoteMaxDelay {
 			if delay *= 2; delay > remoteMaxDelay {
 				delay = remoteMaxDelay
@@ -182,33 +221,6 @@ func withRetry(op func() error, sleep func(time.Duration), now func() time.Time)
 // trivial; work that merged further back than this is not something the harness
 // is at risk of freshly re-dispatching.
 const mainHistoryLookback = 50
-
-// TicketAlreadyOnMain reports whether the ticket Key already appears in recent
-// origin/main history — i.e. its work merged, so dispatching a fresh tdd session
-// would burn a whole worktree + install only to discover an empty diff and raise
-// no PR (BEH-528). It first refreshes origin/main with a single best-effort fetch
-// (the host checkout's remote-tracking ref can lag a just-merged PR), then scans.
-//
-// The key is the tracker-agnostic Key (ADR-0010) the adapter produced — a Linear
-// `BEH-123` or a Jira `PROJ-123` all the same; the scan makes no `BEH-`
-// assumption, treating the Key as an opaque token to word-boundary-match.
-//
-// It fails OPEN: any git error (no remote, detached/corrupt checkout, a fetch
-// blip) returns false so a flaky read never blocks a legitimate dispatch. The
-// asymmetry is deliberate — a false negative costs one session (the pre-guard
-// status quo), whereas a false positive would silently drop real work.
-func TicketAlreadyOnMain(herdPath, key string) bool {
-	// Best-effort refresh; an offline/blipping remote just means we scan whatever
-	// origin/main we already have rather than block dispatch behind the network.
-	_ = execRun("git", "-C", herdPath, "fetch", "-q", "origin", "main")
-	out, err := exec.Command(
-		"git", "-C", herdPath, "log", "--oneline", "-"+strconv.Itoa(mainHistoryLookback), "origin/main",
-	).Output()
-	if err != nil {
-		return false
-	}
-	return mainHistoryReferences(string(out), key)
-}
 
 // mainHistoryReferences reports whether `git log` output contains a commit
 // referencing the exact ticket Key. The Key is tracker-agnostic (ADR-0010): the
@@ -228,135 +240,11 @@ func keyReferenced(text, key string) bool {
 	return regexp.MustCompile(`(?i)\b` + regexp.QuoteMeta(key) + `\b`).MatchString(text)
 }
 
-// TicketHasRemoteBranch reports whether a branch referencing the ticket Key has been
-// pushed to origin — the "work is in flight" signal the stale-claim reaper (BEH-677)
-// checks alongside the linked-PR signal before releasing a claim. The harness names
-// its feature branches `<prefix>/<slug>` where the slug carries the key, so a
-// word-boundary match over `git ls-remote --heads` names finds it.
-//
-// It fails SAFE toward NOT reaping: any git error (no remote, a network blip)
-// returns TRUE, so a flaky ls-remote can never cause a live claim to be released.
-// The asymmetry with TicketAlreadyOnMain (which fails open to false) is deliberate —
-// there a false positive drops work; here a false negative would reap live work, so
-// each fails in its own safe direction.
-func TicketHasRemoteBranch(herdPath, key string) bool {
-	out, _, err := proc.OutputInDir(remoteOpTimeout, herdPath, "git", "ls-remote", "--heads", "origin")
-	if err != nil {
-		return true
-	}
-	return remoteBranchesReference(string(out), key)
-}
-
 // remoteBranchesReference reports whether `git ls-remote --heads` output contains a
 // branch name referencing the exact ticket Key, on word boundaries so a shorter key
 // is never a prefix-match of a longer branch's key.
 func remoteBranchesReference(lsRemoteOutput, key string) bool {
 	return keyReferenced(lsRemoteOutput, key)
-}
-
-// WorktreePath is the host path of the worktree the harness creates for a slug.
-func WorktreePath(herdPath, slug string) string {
-	return filepath.Join(herdPath, ".claude", "worktrees", slug)
-}
-
-// CreateWorktree creates the feature worktree + canonical branch host-side
-// (ADR-0008/BEH-636), retiring the old coupling where the sandbox agent ran the
-// Consumer's `new-worktree.sh` and the host depended on its output. It adds a
-// `git worktree add -b <branchPrefix>/<slug>` at WorktreePath, based on the
-// freshly-fetched origin/main (falling back to local `main` when the remote-
-// tracking ref doesn't resolve). Toolchain provisioning inside the created
-// worktree is the Consumer's `post_create` hook, run separately by the caller —
-// this does pure git only, so it is language-agnostic.
-func CreateWorktree(herdPath, branchPrefix, slug string) error {
-	return createWorktree(herdPath, branchPrefix, slug, WorktreePath(herdPath, slug), execRun)
-}
-
-func createWorktree(herdPath, branchPrefix, slug, worktreePath string, run commandRunner) error {
-	branch := BranchName(branchPrefix, slug)
-	// Resumed-branch case (BEH-554): the branch already exists from a prior session
-	// but its worktree dir was torn down. Re-attach a worktree to it (no `-b`, which
-	// would fail "branch already exists") so the prior work is preserved.
-	if run("git", "-C", herdPath, "rev-parse", "--verify", "-q", "refs/heads/"+branch) == nil {
-		return run("git", "-C", herdPath, "worktree", "add", worktreePath, branch)
-	}
-	// Fresh branch: root it at current origin/main. Best-effort refresh — an
-	// offline/blipping remote just means we branch off whatever ref we already have.
-	_ = run("git", "-C", herdPath, "fetch", "-q", "origin", "main")
-	base := "main"
-	if run("git", "-C", herdPath, "rev-parse", "--verify", "-q", "refs/remotes/origin/main") == nil {
-		base = "refs/remotes/origin/main"
-	}
-	return run("git", "-C", herdPath, "worktree", "add", "-b", branch, worktreePath, base)
-}
-
-// BranchName is the canonical feature branch the harness creates for a slug: the
-// Consumer's configured branch prefix joined to the slug (ADR-0008/BEH-636). The
-// harness owns this branch host-side and keys verify/push/PR/dispatch-guards off
-// it, so the prefix is no longer the hardcoded "feat" — a Consumer that sets
-// branch_prefix = "fix" gets `fix/<slug>`.
-func BranchName(branchPrefix, slug string) string {
-	return branchPrefix + "/" + slug
-}
-
-// HeadSHA returns the commit SHA at the worktree's HEAD, read host-side via the
-// real-path mount (the same seam WorktreeClean/CheckpointCommit use). It lets a
-// caller capture the tip before a session and tell afterwards whether that
-// session actually committed anything.
-func HeadSHA(worktreePath string) (string, error) {
-	out, err := exec.Command("git", "-C", worktreePath, "rev-parse", "HEAD").Output()
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(string(out)), nil
-}
-
-// FetchMain fast-forwards the primary checkout's view of origin/main so commit
-// ranges and the PR base are current (DESIGN.md: pull origin/main after every
-// session). Retried against transient remote blips; a fetch failure is returned
-// for the caller to log, not fatal.
-func FetchMain(herdPath string) error {
-	return fetchMain(herdPath, execRun, time.Sleep, time.Now)
-}
-
-func fetchMain(herdPath string, run commandRunner, sleep func(time.Duration), now func() time.Time) error {
-	return withRetry(func() error {
-		return run("git", "-C", herdPath, "fetch", "-q", "origin", "main")
-	}, sleep, now)
-}
-
-// CommitSubjects returns the subject lines of the commits on the feature branch
-// ahead of origin/main, newest last — the raw material for the templated PR body.
-// Read from the main checkout (the shared `.git` holds the branch's objects); an
-// empty result on any git failure keeps the caller crash-free.
-func CommitSubjects(herdPath, branchPrefix, slug string) []string {
-	out, err := exec.Command(
-		"git", "-C", herdPath, "log", "--reverse", "--format=%s", "origin/main.."+BranchName(branchPrefix, slug),
-	).Output()
-	if err != nil {
-		return nil
-	}
-	var subjects []string
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		if s := strings.TrimSpace(line); s != "" {
-			subjects = append(subjects, s)
-		}
-	}
-	return subjects
-}
-
-// WorktreeClean reports whether the worktree has no uncommitted changes — the
-// guarantee that the tree the host-side gate validated is exactly the tree that
-// `Push` ships. The gate runs against the worktree's working files (committed +
-// uncommitted), but the push ships only the committed branch tip; a dirty worktree
-// (e.g. a review session that edited but never committed) would mean the gate
-// validated a different tree than would ship. Read host-side via the real-path
-// mount; any git failure is treated as not-clean (fail safe — never push on doubt).
-func WorktreeClean(worktreePath string) bool {
-	out, err := exec.Command("git", "-C", worktreePath, "status", "--porcelain").Output()
-	if err != nil {
-		return false
-	}
-	return !porcelainHasRealChanges(string(out))
 }
 
 // porcelainHasRealChanges reports whether `git status --porcelain` output names any
@@ -386,8 +274,8 @@ type RebaseResult int
 const (
 	// RebaseClean — the branch replayed onto origin/main with no conflicts (or was
 	// already current). Its tip may now carry rewritten SHAs, so a branch already on
-	// the remote needs a force-with-lease re-push (PushForceWithLease); a not-yet-
-	// pushed branch ships with a plain Push.
+	// the remote needs a force-with-lease re-push ([Worktree.PushForceWithLease]); a
+	// not-yet-pushed branch ships with a plain [Worktree.Push].
 	RebaseClean RebaseResult = iota
 	// RebaseConflict — the rebase could not be applied cleanly (a genuine content
 	// conflict, or any other failure) and was aborted, restoring the branch exactly
@@ -403,117 +291,6 @@ const (
 // is harmlessly overwritten.
 const rebaseBackupRef = "refs/harness/rebase-onto-main"
 
-// RebaseOntoMain replays the worktree's feature branch onto origin/main so the PR
-// opens on a current base instead of the stale one a long pipeline accreted (a
-// sibling PR merging underneath it — BEH-570). origin/main must already be fresh
-// (call FetchMain first) and the worktree clean. Run host-side against the worktree,
-// whose absolute .git resolves via the real-path mount (ADR-0002) — the same seam
-// WorktreeClean/CheckpointCommit use.
-//
-// The replay deliberately avoids `git rebase`: in a linked worktree (every harness
-// worktree is a `git worktree add` checkout) rebase's detach-to-onto full-tree
-// checkout false-fails with "local changes would be overwritten by merge" / "could
-// not detach HEAD" even on a byte-clean tree — a known worktree checkout-safety
-// artifact (BEH-618). It instead does `reset --hard origin/main` (the same full-tree
-// move, but without the false-positive) then `cherry-pick`s the feature commits back
-// on. cherry-pick's three-way merge surfaces only genuine content conflicts.
-//
-// A clean replay returns RebaseClean. A genuine conflict (or git refusing for any
-// other reason) aborts the cherry-pick, restores the branch to its original tip, and
-// returns RebaseConflict, so the caller hands resolution to a human rather than
-// pushing a branch it could not cleanly replay. There is no network here, so unlike
-// the remote ops it is not retried.
-func RebaseOntoMain(worktreePath string) RebaseResult {
-	return rebaseOntoMain(worktreePath, execRun)
-}
-
-func rebaseOntoMain(worktreePath string, run commandRunner) RebaseResult {
-	// Strip the readiness sentinel before replaying. new-worktree.sh drops an untracked
-	// .worktree-ready into every worktree (BEH-549), and a checkout that wants to write a
-	// now-tracked .worktree-ready over the untracked copy can refuse ("untracked working
-	// tree files would be overwritten") — the BEH-617 trap. Best-effort: a no-op (os
-	// error) when the sentinel is absent.
-	_ = os.Remove(filepath.Join(worktreePath, WorktreeReadySentinel))
-
-	// Pin the feature tip so `reset --hard` can't lose the commits and the cherry-pick
-	// range / conflict-restore can name them.
-	if run("git", "-C", worktreePath, "update-ref", rebaseBackupRef, "HEAD") != nil {
-		return RebaseConflict
-	}
-	defer func() { _ = run("git", "-C", worktreePath, "update-ref", "-d", rebaseBackupRef) }()
-
-	// Move the branch onto the fresh base. reset --hard escapes the rebase checkout
-	// false-fail and also fast-forwards a branch that is merely behind origin/main.
-	if run("git", "-C", worktreePath, "reset", "--hard", "origin/main") != nil {
-		return RebaseConflict
-	}
-
-	// Nothing to replay if the feature tip is already contained in origin/main (the
-	// branch was behind or equal): the reset alone completed the move. cherry-pick of
-	// an empty range errors, so short-circuit it.
-	if run("git", "-C", worktreePath, "merge-base", "--is-ancestor", rebaseBackupRef, "origin/main") == nil {
-		return RebaseClean
-	}
-
-	// Replay the feature's own commits (origin/main..tip) onto the new base. cherry-pick
-	// rewrites the COMMITTER of every replayed commit to whoever runs it, so stamp the
-	// harness identity — exactly as the old rebase did — so the pushed branch never
-	// inherits the host checkout's placeholder identity (BEH-579).
-	//
-	// A bare cherry-pick (no `--empty=drop`) is used deliberately for git-version
-	// portability: `--empty=<action>` for cherry-pick only landed in git 2.45 (May
-	// 2024), and CI runners (and older host checkouts) still ship git 2.39, where the
-	// flag is rejected with a usage error (exit 129) that fails EVERY clean replay.
-	// Both empty-commit classes are instead handled uniformly by the auto-skip loop
-	// below, which reproduces an ideal `git rebase`'s auto-drop without the flag.
-	args := append([]string{"-C", worktreePath}, identityArgs()...)
-	args = append(args, "cherry-pick", "origin/main.."+rebaseBackupRef)
-	if run("git", args...) == nil {
-		return RebaseClean
-	}
-
-	// The cherry-pick halted. A bare cherry-pick halts on BOTH empty-commit classes
-	// with "the previous cherry-pick is now empty" (exit 1): a commit that BECOMES
-	// empty on replay because its diff is already in origin/main (a sibling PR merged
-	// the same change, or a hotfix was cherry-picked to main — the BEH-622 case), AND
-	// a commit that was INITIALLY empty — an `--allow-empty` handoff commit with a zero
-	// net diff (the BEH-678 d0177234b case). Neither is a content conflict: dropping
-	// either is a no-op, so escalating to a sandboxed conflict-resolution session
-	// (BEH-581) would waste a whole session on an empty commit. Auto-skip both inline
-	// instead, matching an ideal `git rebase`'s auto-drop. The empty-halt classes are
-	// told apart from a genuine conflict by unmerged paths: a conflict leaves unmerged
-	// index entries; an empty halt leaves a clean index. Loop because a multi-commit
-	// replay can halt on several empty commits in turn; each `--skip` consumes one, so
-	// it always makes progress and terminates.
-	//
-	// Fail safe first: a cherry-pick error that left NO pick in progress is an
-	// unexpected failure (not a halt on an empty commit or a conflict), so restore the
-	// branch and report RebaseConflict rather than fall through to RebaseClean and push
-	// an incompletely-replayed branch — the file's "never push on doubt" convention.
-	if !cherryPickInProgress(worktreePath, run) {
-		_ = run("git", "-C", worktreePath, "cherry-pick", "--abort")
-		_ = run("git", "-C", worktreePath, "reset", "--hard", rebaseBackupRef)
-		return RebaseConflict
-	}
-	for i := 0; cherryPickInProgress(worktreePath, run); i++ {
-		if hasUnmergedPaths(worktreePath, run) || i >= maxCherryPickSkips {
-			// Genuine content conflict (or a pathological non-progressing skip loop — the
-			// bound is a pure safety backstop): abort the cherry-pick and restore the
-			// branch to its original tip, leaving it exactly as it was for a human
-			// (BEH-570). Both are best-effort — if the cherry-pick never started, --abort
-			// fails harmlessly.
-			_ = run("git", "-C", worktreePath, "cherry-pick", "--abort")
-			_ = run("git", "-C", worktreePath, "reset", "--hard", rebaseBackupRef)
-			return RebaseConflict
-		}
-		// Empty commit → drop it and continue the sequence. --skip may itself halt on the
-		// next commit (empty or conflict), so its exit code isn't trusted — the loop
-		// re-reads git state and re-classifies.
-		_ = run("git", "-C", worktreePath, "cherry-pick", "--skip")
-	}
-	return RebaseClean
-}
-
 // maxCherryPickSkips bounds the initially-empty auto-skip loop as a pure safety
 // backstop (BEH-678). Each `cherry-pick --skip` consumes one commit from the replay
 // todo, so a replay needs at most (commits-ahead) skips — a handful for any harness
@@ -521,165 +298,13 @@ func rebaseOntoMain(worktreePath string, run commandRunner) RebaseResult {
 // where fail-safe is to abort and hand the branch to a human rather than spin.
 const maxCherryPickSkips = 100
 
-// cherryPickInProgress reports whether a cherry-pick is currently halted awaiting
-// resolution — `git rev-parse --verify --quiet CHERRY_PICK_HEAD` exits 0 iff
-// CHERRY_PICK_HEAD resolves. Used to drive the auto-skip loop over initially-empty
-// commits (BEH-678). Run host-side against the worktree via the real-path mount.
-func cherryPickInProgress(worktreePath string, run commandRunner) bool {
-	return run("git", "-C", worktreePath, "rev-parse", "--verify", "--quiet", "CHERRY_PICK_HEAD") == nil
-}
-
-// hasUnmergedPaths reports whether the worktree's index carries unmerged (conflicted)
-// entries — `git diff --quiet --diff-filter=U` exits 0 when there are none and
-// non-zero when there are. It is what tells a genuine content conflict (unmerged
-// entries) apart from a halted-but-empty cherry-pick (clean index) so the harness
-// auto-skips the latter and only escalates the former (BEH-678). Run host-side
-// against the worktree via the real-path mount.
-func hasUnmergedPaths(worktreePath string, run commandRunner) bool {
-	return run("git", "-C", worktreePath, "diff", "--quiet", "--diff-filter=U") != nil
-}
-
-// IsRebasedOnto reports whether ref (e.g. "origin/main") is an ancestor of the
-// worktree's HEAD — i.e. the branch genuinely contains the latest base. It is the
-// ground-truth guard the pre-push conflict-resolution path needs (BEH-581): a
-// sandboxed session that gives up and runs `git rebase --abort` leaves a CLEAN
-// worktree on the original stale tip, so WorktreeClean alone would wave it
-// through. Confirming the rebase actually landed stops the harness re-gating and
-// pushing a still-stale branch. Read host-side via the real-path mount; any git
-// failure (the non-ancestor exit, or git refusing) reads as not-rebased.
-func IsRebasedOnto(worktreePath, ref string) bool {
-	return isRebasedOnto(worktreePath, ref, execRun)
-}
-
-func isRebasedOnto(worktreePath, ref string, run commandRunner) bool {
-	return run("git", "-C", worktreePath, "merge-base", "--is-ancestor", ref, "HEAD") == nil
-}
-
-// IsDisjointFrom reports whether the worktree's HEAD shares NO common ancestor
-// with ref (e.g. "origin/main") — the disjoint-history condition (BEH-597) that
-// passed the tdd gate as a 963-commits-ahead "success" in BEH-355. `git
-// merge-base <ref> HEAD` exits 0 and prints the common ancestor when one exists;
-// it exits non-zero with empty output when the histories are disjoint. The
-// pre-push rebase needs this to avoid mislabelling the inevitable replay-collision
-// of a disjoint branch as a content conflict and burning a sandboxed
-// conflict-resolution session on the wrong problem. Read host-side via the
-// real-path mount; at the call site both refs resolve, so any non-zero exit means
-// no common ancestor (disjoint), not an unresolved ref.
-func IsDisjointFrom(worktreePath, ref string) bool {
-	return isDisjointFrom(worktreePath, ref, execRun)
-}
-
-func isDisjointFrom(worktreePath, ref string, run commandRunner) bool {
-	return branchesDisjoint(worktreePath, ref, "HEAD", run)
-}
-
 // branchesDisjoint reports whether refA and refB share no common ancestor — `git
 // merge-base refA refB` exits non-zero with empty output for a disjoint history.
-// The shared core behind IsDisjointFrom (worktree HEAD vs a ref) and the tdd
-// ground-truth gather (feat/<slug> vs origin/main, read from the main checkout).
-func branchesDisjoint(dir, refA, refB string, run commandRunner) bool {
+// The shared core behind [Worktree.IsDisjointFrom] (worktree HEAD vs a ref) and the
+// ground-truth gather (the feature branch vs origin/main, read from the main
+// checkout).
+func branchesDisjoint(run commandRunner, dir, refA, refB string) bool {
 	return run("git", "-C", dir, "merge-base", refA, refB) != nil
-}
-
-// RegraftOntoBase rescues verified work trapped on a DISJOINT branch (BEH-609).
-// When a tdd session's handoff lands on a branch that roots at an unrelated history
-// (an empty `git merge-base` with origin/main — the BEH-355/BEH-500 condition), the
-// gate fails it and re-launching can never escape it: no in-sandbox work changes
-// the branch's root commit. So the harness re-roots the work host-side — it captures
-// the branch's CONTENT diff against ref (two-dot, a direct tree comparison, so it
-// works ACROSS the disjoint root where `git diff ref...HEAD` would die with "no merge
-// base"), resets the branch onto ref, and re-applies the diff as one fresh commit.
-// The result shares ref's history (rebaseable, handoff-able) while preserving the
-// exact verified tree. The original handoff message is carried over with a regraft
-// note; the disjoint tip stays in the reflog for forensics. Errors (leaving the
-// branch reset onto ref) if there is no content diff — nothing to recover, never an
-// empty commit. Run host-side against the worktree via the real-path mount (ADR-0002).
-func RegraftOntoBase(worktreePath, ref string) error {
-	// Capture the content diff and handoff message BEFORE moving the branch.
-	// --binary so binary blobs / mode / deletion changes regraft faithfully.
-	patch, err := exec.Command("git", "-C", worktreePath, "diff", "--binary", ref, "HEAD").Output()
-	if err != nil {
-		return fmt.Errorf("capturing content diff against %s: %w", ref, err)
-	}
-	if len(bytes.TrimSpace(patch)) == 0 {
-		return fmt.Errorf("no content diff against %s — nothing to regraft", ref)
-	}
-	msg, err := exec.Command("git", "-C", worktreePath, "log", "-1", "--format=%B").Output()
-	if err != nil {
-		return fmt.Errorf("reading handoff message: %w", err)
-	}
-	// Re-root: reset --hard moves the branch ref onto ref's tip (escaping the
-	// disjoint root; the old tip survives in the reflog) and matches the worktree.
-	if err := execRun("git", "-C", worktreePath, "reset", "--hard", ref); err != nil {
-		return fmt.Errorf("resetting onto %s: %w", ref, err)
-	}
-	// Re-apply the captured diff onto the fresh base (index + worktree).
-	apply := exec.Command("git", "-C", worktreePath, "apply", "--index")
-	apply.Stdin = bytes.NewReader(patch)
-	if out, aerr := apply.CombinedOutput(); aerr != nil {
-		return fmt.Errorf("re-applying diff onto %s: %w (%s)", ref, aerr, strings.TrimSpace(string(out)))
-	}
-	// Commit the regrafted tree, preserving the handoff message with a regraft note.
-	commitMsg := strings.TrimRight(string(msg), "\n") +
-		"\n\nRe-grafted onto " + ref + " to escape a disjoint history (BEH-609)."
-	args := append([]string{"-C", worktreePath}, identityArgs()...)
-	args = append(args, "commit", "--no-verify", "-m", commitMsg)
-	if err := execRun("git", args...); err != nil {
-		return fmt.Errorf("committing regrafted diff: %w", err)
-	}
-	return nil
-}
-
-// BranchDiffEmpty reports whether the worktree's committed tip makes ZERO net
-// change against origin/main (an empty `git diff origin/main`) — the empty-commit
-// branch the harness wrongly opened as PR #642 (BEH-603). It is the detection half
-// of the recommend-close disposition: a clean, gate-green, reviewed branch with an
-// empty diff has nothing to ship, so the ticket should be closed as a
-// duplicate/superseded rather than opened as an empty-commit PR. Callers must check
-// WorktreeClean first — `git diff origin/main` includes uncommitted changes, so on a
-// dirty tree an "empty" committed diff could still hide real uncommitted work.
-//
-// `git diff --quiet` exits 0 when there is no diff and non-zero when there is, so
-// only a clean exit-0 reports empty. Any error (a non-zero diff exit, or an
-// unresolvable ref) reads as NOT empty — the fail-safe direction: the harness would
-// rather attempt the push than wrongly recommend closing a ticket on doubt. Read
-// host-side via the real-path mount, the same seam WorktreeClean/RebaseOntoMain use.
-func BranchDiffEmpty(worktreePath string) bool {
-	return branchDiffEmpty(worktreePath, execRun)
-}
-
-func branchDiffEmpty(worktreePath string, run commandRunner) bool {
-	return run("git", "-C", worktreePath, "diff", "--quiet", "origin/main") == nil
-}
-
-// BranchDocsOnly reports whether the branch's net diff against origin/main touches
-// ONLY documentation/prose paths that no build gate or CI job reads (BEH-687) — the
-// condition under which the review host-gate re-run and the CI poll can be skipped
-// for a change that provably cannot break the build. It reads the changed paths with
-// `git diff --name-only origin/main` and classifies them with DocsOnlyPaths. Like
-// BranchDiffEmpty it is fail-safe: a git error (unresolvable ref, gone worktree) or
-// an empty diff (the zero-net-diff case, BEH-602) reports false, so the normal gate +
-// watch still run — the harness would rather validate than wrongly skip. Read
-// host-side via the real-path mount, the same seam BranchDiffEmpty uses.
-// excludedRoots is the Consumer's declared list of directories whose contents are
-// never inert (ADR-0008). An empty list disables the short-circuit entirely — see
-// DocsOnlyPaths for why that is the safe default.
-func BranchDocsOnly(worktreePath string, excludedRoots []string) bool {
-	return branchDocsOnly(worktreePath, excludedRoots, execOutput)
-}
-
-func branchDocsOnly(worktreePath string, excludedRoots []string, run outputRunner) bool {
-	out, err := run("git", "-C", worktreePath, "diff", "--name-only", "origin/main")
-	if err != nil {
-		return false
-	}
-	var paths []string
-	for _, line := range strings.Split(string(out), "\n") {
-		if p := strings.TrimSpace(line); p != "" {
-			paths = append(paths, p)
-		}
-	}
-	return DocsOnlyPaths(paths, excludedRoots)
 }
 
 // DocsOnlyPaths reports whether EVERY given repo-relative changed path is
@@ -690,7 +315,7 @@ func branchDocsOnly(worktreePath string, excludedRoots []string, run outputRunne
 // module tree, scripts, workflows, migrations, package manifests, …) makes the
 // whole set non-docs-only, so the short-circuit never fires on a change that could
 // affect a gate. An empty set is NOT docs-only — a branch with nothing to ship is
-// the zero-net-diff case (BranchDiffEmpty / BEH-602), handled separately.
+// the zero-net-diff case ([Worktree.DiffEmpty] / BEH-602), handled separately.
 //
 // excludedRoots comes from the Consumer's `docs_only_excluded_roots` config: the
 // directories whose contents can feed a gate whatever they look like. It cannot
@@ -745,227 +370,6 @@ func docsOnlyPath(p string, excludedRoots []string) bool {
 	return strings.HasSuffix(p, ".md") || strings.HasPrefix(p, "docs/")
 }
 
-// AbortRebase restores a worktree a conflict-resolution session left mid-replay to a
-// clean, on-branch state before the harness keeps it for a human (BEH-581). The
-// session replays via `cherry-pick` (BEH-618), so a give-up can strand a cherry-pick
-// in progress that `rebase --abort` won't clean — abort BOTH. Best-effort: if neither
-// is in progress the aborts fail harmlessly, so there is nothing to surface — callers
-// fire it unconditionally on a failed resolution.
-func AbortRebase(worktreePath string) {
-	abortRebase(worktreePath, execRun)
-}
-
-func abortRebase(worktreePath string, run commandRunner) {
-	_ = run("git", "-C", worktreePath, "rebase", "--abort")
-	_ = run("git", "-C", worktreePath, "cherry-pick", "--abort")
-}
-
-// Push pushes the feature branch to origin from the main checkout (ADR-0002: the
-// harness owns the push, host-side; the sandbox never reaches a remote). Run only
-// after the harness's own gate re-run is green.
-//
-// --no-verify deliberately skips the host lefthook pre-push hook: the harness has
-// already independently re-run the full gate in a throwaway Linux container
-// (review/main.go BuildWorktreeCommandArgs) — that container's exit code is the sole
-// authority for a push. The host hook is redundant duplication, and running it
-// here is actively wrong: the push happens from the main checkout (HEAD=main, not
-// the feature branch), so lefthook either silently skips every command (its
-// push-file set is empty) or, if it ran, would build the wrong tree against
-// host-platform node_modules the worktree doesn't have. Retried against transient
-// remote blips under a wall-clock budget (BEH-329, widened in BEH-403).
-func Push(herdPath, branchPrefix, slug string) error {
-	return push(herdPath, branchPrefix, slug, execRun, time.Sleep, time.Now)
-}
-
-func push(herdPath, branchPrefix, slug string, run commandRunner, sleep func(time.Duration), now func() time.Time) error {
-	return withRetry(func() error {
-		return run("git", "-C", herdPath, "push", "--no-verify", "origin", BranchName(branchPrefix, slug))
-	}, sleep, now)
-}
-
-// PushForceWithLease re-pushes the feature branch after an auto-rebase rewrote its
-// history (BEH-570). It is needed only on the reactive path — a branch already on
-// the remote whose tip the rebase moved — so a plain Push would be rejected as
-// non-fast-forward. --force-with-lease is the safe force: it refuses to overwrite
-// remote commits the harness hasn't observed (it never will here — the harness owns
-// the branch — but the lease is the correct, non-destructive force). --no-verify and
-// the transient-retry budget match Push.
-func PushForceWithLease(herdPath, branchPrefix, slug string) error {
-	return pushForceWithLease(herdPath, branchPrefix, slug, execRun, time.Sleep, time.Now)
-}
-
-func pushForceWithLease(herdPath, branchPrefix, slug string, run commandRunner, sleep func(time.Duration), now func() time.Time) error {
-	return withRetry(func() error {
-		return run("git", "-C", herdPath, "push", "--no-verify", "--force-with-lease", "origin", BranchName(branchPrefix, slug))
-	}, sleep, now)
-}
-
-// GatherTddGroundTruth reads the state a finished tdd session left behind. The
-// sandbox commits into the shared `.git` (bind-mounted), so the feature branch
-// ref + objects are visible here without touching the worktree itself — the
-// harness never runs git inside a worktree (whose `.git` pointer is container-
-// relative), only against the main checkout.
-func GatherTddGroundTruth(herdPath, branchPrefix, slug string) verify.GroundTruth {
-	_, statErr := os.Stat(WorktreePath(herdPath, slug))
-	worktreeExists := statErr == nil
-
-	branch := BranchName(branchPrefix, slug)
-	commitsAhead := 0
-	// On any failure (branch doesn't exist / no upstream) treat as zero ahead.
-	out, err := exec.Command(
-		"git", "-C", herdPath, "rev-list", "--count", "origin/main.."+branch,
-	).Output()
-	if err == nil {
-		if n, perr := strconv.Atoi(strings.TrimSpace(string(out))); perr == nil {
-			commitsAhead = n
-		}
-	}
-
-	// Disjoint history: feat/<slug> shares no common ancestor with origin/main (an
-	// empty merge-base — the BEH-355 condition). Only checked when the branch is
-	// ahead, so both refs resolve and a non-zero merge-base means genuine disjoint
-	// rather than an unresolved ref; an absent/zero-ahead branch already fails the
-	// CommitsAhead gate (BEH-597).
-	disjoint := commitsAhead > 0 && branchesDisjoint(herdPath, branch, "origin/main", execRun)
-
-	return verify.GroundTruth{WorktreeExists: worktreeExists, CommitsAhead: commitsAhead, DisjointHistory: disjoint}
-}
-
-// BranchExists reports whether `feat/<slug>` resolves to a git revision in the
-// main checkout — i.e. the upstream /tdd session actually created the feature
-// branch. It reads the LOCAL head ref (`refs/heads/feat/<slug>`), where the
-// sandbox's commits land via the shared `.git`; distinct from BranchPushed,
-// which reads the remote-tracking ref. It is the retrospective's host-side
-// precondition (BEH-553): a branch that doesn't resolve means there is no diff to
-// retrospect. Any git failure → false (treat an unreadable ref as absent).
-func BranchExists(herdPath, branchPrefix, slug string) bool {
-	err := exec.Command(
-		"git", "-C", herdPath, "rev-parse", "--verify", "--quiet", "refs/heads/"+BranchName(branchPrefix, slug),
-	).Run()
-	return err == nil
-}
-
-// BranchPushed reports whether `feat/<slug>` reached origin, read from the main
-// checkout's remote-tracking ref (the review tool's host-side push sets it). It
-// is the safe gate on tearing down a worktree: the harness only removes a
-// worktree whose branch is on the remote, so a teardown can never lose work
-// that hasn't been pushed (DESIGN.md "On a clean run … git worktree remove").
-func BranchPushed(herdPath, branchPrefix, slug string) bool {
-	err := exec.Command(
-		"git", "-C", herdPath, "rev-parse", "--verify", "--quiet", "refs/remotes/origin/"+BranchName(branchPrefix, slug),
-	).Run()
-	return err == nil
-}
-
-// StripWorktreePaths removes the Consumer-declared handoff-strip paths from the
-// worktree the implementation tool hands back. The sandbox builds the worktree on
-// linux-arm64 (ADR-0002), so a dependency tree installed in there carries
-// Linux-only native bindings; a reviewer running the gates on a non-Linux host
-// hits a cryptic load failure that a frozen re-install won't repair (the
-// platform-conditional optional deps look satisfied). Stripping those paths means
-// the reviewer always installs fresh for their own platform, and the Consumer's
-// post_create re-provisions them before the review session (BEH-412).
-//
-// Which paths those are is a Consumer choice, not a harness fact: `web/node_modules`
-// for a pnpm monorepo, `obj/` + `bin/` for .NET, nothing at all for Go (BEH-641).
-// Paths are relative to the worktree root; an absolute or parent-escaping path is
-// refused so a stray config value can never delete outside the worktree.
-// Idempotent: a no-op when a path is already absent, and when none are declared.
-func StripWorktreePaths(worktreePath string, paths []string) error {
-	for _, rel := range paths {
-		rel = strings.TrimSpace(rel)
-		if rel == "" {
-			continue
-		}
-		if filepath.IsAbs(rel) {
-			return fmt.Errorf("handoff_strip_paths entry %q must be relative to the worktree", rel)
-		}
-		target := filepath.Join(worktreePath, rel)
-		// filepath.Join cleans the path, so a `../` escape shows up here as a target
-		// that is no longer under the worktree.
-		if target != worktreePath && !strings.HasPrefix(target, worktreePath+string(filepath.Separator)) {
-			return fmt.Errorf("handoff_strip_paths entry %q escapes the worktree", rel)
-		}
-		if target == worktreePath {
-			return fmt.Errorf("handoff_strip_paths entry %q resolves to the worktree root", rel)
-		}
-		if err := os.RemoveAll(target); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// CheckpointCommit captures whatever uncommitted work a finished session left in
-// the worktree as a recovery commit on the feature branch, so a session that
-// ended (wall-clock cap / usage-policy refusal / crash) before committing its work
-// leaves a recoverable commit instead of a bare worktree that needs manual rescue.
-// Both stages use it: the tdd session (BEH-479: the cap fired during a final
-// verification re-run and discarded a finished diff) and the review session
-// (BEH-559: a cap killed a review mid-nit-fix, and the in-progress edit was
-// silently lost on resume — the resumed review then re-judged the original diff and
-// flipped its verdict). `session` names which stage left the work so the message
-// attributes it correctly. It is a SAFETY NET, not a verdict — the work is
-// unverified, so the commit subject loudly marks it a harness checkpoint. Staging
-// is `-A` (this is recovery: capture every change, tracked and untracked) and the
-// commit is `--no-verify` (the work may not pass hooks — that is precisely why it
-// is a checkpoint and not a handoff). A no-op success when the worktree is already
-// clean (nothing was left behind to recover). Run host-side against the worktree
-// via the real-path mount (ADR-0002), the same seam WorktreeClean uses.
-func CheckpointCommit(worktreePath, identifier, session string) error {
-	if WorktreeClean(worktreePath) {
-		return nil
-	}
-	return checkpointCommit(worktreePath, CheckpointMessage(identifier, session), execRun)
-}
-
-func checkpointCommit(worktreePath, message string, run commandRunner) error {
-	if err := run("git", "-C", worktreePath, "add", "-A"); err != nil {
-		return err
-	}
-	// Never let the readiness sentinel (BEH-549) ride into a recovery commit: on a
-	// stale-base branch where it is not yet gitignored, `add -A` stages it. Unstaging
-	// it keeps the checkpoint to real session work and stops the gitignored artifact
-	// reattaching as a tracked file (BEH-612). Best-effort — a no-op when absent.
-	_ = run("git", "-C", worktreePath, "reset", "-q", "--", WorktreeReadySentinel)
-	// Belt-and-braces: refuse to commit when nothing real is staged. `git diff
-	// --cached --quiet` exits 0 (nil) iff the index matches HEAD — so a checkpoint
-	// can never capture zero work (e.g. a sentinel-only tree the guard let through).
-	if run("git", "-C", worktreePath, "diff", "--cached", "--quiet") == nil {
-		return nil
-	}
-	args := append([]string{"-C", worktreePath}, identityArgs()...)
-	args = append(args, "commit", "--no-verify", "-m", message)
-	return run("git", args...)
-}
-
-// EnsureCIRerunCommit guarantees the just-finished auto-fix session leaves CI a
-// fresh HEAD to run against. An auto-fix agent that reproduces every gate locally
-// and finds no code defect (the red was a cancelled/superseded/flaky run) should
-// NOT fabricate a speculative diff just to satisfy the loop's "produce a commit"
-// contract — it leaves the worktree clean with HEAD unmoved. In that case the
-// harness adds an empty commit so the re-push moves the branch tip and CI re-runs
-// (clearing the stale red); if the agent did commit a real fix (HEAD moved), this
-// is a no-op. The worktree must already be clean — the caller checks that and the
-// empty commit ships only committed history (BEH-561).
-func EnsureCIRerunCommit(worktreePath, headBefore string) error {
-	return ensureCIRerunCommit(worktreePath, headBefore, execRun)
-}
-
-func ensureCIRerunCommit(worktreePath, headBefore string, run commandRunner) error {
-	head, err := HeadSHA(worktreePath)
-	if err != nil {
-		return err
-	}
-	// HEAD moved → the agent committed a real fix; that is what re-triggers CI.
-	if head != headBefore {
-		return nil
-	}
-	args := append([]string{"-C", worktreePath}, identityArgs()...)
-	args = append(args, "commit", "--no-verify", "--allow-empty", "-m", CIRerunMessage())
-	return run("git", args...)
-}
-
 // CIRerunMessage is the subject+body for the harness's empty re-trigger commit.
 // It loudly marks the commit as a no-code-change CI re-run so a reviewer reading
 // PR history sees why an empty commit exists rather than mistaking it for a fix.
@@ -987,16 +391,4 @@ func CheckpointMessage(identifier, session string) string {
 		"uncommitted in the worktree (wall-clock cap, usage-policy refusal, or crash)\n" +
 		"before committing its work. This is NOT a verified handoff — finish the work\n" +
 		"or re-run, then squash/amend, before opening a PR."
-}
-
-// RemoveWorktree tears down the worktree at `.claude/worktrees/<slug>` from the
-// main checkout. The real-path bind mount (ADR-0002) makes the worktree's
-// absolute `.git` pointer resolve on the host, so no throwaway container is
-// needed. It is deliberately not forced: if the worktree still holds
-// uncommitted work, git refuses and the harness keeps it (a recoverable
-// artifact) rather than nuking unpushed changes.
-func RemoveWorktree(herdPath, slug string) error {
-	return exec.Command(
-		"git", "-C", herdPath, "worktree", "remove", WorktreePath(herdPath, slug),
-	).Run()
 }

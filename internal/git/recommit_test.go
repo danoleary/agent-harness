@@ -26,7 +26,7 @@ func seedRepo(t *testing.T) string {
 func TestHeadSHAReadsCurrentHead(t *testing.T) {
 	repo := seedRepo(t)
 
-	first, err := HeadSHA(repo)
+	first, err := realWorktree(repo, repo, "beh-561").HeadSHA()
 	if err != nil {
 		t.Fatalf("HeadSHA: %v", err)
 	}
@@ -40,7 +40,7 @@ func TestHeadSHAReadsCurrentHead(t *testing.T) {
 	runGit(t, repo, "add", "-A")
 	runGit(t, repo, "commit", "-q", "-m", "second")
 
-	second, err := HeadSHA(repo)
+	second, err := realWorktree(repo, repo, "beh-561").HeadSHA()
 	if err != nil {
 		t.Fatalf("HeadSHA after commit: %v", err)
 	}
@@ -50,7 +50,7 @@ func TestHeadSHAReadsCurrentHead(t *testing.T) {
 }
 
 func TestHeadSHAErrorsOutsideRepo(t *testing.T) {
-	if _, err := HeadSHA(t.TempDir()); err == nil {
+	if _, err := realWorktree(t.TempDir(), t.TempDir(), "beh-561").HeadSHA(); err == nil {
 		t.Fatal("HeadSHA should error in a non-git directory")
 	}
 }
@@ -61,20 +61,20 @@ func TestHeadSHAErrorsOutsideRepo(t *testing.T) {
 // commit so the re-push gives CI a fresh HEAD to re-run against (BEH-561).
 func TestEnsureCIRerunCommitAddsEmptyCommitWhenHeadUnmoved(t *testing.T) {
 	repo := seedRepo(t)
-	headBefore, err := HeadSHA(repo)
+	headBefore, err := realWorktree(repo, repo, "beh-561").HeadSHA()
 	if err != nil {
 		t.Fatalf("HeadSHA: %v", err)
 	}
 	before := commitCount(t, repo)
 
-	if err := EnsureCIRerunCommit(repo, headBefore); err != nil {
+	if err := realWorktree(repo, repo, "beh-561").EnsureCIRerunCommit(headBefore); err != nil {
 		t.Fatalf("EnsureCIRerunCommit: %v", err)
 	}
 
 	if got := commitCount(t, repo); got != before+1 {
 		t.Fatalf("expected exactly one new (empty) commit, count %d → %d", before, got)
 	}
-	if !WorktreeClean(repo) {
+	if !realWorktree(repo, repo, "beh-561").Clean() {
 		t.Fatal("worktree should stay clean after an empty commit")
 	}
 	// It must be empty: the new commit's tree equals its parent's tree.
@@ -91,12 +91,12 @@ func TestEnsureCIRerunCommitAddsEmptyCommitWhenHeadUnmoved(t *testing.T) {
 // rather than leak the placeholder into history.
 func TestEnsureCIRerunCommitStampsHarnessIdentity(t *testing.T) {
 	repo := seedRepo(t) // seeded with the Test placeholder config
-	headBefore, err := HeadSHA(repo)
+	headBefore, err := realWorktree(repo, repo, "beh-561").HeadSHA()
 	if err != nil {
 		t.Fatalf("HeadSHA: %v", err)
 	}
 
-	if err := EnsureCIRerunCommit(repo, headBefore); err != nil {
+	if err := realWorktree(repo, repo, "beh-561").EnsureCIRerunCommit(headBefore); err != nil {
 		t.Fatalf("EnsureCIRerunCommit: %v", err)
 	}
 
@@ -111,7 +111,7 @@ func TestEnsureCIRerunCommitStampsHarnessIdentity(t *testing.T) {
 // CI. EnsureCIRerunCommit is a no-op in that case.
 func TestEnsureCIRerunCommitIsNoOpWhenHeadMoved(t *testing.T) {
 	repo := seedRepo(t)
-	headBefore, err := HeadSHA(repo)
+	headBefore, err := realWorktree(repo, repo, "beh-561").HeadSHA()
 	if err != nil {
 		t.Fatalf("HeadSHA: %v", err)
 	}
@@ -123,7 +123,7 @@ func TestEnsureCIRerunCommitIsNoOpWhenHeadMoved(t *testing.T) {
 	runGit(t, repo, "commit", "-q", "-m", "real fix")
 	after := commitCount(t, repo)
 
-	if err := EnsureCIRerunCommit(repo, headBefore); err != nil {
+	if err := realWorktree(repo, repo, "beh-561").EnsureCIRerunCommit(headBefore); err != nil {
 		t.Fatalf("EnsureCIRerunCommit: %v", err)
 	}
 
@@ -140,7 +140,7 @@ func TestEnsureCIRerunCommitNoOpWhenHeadBeforeUnknown(t *testing.T) {
 	repo := seedRepo(t)
 	before := commitCount(t, repo)
 
-	if err := EnsureCIRerunCommit(repo, ""); err != nil {
+	if err := realWorktree(repo, repo, "beh-561").EnsureCIRerunCommit(""); err != nil {
 		t.Fatalf("EnsureCIRerunCommit: %v", err)
 	}
 

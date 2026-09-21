@@ -104,7 +104,7 @@ func TestTicketAlreadyOnMainFetchesThenFindsMergedTicket(t *testing.T) {
 
 	commitAndPush(t, author, "docs(harness): isolation rules (BEH-521) (#542)")
 
-	if !TicketAlreadyOnMain(host, "BEH-521") {
+	if !Open(host, testPrefix).TicketAlreadyOnMain("BEH-521") {
 		t.Fatalf("BEH-521 merged on the remote — the guard should fetch and find it")
 	}
 }
@@ -116,7 +116,7 @@ func TestTicketAlreadyOnMainFalseWhenUnmerged(t *testing.T) {
 
 	commitAndPush(t, author, "docs(harness): isolation rules (BEH-521) (#542)")
 
-	if TicketAlreadyOnMain(host, "BEH-999") {
+	if Open(host, testPrefix).TicketAlreadyOnMain("BEH-999") {
 		t.Fatalf("BEH-999 never merged — dispatch must not be skipped")
 	}
 }
@@ -137,7 +137,7 @@ func TestTicketAlreadyOnMainFailsOpenWhenGitErrors(t *testing.T) {
 	runGit(t, repo, "commit", "-q", "-m", "init (BEH-521)")
 
 	// No origin remote and no origin/main ref — the log read fails.
-	if TicketAlreadyOnMain(repo, "BEH-521") {
+	if Open(repo, testPrefix).TicketAlreadyOnMain("BEH-521") {
 		t.Fatalf("a git failure must fail open (false), never block dispatch")
 	}
 }

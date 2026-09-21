@@ -14,11 +14,20 @@ import (
 // branch prefix + slug (BEH-636); the harness keys verify/push/PR/dispatch off it,
 // so a Consumer that sets branch_prefix = "fix" gets `fix/<slug>`, not `feat/<slug>`.
 func TestBranchNameDerivesFromPrefix(t *testing.T) {
-	if got := BranchName("feat", "beh-636-x"); got != "feat/beh-636-x" {
-		t.Errorf(`BranchName("feat", "beh-636-x") = %q, want "feat/beh-636-x"`, got)
+	if got := Open("/herd", "feat").Worktree("beh-636-x").Branch(); got != "feat/beh-636-x" {
+		t.Errorf(`Worktree("beh-636-x").Branch() under prefix "feat" = %q, want "feat/beh-636-x"`, got)
 	}
-	if got := BranchName("fix", "beh-636-x"); got != "fix/beh-636-x" {
-		t.Errorf(`BranchName("fix", "beh-636-x") = %q, want "fix/beh-636-x"`, got)
+	if got := Open("/herd", "fix").Worktree("beh-636-x").Branch(); got != "fix/beh-636-x" {
+		t.Errorf(`Worktree("beh-636-x").Branch() under prefix "fix" = %q, want "fix/beh-636-x"`, got)
+	}
+}
+
+// The worktree path is derived from the checkout the same way — `.claude/worktrees/<slug>`
+// under the Consumer's checkout — so a caller names the ticket and nothing else.
+func TestWorktreePathDerivesFromCheckout(t *testing.T) {
+	got := Open("/herd", "feat").Worktree("beh-636-x").Path()
+	if want := filepath.Join("/herd", ".claude", "worktrees", "beh-636-x"); got != want {
+		t.Errorf("Worktree path = %q, want %q", got, want)
 	}
 }
 
@@ -34,9 +43,9 @@ func TestCreateWorktreeAddsBranchFromPrefixOntoOriginMain(t *testing.T) {
 		}
 		return nil
 	})
-	wt := "/herd/.claude/worktrees/beh-636-x"
-	if err := createWorktree("/herd", "feat", "beh-636-x", wt, run); err != nil {
-		t.Fatalf("createWorktree: %v", err)
+	wt := fakeWorktree("beh-636-x", runners{run: run})
+	if err := wt.Create(); err != nil {
+		t.Fatalf("Create: %v", err)
 	}
 	var add []string
 	for _, c := range *calls {
@@ -51,8 +60,8 @@ func TestCreateWorktreeAddsBranchFromPrefixOntoOriginMain(t *testing.T) {
 	if !strings.Contains(joined, "-b feat/beh-636-x") {
 		t.Errorf("worktree add must create the prefix-derived branch, got %q", joined)
 	}
-	if !strings.Contains(joined, wt) {
-		t.Errorf("worktree add must target the worktree path %q, got %q", wt, joined)
+	if !strings.Contains(joined, wt.Path()) {
+		t.Errorf("worktree add must target the worktree path %q, got %q", wt.Path(), joined)
 	}
 	if !strings.Contains(joined, "refs/remotes/origin/main") {
 		t.Errorf("worktree add must base on origin/main when it resolves, got %q", joined)
@@ -69,8 +78,8 @@ func TestCreateWorktreeFallsBackToLocalMain(t *testing.T) {
 		}
 		return nil
 	})
-	if err := createWorktree("/herd", "feat", "beh-636-x", "/wt", run); err != nil {
-		t.Fatalf("createWorktree: %v", err)
+	if err := fakeWorktree("beh-636-x", runners{run: run}).Create(); err != nil {
+		t.Fatalf("Create: %v", err)
 	}
 	var add []string
 	for _, c := range *calls {
@@ -103,8 +112,8 @@ func TestCreateWorktreeAttachesToExistingBranch(t *testing.T) {
 		}
 		return nil
 	})
-	if err := createWorktree("/herd", "feat", "beh-636-x", "/wt", run); err != nil {
-		t.Fatalf("createWorktree: %v", err)
+	if err := fakeWorktree("beh-636-x", runners{run: run}).Create(); err != nil {
+		t.Fatalf("Create: %v", err)
 	}
 	var add []string
 	for _, c := range *calls {
@@ -130,8 +139,8 @@ func TestCreateWorktreePropagatesAddError(t *testing.T) {
 		}
 		return nil
 	})
-	if err := createWorktree("/herd", "feat", "beh-636-x", "/wt", run); err == nil {
-		t.Fatal("expected createWorktree to propagate a failing `worktree add`")
+	if err := fakeWorktree("beh-636-x", runners{run: run}).Create(); err == nil {
+		t.Fatal("expected Create to propagate a failing `worktree add`")
 	}
 }
 
@@ -207,6 +216,58 @@ func hasArg(argv []string, s string) bool {
 	return false
 }
 
+// testRepo/testPrefix are the checkout and branch prefix every seam test binds a
+// Checkout to. They are the only two strings a test has to supply: the branch and
+// the worktree path follow from the slug, exactly as they do in production.
+const (
+	testRepo   = "/herd"
+	testPrefix = "feat"
+)
+
+// fakeCheckout builds a Checkout over an injected seam — the one hook this package
+// has. Any field left zero gets a harmless no-op, so a test overrides only the
+// primitive it is about; everything else behaves as a silent success.
+//
+// It is what lets a test drive the EXPORTED method production calls. The twelve
+// exported/unexported twin pairs this replaces meant the tested half was never the
+// half the harness ran: Push, PushForceWithLease and Create — the operations that
+// can strand a branch — sat entirely on the untested side, and with them the whole
+// transient-retry budget.
+func fakeCheckout(r runners) Checkout {
+	if r.run == nil {
+		r.run = func(string, ...string) error { return nil }
+	}
+	if r.output == nil {
+		r.output = func(string, ...string) ([]byte, error) { return nil, nil }
+	}
+	if r.pipe == nil {
+		r.pipe = func([]byte, string, ...string) ([]byte, error) { return nil, nil }
+	}
+	if r.sleep == nil {
+		r.sleep = func(time.Duration) {}
+	}
+	if r.now == nil {
+		r.now = func() time.Time { return time.Unix(0, 0) }
+	}
+	return Checkout{path: testRepo, branchPrefix: testPrefix, runners: r}
+}
+
+// fakeWorktree is fakeCheckout's per-ticket shorthand.
+func fakeWorktree(slug string, r runners) Worktree { return fakeCheckout(r).Worktree(slug) }
+
+// branchName is the test-side spelling of the branch a Worktree derives, for the
+// setup `git checkout -b` calls that must create exactly that ref.
+func branchName(slug string) string { return testPrefix + "/" + slug }
+
+// realWorktree binds a Worktree to a throwaway repo a test just built, over the
+// PRODUCTION seam — these tests run real git and pin the contracts the scripted
+// ones rest on. repo and path are separate because a linked worktree (the shape
+// production always uses) is checked out somewhere other than the checkout it
+// hangs off; the flat-repo tests pass the same directory twice.
+func realWorktree(repo, path, slug string) Worktree {
+	return Worktree{repo: repo, branch: branchName(slug), path: path, runners: execRunners()}
+}
+
 // BEH-618: a long pipeline lets sibling PRs merge to main underneath the branch,
 // stranding it on a stale base. RebaseOntoMain replays the feature branch onto the
 // freshly-fetched origin/main before the push so the PR opens on a current base. It
@@ -229,7 +290,7 @@ func TestRebaseOntoMainReplaysViaResetAndCherryPickNotRebase(t *testing.T) {
 		}
 		return nil
 	})
-	if res := rebaseOntoMain("/wt", run); res != RebaseClean {
+	if res := fakeWorktree("beh-618", runners{run: run}).Rebase(); res != RebaseClean {
 		t.Fatalf("res = %v, want RebaseClean", res)
 	}
 
@@ -285,7 +346,7 @@ func TestRebaseOntoMainCherryPickConflictAbortsAndRestores(t *testing.T) {
 		}
 		return nil
 	})
-	if res := rebaseOntoMain("/wt", run); res != RebaseConflict {
+	if res := fakeWorktree("beh-618", runners{run: run}).Rebase(); res != RebaseConflict {
 		t.Fatalf("res = %v, want RebaseConflict", res)
 	}
 	var sawCherryAbort, sawRestore, sawSkip bool
@@ -352,7 +413,7 @@ func TestRebaseOntoMainSkipsInitiallyEmptyCommitInline(t *testing.T) {
 		}
 		return nil
 	})
-	if res := rebaseOntoMain("/wt", run); res != RebaseClean {
+	if res := fakeWorktree("beh-618", runners{run: run}).Rebase(); res != RebaseClean {
 		t.Fatalf("res = %v, want RebaseClean — an initially-empty commit must be auto-skipped inline, not escalated as a conflict (BEH-678)", res)
 	}
 	var sawSkip, sawAbort bool
@@ -393,7 +454,7 @@ func TestRebaseOntoMainCherryPickErrorWithoutPickInProgressIsConflict(t *testing
 		}
 		return nil
 	})
-	if res := rebaseOntoMain("/wt", run); res != RebaseConflict {
+	if res := fakeWorktree("beh-618", runners{run: run}).Rebase(); res != RebaseConflict {
 		t.Fatalf("res = %v, want RebaseConflict — an unexpected cherry-pick failure must fail safe, never RebaseClean (BEH-678)", res)
 	}
 	var sawSkip, sawRestore bool
@@ -457,7 +518,7 @@ func TestRebaseOntoMainAgainstRealGit(t *testing.T) {
 		git("add", "-A")
 		git("commit", "-q", "-m", "base")
 		// feat branch edits feat.txt.
-		git("checkout", "-q", "-b", BranchName("feat", slug))
+		git("checkout", "-q", "-b", branchName(slug))
 		write("feat.txt", "feat change\n")
 		git("add", "-A")
 		git("commit", "-q", "-m", "feat work")
@@ -467,21 +528,21 @@ func TestRebaseOntoMainAgainstRealGit(t *testing.T) {
 		git("add", "-A")
 		git("commit", "-q", "-m", "main moved")
 		git("update-ref", "refs/remotes/origin/main", "main")
-		git("checkout", "-q", BranchName("feat", slug))
+		git("checkout", "-q", branchName(slug))
 		return repo
 	}
 
 	t.Run("clean replay onto an advanced base", func(t *testing.T) {
 		// main touched a different file, so feat replays cleanly onto the new base.
 		repo := setupRepo(t, "unrelated.txt", "main-only\n")
-		if res := RebaseOntoMain(repo); res != RebaseClean {
+		if res := realWorktree(repo, repo, slug).Rebase(); res != RebaseClean {
 			t.Fatalf("res = %v, want RebaseClean", res)
 		}
 		// The replayed branch now sits on top of main: it carries main's new file.
 		if _, err := os.Stat(filepath.Join(repo, "unrelated.txt")); err != nil {
 			t.Fatalf("rebased branch should contain main's commit (unrelated.txt), stat err = %v", err)
 		}
-		if !WorktreeClean(repo) {
+		if !realWorktree(repo, repo, slug).Clean() {
 			t.Fatal("worktree should be clean after a successful rebase")
 		}
 		// BEH-579: a rebase rewrites the COMMITTER of every replayed commit to
@@ -500,18 +561,18 @@ func TestRebaseOntoMainAgainstRealGit(t *testing.T) {
 	t.Run("genuine conflict aborts and restores the branch", func(t *testing.T) {
 		// main edited the same file feat did → a real content conflict.
 		repo := setupRepo(t, "feat.txt", "main change\n")
-		featTip, err := HeadSHA(filepath.Join(repo))
+		featTip, err := realWorktree(repo, repo, slug).HeadSHA()
 		if err != nil {
 			t.Fatalf("read feat tip: %v", err)
 		}
-		if res := RebaseOntoMain(repo); res != RebaseConflict {
+		if res := realWorktree(repo, repo, slug).Rebase(); res != RebaseConflict {
 			t.Fatalf("res = %v, want RebaseConflict", res)
 		}
 		// Aborted cleanly: no rebase in progress, branch back at its original tip.
-		if !WorktreeClean(repo) {
+		if !realWorktree(repo, repo, slug).Clean() {
 			t.Fatal("worktree should be clean after the conflicting rebase was aborted")
 		}
-		after, err := HeadSHA(repo)
+		after, err := realWorktree(repo, repo, slug).HeadSHA()
 		if err != nil {
 			t.Fatalf("read tip after abort: %v", err)
 		}
@@ -560,7 +621,7 @@ func TestRebaseOntoMainDropsRedundantCommit(t *testing.T) {
 	git("commit", "-q", "-m", "base")
 	// feat branch makes two commits: the first sets shared.txt to a value main will
 	// also adopt (becomes redundant on replay); the second is feat-only (must survive).
-	git("checkout", "-q", "-b", BranchName("feat", slug))
+	git("checkout", "-q", "-b", branchName(slug))
 	write("shared.txt", "shared change\n")
 	git("add", "-A")
 	git("commit", "-q", "-m", "feat redundant")
@@ -575,12 +636,12 @@ func TestRebaseOntoMainDropsRedundantCommit(t *testing.T) {
 	git("add", "-A")
 	git("commit", "-q", "-m", "main moved")
 	git("update-ref", "refs/remotes/origin/main", "main")
-	git("checkout", "-q", BranchName("feat", slug))
+	git("checkout", "-q", branchName(slug))
 
-	if res := RebaseOntoMain(repo); res != RebaseClean {
+	if res := realWorktree(repo, repo, slug).Rebase(); res != RebaseClean {
 		t.Fatalf("res = %v, want RebaseClean — a commit already present in origin/main must be auto-dropped, not misread as a conflict (BEH-622)", res)
 	}
-	if !WorktreeClean(repo) {
+	if !realWorktree(repo, repo, slug).Clean() {
 		t.Fatal("worktree should be clean after the redundant commit was dropped")
 	}
 	// The non-redundant commit survived: feat.txt carries feat's change.
@@ -638,7 +699,7 @@ func TestRebaseOntoMainSkipsInitiallyEmptyCommitAgainstRealGit(t *testing.T) {
 	git("commit", "-q", "-m", "base")
 	// feat branch makes a real commit, then an INITIALLY-empty --allow-empty commit
 	// (zero net diff — the shape a superseded ticket's documentation handoff leaves).
-	git("checkout", "-q", "-b", BranchName("feat", slug))
+	git("checkout", "-q", "-b", branchName(slug))
 	write("feat.txt", "feat change\n")
 	git("add", "-A")
 	git("commit", "-q", "-m", "feat keep")
@@ -649,12 +710,12 @@ func TestRebaseOntoMainSkipsInitiallyEmptyCommitAgainstRealGit(t *testing.T) {
 	git("add", "-A")
 	git("commit", "-q", "-m", "main moved")
 	git("update-ref", "refs/remotes/origin/main", "main")
-	git("checkout", "-q", BranchName("feat", slug))
+	git("checkout", "-q", branchName(slug))
 
-	if res := RebaseOntoMain(repo); res != RebaseClean {
+	if res := realWorktree(repo, repo, slug).Rebase(); res != RebaseClean {
 		t.Fatalf("res = %v, want RebaseClean — an initially-empty commit must be auto-skipped inline, not misread as a conflict (BEH-678)", res)
 	}
-	if !WorktreeClean(repo) {
+	if !realWorktree(repo, repo, slug).Clean() {
 		t.Fatal("worktree should be clean after the initially-empty commit was skipped")
 	}
 	// The real commit survived: feat.txt carries feat's change.
@@ -710,7 +771,7 @@ func TestRebaseOntoMainStripsReadySentinelBeforeRebase(t *testing.T) {
 	write("feat.txt", "base\n")
 	git("add", "-A")
 	git("commit", "-q", "-m", "base")
-	git("checkout", "-q", "-b", BranchName("feat", slug))
+	git("checkout", "-q", "-b", branchName(slug))
 	write("feat.txt", "feat change\n")
 	git("add", "-A")
 	git("commit", "-q", "-m", "feat work")
@@ -723,11 +784,11 @@ func TestRebaseOntoMainStripsReadySentinelBeforeRebase(t *testing.T) {
 	git("add", "-A")
 	git("commit", "-q", "-m", "main moved")
 	git("update-ref", "refs/remotes/origin/main", "main")
-	git("checkout", "-q", BranchName("feat", slug))
+	git("checkout", "-q", branchName(slug))
 	// The live worktree carries the untracked readiness sentinel new-worktree.sh drops.
 	write(WorktreeReadySentinel, "")
 
-	if res := RebaseOntoMain(repo); res != RebaseClean {
+	if res := realWorktree(repo, repo, slug).Rebase(); res != RebaseClean {
 		t.Fatalf("res = %v, want RebaseClean — the untracked sentinel must not block (or be misreported as a conflict for) the rebase", res)
 	}
 	// The replayed branch sits on top of main: it carries main's new file.
@@ -749,10 +810,12 @@ func TestRebaseOntoMainReplaysInLinkedWorktree(t *testing.T) {
 		t.Skip("git not on PATH")
 	}
 	const slug = "beh-618-linked"
-	// setupLinked returns the LINKED worktree path (where feat is checked out) — the
-	// path RebaseOntoMain operates on in production. mainFile/mainContents control
-	// whether main's advancing commit collides with feat.txt (conflict) or not (clean).
-	setupLinked := func(t *testing.T, mainFile, mainContents string) string {
+	// setupLinked returns the linked worktree's path (for the test's own file reads)
+	// and the [Worktree] the harness would hold for it — a worktree checked out
+	// somewhere other than the checkout it hangs off, which is the production shape.
+	// mainFile/mainContents control whether main's advancing commit collides with
+	// feat.txt (conflict) or not (clean).
+	setupLinked := func(t *testing.T, mainFile, mainContents string) (string, Worktree) {
 		t.Helper()
 		base := t.TempDir()
 		git := func(dir string, args ...string) {
@@ -774,7 +837,7 @@ func TestRebaseOntoMainReplaysInLinkedWorktree(t *testing.T) {
 		git(base, "add", "-A")
 		git(base, "commit", "-q", "-m", "base")
 		// feat branch edits feat.txt, then main advances; origin/main tracks main's tip.
-		git(base, "checkout", "-q", "-b", BranchName("feat", slug))
+		git(base, "checkout", "-q", "-b", branchName(slug))
 		write(base, "feat.txt", "feat change\n")
 		git(base, "add", "-A")
 		git(base, "commit", "-q", "-m", "feat work")
@@ -787,21 +850,21 @@ func TestRebaseOntoMainReplaysInLinkedWorktree(t *testing.T) {
 		// can claim the branch). This is the harness's real shape (ADR-0002).
 		git(base, "checkout", "-q", "main")
 		linked := filepath.Join(t.TempDir(), "wt")
-		git(base, "worktree", "add", "-q", linked, BranchName("feat", slug))
+		git(base, "worktree", "add", "-q", linked, branchName(slug))
 		// new-worktree.sh drops the untracked readiness sentinel in every worktree.
 		write(linked, WorktreeReadySentinel, "")
-		return linked
+		return linked, realWorktree(base, linked, slug)
 	}
 
 	t.Run("clean replay inside a linked worktree", func(t *testing.T) {
-		linked := setupLinked(t, "unrelated.txt", "main-only\n")
-		if res := RebaseOntoMain(linked); res != RebaseClean {
+		linked, w := setupLinked(t, "unrelated.txt", "main-only\n")
+		if res := w.Rebase(); res != RebaseClean {
 			t.Fatalf("res = %v, want RebaseClean — a clean replay must not false-fail in a linked worktree (BEH-618)", res)
 		}
 		if _, err := os.Stat(filepath.Join(linked, "unrelated.txt")); err != nil {
 			t.Fatalf("replayed branch should carry main's new file (unrelated.txt), stat err = %v", err)
 		}
-		if !WorktreeClean(linked) {
+		if !w.Clean() {
 			t.Fatal("linked worktree should be clean after a successful replay")
 		}
 		out, err := exec.Command("git", "-C", linked, "log", "-1", "--format=%cn|%ce").Output()
@@ -814,18 +877,18 @@ func TestRebaseOntoMainReplaysInLinkedWorktree(t *testing.T) {
 	})
 
 	t.Run("genuine conflict aborts and restores inside a linked worktree", func(t *testing.T) {
-		linked := setupLinked(t, "feat.txt", "main change\n")
-		featTip, err := HeadSHA(linked)
+		_, w := setupLinked(t, "feat.txt", "main change\n")
+		featTip, err := w.HeadSHA()
 		if err != nil {
 			t.Fatalf("read feat tip: %v", err)
 		}
-		if res := RebaseOntoMain(linked); res != RebaseConflict {
+		if res := w.Rebase(); res != RebaseConflict {
 			t.Fatalf("res = %v, want RebaseConflict", res)
 		}
-		if !WorktreeClean(linked) {
+		if !w.Clean() {
 			t.Fatal("linked worktree should be clean after the conflicting replay was aborted")
 		}
-		after, err := HeadSHA(linked)
+		after, err := w.HeadSHA()
 		if err != nil {
 			t.Fatalf("read tip after abort: %v", err)
 		}
@@ -844,11 +907,11 @@ func TestRebaseOntoMainReplaysInLinkedWorktree(t *testing.T) {
 // a non-change regardless of .gitignore. The test repo has no .gitignore, so the
 // sentinel shows as untracked — exactly the stale-base condition.
 func TestWorktreeCleanIgnoresReadySentinel(t *testing.T) {
-	_, wt := newRepoWithWorktree(t, "beh-612")
+	wt, w := newRepoWithWorktree(t, "beh-612")
 	if err := os.WriteFile(filepath.Join(wt, WorktreeReadySentinel), nil, 0o644); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
-	if !WorktreeClean(wt) {
+	if !w.Clean() {
 		t.Fatal("a worktree whose only change is the readiness sentinel must be clean")
 	}
 }
@@ -857,14 +920,14 @@ func TestWorktreeCleanIgnoresReadySentinel(t *testing.T) {
 // must still read as dirty, so the gate never waves through a tree that differs from
 // what would ship.
 func TestWorktreeCleanStillDetectsRealChangesAlongsideSentinel(t *testing.T) {
-	_, wt := newRepoWithWorktree(t, "beh-612b")
+	wt, w := newRepoWithWorktree(t, "beh-612b")
 	if err := os.WriteFile(filepath.Join(wt, WorktreeReadySentinel), nil, 0o644); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(wt, "real.ts"), []byte("x\n"), 0o644); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
-	if WorktreeClean(wt) {
+	if w.Clean() {
 		t.Fatal("a worktree with real uncommitted work must NOT be clean, even alongside the sentinel")
 	}
 }
@@ -877,11 +940,12 @@ func TestWorktreeCleanStillDetectsRealChangesAlongsideSentinel(t *testing.T) {
 func TestIsRebasedOntoTrueWhenAncestor(t *testing.T) {
 	// `merge-base --is-ancestor` exits 0 → the ref is an ancestor → rebased.
 	run, calls := scriptedRunner(0, nil)
-	if !isRebasedOnto("/wt", "origin/main", run) {
+	wt := fakeWorktree("beh-581", runners{run: run})
+	if !wt.IsRebasedOnto("origin/main") {
 		t.Fatal("exit 0 from merge-base --is-ancestor should report rebased (true)")
 	}
 	got := strings.Join((*calls)[0], " ")
-	want := "git -C /wt merge-base --is-ancestor origin/main HEAD"
+	want := "git -C " + wt.Path() + " merge-base --is-ancestor origin/main HEAD"
 	if got != want {
 		t.Fatalf("argv = %q, want %q", got, want)
 	}
@@ -890,7 +954,7 @@ func TestIsRebasedOntoTrueWhenAncestor(t *testing.T) {
 func TestIsRebasedOntoFalseWhenNotAncestor(t *testing.T) {
 	// A non-zero exit (ref not an ancestor) → NOT rebased.
 	run, _ := scriptedRunner(1, errors.New("exit status 1"))
-	if isRebasedOnto("/wt", "origin/main", run) {
+	if fakeWorktree("beh-581", runners{run: run}).IsRebasedOnto("origin/main") {
 		t.Fatal("a non-zero merge-base exit should report not-rebased (false)")
 	}
 }
@@ -922,7 +986,7 @@ func TestIsRebasedOntoAgainstRealGit(t *testing.T) {
 	write("base.txt", "base\n")
 	git("add", "-A")
 	git("commit", "-q", "-m", "base")
-	git("checkout", "-q", "-b", BranchName("feat", slug))
+	git("checkout", "-q", "-b", branchName(slug))
 	write("feat.txt", "feat\n")
 	git("add", "-A")
 	git("commit", "-q", "-m", "feat work")
@@ -932,17 +996,17 @@ func TestIsRebasedOntoAgainstRealGit(t *testing.T) {
 	git("add", "-A")
 	git("commit", "-q", "-m", "main moved")
 	git("update-ref", "refs/remotes/origin/main", "main")
-	git("checkout", "-q", BranchName("feat", slug))
+	git("checkout", "-q", branchName(slug))
 
 	// Before rebasing, origin/main is NOT an ancestor of feat's tip.
-	if IsRebasedOnto(repo, "origin/main") {
+	if realWorktree(repo, repo, slug).IsRebasedOnto("origin/main") {
 		t.Fatal("feat on its stale base should NOT read as rebased onto origin/main")
 	}
-	if res := RebaseOntoMain(repo); res != RebaseClean {
+	if res := realWorktree(repo, repo, slug).Rebase(); res != RebaseClean {
 		t.Fatalf("setup rebase = %v, want RebaseClean", res)
 	}
 	// After a clean replay, origin/main IS an ancestor.
-	if !IsRebasedOnto(repo, "origin/main") {
+	if !realWorktree(repo, repo, slug).IsRebasedOnto("origin/main") {
 		t.Fatal("after rebasing, feat should read as rebased onto origin/main")
 	}
 }
@@ -953,11 +1017,12 @@ func TestIsRebasedOntoAgainstRealGit(t *testing.T) {
 // conflict. `git merge-base <ref> HEAD` exits 0 when a common ancestor exists.
 func TestIsDisjointFromFalseWhenCommonAncestor(t *testing.T) {
 	run, calls := scriptedRunner(0, nil)
-	if isDisjointFrom("/wt", "origin/main", run) {
+	wt := fakeWorktree("beh-597", runners{run: run})
+	if wt.IsDisjointFrom("origin/main") {
 		t.Fatal("exit 0 from merge-base (a common ancestor exists) should report NOT disjoint")
 	}
 	got := strings.Join((*calls)[0], " ")
-	want := "git -C /wt merge-base origin/main HEAD"
+	want := "git -C " + wt.Path() + " merge-base origin/main HEAD"
 	if got != want {
 		t.Fatalf("argv = %q, want %q", got, want)
 	}
@@ -966,7 +1031,7 @@ func TestIsDisjointFromFalseWhenCommonAncestor(t *testing.T) {
 func TestIsDisjointFromTrueWhenNoCommonAncestor(t *testing.T) {
 	// A non-zero exit (no merge base — disjoint histories) → disjoint.
 	run, _ := scriptedRunner(1, errors.New("exit status 1"))
-	if !isDisjointFrom("/wt", "origin/main", run) {
+	if !fakeWorktree("beh-597", runners{run: run}).IsDisjointFrom("origin/main") {
 		t.Fatal("a non-zero merge-base exit (no common ancestor) should report disjoint (true)")
 	}
 }
@@ -1000,20 +1065,20 @@ func TestIsDisjointFromAgainstRealGit(t *testing.T) {
 	git("update-ref", "refs/remotes/origin/main", "main")
 
 	// A normal feature branch off main shares main's history → NOT disjoint.
-	git("checkout", "-q", "-b", BranchName("feat", "beh-597-joined"))
+	git("checkout", "-q", "-b", branchName("beh-597-joined"))
 	write("feat.txt", "feat\n")
 	git("add", "-A")
 	git("commit", "-q", "-m", "feat work")
-	if IsDisjointFrom(repo, "origin/main") {
+	if realWorktree(repo, repo, "beh-597-joined").IsDisjointFrom("origin/main") {
 		t.Fatal("a feature branch off main shares a common ancestor — must NOT read as disjoint")
 	}
 
 	// An orphan branch (built with no parent) shares NO history with main → disjoint.
-	git("checkout", "-q", "--orphan", BranchName("feat", "beh-597-orphan"))
+	git("checkout", "-q", "--orphan", branchName("beh-597-orphan"))
 	write("orphan.txt", "orphan\n")
 	git("add", "-A")
 	git("commit", "-q", "-m", "orphan root")
-	if !IsDisjointFrom(repo, "origin/main") {
+	if !realWorktree(repo, repo, "beh-597-orphan").IsDisjointFrom("origin/main") {
 		t.Fatal("an orphan branch with no common ancestor must read as disjoint")
 	}
 }
@@ -1052,26 +1117,26 @@ func TestRegraftOntoBaseEscapesDisjointHistory(t *testing.T) {
 	// Build a DISJOINT branch (orphan root, no shared history) that carries the
 	// same base file plus a verified fix — the BEH-500 shape, where the content
 	// diff against origin/main is just the real fix despite the disjoint root.
-	git("checkout", "-q", "--orphan", BranchName("feat", "beh-500"))
+	git("checkout", "-q", "--orphan", branchName("beh-500"))
 	git("rm", "-rfq", "--cached", ".")
 	write("base.txt", "base\n")
 	write("fix.txt", "the verified fix\n")
 	git("add", "-A")
 	git("commit", "-q", "-m", "handoff: the verified fix")
-	if !IsDisjointFrom(repo, "origin/main") {
+	if !realWorktree(repo, repo, "beh-500").IsDisjointFrom("origin/main") {
 		t.Fatal("fixture precondition: the orphan branch must be disjoint from origin/main")
 	}
 
-	if err := RegraftOntoBase(repo, "origin/main"); err != nil {
+	if err := realWorktree(repo, repo, "beh-500").RegraftOntoBase("origin/main"); err != nil {
 		t.Fatalf("RegraftOntoBase: %v", err)
 	}
 
 	// After the regraft the branch shares origin/main's history (no longer disjoint).
-	if IsDisjointFrom(repo, "origin/main") {
+	if realWorktree(repo, repo, "beh-500").IsDisjointFrom("origin/main") {
 		t.Fatal("branch is still disjoint after regraft — the re-root did not take")
 	}
 	// origin/main is now an ancestor of the branch tip (a clean rebase target).
-	if !IsRebasedOnto(repo, "origin/main") {
+	if !realWorktree(repo, repo, "beh-500").IsRebasedOnto("origin/main") {
 		t.Fatal("origin/main must be an ancestor of the regrafted tip")
 	}
 	// The verified fix survived the regraft.
@@ -1116,10 +1181,10 @@ func TestRegraftOntoBaseEmptyDiffErrors(t *testing.T) {
 
 	// An orphan branch with the SAME tree as main: disjoint history, but zero content
 	// diff against origin/main.
-	git("checkout", "-q", "--orphan", BranchName("feat", "beh-500-empty"))
+	git("checkout", "-q", "--orphan", branchName("beh-500-empty"))
 	git("add", "-A")
 	git("commit", "-q", "-m", "identical tree, unrelated root")
-	if err := RegraftOntoBase(repo, "origin/main"); err == nil {
+	if err := realWorktree(repo, repo, "beh-500-empty").RegraftOntoBase("origin/main"); err == nil {
 		t.Fatal("RegraftOntoBase must error when there is no content diff to regraft")
 	}
 }
@@ -1130,11 +1195,12 @@ func TestRegraftOntoBaseEmptyDiffErrors(t *testing.T) {
 // exits 0 when there is no diff and non-zero when there is, so exit 0 → empty.
 func TestBranchDiffEmptyTrueWhenNoDiff(t *testing.T) {
 	run, calls := scriptedRunner(0, nil)
-	if !branchDiffEmpty("/wt", run) {
+	wt := fakeWorktree("beh-603", runners{run: run})
+	if !wt.DiffEmpty() {
 		t.Fatal("exit 0 from diff --quiet (no changes) should report the diff empty (true)")
 	}
 	got := strings.Join((*calls)[0], " ")
-	want := "git -C /wt diff --quiet origin/main"
+	want := "git -C " + wt.Path() + " diff --quiet origin/main"
 	if got != want {
 		t.Fatalf("argv = %q, want %q", got, want)
 	}
@@ -1143,7 +1209,7 @@ func TestBranchDiffEmptyTrueWhenNoDiff(t *testing.T) {
 func TestBranchDiffEmptyFalseWhenDiffPresent(t *testing.T) {
 	// A non-zero exit means `diff --quiet` found changes → NOT empty.
 	run, _ := scriptedRunner(1, errors.New("exit status 1"))
-	if branchDiffEmpty("/wt", run) {
+	if fakeWorktree("beh-603", runners{run: run}).DiffEmpty() {
 		t.Fatal("a non-zero diff --quiet exit (changes present) should report not-empty (false)")
 	}
 }
@@ -1153,7 +1219,7 @@ func TestBranchDiffEmptyFalseWhenDiffPresent(t *testing.T) {
 // would rather attempt the push than wrongly advise a close.
 func TestBranchDiffEmptyFalseOnError(t *testing.T) {
 	run, _ := scriptedRunner(1, errors.New("fatal: bad revision 'origin/main'"))
-	if branchDiffEmpty("/wt", run) {
+	if fakeWorktree("beh-603", runners{run: run}).DiffEmpty() {
 		t.Fatal("a git error must read as not-empty (fail-safe) so a close is never recommended on doubt")
 	}
 }
@@ -1187,9 +1253,9 @@ func TestBranchDiffEmptyAgainstRealGit(t *testing.T) {
 	git("update-ref", "refs/remotes/origin/main", "main")
 
 	// An empty-commit branch: a commit ahead of main that changes nothing.
-	git("checkout", "-q", "-b", BranchName("feat", "beh-603-empty"))
+	git("checkout", "-q", "-b", branchName("beh-603-empty"))
 	git("commit", "-q", "--allow-empty", "-m", "document finding (no functional change)")
-	if !BranchDiffEmpty(repo) {
+	if !realWorktree(repo, repo, "beh-603-empty").DiffEmpty() {
 		t.Fatal("an empty-commit branch makes no net change against origin/main — must read as empty diff")
 	}
 
@@ -1197,7 +1263,7 @@ func TestBranchDiffEmptyAgainstRealGit(t *testing.T) {
 	write("feat.txt", "feat\n")
 	git("add", "-A")
 	git("commit", "-q", "-m", "real change")
-	if BranchDiffEmpty(repo) {
+	if realWorktree(repo, repo, "beh-603-empty").DiffEmpty() {
 		t.Fatal("a branch with a committed file change must NOT read as an empty diff")
 	}
 }
@@ -1233,9 +1299,9 @@ func TestGatherTddGroundTruthFlagsDisjointHistory(t *testing.T) {
 		git("update-ref", "refs/remotes/origin/main", "main")
 		const slug = "beh-597-gather"
 		if orphan {
-			git("checkout", "-q", "--orphan", BranchName("feat", slug))
+			git("checkout", "-q", "--orphan", branchName(slug))
 		} else {
-			git("checkout", "-q", "-b", BranchName("feat", slug))
+			git("checkout", "-q", "-b", branchName(slug))
 		}
 		write("feat.txt", "feat\n")
 		git("add", "-A")
@@ -1245,7 +1311,7 @@ func TestGatherTddGroundTruthFlagsDisjointHistory(t *testing.T) {
 
 	t.Run("orphan branch is disjoint", func(t *testing.T) {
 		repo, slug := mkRepo(true)
-		truth := GatherTddGroundTruth(repo, "feat", slug)
+		truth := realWorktree(repo, repo, slug).GroundTruth()
 		if !truth.DisjointHistory {
 			t.Errorf("an orphan branch (no common ancestor) must be flagged disjoint, got %+v", truth)
 		}
@@ -1256,7 +1322,7 @@ func TestGatherTddGroundTruthFlagsDisjointHistory(t *testing.T) {
 
 	t.Run("normal feature branch is not disjoint", func(t *testing.T) {
 		repo, slug := mkRepo(false)
-		truth := GatherTddGroundTruth(repo, "feat", slug)
+		truth := realWorktree(repo, repo, slug).GroundTruth()
 		if truth.DisjointHistory {
 			t.Errorf("a feature branch off main shares a common ancestor — must NOT be flagged disjoint, got %+v", truth)
 		}
@@ -1270,13 +1336,14 @@ func TestGatherTddGroundTruthFlagsDisjointHistory(t *testing.T) {
 // (no return): a no-op abort when neither is in progress fails harmlessly.
 func TestAbortRebaseAbortsBothRebaseAndCherryPick(t *testing.T) {
 	run, calls := scriptedRunner(0, nil)
-	abortRebase("/wt", run)
+	wt := fakeWorktree("beh-581", runners{run: run})
+	wt.AbortRebase()
 	var sawRebaseAbort, sawCherryAbort bool
 	for _, c := range *calls {
 		switch strings.Join(c, " ") {
-		case "git -C /wt rebase --abort":
+		case "git -C " + wt.Path() + " rebase --abort":
 			sawRebaseAbort = true
-		case "git -C /wt cherry-pick --abort":
+		case "git -C " + wt.Path() + " cherry-pick --abort":
 			sawCherryAbort = true
 		}
 	}
@@ -1299,7 +1366,7 @@ func TestStripWorktreePathsRemovesEachDeclaredPath(t *testing.T) {
 		}
 	}
 
-	if err := StripWorktreePaths(wt, []string{"web/node_modules", "obj"}); err != nil {
+	if err := realWorktree(wt, wt, "beh-412").StripPaths([]string{"web/node_modules", "obj"}); err != nil {
 		t.Fatalf("expected success, got %v", err)
 	}
 
@@ -1319,7 +1386,7 @@ func TestStripWorktreePathsIsNoOpWhenAbsent(t *testing.T) {
 		t.Fatalf("setup: %v", err)
 	}
 
-	if err := StripWorktreePaths(wt, []string{"web/node_modules"}); err != nil {
+	if err := realWorktree(wt, wt, "beh-412").StripPaths([]string{"web/node_modules"}); err != nil {
 		t.Fatalf("expected no error when the path is absent, got %v", err)
 	}
 }
@@ -1333,7 +1400,7 @@ func TestStripWorktreePathsWithNoDeclarationStripsNothing(t *testing.T) {
 		t.Fatalf("setup: %v", err)
 	}
 
-	if err := StripWorktreePaths(wt, nil); err != nil {
+	if err := realWorktree(wt, wt, "beh-412").StripPaths(nil); err != nil {
 		t.Fatalf("expected no error with no declared paths, got %v", err)
 	}
 	if _, err := os.Stat(src); err != nil {
@@ -1356,7 +1423,7 @@ func TestStripWorktreePathsLeavesSourceIntact(t *testing.T) {
 		t.Fatalf("setup: %v", err)
 	}
 
-	if err := StripWorktreePaths(wt, []string{"web/node_modules"}); err != nil {
+	if err := realWorktree(wt, wt, "beh-412").StripPaths([]string{"web/node_modules"}); err != nil {
 		t.Fatalf("expected success, got %v", err)
 	}
 
@@ -1389,7 +1456,7 @@ func TestStripWorktreePathsRefusesPathsOutsideTheWorktree(t *testing.T) {
 				t.Fatalf("setup: %v", err)
 			}
 
-			if err := StripWorktreePaths(wt, []string{rel}); err == nil {
+			if err := realWorktree(wt, wt, "beh-412").StripPaths([]string{rel}); err == nil {
 				t.Errorf("StripWorktreePaths(%q) must be refused, got nil error", rel)
 			}
 			if _, err := os.Stat(sibling); err != nil {
@@ -1420,23 +1487,23 @@ func TestBranchExistsTracksLocalFeatureBranch(t *testing.T) {
 	gitInRepo("commit", "-q", "--allow-empty", "-m", "root")
 
 	const slug = "beh-553-retro-precondition"
-	if BranchExists(repo, "feat", slug) {
+	if realWorktree(repo, repo, slug).BranchExists() {
 		t.Fatal("BranchExists should be false before feat/<slug> is created")
 	}
 
-	gitInRepo("branch", BranchName("feat", slug))
-	if !BranchExists(repo, "feat", slug) {
+	gitInRepo("branch", branchName(slug))
+	if !realWorktree(repo, repo, slug).BranchExists() {
 		t.Error("BranchExists should be true once feat/<slug> resolves")
 	}
 
 	// An unrelated slug must not resolve — the gate is keyed to the exact branch.
-	if BranchExists(repo, "feat", "beh-999-nope") {
+	if realWorktree(repo, repo, "beh-999-nope").BranchExists() {
 		t.Error("BranchExists must not report a branch that was never created")
 	}
 
 	// A path that isn't a git repo makes rev-parse fail; the documented contract
 	// treats any git failure as "ref absent" (false), never a panic or true.
-	if BranchExists(t.TempDir(), "feat", slug) {
+	if realWorktree(t.TempDir(), t.TempDir(), slug).BranchExists() {
 		t.Error("BranchExists must read an unreadable ref (non-repo path) as absent")
 	}
 }
@@ -1444,7 +1511,7 @@ func TestBranchExistsTracksLocalFeatureBranch(t *testing.T) {
 func TestPushUsesNoVerifyAndCorrectArgs(t *testing.T) {
 	clock := newFakeClock()
 	run, calls := scriptedRunner(0, nil)
-	if err := push("/herd", "feat", "beh-403", run, clock.sleep, clock.now); err != nil {
+	if err := fakeWorktree("beh-403", runners{run: run, sleep: clock.sleep, now: clock.now}).Push(); err != nil {
 		t.Fatalf("expected success, got %v", err)
 	}
 	if len(*calls) != 1 {
@@ -1469,7 +1536,7 @@ func TestPushUsesNoVerifyAndCorrectArgs(t *testing.T) {
 func TestPushForceWithLeaseUsesLeaseAndNoVerify(t *testing.T) {
 	clock := newFakeClock()
 	run, calls := scriptedRunner(0, nil)
-	if err := pushForceWithLease("/herd", "feat", "beh-570", run, clock.sleep, clock.now); err != nil {
+	if err := fakeWorktree("beh-570", runners{run: run, sleep: clock.sleep, now: clock.now}).PushForceWithLease(); err != nil {
 		t.Fatalf("expected success, got %v", err)
 	}
 	if len(*calls) != 1 {
@@ -1490,7 +1557,7 @@ func TestPushForceWithLeaseUsesLeaseAndNoVerify(t *testing.T) {
 func TestPushForceWithLeaseRetriesThenSucceeds(t *testing.T) {
 	clock := newFakeClock()
 	run, calls := scriptedRunner(2, errors.New("exit status 128"))
-	if err := pushForceWithLease("/herd", "feat", "beh-570", run, clock.sleep, clock.now); err != nil {
+	if err := fakeWorktree("beh-570", runners{run: run, sleep: clock.sleep, now: clock.now}).PushForceWithLease(); err != nil {
 		t.Fatalf("expected eventual success, got %v", err)
 	}
 	if len(*calls) != 3 {
@@ -1502,7 +1569,7 @@ func TestPushRetriesThenSucceeds(t *testing.T) {
 	// Two transient failures, then success — must not be stranded.
 	clock := newFakeClock()
 	run, calls := scriptedRunner(2, errors.New("exit status 128"))
-	if err := push("/herd", "feat", "beh-403", run, clock.sleep, clock.now); err != nil {
+	if err := fakeWorktree("beh-403", runners{run: run, sleep: clock.sleep, now: clock.now}).Push(); err != nil {
 		t.Fatalf("expected eventual success, got %v", err)
 	}
 	if len(*calls) != 3 {
@@ -1516,7 +1583,7 @@ func TestPushRetriesThenSucceeds(t *testing.T) {
 func TestPushRidesOutMultiMinuteBlip(t *testing.T) {
 	clock := newFakeClock()
 	run, calls := blipRunner(clock, 2*time.Minute, errors.New("exit status 128"))
-	if err := push("/herd", "feat", "beh-403", run, clock.sleep, clock.now); err != nil {
+	if err := fakeWorktree("beh-403", runners{run: run, sleep: clock.sleep, now: clock.now}).Push(); err != nil {
 		t.Fatalf("expected eventual success once the blip cleared, got %v", err)
 	}
 	if *calls < 2 {
@@ -1533,7 +1600,7 @@ func TestPushGivesUpNearBudgetAfterPersistentFailure(t *testing.T) {
 	clock := newFakeClock()
 	boom := errors.New("exit status 128")
 	run, calls := scriptedRunner(1<<30, boom) // always fails
-	err := push("/herd", "feat", "beh-403", run, clock.sleep, clock.now)
+	err := fakeWorktree("beh-403", runners{run: run, sleep: clock.sleep, now: clock.now}).Push()
 	if !errors.Is(err, boom) {
 		t.Fatalf("expected the last error %v, got %v", boom, err)
 	}
@@ -1559,7 +1626,7 @@ func TestPushFailsFastOnPermanentAuthFailure(t *testing.T) {
 	authErr := errors.New("exit status 128: fatal: unable to access " +
 		"'https://github.com/org/herd.git/': The requested URL returned error: 403")
 	run, calls := scriptedRunner(1<<30, authErr) // would fail forever if retried
-	err := push("/herd", "feat", "beh-475", run, sleep, clock.now)
+	err := fakeWorktree("beh-475", runners{run: run, sleep: sleep, now: clock.now}).Push()
 	if !errors.Is(err, authErr) {
 		t.Fatalf("expected the underlying auth error preserved, got %v", err)
 	}
@@ -1610,7 +1677,7 @@ func TestNonTransientClassifiesOnlyAuthFailures(t *testing.T) {
 func TestFetchMainRetriesThenSucceeds(t *testing.T) {
 	clock := newFakeClock()
 	run, calls := scriptedRunner(1, errors.New("exit status 128"))
-	if err := fetchMain("/herd", run, clock.sleep, clock.now); err != nil {
+	if err := fakeCheckout(runners{run: run, sleep: clock.sleep, now: clock.now}).FetchMain(); err != nil {
 		t.Fatalf("expected eventual success, got %v", err)
 	}
 	if len(*calls) != 2 {
@@ -1632,7 +1699,7 @@ func TestWithRetryBackoffIsExponentialAndCapped(t *testing.T) {
 	clock := newFakeClock()
 	var delays []time.Duration
 	sleep := func(d time.Duration) { delays = append(delays, d); clock.sleep(d) }
-	if err := withRetry(func() error { return errors.New("always") }, sleep, clock.now); err == nil {
+	if err := fakeCheckout(runners{sleep: sleep, now: clock.now}).withRetry(func() error { return errors.New("always") }); err == nil {
 		t.Fatal("expected an error when op always fails")
 	}
 	if len(delays) < 2 {
@@ -1658,7 +1725,7 @@ func TestWithRetryNoSleepOnFirstSuccess(t *testing.T) {
 	clock := newFakeClock()
 	sleeps := 0
 	sleep := func(d time.Duration) { sleeps++; clock.sleep(d) }
-	if err := withRetry(func() error { return nil }, sleep, clock.now); err != nil {
+	if err := fakeCheckout(runners{sleep: sleep, now: clock.now}).withRetry(func() error { return nil }); err != nil {
 		t.Fatalf("expected success, got %v", err)
 	}
 	if sleeps != 0 {
@@ -1765,11 +1832,12 @@ func scriptedOutput(stdout string, err error) (outputRunner, *[][]string) {
 // an all-docs diff is docs-only.
 func TestBranchDocsOnlyTrueForAllDocsDiff(t *testing.T) {
 	run, calls := scriptedOutput("AGENTS.md\ndocs/adr/0026.md\n", nil)
-	if !branchDocsOnly("/wt", consumerRoots, run) {
+	wt := fakeWorktree("beh-687", runners{output: run})
+	if !wt.DocsOnly(consumerRoots) {
 		t.Fatal("a name-only diff of pure docs must classify as docs-only")
 	}
 	got := strings.Join((*calls)[0], " ")
-	want := "git -C /wt diff --name-only origin/main"
+	want := "git -C " + wt.Path() + " diff --name-only origin/main"
 	if got != want {
 		t.Fatalf("argv = %q, want %q", got, want)
 	}
@@ -1777,7 +1845,7 @@ func TestBranchDocsOnlyTrueForAllDocsDiff(t *testing.T) {
 
 func TestBranchDocsOnlyFalseWhenCodeChanged(t *testing.T) {
 	run, _ := scriptedOutput("AGENTS.md\nweb/src/app.tsx\n", nil)
-	if branchDocsOnly("/wt", consumerRoots, run) {
+	if fakeWorktree("beh-687", runners{output: run}).DocsOnly(consumerRoots) {
 		t.Fatal("a diff that touches web/src must not classify as docs-only")
 	}
 }
@@ -1786,7 +1854,7 @@ func TestBranchDocsOnlyFalseWhenCodeChanged(t *testing.T) {
 // not a docs-only ship — falling back to false keeps the normal gate + watch.
 func TestBranchDocsOnlyFalseWhenDiffEmpty(t *testing.T) {
 	run, _ := scriptedOutput("\n", nil)
-	if branchDocsOnly("/wt", consumerRoots, run) {
+	if fakeWorktree("beh-687", runners{output: run}).DocsOnly(consumerRoots) {
 		t.Fatal("an empty name-only diff must not classify as docs-only")
 	}
 }
@@ -1795,7 +1863,7 @@ func TestBranchDocsOnlyFalseWhenDiffEmpty(t *testing.T) {
 // so the harness never skips the gate + watch on doubt.
 func TestBranchDocsOnlyFalseOnError(t *testing.T) {
 	run, _ := scriptedOutput("", errors.New("fatal: bad revision 'origin/main'"))
-	if branchDocsOnly("/wt", consumerRoots, run) {
+	if fakeWorktree("beh-687", runners{output: run}).DocsOnly(consumerRoots) {
 		t.Fatal("a git error must read as not-docs-only (fail-safe)")
 	}
 }
@@ -1830,18 +1898,18 @@ func TestBranchDocsOnlyAgainstRealGit(t *testing.T) {
 	git("commit", "-q", "-m", "base")
 	git("update-ref", "refs/remotes/origin/main", "main")
 
-	git("checkout", "-q", "-b", BranchName("feat", "beh-687-docs"))
+	git("checkout", "-q", "-b", branchName("beh-687-docs"))
 	write("AGENTS.md", "base\nnew guidance line\n")
 	git("add", "-A")
 	git("commit", "-q", "-m", "docs: add guidance")
-	if !BranchDocsOnly(repo, consumerRoots) {
+	if !realWorktree(repo, repo, "beh-687-docs").DocsOnly(consumerRoots) {
 		t.Fatal("a branch whose only change is a root-markdown edit must be docs-only")
 	}
 
 	write("web/src/app.tsx", "export const x = 1\n")
 	git("add", "-A")
 	git("commit", "-q", "-m", "feat: add code")
-	if BranchDocsOnly(repo, consumerRoots) {
+	if realWorktree(repo, repo, "beh-687-docs").DocsOnly(consumerRoots) {
 		t.Fatal("adding a web/src file must flip the branch off docs-only")
 	}
 }
