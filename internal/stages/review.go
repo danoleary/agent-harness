@@ -97,7 +97,7 @@ const (
 // Every host-side effect goes through h, so the whole body is reachable from a
 // test with hostio.NewFake().
 func Review(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Result {
-	slug := strings.ToLower(args.Identifier)
+	slug := ticket.Slug(args.Identifier)
 	worktreePath := h.WorktreePath(slug)
 
 	dry := ""

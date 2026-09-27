@@ -15,8 +15,6 @@
 package ship
 
 import (
-	"strings"
-
 	"github.com/danoleary/agent-harness/internal/hostio"
 	"github.com/danoleary/agent-harness/internal/pr"
 	"github.com/danoleary/agent-harness/internal/ticket"
@@ -100,7 +98,7 @@ type Recovery struct {
 // release and a later run re-grabs it — an attempt is never worse than no attempt.
 // Opening a PR is safe recovery, not a merge: CI and human review still gate that.
 func Recover(h hostio.Host, log EventSink, key string) Recovery {
-	slug := strings.ToLower(key)
+	slug := ticket.Slug(key)
 
 	// A committed fix means a worktree that is there and clean: uncommitted edits are
 	// an in-progress or crashed run, not a finished-but-unpushed one, so those are

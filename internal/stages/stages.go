@@ -30,7 +30,8 @@ import (
 	"github.com/danoleary/agent-harness/internal/session"
 )
 
-var ticketRE = regexp.MustCompile(`^[A-Z]+-\d+$`)
+// ticketRE matches a Linear or Jira Key (`BEH-362`) or a GitHub Issues Key (`#30`).
+var ticketRE = regexp.MustCompile(`^([A-Z]+-\d+|#\d+)$`)
 
 // isDiskFull reports whether err is the host-disk-full ENOSPC — surfaced when a
 // findings-dir mkdir fails because the disk filled (BEH-540: the BEH-336

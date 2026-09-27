@@ -24,7 +24,7 @@ import (
 // both honest about dry-run and trivially testable.
 func Plan(cfg config.Config, identifier string) string {
 	id := strings.ToUpper(identifier)
-	slug := strings.ToLower(identifier)
+	slug := ticket.Slug(identifier)
 	// Stub ticket: Linear is deliberately not fetched under dry-run, so the prompt
 	// bodies show structure with an empty title/description ("best computable").
 	t := ticket.Ticket{Identifier: id}

@@ -12,6 +12,7 @@ import (
 	"github.com/danoleary/agent-harness/internal/prompt"
 	"github.com/danoleary/agent-harness/internal/runlog"
 	"github.com/danoleary/agent-harness/internal/sandbox"
+	"github.com/danoleary/agent-harness/internal/ticket"
 	"github.com/danoleary/agent-harness/internal/verify"
 )
 
@@ -41,7 +42,7 @@ func toPromptFindings(prior []filing.PriorFinding) []prompt.FiledFinding {
 // Every host-side effect goes through h, so the whole body is reachable from a
 // test with hostio.NewFake().
 func Retrospective(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Result {
-	slug := strings.ToLower(args.Identifier)
+	slug := ticket.Slug(args.Identifier)
 
 	dry := ""
 	if args.DryRun {
