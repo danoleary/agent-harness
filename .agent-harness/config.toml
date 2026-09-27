@@ -1,0 +1,58 @@
+# The harness works its own backlog: this repo is a Consumer of itself
+# (ADR-0008). Work comes from this repo's GitHub issues labelled
+# `ready-for-agent`; a human applies that label. Credentials live in
+# `.agent-harness/.env` (gitignored, and masked in every container).
+
+dockerfile = ".agent-harness/Dockerfile"
+image = "agent-harness-self:latest"
+
+branch_prefix = "feat"
+
+# Idempotent: a no-op when the module cache on the volume is already warm.
+post_create = '''
+go mod download
+'''
+
+min_harness_version = "0.5"
+
+# Everything that feeds `make check` or CI. example/ and the skill tree are read
+# by the test suite; .agent-harness/ is this very config.
+docs_only_excluded_roots = [
+  "cmd/", "internal/", "scripts/", "example/", ".github/",
+  ".claude/", ".agent-harness/",
+]
+
+# `make build` writes linux-arm64 binaries here inside the sandbox.
+handoff_strip_paths = ["bin"]
+
+source_roots = ["cmd", "internal", "scripts"]
+
+[cache]
+volume = "agent-harness-self-go"
+path = "/go"
+prune_command = "go clean -cache"
+
+[tracker]
+kind = "github"
+repo = "danoleary/agent-harness"
+findings_label_id = "agent-harness"
+ready_label = "ready-for-agent"
+blocked_label = "blocked"
+in_progress_label = "in-progress"
+
+# Harness findings ARE this repo's findings, so file them here rather than
+# leaving them in .agent-harness/harness-findings/.
+[feedback]
+upstream = "github"
+repo = "danoleary/agent-harness"
+findings_label = "harness-finding"
+project = "agent-harness"
+
+# `make check` is the same gate CI runs: fmt, vet, the script guards, the tests.
+[[gates]]
+name = "check"
+command = "make check"
+
+[[gates]]
+name = "build"
+command = "make build"
