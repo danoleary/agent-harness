@@ -123,7 +123,7 @@ func (r *Runner) agentArgs(name string, a AgentRun) []string {
 		CacheVolume:    r.cfg.CacheVolume,
 		CacheMountPath: r.cfg.CacheMountPath,
 		Prompt:         a.Prompt,
-		Model:          r.cfg.Model,
+		Model:          a.Model,
 		ContainerName:  name,
 	})
 }

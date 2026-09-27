@@ -59,7 +59,7 @@ func Plan(cfg config.Config, identifier string) string {
 		CacheVolume:    cfg.CacheVolume,
 		CacheMountPath: cfg.CacheMountPath,
 		Prompt:         implPrompt,
-		Model:          cfg.Model,
+		Model:          cfg.ImplementationModel,
 		ContainerName:  name("implementation"),
 	})
 	// The harness creates the worktree + canonical branch host-side, then runs the
@@ -101,7 +101,7 @@ func Plan(cfg config.Config, identifier string) string {
 		CacheVolume:    cfg.CacheVolume,
 		CacheMountPath: cfg.CacheMountPath,
 		Prompt:         reviewPrompt,
-		Model:          cfg.Model,
+		Model:          cfg.ReviewModel,
 		ContainerName:  name("review"),
 	})
 	// The pre-session prep is the Consumer's post_create (BEH-641); a Consumer
@@ -132,7 +132,7 @@ func Plan(cfg config.Config, identifier string) string {
 		CacheVolume:    cfg.CacheVolume,
 		CacheMountPath: cfg.CacheMountPath,
 		Prompt:         retroPrompt,
-		Model:          cfg.Model,
+		Model:          cfg.RetrospectiveModel,
 		ContainerName:  name("retrospective"),
 	})
 	fmt.Fprintf(&b, "\n=== stage 3: retrospective (always) ===\n--- prompt ---\n%s\n\n--- docker command ---\n%s\n", retroPrompt, dockerLine(retroDocker))

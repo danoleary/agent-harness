@@ -534,9 +534,11 @@ loop:
   refusal, a crash) is a `git log` away on `feat/beh-nnn` rather than a bare
   worktree needing manual rescue. The checkpoint does **not** flip the verdict —
   the run still fails and its subject (`checkpoint(harness): …`) loudly marks it
-  unverified so a reviewer never mistakes it for a real handoff. To keep refusals rare, the tdd
-  session is pinned to an exact Opus snapshot (`claude-opus-4-8`), not the floating
-  `opus` alias that once resolved to a stale, refusal-prone Opus 4.1.
+  unverified so a reviewer never mistakes it for a real handoff. To keep refusals rare, every
+  session is pinned to an exact Opus snapshot (`claude-opus-5-5`), not the floating
+  `opus` alias that once resolved to a stale, refusal-prone Opus 4.1. `HARNESS_MODEL`
+  moves every stage at once; `TDD_MODEL`, `REVIEW_MODEL` and `RETROSPECTIVE_MODEL`
+  override one stage each.
   The **review** stage applies the same safety net ([BEH-559](https://linear.app/beherd/issue/BEH-559)):
   a review session killed mid-edit by a spending cap would otherwise lose its
   in-progress nit fixes on resume — the worktree is re-derived from the committed

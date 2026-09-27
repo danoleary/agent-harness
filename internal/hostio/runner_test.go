@@ -32,7 +32,6 @@ func testRunner(t *testing.T, outcomes ...session.Outcome) (*Runner, *[]launch) 
 	r := NewRunner(config.Config{
 		ProjectPath:        "/Users/dan/my-project",
 		Image:              "myproject-agent-harness:latest",
-		Model:              "claude-opus-5",
 		SessionIdleTimeout: 5 * time.Minute,
 	}, log, "20260920-101500", false)
 	r.pid = 4242
@@ -71,6 +70,20 @@ func TestRunnerNameAlwaysMatchesTheArgv(t *testing.T) {
 	for _, l := range *seen {
 		if got := flagValue(l.args, "--name"); got != l.opts.ContainerName {
 			t.Errorf("--name %q != Options.ContainerName %q — the timeout kill would miss its target", got, l.opts.ContainerName)
+		}
+	}
+}
+
+// The model comes from the run, not the Runner, so each stage can pick its own.
+func TestRunnerPinsTheRunsModel(t *testing.T) {
+	r, seen := testRunner(t)
+
+	r.Agent(AgentRun{Label: "implementation", Model: "claude-opus-5-5"})
+	r.Agent(AgentRun{Label: "retrospective", Model: "claude-haiku-4-5-20251001"})
+
+	for i, want := range []string{"claude-opus-5-5", "claude-haiku-4-5-20251001"} {
+		if got := flagValue((*seen)[i].args, "--model"); got != want {
+			t.Errorf("launch %d --model = %q, want %q", i, got, want)
 		}
 	}
 }
