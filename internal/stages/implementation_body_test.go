@@ -13,7 +13,6 @@ import (
 	"github.com/danoleary/agent-harness/internal/runlog"
 	"github.com/danoleary/agent-harness/internal/sandbox"
 	"github.com/danoleary/agent-harness/internal/session"
-	"github.com/danoleary/agent-harness/internal/verify"
 )
 
 // These tests reach the *body* of the implementation stage — the composition that
@@ -165,7 +164,7 @@ func TestImplementationSkipsWorkAlreadyMergedOnMain(t *testing.T) {
 // asserts the worktree already exists rather than recreating it.
 func TestImplementationRetriesAUsagePolicyRefusalWithTheResumePrompt(t *testing.T) {
 	h := hostio.NewFake()
-	h.Truth = verify.GroundTruth{WorktreeExists: true} // no handoff commit
+	h.Ahead = 0 // no handoff commit
 	h.AgentFn = func(call int, _ hostio.AgentRun) session.Outcome {
 		return session.Outcome{ExitCode: 1, UsagePolicyRefusal: true}
 	}
@@ -184,22 +183,37 @@ func TestImplementationRetriesAUsagePolicyRefusalWithTheResumePrompt(t *testing.
 	}
 }
 
-// The refusal retry is gated on a surviving worktree: a refusal that struck before
-// one existed has no diff to recover, and the resume prompt would burn a whole
-// session on a false premise.
+// The refusal retry is gated on a surviving worktree: a refusal with no worktree has
+// no diff to recover, and the resume prompt — which asserts the worktree already
+// exists and forbids recreating it — would burn a whole session on a false premise.
+//
+// The gate reads the worktree live, so this is the defence-in-depth path: since
+// BEH-636 the harness pre-creates the worktree host-side before the session, and a
+// creation failure is fatal upstream, so reaching a refusal verdict with no worktree
+// means one vanished mid-run.
 func TestImplementationDoesNotRetryARefusalThatLeftNoWorktree(t *testing.T) {
 	h := hostio.NewFake()
-	h.Truth = verify.GroundTruth{}
-	h.Exists = false
+	h.Ahead = 0
 	h.AgentFn = func(int, hostio.AgentRun) session.Outcome {
 		return session.Outcome{ExitCode: 1, UsagePolicyRefusal: true}
 	}
 
-	Implementation(h, stageCfg(), stageLog(t, "PROJ-6"), Args{Identifier: "PROJ-6"})
+	Implementation(worktreeLost{h}, stageCfg(), stageLog(t, "PROJ-6"), Args{Identifier: "PROJ-6"})
 
 	if got := labels(h.Agents); len(got) != 1 {
 		t.Errorf("agent runs = %v, want exactly one — there is no worktree to resume", got)
 	}
+}
+
+// worktreeLost is a Fake whose worktree is gone by the time the verdict is read.
+type worktreeLost struct {
+	*hostio.Fake
+}
+
+func (w worktreeLost) Agent(run hostio.AgentRun) hostio.Result {
+	res := w.Fake.Agent(run)
+	w.Fake.Exists = false
+	return res
 }
 
 // BEH-543/BEH-707: an environmental crash that left the pre-provisioned worktree
@@ -207,7 +221,7 @@ func TestImplementationDoesNotRetryARefusalThatLeftNoWorktree(t *testing.T) {
 // re-grab — and the stage reports Retryable so the pipeline re-attempts it once.
 func TestImplementationReleasesTheClaimAfterAnEnvironmentalCrash(t *testing.T) {
 	h := hostio.NewFake()
-	h.Truth = verify.GroundTruth{WorktreeExists: true}
+	h.Ahead = 0
 	h.AgentFn = func(int, hostio.AgentRun) session.Outcome {
 		return session.Outcome{ExitCode: sandbox.ExitOOMKill}
 	}
@@ -227,7 +241,7 @@ func TestImplementationReleasesTheClaimAfterAnEnvironmentalCrash(t *testing.T) {
 // environmental-crash retry, and the ticket stays claimed for a human.
 func TestImplementationDoesNotRetryAZeroWorkCrash(t *testing.T) {
 	h := hostio.NewFake()
-	h.Truth = verify.GroundTruth{WorktreeExists: true}
+	h.Ahead = 0
 	h.AgentFn = func(int, hostio.AgentRun) session.Outcome {
 		return session.Outcome{NoRealTurns: true}
 	}
@@ -251,7 +265,7 @@ func TestImplementationDoesNotRetryAZeroWorkCrash(t *testing.T) {
 // of a bare worktree needing manual rescue. It never flips the verdict.
 func TestImplementationCheckpointsUncommittedWorkOnAFailedVerdict(t *testing.T) {
 	h := hostio.NewFake()
-	h.Truth = verify.GroundTruth{WorktreeExists: true}
+	h.Ahead = 0
 	h.Clean = false
 	h.AgentFn = func(int, hostio.AgentRun) session.Outcome { return session.Outcome{ExitCode: 1} }
 
@@ -272,14 +286,12 @@ func TestImplementationCheckpointsUncommittedWorkOnAFailedVerdict(t *testing.T) 
 // base off origin/main and re-verified, rather than discarded to a doomed re-run.
 func TestImplementationRegraftsWorkTrappedOnADisjointBranch(t *testing.T) {
 	h := hostio.NewFake()
-	trapped := verify.GroundTruth{WorktreeExists: true, CommitsAhead: 3, DisjointHistory: true}
-	healthy := verify.GroundTruth{WorktreeExists: true, CommitsAhead: 3}
-	h.Truth = trapped
+	h.Ahead, h.Disjoint = 3, true
 	h.RegraftErr = nil
 	// The regraft rewrites history, so the second ground-truth read sees a healthy
 	// branch. Flip it when the stage asks for the regraft.
 	h.AgentFn = func(int, hostio.AgentRun) session.Outcome { return session.Outcome{} }
-	res := Implementation(regrafting{h, healthy}, stageCfg(), stageLog(t, "PROJ-10"), Args{Identifier: "PROJ-10"})
+	res := Implementation(regrafting{h}, stageCfg(), stageLog(t, "PROJ-10"), Args{Identifier: "PROJ-10"})
 
 	if !res.OK {
 		t.Fatalf("a clean regraft turns trapped work into a healthy handoff (BEH-609), got %+v", res)
@@ -290,17 +302,17 @@ func TestImplementationRegraftsWorkTrappedOnADisjointBranch(t *testing.T) {
 }
 
 // regrafting is a Fake whose ground truth heals once Regraft has run — the BEH-609
-// re-read the stage performs after the re-graft.
+// re-read verify performs after the re-graft. The regraft re-roots the branch onto
+// origin/main, so its history stops being disjoint while the committed work stays.
 type regrafting struct {
 	*hostio.Fake
-	after verify.GroundTruth
 }
 
 func (r regrafting) Regraft(slug string) error {
 	if err := r.Fake.Regraft(slug); err != nil {
 		return err
 	}
-	r.Fake.Truth = r.after
+	r.Fake.Disjoint = false
 	return nil
 }
 

@@ -2,6 +2,7 @@ package git
 
 import (
 	"errors"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -131,5 +132,56 @@ func TestBranchExistsAndBranchPushedFalseWhenRefUnresolvable(t *testing.T) {
 	}
 	if wt.BranchPushed() {
 		t.Error("BranchPushed must read an unresolvable ref as not-pushed")
+	}
+}
+
+// Exists is the implementation stage's "already provisioned?" check and the review
+// stage's precondition, and it is the first read verify.Tdd spends — a false here
+// short-circuits the whole verdict to "worktree was not created". It reads the
+// directory, not git, so it answers for a path that never existed.
+func TestExistsReadsTheWorktreeDirectory(t *testing.T) {
+	dir := t.TempDir()
+	if !(Worktree{path: dir}).Exists() {
+		t.Error("a worktree directory that is on disk must read as existing")
+	}
+	if (Worktree{path: filepath.Join(dir, "never-provisioned")}).Exists() {
+		t.Error("a worktree path that was never created must read as absent")
+	}
+}
+
+// CommitsAhead reads the branch's commit count from the MAIN checkout — the shared
+// `.git` holds the sandbox's commits, so the worktree need not exist — and reads as
+// zero on ANY failure. Zero is what verify.Tdd fails as "no handoff commit", so an
+// unresolvable branch or unparseable output must degrade to that rather than to a
+// number the push gate would trust.
+func TestCommitsAheadReadsFromTheCheckoutAndFailsToZero(t *testing.T) {
+	var argv []string
+	wt := fakeWorktree("beh-700", runners{output: func(name string, args ...string) ([]byte, error) {
+		argv = append([]string{name}, args...)
+		return []byte("3\n"), nil
+	}})
+	if got := wt.CommitsAhead(); got != 3 {
+		t.Errorf("CommitsAhead = %d, want 3", got)
+	}
+	joined := strings.Join(argv, " ")
+	if !strings.Contains(joined, "-C "+testRepo) {
+		t.Errorf("the count must be read from the main checkout, got %q", joined)
+	}
+	if !strings.Contains(joined, "origin/main.."+wt.Branch()) {
+		t.Errorf("the range must be origin/main..<branch>, got %q", joined)
+	}
+
+	failed := fakeWorktree("beh-700", runners{output: func(string, ...string) ([]byte, error) {
+		return nil, errors.New("fatal: ambiguous argument 'origin/main..feat/beh-700'")
+	}})
+	if got := failed.CommitsAhead(); got != 0 {
+		t.Errorf("CommitsAhead = %d for an unresolvable branch, want 0 (the no-handoff verdict)", got)
+	}
+
+	junk := fakeWorktree("beh-700", runners{output: func(string, ...string) ([]byte, error) {
+		return []byte("not a number\n"), nil
+	}})
+	if got := junk.CommitsAhead(); got != 0 {
+		t.Errorf("CommitsAhead = %d for unparseable output, want 0 — never a count the push gate would trust", got)
 	}
 }

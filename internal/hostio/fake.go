@@ -11,7 +11,6 @@ import (
 	"github.com/danoleary/agent-harness/internal/session"
 	"github.com/danoleary/agent-harness/internal/ticket"
 	"github.com/danoleary/agent-harness/internal/tracker"
-	"github.com/danoleary/agent-harness/internal/verify"
 )
 
 // Fake is the scripted [Host] the stage tests drive. It is the second adapter
@@ -47,7 +46,7 @@ type Fake struct {
 
 	// --- repo state ---
 
-	Truth          verify.GroundTruth
+	Ahead          int
 	Exists         bool
 	Clean          bool
 	DiffEmpty      bool
@@ -108,7 +107,7 @@ var _ Host = (*Fake)(nil)
 func NewFake() *Fake {
 	return &Fake{
 		AgentOutcome:  session.Outcome{ReviewVerdictEmitted: true},
-		Truth:         verify.GroundTruth{WorktreeExists: true, CommitsAhead: 1},
+		Ahead:         1,
 		Exists:        true,
 		Clean:         true,
 		BranchThere:   true,
@@ -201,12 +200,13 @@ func (f *Fake) EnsureCIRerunCommit(slug, headBefore string) error {
 	return f.RerunCommitErr
 }
 
-func (f *Fake) GroundTruth(string) verify.GroundTruth { return f.Truth }
-func (f *Fake) BranchDiffEmpty(string) bool           { return f.DiffEmpty }
-func (f *Fake) BranchDocsOnly(string) bool            { return f.DocsOnly }
-func (f *Fake) BranchExists(string) bool              { return f.BranchThere }
-func (f *Fake) BranchPushed(string) bool              { return f.Pushed }
-func (f *Fake) CommitSubjects(string) []string        { return f.Subjects }
+func (f *Fake) CommitsAhead(string) int        { return f.Ahead }
+func (f *Fake) BranchDisjoint(string) bool     { return f.Disjoint }
+func (f *Fake) BranchDiffEmpty(string) bool    { return f.DiffEmpty }
+func (f *Fake) BranchDocsOnly(string) bool     { return f.DocsOnly }
+func (f *Fake) BranchExists(string) bool       { return f.BranchThere }
+func (f *Fake) BranchPushed(string) bool       { return f.Pushed }
+func (f *Fake) CommitSubjects(string) []string { return f.Subjects }
 
 func (f *Fake) Rebase(slug string) gitpkg.RebaseResult {
 	f.record("rebase %s", slug)

@@ -1268,10 +1268,10 @@ func TestBranchDiffEmptyAgainstRealGit(t *testing.T) {
 	}
 }
 
-// BEH-597: GatherTddGroundTruth must surface a disjoint history so verify.Tdd can
-// fail it. An orphan feature branch (no common ancestor with origin/main) is the
+// BEH-597: DisjointHistory must surface a disjoint history so verify.Tdd can fail
+// it. An orphan feature branch (no common ancestor with origin/main) is the
 // BEH-355 condition; a normal feature branch off main is not disjoint.
-func TestGatherTddGroundTruthFlagsDisjointHistory(t *testing.T) {
+func TestDisjointHistoryFlagsAnOrphanBranch(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not on PATH")
 	}
@@ -1311,20 +1311,34 @@ func TestGatherTddGroundTruthFlagsDisjointHistory(t *testing.T) {
 
 	t.Run("orphan branch is disjoint", func(t *testing.T) {
 		repo, slug := mkRepo(true)
-		truth := realWorktree(repo, repo, slug).GroundTruth()
-		if !truth.DisjointHistory {
-			t.Errorf("an orphan branch (no common ancestor) must be flagged disjoint, got %+v", truth)
+		wt := realWorktree(repo, repo, slug)
+		if !wt.DisjointHistory() {
+			t.Error("an orphan branch (no common ancestor) must be flagged disjoint")
 		}
-		if truth.CommitsAhead < 1 {
-			t.Errorf("a disjoint branch is still ahead by its own commits, got CommitsAhead=%d", truth.CommitsAhead)
+		if ahead := wt.CommitsAhead(); ahead < 1 {
+			t.Errorf("a disjoint branch is still ahead by its own commits, got CommitsAhead=%d", ahead)
 		}
 	})
 
 	t.Run("normal feature branch is not disjoint", func(t *testing.T) {
 		repo, slug := mkRepo(false)
-		truth := realWorktree(repo, repo, slug).GroundTruth()
-		if truth.DisjointHistory {
-			t.Errorf("a feature branch off main shares a common ancestor — must NOT be flagged disjoint, got %+v", truth)
+		if realWorktree(repo, repo, slug).DisjointHistory() {
+			t.Error("a feature branch off main shares a common ancestor — must NOT be flagged disjoint")
+		}
+	})
+
+	// The ahead check is what makes DisjointHistory safe to call on its own: a branch
+	// that does not resolve fails `git merge-base` exactly as a disjoint one does, and
+	// without the guard an absent branch would read as "disjoint" rather than as the
+	// plain no-handoff failure it is (BEH-597).
+	t.Run("a branch with no commits ahead is not disjoint", func(t *testing.T) {
+		repo, _ := mkRepo(false)
+		wt := realWorktree(repo, repo, "beh-597-absent")
+		if ahead := wt.CommitsAhead(); ahead != 0 {
+			t.Fatalf("CommitsAhead = %d for a branch that does not exist, want 0", ahead)
+		}
+		if wt.DisjointHistory() {
+			t.Error("a branch with no commits ahead must not read as disjoint (an unresolvable ref fails merge-base too)")
 		}
 	})
 }

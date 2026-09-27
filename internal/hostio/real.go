@@ -16,7 +16,6 @@ import (
 	"github.com/danoleary/agent-harness/internal/semdedup"
 	"github.com/danoleary/agent-harness/internal/tracker"
 	"github.com/danoleary/agent-harness/internal/trackers"
-	"github.com/danoleary/agent-harness/internal/verify"
 )
 
 // prCreateTimeout bounds the `gh pr create` network round-trip. Like the git
@@ -214,7 +213,9 @@ func (h *Real) EnsureCIRerunCommit(slug, headBefore string) error {
 	return h.wt(slug).EnsureCIRerunCommit(headBefore)
 }
 
-func (h *Real) GroundTruth(slug string) verify.GroundTruth { return h.wt(slug).GroundTruth() }
+func (h *Real) CommitsAhead(slug string) int { return h.wt(slug).CommitsAhead() }
+
+func (h *Real) BranchDisjoint(slug string) bool { return h.wt(slug).DisjointHistory() }
 
 func (h *Real) BranchDiffEmpty(slug string) bool { return h.wt(slug).DiffEmpty() }
 
