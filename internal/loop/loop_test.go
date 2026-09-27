@@ -321,6 +321,33 @@ func TestNoPRRunReleasesTicketBackToTodo(t *testing.T) {
 	}
 }
 
+// #25: the implementation stage already returned the ticket to Todo (an
+// environmental crash with nothing to salvage), and the run folded to NoPR. The
+// loop settles the same lease, so it must not release the ticket a second time —
+// by then another selector may have claimed it.
+func TestNoPRRunDoesNotReleaseATicketTheRunAlreadyReleased(t *testing.T) {
+	r := &recorder{}
+	var released []string
+	h := &fakeHost{
+		stopRequested: stopAfter(1),
+		resolveNext:   func() (string, bool) { return "BEH-43", true },
+		release:       func(id string) error { released = append(released, id); return nil },
+	}
+	h.runPipeline = func(string) stages.Result {
+		_ = h.leased.Release() // what the implementation stage does on an env crash
+		return stages.Result{Disposition: stages.NoPR}
+	}
+	Run(Deps{
+		Host:   h,
+		Limits: Limits{PollInterval: time.Minute, TickInterval: 2 * time.Second, MaxConsecutiveFailures: 3},
+		Clock:  testClock{sleep: func(time.Duration) {}},
+		Log:    r,
+	})
+	if want := []string{"BEH-43"}; !reflect.DeepEqual(released, want) {
+		t.Errorf("released = %v, want %v (one release per run, whoever issues it)", released, want)
+	}
+}
+
 // commentRec records the (identifier, body) of each comment posted, so a test can
 // assert the release leaves a visible breadcrumb on the ticket.
 type commentRec struct {
@@ -388,7 +415,7 @@ func TestRecommendCloseThatCannotCloseFallsBackToKeepingInProgress(t *testing.T)
 			resolveNext:   func() (string, bool) { return "BEH-365", true },
 			runPipeline: func(string) stages.Result {
 				return stages.Result{Disposition: stages.RecommendClose}
-			}, // No CloseTicket wired — exercises the nil-closer fallback path.
+			}, // No closeTicket wired — the tracker accepts the close by default.
 			release: func(id string) error { released = append(released, id); return nil },
 		},
 		Limits: Limits{
@@ -408,7 +435,7 @@ func TestRecommendCloseThatCannotCloseFallsBackToKeepingInProgress(t *testing.T)
 }
 
 // TestRecommendCloseRunClosesTicket is the BEH-682 fix: a recommend-close run must
-// actually close the superseded ticket (move it to Canceled via CloseTicket) so it
+// actually close the superseded ticket (move it to Canceled through the run's lease) so it
 // exits the --next selection pool AND the reaper pool for good — never releasing it
 // to Todo (which would re-loop it). Keeping it merely In Progress was defeated by the
 // stale-claim reaper, which released it back to Todo past the TTL, re-running the
@@ -637,7 +664,7 @@ func TestSpendingCapAbortReleasesTicketBacksOffAndLeavesBreakerNeutral(t *testin
 // prunes can't reach; (3) back off interruptibly before re-polling so it doesn't spin
 // re-selecting the same top-of-queue ticket into an identical failure; and (4) NOT
 // release the ticket at the loop level — the implementation stage already released the
-// pre-claimed ticket (ADR-0003), so a loop-level release would be a wrong double-move.
+// selected ticket (ADR-0003), so a loop-level release would be a wrong double-move.
 func TestPreflightAbortReclaimsBacksOffAndLeavesBreakerNeutral(t *testing.T) {
 	r := &recorder{}
 	var ran, dockerPrunes int

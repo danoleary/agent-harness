@@ -3,17 +3,19 @@ package pipeline
 import (
 	"fmt"
 
+	"github.com/danoleary/agent-harness/internal/lease"
 	"github.com/danoleary/agent-harness/internal/loopstream"
 	"github.com/danoleary/agent-harness/internal/ticket"
 )
 
-// NextResolver is the Linear surface `pipeline --next` needs: a pure read to
-// select the top-of-queue eligible ticket, plus the claim mutation. Claim-on-select
-// (ADR-0003) is ResolveNext composing the two — selection stays side-effect-free so
-// dry-run can resolve a ticket without mutating Linear.
+// NextResolver is the tracker surface `pipeline --next` needs: a pure read to
+// select the top-of-queue eligible ticket, plus the queue the selected ticket's
+// lease claims through. Claim-on-select (ADR-0003) is ResolveNext composing the
+// two — selection stays side-effect-free so dry-run can resolve a ticket without
+// mutating the tracker.
 type NextResolver interface {
 	SelectNextTicket() (ticket.Ticket, bool, error)
-	MoveToInProgress(identifier string) error
+	lease.Queue
 }
 
 // NextSelection is the outcome of resolving `pipeline --next`.
@@ -22,10 +24,9 @@ type NextSelection struct {
 	// errored. It is set even when Proceed is false on a dry-run preview, so the
 	// caller can print the plan for it.
 	Identifier string
-	// PreClaimed records that ResolveNext claimed the ticket (a real run, not a
-	// dry-run), so the implementation stage skips its own claim and releases on a
-	// preflight failure (ADR-0003).
-	PreClaimed bool
+	// Lease is the run's claim on the selected ticket, held because ResolveNext
+	// claimed it (ADR-0003). Nil on a dry-run, which claims nothing.
+	Lease *lease.Lease
 	// Proceed is true when the caller should run the pipeline over Identifier;
 	// false means exit now with ExitCode (printing the plan first on a dry-run).
 	Proceed bool
@@ -58,7 +59,8 @@ func ResolveNext(r NextResolver, dryRun bool, log Narrator) NextSelection {
 		log.Event(fmt.Sprintf("dry-run — selected %s (not claiming)", t.Identifier))
 		return NextSelection{Identifier: t.Identifier, ExitCode: 0}
 	}
-	if err := r.MoveToInProgress(t.Identifier); err != nil {
+	claim := lease.Unheld(r, t.Identifier)
+	if err := claim.Hold(); err != nil {
 		log.Event(fmt.Sprintf("pipeline — claiming %s failed: %v", t.Identifier, err))
 		return NextSelection{ExitCode: 1}
 	}
@@ -67,7 +69,7 @@ func ResolveNext(r NextResolver, dryRun bool, log Narrator) NextSelection {
 		Ticket:  t.Identifier,
 		Message: fmt.Sprintf("selected %s (%s) — claimed → In Progress", t.Identifier, priorityOrNone(t.Priority)),
 	})
-	return NextSelection{Identifier: t.Identifier, PreClaimed: true, Proceed: true}
+	return NextSelection{Identifier: t.Identifier, Lease: claim, Proceed: true}
 }
 
 // priorityOrNone renders a ticket's priority for narration, defaulting an unset

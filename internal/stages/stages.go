@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/danoleary/agent-harness/internal/config"
+	"github.com/danoleary/agent-harness/internal/lease"
 	"github.com/danoleary/agent-harness/internal/runlog"
 	"github.com/danoleary/agent-harness/internal/sandbox"
 	"github.com/danoleary/agent-harness/internal/session"
@@ -73,10 +74,10 @@ func hasUpstreamTranscripts(logDir string) bool {
 // Args is the parsed CLI surface shared by all three tools and the pipeline:
 // a ticket identifier plus the universal flags. Force overrides the
 // already-merged-on-main dispatch guard (BEH-528) and is only consulted by the
-// implementation stage. Next and PreClaimed serve `pipeline --next` (BEH-565):
-// Next requests auto-selection (no identifier on the command line), and PreClaimed
-// records that selection already claimed the ticket so the implementation stage
-// skips its own claim and releases on a preflight failure (ADR-0003).
+// implementation stage. Next and Lease serve `pipeline --next` (BEH-565): Next
+// requests auto-selection (no identifier on the command line), and Lease carries
+// the claim selection already made, so the implementation stage skips its own
+// claim and releases on a preflight failure (ADR-0003).
 type Args struct {
 	Identifier string
 	DryRun     bool
@@ -85,11 +86,10 @@ type Args struct {
 	// Next requests `pipeline --next` auto-select: resolve the top-of-queue
 	// eligible ticket instead of taking an explicit identifier. Pipeline-only.
 	Next bool
-	// PreClaimed is set when the ticket was already claimed (Todo → In Progress)
-	// during selection, so the implementation stage skips MoveToInProgress and
-	// releases the claim on a Docker-preflight failure (ADR-0003). False on the
-	// hand-passed path, leaving the BEH-316 claim-after-preflight ordering intact.
-	PreClaimed bool
+	// Lease is the run's claim on the ticket (#25). Selection hands over a held
+	// lease (ADR-0003); nil on the hand-passed path, where the implementation stage
+	// claims after the Docker preflight (BEH-316).
+	Lease *lease.Lease
 }
 
 // ParseArgs parses argv (excluding the program name) into Args. tool names the

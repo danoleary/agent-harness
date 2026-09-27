@@ -1,7 +1,16 @@
 # ADR-0003: `--next` claims the ticket during selection, before Docker preflight
 
-- Status: Accepted
+- Status: Accepted; mechanism amended by #25
 - Date: 2026-06-27
+
+> **Amendment (#25).** The `PreClaimed` flag this ADR threads from selection to the
+> stage is replaced by a per-run ticket **lease** (`internal/lease`). The decision
+> stands: selection claims, the hand-passed path claims after preflight, and a
+> preflight failure releases a selected ticket. What changed is how the stage knows:
+> it asks the lease whether it holds the ticket *now*, instead of reading a flag set
+> once at selection. The flag went stale when a stage released the ticket and the
+> pipeline retried, so the retry skipped its claim and worked a ticket sitting in
+> Todo. The lease re-claims on that retry, and makes a second release a no-op.
 
 ## Context
 

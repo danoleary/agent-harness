@@ -23,6 +23,7 @@ import (
 	"github.com/danoleary/agent-harness/internal/config"
 	gitpkg "github.com/danoleary/agent-harness/internal/git"
 	"github.com/danoleary/agent-harness/internal/hostio"
+	"github.com/danoleary/agent-harness/internal/lease"
 	"github.com/danoleary/agent-harness/internal/loop"
 	"github.com/danoleary/agent-harness/internal/pipeline"
 	"github.com/danoleary/agent-harness/internal/proc"
@@ -121,20 +122,15 @@ func (h *Real) FetchMain() error { return h.checkout().FetchMain() }
 // never a dry-run: the loop claims-on-select (ADR-0003) so a concurrent selection
 // can't grab the same ticket. A selection/claim failure is folded into "no ticket"
 // — the daemon idles and re-polls rather than crashing on one bad poll.
-func (h *Real) ResolveNext() (string, bool) {
+func (h *Real) ResolveNext() (*lease.Lease, bool) {
 	sel := pipeline.ResolveNext(h.client, false, h.log)
 	if !sel.Proceed {
-		return "", false
+		return nil, false
 	}
-	return sel.Identifier, true
+	return sel.Lease, true
 }
 
 func (h *Real) ReleaseTicket(id string) error { return h.client.ReleaseToTodo(id) }
-
-// CloseTicket consumes a recommend-close verdict by moving the superseded ticket to
-// the terminal Canceled state (BEH-682), so it exits the selection + reaper pools
-// for good rather than re-looping to the same "nothing to ship" conclusion.
-func (h *Real) CloseTicket(id string) error { return h.client.MoveToCanceled(id) }
 
 func (h *Real) CommentTicket(id, body string) error { return h.client.AddComment(id, body) }
 
@@ -168,10 +164,11 @@ func (h *Real) TicketHasRemoteBranch(id string) bool {
 // RunPipeline runs the full implementation → review → retrospective chain over one
 // already-claimed ticket, mirroring cmd/pipeline's wiring: its own ticket-keyed
 // runlog and run id (the daemon runs many tickets, so each gets its own log dir).
-// The stage args carry PreClaimed=true because ResolveNext claimed the ticket on
-// selection, so the implementation stage skips its own claim and releases on a
-// preflight failure (ADR-0003).
-func (h *Real) RunPipeline(identifier string) stages.Result {
+// The stage args carry the lease ResolveNext claimed on selection, so the
+// implementation stage skips its own claim, releases on a preflight failure
+// (ADR-0003), and re-claims on a retry after a release (#25).
+func (h *Real) RunPipeline(claim *lease.Lease) stages.Result {
+	identifier := claim.Key()
 	cfg, log, runID, err := stages.Setup(identifier)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
@@ -179,7 +176,7 @@ func (h *Real) RunPipeline(identifier string) stages.Result {
 		// breaker counts it like any other failure to ship.
 		return stages.Result{}
 	}
-	args := stages.Args{Identifier: identifier, PreClaimed: true}
+	args := stages.Args{Identifier: identifier, Lease: claim}
 	// One Host for the whole slice: the three stages share the run id it stamps into
 	// every container name and transcript, and the tracker client it resolves once.
 	host := hostio.New(cfg, log, runID, args.Verbose)

@@ -27,8 +27,11 @@ func (f *fakeResolver) MoveToInProgress(id string) error {
 	return f.moveErr
 }
 
+func (f *fakeResolver) ReleaseToTodo(string) error  { return nil }
+func (f *fakeResolver) MoveToCanceled(string) error { return nil }
+
 // A real run selects, then claims the ticket (claim-on-select dequeue, ADR-0003)
-// and signals the caller to proceed with PreClaimed set.
+// and signals the caller to proceed with the held lease.
 func TestResolveNextSelectsAndClaims(t *testing.T) {
 	r := &fakeResolver{ticket: ticket.Ticket{Identifier: "BEH-100", Priority: "Urgent"}, ok: true}
 	rec := &recorder{}
@@ -41,8 +44,8 @@ func TestResolveNextSelectsAndClaims(t *testing.T) {
 	if sel.Identifier != "BEH-100" {
 		t.Errorf("Identifier = %q, want BEH-100", sel.Identifier)
 	}
-	if !sel.PreClaimed {
-		t.Error("a claimed selection must set PreClaimed so the stage skips its own claim")
+	if sel.Lease == nil || !sel.Lease.Held() {
+		t.Error("a claimed selection must hand back a held lease so the stage skips its own claim")
 	}
 	if len(r.moved) != 1 || r.moved[0] != "BEH-100" {
 		t.Errorf("claim mutations = %v, want exactly [BEH-100]", r.moved)
@@ -98,8 +101,8 @@ func TestResolveNextDryRunResolvesButDoesNotClaim(t *testing.T) {
 	if len(r.moved) != 0 {
 		t.Errorf("dry-run must claim nothing, claimed %v", r.moved)
 	}
-	if sel.PreClaimed {
-		t.Error("dry-run claimed nothing, so PreClaimed must be false")
+	if sel.Lease != nil {
+		t.Error("dry-run claimed nothing, so there is no lease to hand back")
 	}
 	if !rec.saw("not claiming") {
 		t.Errorf("expected a 'not claiming' dry-run narration; events = %v", rec.events)

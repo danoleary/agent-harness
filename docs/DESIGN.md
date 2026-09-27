@@ -159,7 +159,7 @@ breaker here; a human is still at the trigger, pulling it once per ticket.
 pipeline --next:
   ticket = selectNextTicket()          // Linear read + claim — see "claim-on-select" below
   if no ticket -> log "no eligible ticket — queue empty"; exit 0   // empty queue is not a failure
-  run the pipeline over ticket (exactly as pipeline BEH-NNN, with PreClaimed set)
+  run the pipeline over ticket (exactly as pipeline BEH-NNN, with the held lease)
 ```
 
 Design decisions, and why:
@@ -179,14 +179,16 @@ Design decisions, and why:
   inverts the implementation stage's hard-won "never claim a ticket we cannot work"
   ordering — is paid back by **release-on-preflight-failure**, and the whole trade-off
   is recorded in [ADR-0003](adr/0003-claim-on-select.md).
-- **`PreClaimed` threads the claim state into the stage; the hand-passed path is
-  untouched.** Selection sets `args.PreClaimed = true`. The implementation stage then
-  (a) skips its own `MoveToInProgress` (the ticket is already In Progress — it would
-  be a redundant no-op) and (b) if its **Docker preflight fails**, calls
-  `ReleaseToTodo` so the dequeued-but-unworkable ticket returns to the queue instead
-  of stranding In Progress. On the hand-passed path `PreClaimed` is false: preflight
-  still precedes the claim exactly as before, nothing to release, BEH-316 ordering
-  intact. The `--next` path carries the new complexity; the tested path does not move.
+- **A ticket lease carries the claim into the stage; the hand-passed path is
+  untouched.** Selection hands over a *held* `lease.Lease` in `args.Lease`. The
+  implementation stage then (a) skips its own claim (the lease already holds the
+  ticket) and (b) if its **Docker preflight fails**, releases the lease so the
+  dequeued-but-unworkable ticket returns to the queue instead of stranding In
+  Progress. On the hand-passed path there is no lease yet: the stage makes an
+  unheld one, preflight still precedes the claim, nothing to release, BEH-316
+  ordering intact. Because the lease tracks whether the ticket is held *now*, a
+  pipeline retry after a release re-claims it, and the loop's own release of a
+  no-PR run is a no-op when a stage already released it (#25).
 - **`--dry-run` performs no Linear *mutations* — but it does *read*.** `--next
   --dry-run` runs the real `selectNextTicket()` query to resolve the actual
   top-of-queue ticket and prints the plan for it, but **never claims** (no
@@ -394,7 +396,7 @@ loop:
   // DOCKER-PREFLIGHT ABORT is likewise environmental, NOT a ticket failure: the host
   // couldn't launch a sandbox (full disk / daemon down) BEFORE any work began.
   if Disposition == PreflightAborted:
-    // ticket was already released -> Todo by the impl stage (releaseIfPreClaimed, ADR-0003)
+    // ticket was already released -> Todo by the impl stage, through the run's lease (ADR-0003)
     reclaim disk (incl. the Docker prune) // the usual cause — clear the floor for the retry
     short backoff sleep (interruptible by STOP; = pollInterval)   // don't spin re-selecting the same top-of-queue ticket
     do NOT touch the breaker counter  // breaker stays blind; otherwise 3 identical ~2s preflight failures trip it in seconds

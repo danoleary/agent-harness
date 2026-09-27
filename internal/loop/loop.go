@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/danoleary/agent-harness/internal/lease"
 	"github.com/danoleary/agent-harness/internal/loopstream"
 	"github.com/danoleary/agent-harness/internal/stages"
 )
@@ -85,21 +86,14 @@ type Host interface {
 	FetchMain() error
 
 	// ResolveNext selects and claims the top-of-queue eligible ticket, returning
-	// its identifier and ok=false when the queue is empty.
-	ResolveNext() (identifier string, ok bool)
-	// ReleaseTicket returns a claimed ticket to Todo after a run made no progress —
-	// a spending-cap abort (DESIGN.md §Spending-cap abort backoff) or any other no-PR
-	// run (BEH-590) — so it isn't stranded In Progress. A release failure is narrated,
-	// not fatal — the daemon still backs off / continues and re-polls.
+	// the run's held lease on it and ok=false when the queue is empty. The loop
+	// settles the run through that lease — release to Todo, close, or keep — so a
+	// ticket a stage already released is never released twice (#25).
+	ResolveNext() (claim *lease.Lease, ok bool)
+	// ReleaseTicket returns a stale claim to Todo for the reaper (BEH-677): a ticket
+	// some earlier, dead run claimed, which this daemon holds no lease on. A release
+	// failure is narrated, not fatal.
 	ReleaseTicket(identifier string) error
-	// CloseTicket moves a ticket into the tracker's terminal canceled state, consuming
-	// a recommend-close verdict (BEH-682): a run that found the branch makes zero net
-	// change against origin/main is a superseded/duplicate ticket, so it is closed
-	// rather than left claimed. Closing (not releasing) is what stops the re-loop —
-	// a canceled ticket leaves both the --next selection pool and the reaper pool, so
-	// it can never re-enter the pipeline. A close failure degrades to the pre-BEH-682
-	// behavior (kept In Progress for a human to close), narrated not fatal.
-	CloseTicket(identifier string) error
 	// CommentTicket posts a breadcrumb on the released ticket noting the run died and
 	// why (BEH-590), so a repeatedly-failing ticket is visible on the board rather
 	// than silently bouncing Todo↔In Progress. Best-effort: a post failure is
@@ -119,7 +113,7 @@ type Host interface {
 	// RunPipeline runs the full implementation→review→retrospective pipeline over
 	// one ticket and returns the run's folded Result — the loop branches on its
 	// Disposition (did it ship? was it aborted?), never on the opaque exit code.
-	RunPipeline(identifier string) stages.Result
+	RunPipeline(claim *lease.Lease) stages.Result
 	// RecoverCommittedFix attempts to FINISH a no-PR run whose fix was already
 	// committed on its branch but never pushed/PR'd — the recovered-checkpoint /
 	// verify-only state where the review stage left a gate-green, clean commit yet
@@ -278,7 +272,7 @@ func Run(d Deps) int {
 		// a failed list/release is narrated and swallowed, never a ticket outcome.
 		d.reapStaleClaims()
 
-		identifier, ok := d.Host.ResolveNext()
+		claim, ok := d.Host.ResolveNext()
 		if !ok {
 			// The daemon difference from `pipeline --next`: an empty queue is a
 			// normal steady state, so the loop idles for PollInterval and re-polls
@@ -292,7 +286,8 @@ func Run(d Deps) int {
 		// Run the full pipeline over the claimed ticket. Count it as attempted before
 		// any outcome branching — a cap-aborted run was still an attempt, so it counts
 		// toward the MaxTickets ceiling like any other.
-		outcome := d.Host.RunPipeline(identifier)
+		identifier := claim.Key()
+		outcome := d.Host.RunPipeline(claim)
 		attempted++
 
 		// A spending-cap abort is a control-flow signal, NOT a ticket verdict
@@ -305,7 +300,7 @@ func Run(d Deps) int {
 		// settled that: a CapAborted run is one where nothing shipped.
 		if outcome.Disposition == stages.CapAborted {
 			d.Log.Structured(loopstream.Record{Kind: loopstream.KindCapAbort, Ticket: identifier, Message: "loop — spending-cap abort on " + identifier + "; releasing to Todo"})
-			if err := d.Host.ReleaseTicket(identifier); err != nil {
+			if err := claim.Release(); err != nil {
 				d.Log.Event("loop … warning: could not release " + identifier + " to Todo after cap abort: " + err.Error())
 			}
 			d.comment(identifier, "Autonomous run aborted by the Anthropic spending cap before it could ship — released back to Todo. The daemon backs off and auto-resumes once the cap window resets, so this should retry on its own.")
@@ -316,8 +311,8 @@ func Run(d Deps) int {
 		// A Docker-preflight abort is environmental, NOT a ticket verdict: the host
 		// couldn't launch a sandbox (full disk / daemon down) before any work began, so
 		// no progress was made and it is not the diff's fault. The implementation stage
-		// already released the pre-claimed ticket back to Todo (releaseIfPreClaimed,
-		// ADR-0003), so here we only reclaim disk (the usual cause — now including the
+		// already released the selected ticket back to Todo through the run's lease
+		// (ADR-0003), so here we only reclaim disk (the usual cause — now including the
 		// Docker build-cache/image prune) and back off briefly before re-polling. The
 		// breaker stays blind to it (breaker.record), so a poison top-of-queue ticket
 		// can't rack up identical ~2s preflight failures and trip the breaker in seconds
@@ -377,7 +372,7 @@ func Run(d Deps) int {
 		// falls through to the normal after-ticket fold below.
 		switch outcome.Disposition {
 		case stages.RecommendClose:
-			closed := d.closeTicket(identifier)
+			closed := d.closeTicket(claim)
 			msg := "loop — " + identifier + " makes no net change against main; closing it as a duplicate/superseded (BEH-682)"
 			// The breadcrumb must reflect what actually happened: only claim the ticket was
 			// moved to Canceled when the close succeeded, else a Linear/tracker hiccup would
@@ -401,7 +396,7 @@ func Run(d Deps) int {
 			// exit (CI red after the auto-fix budget). Best-effort: a Linear hiccup here is
 			// warned, never fatal — the daemon must keep running.
 			d.Log.Structured(loopstream.Record{Kind: loopstream.KindTicketReleased, Ticket: identifier, Message: "loop — " + identifier + " produced no PR; releasing back to Todo so it isn't stranded In Progress (BEH-590)"})
-			if err := d.Host.ReleaseTicket(identifier); err != nil {
+			if err := claim.Release(); err != nil {
 				d.Log.Event("loop … warning: could not release " + identifier + " to Todo after a no-PR run: " + err.Error())
 			}
 			d.comment(identifier, "Autonomous run finished with no PR for this ticket — released back to Todo so a later run can re-grab it. Repeated occurrences here mean the ticket keeps failing to ship; see the run logs for the cause.")
@@ -448,9 +443,9 @@ func (d Deps) comment(identifier, body string) {
 // degrades to false, and the caller falls back to the pre-BEH-682 disposition (keep
 // In Progress for a human to close) rather than crashing the daemon — a tracker
 // hiccup must never sink the loop.
-func (d Deps) closeTicket(identifier string) bool {
-	if err := d.Host.CloseTicket(identifier); err != nil {
-		d.Log.Event("loop … warning: could not close " + identifier + " as superseded (leaving it In Progress for a human): " + err.Error())
+func (d Deps) closeTicket(claim *lease.Lease) bool {
+	if err := claim.Close(); err != nil {
+		d.Log.Event("loop … warning: could not close " + claim.Key() + " as superseded (leaving it In Progress for a human): " + err.Error())
 		return false
 	}
 	return true
