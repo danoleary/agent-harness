@@ -38,9 +38,11 @@ import (
 // name and the transcript filename from it, so the two can never disagree and a
 // caller never mints either. An empty FindingsDir mounts no dropbox — the review
 // session emits no findings, and having nowhere to write keeps its "do not write
-// findings" steering honest.
+// findings" steering honest. Model is the claude `--model`; the stage picks it,
+// so each stage can run on a different model.
 type AgentRun struct {
 	Label       string
+	Model       string
 	Prompt      string
 	FindingsDir string
 	Cap         time.Duration

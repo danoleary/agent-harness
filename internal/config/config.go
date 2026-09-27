@@ -85,12 +85,16 @@ type Config struct {
 	// reaps a healthy session mid-build. The active-time hard cap is the backstop, so
 	// this only needs to detect a dead stream faster than the cap, not race it.
 	SessionIdleTimeout time.Duration
-	// Model is the claude `--model` the tdd session runs on. Pinned to an exact
-	// Opus snapshot, not the floating `opus` alias: the CLI's own default is not
-	// guaranteed to be Opus and a past run silently fell back to Sonnet (BEH-316),
-	// while the alias once resolved to a stale Opus 4.1 prone to a false-positive
-	// usage-policy refusal on long sessions (BEH-389).
-	Model string
+	// ImplementationModel, ReviewModel and RetrospectiveModel are the claude
+	// `--model` each stage's sessions run on. ReviewModel also covers the review
+	// stage's cifix and rebasefix sessions. Each defaults to an exact Opus snapshot,
+	// not the floating `opus` alias: the CLI's own default is not guaranteed to be
+	// Opus and a past run silently fell back to Sonnet (BEH-316), while the alias
+	// once resolved to a stale Opus 4.1 prone to a false-positive usage-policy
+	// refusal on long sessions (BEH-389).
+	ImplementationModel string
+	ReviewModel         string
+	RetrospectiveModel  string
 	// CIMaxFixAttempts caps how many diagnose+fix+push cycles the review tool runs
 	// against a red CI before giving up and leaving the PR for a human (BEH-414).
 	CIMaxFixAttempts int
@@ -208,7 +212,7 @@ const (
 	defaultReviewTimeout    = 25 * time.Minute
 	defaultRetroTimeout     = 45 * time.Minute
 	defaultSessionIdle      = 20 * time.Minute
-	defaultModel            = "claude-opus-4-8"
+	defaultModel            = "claude-opus-5-5"
 	defaultDedupModel       = "claude-haiku-4-5-20251001"
 	defaultCIMaxFixAttempts = 2
 	defaultCIFixBudget      = 30 * time.Minute
@@ -373,6 +377,9 @@ func Load(get Getenv, opts ...Option) (Config, error) {
 		cachePath = legacyPnpmStoreMountPath
 	}
 
+	// HARNESS_MODEL moves every stage at once; a per-stage variable overrides it.
+	sharedModel := orDefault(get("HARNESS_MODEL"), defaultModel)
+
 	cfg := Config{
 		LinearAPIKey:            linearKey,
 		GitHubToken:             githubToken,
@@ -390,7 +397,9 @@ func Load(get Getenv, opts ...Option) (Config, error) {
 		ReviewTimeout:           parseTimeout(get("REVIEW_TIMEOUT_MS"), defaultReviewTimeout),
 		RetrospectiveTimeout:    parseTimeout(get("RETROSPECTIVE_TIMEOUT_MS"), defaultRetroTimeout),
 		SessionIdleTimeout:      parseTimeout(get("SESSION_IDLE_TIMEOUT_MS"), defaultSessionIdle),
-		Model:                   orDefault(get("TDD_MODEL"), defaultModel),
+		ImplementationModel:     orDefault(get("TDD_MODEL"), sharedModel),
+		ReviewModel:             orDefault(get("REVIEW_MODEL"), sharedModel),
+		RetrospectiveModel:      orDefault(get("RETROSPECTIVE_MODEL"), sharedModel),
 
 		CIMaxFixAttempts: parsePositiveInt(get("CI_MAX_FIX_ATTEMPTS"), defaultCIMaxFixAttempts),
 		CIFixBudget:      parseTimeout(get("CI_FIX_BUDGET_MS"), defaultCIFixBudget),

@@ -251,7 +251,7 @@ func Implementation(h hostio.Host, cfg config.Config, log *runlog.Logger, args A
 		fmt.Printf(
 			"\n--- prompt ---\n%s\n\n--- docker command ---\ndocker %s\n",
 			p, strings.Join(h.AgentPreview(hostio.AgentRun{
-				Label: implementationSession, Prompt: p, FindingsDir: findingsDir, Cap: sessionCap,
+				Label: implementationSession, Model: cfg.ImplementationModel, Prompt: p, FindingsDir: findingsDir, Cap: sessionCap,
 			}), " "),
 		)
 		return Result{OK: true}
@@ -348,6 +348,7 @@ func Implementation(h hostio.Host, cfg config.Config, log *runlog.Logger, args A
 		// worktree, so recreating is the correct recovery.
 		run := h.Agent(hostio.AgentRun{
 			Label:       attemptLabel,
+			Model:       cfg.ImplementationModel,
 			Prompt:      attemptPrompt,
 			FindingsDir: findingsDir,
 			Cap:         sessionCap,

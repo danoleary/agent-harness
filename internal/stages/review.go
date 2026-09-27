@@ -122,7 +122,7 @@ func Review(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Res
 
 	// Review emits no findings (retrospective owns them) → no findings mount.
 	p := prompt.BuildReview(t, slug, worktreePath, cfg.BranchPrefix, cfg.Prompts.Review)
-	reviewRun := hostio.AgentRun{Label: reviewSession, Prompt: p, Cap: cfg.ReviewTimeout}
+	reviewRun := hostio.AgentRun{Label: reviewSession, Model: cfg.ReviewModel, Prompt: p, Cap: cfg.ReviewTimeout}
 	prepRun := hostio.ShellRun{
 		Label: prepStep, Command: cfg.PostCreate, WorktreePath: worktreePath, Cap: cfg.ReviewTimeout,
 		Retry: hostio.Retry{
@@ -538,6 +538,7 @@ func ciFixRunner(h hostio.Host, cfg config.Config, log *runlog.Logger, slug stri
 		log.Event(fmt.Sprintf("CI red — launching auto-fix session %d (cap %d min active)", attempt, int(cfg.ReviewTimeout.Minutes())))
 		res := h.Agent(hostio.AgentRun{
 			Label:  fmt.Sprintf("cifix-%d", attempt),
+			Model:  cfg.ReviewModel,
 			Prompt: prompt.BuildCIFix(t, slug, cfg.BranchPrefix, h.WorktreePath(slug), ciLogs, logAvailable),
 			Cap:    cfg.ReviewTimeout,
 		})
@@ -581,6 +582,7 @@ func resolvePrePushConflict(
 	log.Event(fmt.Sprintf("launching conflict-resolution session (cap %d min active)", int(cfg.ReviewTimeout.Minutes())))
 	res := h.Agent(hostio.AgentRun{
 		Label:  "rebasefix",
+		Model:  cfg.ReviewModel,
 		Prompt: prompt.BuildRebaseFix(t, slug, cfg.BranchPrefix, h.WorktreePath(slug)),
 		Cap:    cfg.ReviewTimeout,
 	})

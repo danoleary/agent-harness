@@ -208,7 +208,7 @@ type Config struct {
 	CacheMountPath string
 	// Prompt is the `-p` prompt to hand to claude.
 	Prompt string
-	// Model is the claude `--model` to pin the session to (e.g. "claude-opus-4-8"). Empty
+	// Model is the claude `--model` to pin the session to (e.g. "claude-opus-5-5"). Empty
 	// omits the flag and lets the CLI fall back to its account default — which is
 	// not guaranteed to be Opus, so the harness always sets it (BEH-316).
 	Model string

@@ -9,11 +9,32 @@ import (
 
 func planCfg() config.Config {
 	return config.Config{
-		Image:          "herd-agent-harness:latest",
-		ProjectPath:    "/herd",
-		CacheVolume:    "herd-pnpm-store",
-		CacheMountPath: "/pnpm-store",
-		Model:          "claude-opus-4-8",
+		Image:               "herd-agent-harness:latest",
+		ProjectPath:         "/herd",
+		CacheVolume:         "herd-pnpm-store",
+		CacheMountPath:      "/pnpm-store",
+		ImplementationModel: "claude-opus-5-5",
+		ReviewModel:         "claude-sonnet-5",
+		RetrospectiveModel:  "claude-haiku-4-5-20251001",
+	}
+}
+
+// Each stage's docker command carries that stage's model, never another's.
+func TestPlanPinsEachStageToItsOwnModel(t *testing.T) {
+	plan := Plan(planCfg(), "beh-527")
+	iReview := strings.Index(plan, "=== stage 2: review")
+	iRetro := strings.Index(plan, "=== stage 3: retrospective")
+	if iReview < 0 || iRetro < 0 {
+		t.Fatalf("plan is missing a stage header:\n%s", plan)
+	}
+	for _, c := range []struct{ section, want string }{
+		{plan[:iReview], "--model claude-opus-5-5"},
+		{plan[iReview:iRetro], "--model claude-sonnet-5"},
+		{plan[iRetro:], "--model claude-haiku-4-5-20251001"},
+	} {
+		if !strings.Contains(c.section, c.want) || strings.Count(c.section, "--model ") != 1 {
+			t.Errorf("stage section should pin exactly %q:\n%s", c.want, c.section)
+		}
 	}
 }
 

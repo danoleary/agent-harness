@@ -46,8 +46,15 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.TddTimeout != 30*time.Minute {
 		t.Errorf("TddTimeout = %v, want 30m", cfg.TddTimeout)
 	}
-	if cfg.Model != "claude-opus-4-8" {
-		t.Errorf("Model = %q, want claude-opus-4-8 (tdd sessions pin the exact Opus snapshot, not the floating alias)", cfg.Model)
+	// Every stage pins the exact Opus snapshot, not the floating alias.
+	for stage, got := range map[string]string{
+		"implementation": cfg.ImplementationModel,
+		"review":         cfg.ReviewModel,
+		"retrospective":  cfg.RetrospectiveModel,
+	} {
+		if got != "claude-opus-5-5" {
+			t.Errorf("%s model = %q, want claude-opus-5-5", stage, got)
+		}
 	}
 	// The review family's cap is kept above the 20m idle window so the idle
 	// watchdog can reap a stalled session before this hard cap (BEH-535/538).
@@ -180,8 +187,8 @@ func TestLoadHonoursOverrides(t *testing.T) {
 	if cfg.TddLargeRefactorTimeout != 2*time.Minute {
 		t.Errorf("TddLargeRefactorTimeout = %v, want 2m (TDD_LARGE_REFACTOR_TIMEOUT_MS override)", cfg.TddLargeRefactorTimeout)
 	}
-	if cfg.Model != "sonnet" {
-		t.Errorf("Model = %q, want sonnet (TDD_MODEL override)", cfg.Model)
+	if cfg.ImplementationModel != "sonnet" {
+		t.Errorf("ImplementationModel = %q, want sonnet (TDD_MODEL override)", cfg.ImplementationModel)
 	}
 }
 
@@ -190,6 +197,26 @@ func TestLoadHonoursOverrides(t *testing.T) {
 // declared no `[cache]` path, the resolved mount must still default to
 // /pnpm-store — otherwise a pathless volume produces an invalid `-v <vol>:`
 // docker arg that dies at run (exit 125) after the ticket is already claimed.
+// HARNESS_MODEL moves every stage; a per-stage variable overrides only its stage.
+func TestLoadPicksAModelPerStage(t *testing.T) {
+	cfg, err := Load(fullEnv(map[string]string{
+		"HARNESS_MODEL":       "claude-sonnet-5",
+		"RETROSPECTIVE_MODEL": "claude-haiku-4-5-20251001",
+	}))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.ImplementationModel != "claude-sonnet-5" {
+		t.Errorf("ImplementationModel = %q, want claude-sonnet-5 (HARNESS_MODEL)", cfg.ImplementationModel)
+	}
+	if cfg.ReviewModel != "claude-sonnet-5" {
+		t.Errorf("ReviewModel = %q, want claude-sonnet-5 (HARNESS_MODEL)", cfg.ReviewModel)
+	}
+	if cfg.RetrospectiveModel != "claude-haiku-4-5-20251001" {
+		t.Errorf("RetrospectiveModel = %q, want claude-haiku-4-5-20251001 (RETROSPECTIVE_MODEL override)", cfg.RetrospectiveModel)
+	}
+}
+
 func TestLoadEnvCacheVolumeWithoutPathDefaultsMount(t *testing.T) {
 	orig := projectLoader
 	t.Cleanup(func() { projectLoader = orig })
