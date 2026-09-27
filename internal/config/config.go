@@ -7,15 +7,29 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/danoleary/agent-harness/internal/version"
 )
 
-// Config is the resolved harness configuration.
+// Config is the resolved harness configuration, in the two halves ADR-0008
+// separates: "Project configuration lives in the Consumer repo … only secrets and
+// host paths stay as env vars on the harness side." Host is the harness side's
+// half and Project the Consumer's, so the line is drawn by the type rather than
+// only in prose. Both are embedded, so cfg.Gates and cfg.GitHubToken read as
+// before; a caller that needs one half takes cfg.Host or cfg.Project.
 type Config struct {
+	Host
+	Project
+}
+
+// Host is what the harness side supplies through its environment: the secrets,
+// the host paths, and the tuning knobs. None of it is read from the Consumer's
+// checkout.
+type Host struct {
+	// Secrets. Each is host-only (ADR-0001/0002): none crosses into the sandbox.
+
 	// LinearAPIKey is the host-only Linear key (ADR-0001) — never passed into the sandbox.
 	LinearAPIKey string
 	// GitHubToken is the host-only GH_TOKEN (ADR-0001) — used for the harness's own
@@ -30,23 +44,25 @@ type Config struct {
 	JiraBaseURL  string
 	JiraEmail    string
 	JiraAPIToken string
-	// Image is the sandbox image tag/ref the harness runs sessions in.
-	Image string
-	// Dockerfile is the checkout-relative path to the Consumer Dockerfile (FROM the
-	// base) to build the sandbox image from on a local miss (ADR-0008). Empty means
-	// the Image is a prebuilt ref the harness pulls instead of building.
-	Dockerfile string
-	// ProjectPath is the absolute host path to the herd checkout to bind-mount.
+	// AnthropicAPIKey is the host-only API key used for the cheap host-side semantic
+	// dedup model call when filing findings (BEH-573). Unlike the sandbox credential
+	// (which is validated for presence but never stored — it crosses into the
+	// container via docker `-e`, ADR-0002), this is held host-side for the harness's
+	// own model call. It is "" when only a subscription OAuth token is set — the
+	// x-api-key header rejects an OAuth token (BEH-316) — and semantic dedup is then
+	// skipped (best-effort), with filing degrading to exact key/title dedup.
+	AnthropicAPIKey string
+
+	// Host paths.
+
+	// ProjectPath is the absolute host path to the Consumer checkout to bind-mount.
 	ProjectPath string
-	// CacheVolume is the Docker volume name for the optional persistent toolchain
-	// cache (pnpm store / GOMODCACHE / NuGet). Empty means no cache mount.
-	CacheVolume string
-	// CacheMountPath is the in-container path CacheVolume mounts at (Consumer-
-	// declared; BEH-635). Only meaningful when CacheVolume is set.
-	CacheMountPath string
-	// CachePruneCommand is the Consumer's host-side cache-reclaim command, run by
-	// the loop between tickets (ADR-0005). Empty skips that reclaim rung.
-	CachePruneCommand string
+	// StopFile is the STOP sentinel path used by startup-clear and the stop check. A
+	// relative path is resolved against ProjectPath by cmd/loop.
+	StopFile string
+
+	// Tuning knobs, each one row of Host.knobs.
+
 	// TddTimeout is the hard cap for the tdd (implementation) session, enforced on
 	// ACTIVE (monotonic) in-sandbox time — host sleep is excluded (BEH-608), and it is
 	// NOT the total wall-clock the session's claude `duration_ms` reports (that also
@@ -119,14 +135,6 @@ type Config struct {
 	// manual triage. Zero (or ≤ CIPollBudget) disables the extension; CIPollBudget is then
 	// the only bound (the pre-BEH-685 behaviour).
 	CIPollMaxBudget time.Duration
-	// AnthropicAPIKey is the host-only API key used for the cheap host-side semantic
-	// dedup model call when filing findings (BEH-573). Unlike the sandbox credential
-	// (which is validated for presence but never stored — it crosses into the
-	// container via docker `-e`, ADR-0002), this is held host-side for the harness's
-	// own model call. It is "" when only a subscription OAuth token is set — the
-	// x-api-key header rejects an OAuth token (BEH-316) — and semantic dedup is then
-	// skipped (best-effort), with filing degrading to exact key/title dedup.
-	AnthropicAPIKey string
 	// DedupModel is the cheap model used for the semantic dedup pass — a small model
 	// is plenty for a one-token same-class-or-NONE classification.
 	DedupModel string
@@ -152,15 +160,33 @@ type Config struct {
 	// claim→first-push window (the observed mid-flight case was ~18 min), so a healthy
 	// agent mid-work is never mistaken for a dead one. Defaults to 30m.
 	LoopClaimTTL time.Duration
-	// StopFile is the STOP sentinel path used by startup-clear and the stop check. A
-	// relative path is resolved against ProjectPath by cmd/loop.
-	StopFile string
 	// LoopDiskReclaimThreshold is the soft free-disk floor (bytes) below which the
 	// daemon proactively reclaims host disk between tickets — pruning merged worktrees
 	// before the hard 5 GiB sandbox preflight floor would refuse a launch (ADR-0005).
 	// It defaults above that floor with headroom; 0 disables reclaim entirely.
 	LoopDiskReclaimThreshold uint64
+}
 
+// Project is the Consumer's declaration, resolved: the committed
+// `.agent-harness/config.toml` (ProjectConfig) after its defaults and the two
+// operator overrides (HARNESS_IMAGE, PNPM_STORE_VOLUME), plus the prompt bodies
+// committed beside it (ADR-0008/0009). Nothing here is a credential.
+type Project struct {
+	// Image is the sandbox image tag/ref the harness runs sessions in.
+	Image string
+	// Dockerfile is the checkout-relative path to the Consumer Dockerfile (FROM the
+	// base) to build the sandbox image from on a local miss (ADR-0008). Empty means
+	// the Image is a prebuilt ref the harness pulls instead of building.
+	Dockerfile string
+	// CacheVolume is the Docker volume name for the optional persistent toolchain
+	// cache (pnpm store / GOMODCACHE / NuGet). Empty means no cache mount.
+	CacheVolume string
+	// CacheMountPath is the in-container path CacheVolume mounts at (Consumer-
+	// declared; BEH-635). Only meaningful when CacheVolume is set.
+	CacheMountPath string
+	// CachePruneCommand is the Consumer's host-side cache-reclaim command, run by
+	// the loop between tickets (ADR-0005). Empty skips that reclaim rung.
+	CachePruneCommand string
 	// BranchPrefix is the canonical worktree branch prefix (from the project
 	// config's branch_prefix, default "feat"). The harness keys verify/push/PR/
 	// dispatch-guards off `<BranchPrefix>/<slug>` (ADR-0008).
@@ -195,16 +221,6 @@ type Config struct {
 	// composes each body inside its non-overridable contract envelope.
 	Prompts PromptBodies
 }
-
-// projectLoader resolves the Consumer's committed project config from the
-// bind-mounted checkout. It is a package var so tests can inject a fixture
-// instead of laying down a real .agent-harness/config.toml (ADR-0008).
-var projectLoader = LoadProject
-
-// promptsLoader resolves the Consumer's committed per-Stage prompt bodies from
-// the bind-mounted checkout. A package var so tests can inject fixture bodies
-// instead of laying down real .agent-harness/prompts/*.md files (ADR-0009).
-var promptsLoader = LoadPrompts
 
 const (
 	defaultTddTimeout       = 30 * time.Minute
@@ -258,12 +274,6 @@ func requireEnv(get Getenv, key string) (string, error) {
 	return v, nil
 }
 
-// Load reads harness config from the environment. The Claude credential is the
-// only secret that crosses the sandbox boundary (ADR-0002); it is validated for
-// presence here but not returned — it flows into the container via docker's
-// `-e NAME` reading the harness's own inherited environment, so it never sits in
-// our argv. GH_TOKEN is validated host-side too but stays host-only (the
-// harness's own push + `gh pr create`); it never enters the container.
 // Option adjusts how Load resolves configuration. It exists so a test can pin the
 // harness version the Consumer's `min_harness_version` is checked against, rather
 // than depending on the linker flags of the binary under test.
@@ -279,91 +289,136 @@ func WithHarnessVersion(v string) Option {
 	return func(o *loadOptions) { o.harnessVersion = v }
 }
 
+// Load resolves the harness config: the Host half from the environment, then the
+// Project half from the Consumer checkout at PROJECT_PATH. Any misconfiguration in
+// either fails here, before a sandbox launches.
 func Load(get Getenv, opts ...Option) (Config, error) {
 	options := loadOptions{harnessVersion: version.Version}
 	for _, opt := range opts {
 		opt(&options)
 	}
+	host, err := loadHost(get)
+	if err != nil {
+		return Config{}, err
+	}
+	project, err := loadProject(get, host.ProjectPath, options.harnessVersion)
+	if err != nil {
+		return Config{}, err
+	}
+	return Config{Host: host, Project: project}, nil
+}
+
+// loadHost reads the harness side's half from the environment. The Claude
+// credential is the only secret that crosses the sandbox boundary (ADR-0002); it
+// is validated for presence here but not returned — it flows into the container
+// via docker's `-e NAME` reading the harness's own inherited environment, so it
+// never sits in our argv. GH_TOKEN is validated host-side too but stays host-only
+// (the harness's own push + `gh pr create`); it never enters the container.
+func loadHost(get Getenv) (Host, error) {
 	// Exactly one Claude credential is required: a long-lived API key
 	// (ANTHROPIC_API_KEY) or a subscription OAuth token (CLAUDE_CODE_OAUTH_TOKEN,
 	// from `claude setup-token`). The latter must NOT be set as ANTHROPIC_API_KEY
 	// — Claude Code would send it via x-api-key and Anthropic rejects it (BEH-316).
 	if get("ANTHROPIC_API_KEY") == "" && get("CLAUDE_CODE_OAUTH_TOKEN") == "" {
-		return Config{}, fmt.Errorf(
+		return Host{}, fmt.Errorf(
 			"missing Claude credential: set ANTHROPIC_API_KEY (sk-ant-api03-…) " +
 				"or CLAUDE_CODE_OAUTH_TOKEN (sk-ant-oat01-… from `claude setup-token`)",
 		)
 	}
-	githubToken, err := requireEnv(get, "GH_TOKEN")
-	if err != nil {
-		return Config{}, err
+	h := Host{
+		// The tracker credential is NOT required here: which one is needed depends
+		// on the Consumer's `tracker.kind`, which lives in the project config.
+		// Requiring LINEAR_API_KEY unconditionally meant a Jira- or
+		// GitHub-Issues-only Consumer could not start the harness at all (BEH-641).
+		// trackers.New owns the per-kind check, alongside the Jira triple's.
+		LinearAPIKey:    get("LINEAR_API_KEY"),
+		JiraBaseURL:     get("JIRA_BASE_URL"),
+		JiraEmail:       get("JIRA_EMAIL"),
+		JiraAPIToken:    get("JIRA_API_TOKEN"),
+		AnthropicAPIKey: get("ANTHROPIC_API_KEY"),
 	}
-
-	// The tracker credential is NOT required here: which one is needed depends on
-	// the Consumer's `tracker.kind`, which lives in the project config loaded
-	// below. Requiring LINEAR_API_KEY unconditionally meant a Jira- or
-	// GitHub-Issues-only Consumer could not start the harness at all (BEH-641).
-	// trackers.New owns the per-kind check, alongside the Jira triple's.
-	linearKey := get("LINEAR_API_KEY")
-
-	herdPath, err := requireEnv(get, "PROJECT_PATH")
-	if err != nil {
-		return Config{}, err
+	var err error
+	if h.GitHubToken, err = requireEnv(get, "GH_TOKEN"); err != nil {
+		return Host{}, err
 	}
+	if h.ProjectPath, err = requireEnv(get, "PROJECT_PATH"); err != nil {
+		return Host{}, err
+	}
+	for _, k := range h.knobs(get) {
+		if err := k.resolve(get(k.key)); err != nil {
+			return Host{}, err
+		}
+	}
+	if err := h.validateIdleBelowCaps(); err != nil {
+		return Host{}, err
+	}
+	return h, nil
+}
 
-	// Project config lives in the bind-mounted checkout, not the environment
-	// (ADR-0008). A missing/invalid file fails loud here, before any sandbox
-	// launches, rather than surfacing as a wrong image or empty gate list later.
-	project, err := projectLoader(herdPath)
+// knobs is the table of Host's env-tunable settings, one row per knob: the env
+// var, the field it sets, how its value parses, the default when it is unset, and
+// whether a value the parser rejects is an error or falls back to the default.
+//
+// The session caps and CI knobs are lenient, a fallback-on-junk contract that
+// predates strict parsing. The cmd/loop knobs are strict: a nonsensical override
+// fails loud at load, before the daemon launches.
+func (h *Host) knobs(get Getenv) []knob {
+	// HARNESS_MODEL moves every stage at once; a per-stage variable overrides it.
+	sharedModel := orDefault(get("HARNESS_MODEL"), defaultModel)
+
+	return []knob{
+		bind("TDD_TIMEOUT_MS", &h.TddTimeout, positiveMillis, defaultTddTimeout, lenient),
+		bind("TDD_LARGE_REFACTOR_TIMEOUT_MS", &h.TddLargeRefactorTimeout, positiveMillis, defaultTddLargeCap, lenient),
+		bind("REVIEW_TIMEOUT_MS", &h.ReviewTimeout, positiveMillis, defaultReviewTimeout, lenient),
+		bind("RETROSPECTIVE_TIMEOUT_MS", &h.RetrospectiveTimeout, positiveMillis, defaultRetroTimeout, lenient),
+		bind("SESSION_IDLE_TIMEOUT_MS", &h.SessionIdleTimeout, positiveMillis, defaultSessionIdle, lenient),
+
+		bind("TDD_MODEL", &h.ImplementationModel, text, sharedModel, lenient),
+		bind("REVIEW_MODEL", &h.ReviewModel, text, sharedModel, lenient),
+		bind("RETROSPECTIVE_MODEL", &h.RetrospectiveModel, text, sharedModel, lenient),
+		bind("DEDUP_MODEL", &h.DedupModel, text, defaultDedupModel, lenient),
+
+		bind("CI_MAX_FIX_ATTEMPTS", &h.CIMaxFixAttempts, positiveCount, defaultCIMaxFixAttempts, lenient),
+		bind("CI_FIX_BUDGET_MS", &h.CIFixBudget, positiveMillis, defaultCIFixBudget, lenient),
+		bind("CI_POLL_INTERVAL_MS", &h.CIPollInterval, positiveMillis, defaultCIPollInterval, lenient),
+		bind("CI_POLL_BUDGET_MS", &h.CIPollBudget, positiveMillis, defaultCIPollBudget, lenient),
+		bind("CI_POLL_STALL_MS", &h.CIPollStall, positiveMillis, defaultCIPollStall, lenient),
+		bind("CI_POLL_MAX_BUDGET_MS", &h.CIPollMaxBudget, positiveMillis, defaultCIPollMaxBudget, lenient),
+
+		bind("LOOP_POLL_INTERVAL_MS", &h.LoopPollInterval, positiveMillis, defaultLoopPollInterval, strict),
+		bind("LOOP_CAP_BACKOFF_MS", &h.LoopCapBackoff, positiveMillis, defaultLoopCapBackoff, strict),
+		bind("LOOP_MAX_CONSECUTIVE_FAILURES", &h.LoopMaxConsecutiveFailures, positiveCount, defaultLoopMaxConsecutiveFailures, strict),
+		bind("LOOP_MAX_TICKETS", &h.LoopMaxTickets, ceilingCount, defaultLoopMaxTickets, strict),
+		bind("LOOP_MAX_RUNTIME_MS", &h.LoopMaxRuntime, ceilingMillis, defaultLoopMaxRuntime, strict),
+		bind("LOOP_CLAIM_TTL_MS", &h.LoopClaimTTL, positiveMillis, defaultLoopClaimTTL, strict),
+		bind("LOOP_DISK_RECLAIM_THRESHOLD_BYTES", &h.LoopDiskReclaimThreshold, reclaimBytes, defaultLoopDiskReclaimThreshold, strict),
+		bind("STOP_FILE", &h.StopFile, text, defaultStopFile, strict),
+	}
+}
+
+// loadProject resolves the Consumer's half from the checkout (ADR-0008): the
+// committed config, the version pin it carries, and the per-Stage prompt bodies.
+// A missing or invalid file fails loud here, before any sandbox launches, rather
+// than surfacing as a wrong image or empty gate list later.
+func loadProject(get Getenv, checkout, harnessVersion string) (Project, error) {
+	pc, err := LoadProject(checkout)
 	if err != nil {
-		return Config{}, err
+		return Project{}, err
 	}
 
 	// The Consumer's version pin is checked before anything else reads the config,
 	// so an incompatible harness says so instead of acting on keys it half
 	// understands.
-	if err := checkHarnessVersion(options.harnessVersion, project.MinHarnessVersion); err != nil {
-		return Config{}, err
+	if err := checkHarnessVersion(harnessVersion, pc.MinHarnessVersion); err != nil {
+		return Project{}, err
 	}
 
 	// Per-Stage prompt bodies live alongside the project config in the checkout
 	// (ADR-0009). Each one is required: the harness declares no skill of its own,
 	// so a missing body would leave that Stage with nothing to invoke.
-	prompts, err := promptsLoader(herdPath)
+	prompts, err := LoadPrompts(checkout)
 	if err != nil {
-		return Config{}, err
-	}
-
-	// The cmd/loop knobs are validated strictly (a nonsensical override fails loud at
-	// load, before the daemon launches), unlike the lenient parseTimeout above whose
-	// fallback-on-junk contract predates this slice.
-	loopPoll, err := parsePositiveDurationMs(get, "LOOP_POLL_INTERVAL_MS", defaultLoopPollInterval)
-	if err != nil {
-		return Config{}, err
-	}
-	capBackoff, err := parsePositiveDurationMs(get, "LOOP_CAP_BACKOFF_MS", defaultLoopCapBackoff)
-	if err != nil {
-		return Config{}, err
-	}
-	maxFailures, err := parsePositiveIntStrict(get, "LOOP_MAX_CONSECUTIVE_FAILURES", defaultLoopMaxConsecutiveFailures)
-	if err != nil {
-		return Config{}, err
-	}
-	maxTickets, err := parseCeilingInt(get, "LOOP_MAX_TICKETS", defaultLoopMaxTickets)
-	if err != nil {
-		return Config{}, err
-	}
-	maxRuntime, err := parseCeilingDurationMs(get, "LOOP_MAX_RUNTIME_MS", defaultLoopMaxRuntime)
-	if err != nil {
-		return Config{}, err
-	}
-	diskReclaim, err := parseNonNegativeBytes(get, "LOOP_DISK_RECLAIM_THRESHOLD_BYTES", defaultLoopDiskReclaimThreshold)
-	if err != nil {
-		return Config{}, err
-	}
-	claimTTL, err := parsePositiveDurationMs(get, "LOOP_CLAIM_TTL_MS", defaultLoopClaimTTL)
-	if err != nil {
-		return Config{}, err
+		return Project{}, err
 	}
 
 	// The PNPM_STORE_VOLUME env override is the host twin of the deprecated
@@ -371,69 +426,28 @@ func Load(get Getenv, opts ...Option) (Config, error) {
 	// declared no `[cache]` path, default the mount to /pnpm-store — mirroring
 	// applyDefaults' back-compat mapping so an env override alone can't produce a
 	// pathless `-v <vol>:` that dies at docker run (exit 125) after the claim.
-	cacheVolume := orDefault(get("PNPM_STORE_VOLUME"), project.Cache.Volume)
-	cachePath := project.Cache.Path
+	cacheVolume := orDefault(get("PNPM_STORE_VOLUME"), pc.Cache.Volume)
+	cachePath := pc.Cache.Path
 	if cachePath == "" && cacheVolume != "" {
 		cachePath = legacyPnpmStoreMountPath
 	}
 
-	// HARNESS_MODEL moves every stage at once; a per-stage variable overrides it.
-	sharedModel := orDefault(get("HARNESS_MODEL"), defaultModel)
-
-	cfg := Config{
-		LinearAPIKey:            linearKey,
-		GitHubToken:             githubToken,
-		JiraBaseURL:             get("JIRA_BASE_URL"),
-		JiraEmail:               get("JIRA_EMAIL"),
-		JiraAPIToken:            get("JIRA_API_TOKEN"),
-		ProjectPath:             herdPath,
-		Image:                   orDefault(get("HARNESS_IMAGE"), project.Image),
-		Dockerfile:              project.Dockerfile,
-		CacheVolume:             cacheVolume,
-		CacheMountPath:          cachePath,
-		CachePruneCommand:       project.Cache.PruneCommand,
-		TddTimeout:              parseTimeout(get("TDD_TIMEOUT_MS"), defaultTddTimeout),
-		TddLargeRefactorTimeout: parseTimeout(get("TDD_LARGE_REFACTOR_TIMEOUT_MS"), defaultTddLargeCap),
-		ReviewTimeout:           parseTimeout(get("REVIEW_TIMEOUT_MS"), defaultReviewTimeout),
-		RetrospectiveTimeout:    parseTimeout(get("RETROSPECTIVE_TIMEOUT_MS"), defaultRetroTimeout),
-		SessionIdleTimeout:      parseTimeout(get("SESSION_IDLE_TIMEOUT_MS"), defaultSessionIdle),
-		ImplementationModel:     orDefault(get("TDD_MODEL"), sharedModel),
-		ReviewModel:             orDefault(get("REVIEW_MODEL"), sharedModel),
-		RetrospectiveModel:      orDefault(get("RETROSPECTIVE_MODEL"), sharedModel),
-
-		CIMaxFixAttempts: parsePositiveInt(get("CI_MAX_FIX_ATTEMPTS"), defaultCIMaxFixAttempts),
-		CIFixBudget:      parseTimeout(get("CI_FIX_BUDGET_MS"), defaultCIFixBudget),
-		CIPollInterval:   parseTimeout(get("CI_POLL_INTERVAL_MS"), defaultCIPollInterval),
-		CIPollBudget:     parseTimeout(get("CI_POLL_BUDGET_MS"), defaultCIPollBudget),
-		CIPollStall:      parseTimeout(get("CI_POLL_STALL_MS"), defaultCIPollStall),
-		CIPollMaxBudget:  parseTimeout(get("CI_POLL_MAX_BUDGET_MS"), defaultCIPollMaxBudget),
-
-		AnthropicAPIKey: get("ANTHROPIC_API_KEY"),
-		DedupModel:      orDefault(get("DEDUP_MODEL"), defaultDedupModel),
-
-		LoopPollInterval:           loopPoll,
-		LoopCapBackoff:             capBackoff,
-		LoopMaxConsecutiveFailures: maxFailures,
-		LoopMaxTickets:             maxTickets,
-		LoopMaxRuntime:             maxRuntime,
-		LoopClaimTTL:               claimTTL,
-		StopFile:                   orDefault(get("STOP_FILE"), defaultStopFile),
-		LoopDiskReclaimThreshold:   diskReclaim,
-
-		BranchPrefix:          project.BranchPrefix,
-		PostCreate:            project.PostCreate,
-		Gates:                 project.Gates,
-		DocsOnlyExcludedRoots: project.DocsOnlyExcludedRoots,
-		HandoffStripPaths:     project.HandoffStripPaths,
-		SourceRoots:           project.SourceRoots,
-		Tracker:               project.Tracker,
-		Feedback:              project.Feedback,
+	return Project{
+		Image:                 orDefault(get("HARNESS_IMAGE"), pc.Image),
+		Dockerfile:            pc.Dockerfile,
+		CacheVolume:           cacheVolume,
+		CacheMountPath:        cachePath,
+		CachePruneCommand:     pc.Cache.PruneCommand,
+		BranchPrefix:          pc.BranchPrefix,
+		PostCreate:            pc.PostCreate,
+		Gates:                 pc.Gates,
+		DocsOnlyExcludedRoots: pc.DocsOnlyExcludedRoots,
+		HandoffStripPaths:     pc.HandoffStripPaths,
+		SourceRoots:           pc.SourceRoots,
+		Tracker:               pc.Tracker,
+		Feedback:              pc.Feedback,
 		Prompts:               prompts,
-	}
-	if err := validateIdleBelowCaps(cfg); err != nil {
-		return Config{}, err
-	}
-	return cfg, nil
+	}, nil
 }
 
 // validateIdleBelowCaps enforces the watchdog's load-bearing invariant: the idle/
@@ -445,21 +459,21 @@ func Load(get Getenv, opts ...Option) (Config, error) {
 // burn to the hard cap instead of being reaped early (BEH-535/538). A tuning typo
 // in an env override must fail loud here, before any sandbox launches, rather than
 // surface an hour later as a hung session.
-func validateIdleBelowCaps(cfg Config) error {
+func (h Host) validateIdleBelowCaps() error {
 	caps := []struct {
 		name string
 		cap  time.Duration
 	}{
-		{"TDD_TIMEOUT_MS", cfg.TddTimeout},
-		{"TDD_LARGE_REFACTOR_TIMEOUT_MS", cfg.TddLargeRefactorTimeout},
-		{"REVIEW_TIMEOUT_MS", cfg.ReviewTimeout},
-		{"RETROSPECTIVE_TIMEOUT_MS", cfg.RetrospectiveTimeout},
+		{"TDD_TIMEOUT_MS", h.TddTimeout},
+		{"TDD_LARGE_REFACTOR_TIMEOUT_MS", h.TddLargeRefactorTimeout},
+		{"REVIEW_TIMEOUT_MS", h.ReviewTimeout},
+		{"RETROSPECTIVE_TIMEOUT_MS", h.RetrospectiveTimeout},
 	}
 	for _, c := range caps {
-		if cfg.SessionIdleTimeout >= c.cap {
+		if h.SessionIdleTimeout >= c.cap {
 			return fmt.Errorf(
 				"SESSION_IDLE_TIMEOUT (%s) must be below the %s cap (%s), else the idle/no-progress watchdog can never fire before that hard cap and a stalled session is reaped only at the cap",
-				cfg.SessionIdleTimeout, c.name, c.cap,
+				h.SessionIdleTimeout, c.name, c.cap,
 			)
 		}
 	}
@@ -664,104 +678,4 @@ func orDefault(v, fallback string) string {
 		return fallback
 	}
 	return v
-}
-
-func parseTimeout(raw string, fallback time.Duration) time.Duration {
-	if raw == "" {
-		return fallback
-	}
-	ms, err := strconv.Atoi(raw)
-	if err != nil || ms <= 0 {
-		return fallback
-	}
-	return time.Duration(ms) * time.Millisecond
-}
-
-// parsePositiveInt parses a positive integer env value, falling back on anything
-// unparseable or non-positive (same lenient contract as parseTimeout).
-func parsePositiveInt(raw string, fallback int) int {
-	if raw == "" {
-		return fallback
-	}
-	n, err := strconv.Atoi(raw)
-	if err != nil || n <= 0 {
-		return fallback
-	}
-	return n
-}
-
-// parsePositiveDurationMs parses a millisecond env value that MUST be a positive
-// integer when set, returning a clear error otherwise (the cmd/loop knobs reject
-// nonsensical overrides loudly at load, rather than silently falling back like the
-// older parseTimeout). An unset key uses the fallback.
-func parsePositiveDurationMs(get Getenv, key string, fallback time.Duration) (time.Duration, error) {
-	raw := get(key)
-	if raw == "" {
-		return fallback, nil
-	}
-	ms, err := strconv.Atoi(raw)
-	if err != nil || ms <= 0 {
-		return 0, fmt.Errorf("%s must be a positive integer (milliseconds), got %q", key, raw)
-	}
-	return time.Duration(ms) * time.Millisecond, nil
-}
-
-// parseCeilingDurationMs parses an optional millisecond ceiling: 0 means unlimited,
-// any positive value is the ceiling, and a negative or unparseable value is an
-// error. An unset key uses the fallback.
-func parseCeilingDurationMs(get Getenv, key string, fallback time.Duration) (time.Duration, error) {
-	raw := get(key)
-	if raw == "" {
-		return fallback, nil
-	}
-	ms, err := strconv.Atoi(raw)
-	if err != nil || ms < 0 {
-		return 0, fmt.Errorf("%s must be a non-negative integer (milliseconds; 0 = unlimited), got %q", key, raw)
-	}
-	return time.Duration(ms) * time.Millisecond, nil
-}
-
-// parseCeilingInt parses an optional integer ceiling: 0 means unlimited, any
-// positive value is the ceiling, and a negative or unparseable value is an error.
-// An unset key uses the fallback.
-func parseCeilingInt(get Getenv, key string, fallback int) (int, error) {
-	raw := get(key)
-	if raw == "" {
-		return fallback, nil
-	}
-	n, err := strconv.Atoi(raw)
-	if err != nil || n < 0 {
-		return 0, fmt.Errorf("%s must be a non-negative integer (0 = unlimited), got %q", key, raw)
-	}
-	return n, nil
-}
-
-// parseNonNegativeBytes parses an optional byte-count env value: 0 means "disabled"
-// (a documented value, not nonsensical), any positive value is the threshold, and a
-// negative or unparseable value is an error naming the var. An unset key uses the
-// fallback. ParseUint rejects a leading '-', so negatives fail here too.
-func parseNonNegativeBytes(get Getenv, key string, fallback uint64) (uint64, error) {
-	raw := get(key)
-	if raw == "" {
-		return fallback, nil
-	}
-	n, err := strconv.ParseUint(raw, 10, 64)
-	if err != nil {
-		return 0, fmt.Errorf("%s must be a non-negative integer (bytes; 0 = disable reclaim), got %q", key, raw)
-	}
-	return n, nil
-}
-
-// parsePositiveIntStrict parses an integer env value that MUST be positive when
-// set, returning a clear error otherwise. An unset key uses the fallback.
-func parsePositiveIntStrict(get Getenv, key string, fallback int) (int, error) {
-	raw := get(key)
-	if raw == "" {
-		return fallback, nil
-	}
-	n, err := strconv.Atoi(raw)
-	if err != nil || n <= 0 {
-		return 0, fmt.Errorf("%s must be a positive integer, got %q", key, raw)
-	}
-	return n, nil
 }

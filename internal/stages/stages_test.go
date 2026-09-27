@@ -57,7 +57,7 @@ func newProvisionLog(t *testing.T, identifier string) *runlog.Logger {
 func TestProvisionWorktreeReprovisionsExistingWorktree(t *testing.T) {
 	h := hostio.NewFake()
 	h.Exists = true
-	cfg := config.Config{BranchPrefix: "feat", PostCreate: "cd web && pnpm install"}
+	cfg := config.Config{Project: config.Project{BranchPrefix: "feat", PostCreate: "cd web && pnpm install"}}
 
 	if err := provisionWorktree(h, cfg, "beh-796-x", newProvisionLog(t, "BEH-796")); err != nil {
 		t.Fatalf("provisionWorktree on an existing worktree: %v", err)
@@ -77,7 +77,7 @@ func TestProvisionWorktreeReprovisionsExistingWorktree(t *testing.T) {
 func TestProvisionWorktreeCreatesThenProvisionsFreshWorktree(t *testing.T) {
 	h := hostio.NewFake()
 	h.Exists = false
-	cfg := config.Config{BranchPrefix: "feat", PostCreate: "cd web && pnpm install"}
+	cfg := config.Config{Project: config.Project{BranchPrefix: "feat", PostCreate: "cd web && pnpm install"}}
 
 	if err := provisionWorktree(h, cfg, "beh-796-fresh", newProvisionLog(t, "BEH-796")); err != nil {
 		t.Fatalf("provisionWorktree on a fresh worktree: %v", err)
@@ -96,7 +96,7 @@ func TestProvisionWorktreeSkipsPostCreateWhenCreationFails(t *testing.T) {
 	h := hostio.NewFake()
 	h.Exists = false
 	h.CreateErr = errors.New("git worktree add: boom")
-	cfg := config.Config{BranchPrefix: "feat", PostCreate: "cd web && pnpm install"}
+	cfg := config.Config{Project: config.Project{BranchPrefix: "feat", PostCreate: "cd web && pnpm install"}}
 
 	err := provisionWorktree(h, cfg, "beh-796-broken", newProvisionLog(t, "BEH-796"))
 	if err == nil {
@@ -116,7 +116,7 @@ func TestProvisionWorktreeSkipsPostCreateWhenCreationFails(t *testing.T) {
 func TestProvisionWorktreeSkipsUnconfiguredPostCreate(t *testing.T) {
 	h := hostio.NewFake()
 	h.Exists = false
-	cfg := config.Config{BranchPrefix: "feat"}
+	cfg := config.Config{Project: config.Project{BranchPrefix: "feat"}}
 
 	if err := provisionWorktree(h, cfg, "beh-796-nohook", newProvisionLog(t, "BEH-796")); err != nil {
 		t.Fatalf("provisionWorktree with no post_create: %v", err)
@@ -507,7 +507,7 @@ func TestRetrospectiveSkipsWhenNoPipelineInputs(t *testing.T) {
 	h := hostio.NewFake()
 	h.BranchThere = false // no feat/ branch: the /tdd step produced nothing
 
-	res := Retrospective(h, config.Config{ProjectPath: herd}, log, Args{Identifier: "BEH-318"})
+	res := Retrospective(h, config.Config{Host: config.Host{ProjectPath: herd}}, log, Args{Identifier: "BEH-318"})
 
 	if res.Err != nil {
 		t.Fatalf("a clean skip must not surface a hard error, got %v", res.Err)
@@ -641,8 +641,10 @@ func TestParseArgsForceDefaultsOff(t *testing.T) {
 // refactor (BEH-688 Symptom 2) and the ordinary cap to everything else.
 func TestTddCap(t *testing.T) {
 	cfg := config.Config{
-		TddTimeout:              30 * time.Minute,
-		TddLargeRefactorTimeout: 60 * time.Minute,
+		Host: config.Host{
+			TddTimeout:              30 * time.Minute,
+			TddLargeRefactorTimeout: 60 * time.Minute,
+		},
 	}
 	large := ticket.Ticket{
 		Title:       "Extract shared admin scaffolding",

@@ -21,7 +21,7 @@ func testReal(t *testing.T, cfg config.Config) *Real {
 // [git.Worktree] per slug, so a Stage names the ticket and nothing else — the
 // checkout, the branch and the worktree path never travel as three loose strings.
 func TestRealBindsTheCheckoutAndBranchPrefix(t *testing.T) {
-	h := testReal(t, config.Config{ProjectPath: "/Users/dan/my-project", BranchPrefix: "feat"})
+	h := testReal(t, config.Config{Host: config.Host{ProjectPath: "/Users/dan/my-project"}, Project: config.Project{BranchPrefix: "feat"}})
 
 	if got, want := h.BranchName("proj-7"), "feat/proj-7"; got != want {
 		t.Errorf("BranchName = %q, want %q", got, want)
@@ -34,12 +34,12 @@ func TestRealBindsTheCheckoutAndBranchPrefix(t *testing.T) {
 // BEH-641: a Consumer that declares no source_roots gets no resolved-symbol
 // advisory rather than a scan of a guessed directory.
 func TestRealSourceRootsAreConsumerDeclaredAndAbsolute(t *testing.T) {
-	none := testReal(t, config.Config{ProjectPath: "/p"})
+	none := testReal(t, config.Config{Host: config.Host{ProjectPath: "/p"}})
 	if got := none.sourceRoots(); got != nil {
 		t.Errorf("sourceRoots = %v, want nil when the Consumer declares none (BEH-641)", got)
 	}
 
-	declared := testReal(t, config.Config{ProjectPath: "/p", SourceRoots: []string{"src", "  ", "web/src"}})
+	declared := testReal(t, config.Config{Host: config.Host{ProjectPath: "/p"}, Project: config.Project{SourceRoots: []string{"src", "  ", "web/src"}}})
 	want := []string{filepath.Join("/p", "src"), filepath.Join("/p", "web/src")}
 	got := declared.sourceRoots()
 	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
@@ -53,7 +53,7 @@ func TestRealSourceRootsAreConsumerDeclaredAndAbsolute(t *testing.T) {
 // project name for provenance. It lives here, not in internal/stages, which is
 // what lets the stage layer stop importing a concrete tracker adapter.
 func TestUpstreamOffYieldsNilSink(t *testing.T) {
-	if up := testReal(t, config.Config{Feedback: config.FeedbackConfig{Upstream: "off"}}).upstream(); up != nil {
+	if up := testReal(t, config.Config{Project: config.Project{Feedback: config.FeedbackConfig{Upstream: "off"}}}).upstream(); up != nil {
 		t.Errorf("upstream(off) = %+v, want nil (local sink)", up)
 	}
 	if up := testReal(t, config.Config{}).upstream(); up != nil {
@@ -63,10 +63,14 @@ func TestUpstreamOffYieldsNilSink(t *testing.T) {
 
 func TestUpstreamGitHubBuildsRepoBoundSink(t *testing.T) {
 	up := testReal(t, config.Config{
-		GitHubToken: "gh-token",
-		Feedback: config.FeedbackConfig{
-			Upstream: "github", Repo: "example-org/agent-harness",
-			FindingsLabel: "harness-finding", Project: "herd",
+		Host: config.Host{
+			GitHubToken: "gh-token",
+		},
+		Project: config.Project{
+			Feedback: config.FeedbackConfig{
+				Upstream: "github", Repo: "example-org/agent-harness",
+				FindingsLabel: "harness-finding", Project: "herd",
+			},
 		},
 	}).upstream()
 
@@ -88,7 +92,7 @@ func TestUpstreamGitHubBuildsRepoBoundSink(t *testing.T) {
 // trackers.New rejects it again; that defensive failure degrades to the local
 // sink rather than filing nowhere.
 func TestUpstreamMalformedRepoDegradesToTheLocalSink(t *testing.T) {
-	up := testReal(t, config.Config{Feedback: config.FeedbackConfig{Upstream: "github", Repo: "not-a-repo"}}).upstream()
+	up := testReal(t, config.Config{Project: config.Project{Feedback: config.FeedbackConfig{Upstream: "github", Repo: "not-a-repo"}}}).upstream()
 	if up != nil {
 		t.Errorf("upstream = %+v, want nil so harness findings stay local", up)
 	}
@@ -102,7 +106,7 @@ func TestMatcherIsNilWithoutAnAnthropicAPIKey(t *testing.T) {
 	if m := testReal(t, config.Config{}).matcher(); m != nil {
 		t.Errorf("matcher = %v, want a true nil interface so filing skips the semantic pass", m)
 	}
-	if m := testReal(t, config.Config{AnthropicAPIKey: "sk-ant-api03-x"}).matcher(); m == nil {
+	if m := testReal(t, config.Config{Host: config.Host{AnthropicAPIKey: "sk-ant-api03-x"}}).matcher(); m == nil {
 		t.Error("an API key must enable the semantic dedup pass (BEH-573)")
 	}
 }
@@ -110,7 +114,7 @@ func TestMatcherIsNilWithoutAnAnthropicAPIKey(t *testing.T) {
 // The tracker is resolved once per run and cached — a stage that fetches the
 // ticket and later files findings builds one client, not three.
 func TestTrackerIsResolvedOnceAndCached(t *testing.T) {
-	h := testReal(t, config.Config{Tracker: config.TrackerConfig{Kind: "nonesuch"}})
+	h := testReal(t, config.Config{Project: config.Project{Tracker: config.TrackerConfig{Kind: "nonesuch"}}})
 
 	_, first := h.Tracker()
 	_, second := h.Tracker()

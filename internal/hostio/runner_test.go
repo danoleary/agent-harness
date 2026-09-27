@@ -30,9 +30,13 @@ func testRunner(t *testing.T, outcomes ...session.Outcome) (*Runner, *[]launch) 
 	}
 	var seen []launch
 	r := NewRunner(config.Config{
-		ProjectPath:        "/Users/dan/my-project",
-		Image:              "myproject-agent-harness:latest",
-		SessionIdleTimeout: 5 * time.Minute,
+		Host: config.Host{
+			ProjectPath:        "/Users/dan/my-project",
+			SessionIdleTimeout: 5 * time.Minute,
+		},
+		Project: config.Project{
+			Image: "myproject-agent-harness:latest",
+		},
 	}, log, "20260920-101500", false)
 	r.pid = 4242
 	r.sleep = func(time.Duration) {}

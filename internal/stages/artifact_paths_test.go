@@ -17,7 +17,7 @@ import (
 // source-looking `agent-harness/` inside every project it runs against — untracked,
 // un-gitignored, and indistinguishable from a vendored copy of the harness itself.
 func TestLogsRootLivesInTheConsumerHarnessDir(t *testing.T) {
-	cfg := config.Config{ProjectPath: "/Users/dan/myproject"}
+	cfg := config.Config{Host: config.Host{ProjectPath: "/Users/dan/myproject"}}
 
 	got := LogsRoot(cfg)
 	want := filepath.Join("/Users/dan/myproject", config.ProjectDirName, "logs")
@@ -31,7 +31,7 @@ func TestLogsRootLivesInTheConsumerHarnessDir(t *testing.T) {
 // extraction had to stop. Asserted separately from the exact path so the intent
 // survives a future change to the directory's layout.
 func TestLogsRootNeverWritesAHarnessSourceDirIntoAConsumer(t *testing.T) {
-	got := LogsRoot(config.Config{ProjectPath: "/Users/dan/myproject"})
+	got := LogsRoot(config.Config{Host: config.Host{ProjectPath: "/Users/dan/myproject"}})
 
 	for _, segment := range strings.Split(filepath.ToSlash(got), "/") {
 		if segment == "agent-harness" {

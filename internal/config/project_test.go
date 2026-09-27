@@ -8,42 +8,51 @@ import (
 	"testing"
 )
 
-// testProjectConfig mirrors a Consumer's committed .agent-harness/config.toml so the
-// env-config tests (which don't lay down a real checkout) resolve stable values;
-// the real file read is covered by the LoadProject tests in this file.
-func testProjectConfig() ProjectConfig {
-	return ProjectConfig{
-		Image:        "myproject-agent-harness:latest",
-		Cache:        CacheConfig{Volume: "myproject-cache", Path: "/pnpm-store"},
-		BranchPrefix: "feat",
-		PostCreate:   "cd web && pnpm install --frozen-lockfile",
-		Gates: []Gate{
-			{Name: "check", Command: "pnpm run check"},
-			{Name: "typecheck", Command: "pnpm run typecheck"},
-		},
-		Tracker: TrackerConfig{
-			Kind: "linear", TeamKey: "BEH",
-			FindingsLabelID: "788a5654-a4b3-4ac2-8483-a4d50408ebc0",
-			FindingsLabel:   "agent-harness",
-			ReadyLabel:      "ready-for-agent", BlockedLabel: "Blocked",
-		},
+// testConfigTOML is the committed .agent-harness/config.toml the Load tests run
+// against, through the real loader: fullEnv lays it down in a temp checkout.
+const testConfigTOML = `
+image = "myproject-agent-harness:latest"
+pnpm_store_volume = "myproject-cache"
+branch_prefix = "feat"
+post_create = "cd web && pnpm install --frozen-lockfile"
+
+[tracker]
+kind = "linear"
+team_key = "BEH"
+findings_label_id = "788a5654-a4b3-4ac2-8483-a4d50408ebc0"
+findings_label = "agent-harness"
+ready_label = "ready-for-agent"
+blocked_label = "Blocked"
+
+[[gates]]
+name = "check"
+command = "pnpm run check"
+
+[[gates]]
+name = "typecheck"
+command = "pnpm run typecheck"
+`
+
+// testCheckout lays down a Consumer checkout in a temp dir — configTOML as its
+// committed config plus a usable body for every Stage — and returns its root.
+func testCheckout(t *testing.T, configTOML string) string {
+	t.Helper()
+	dir := t.TempDir()
+	writeProjectConfig(t, dir, configTOML)
+	for _, stage := range []string{"implement", "review", "retro"} {
+		writePromptBody(t, dir, stage, "/"+stage)
 	}
+	return dir
 }
 
-func TestMain(m *testing.M) {
-	projectLoader = func(string) (ProjectConfig, error) { return testProjectConfig(), nil }
-	// Prompt bodies are a required Consumer surface, and fullEnv's PROJECT_PATH is
-	// a fixture path with no checkout behind it. Inject usable bodies package-wide
-	// so every Load test exercises what it is about; the prompts tests drive the
-	// real loader against a temp dir.
-	promptsLoader = func(string) (PromptBodies, error) {
-		return PromptBodies{Implement: "/implement", Review: "/review", Retro: "/retro"}, nil
-	}
-	os.Exit(m.Run())
+// withPin returns testConfigTOML pinned to min_harness_version. The key goes
+// first: below a [table] header it would belong to that table.
+func withPin(pin string) string {
+	return fmt.Sprintf("min_harness_version = %q\n", pin) + testConfigTOML
 }
 
 func TestLoadSourcesProjectConfig(t *testing.T) {
-	cfg, err := Load(fullEnv(nil))
+	cfg, err := Load(fullEnv(t, nil))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -64,14 +73,14 @@ func TestLoadSourcesProjectConfig(t *testing.T) {
 // The feedback surface is plumbed from the project config through Load so the
 // retrospective stage can build the upstream sink (ADR-0011/BEH-640).
 func TestLoadSurfacesFeedbackConfig(t *testing.T) {
-	orig := projectLoader
-	t.Cleanup(func() { projectLoader = orig })
-	projectLoader = func(string) (ProjectConfig, error) {
-		pc := testProjectConfig()
-		pc.Feedback = FeedbackConfig{Upstream: "github", Repo: "example-org/agent-harness", FindingsLabel: "harness-finding", Project: "myproject"}
-		return pc, nil
-	}
-	cfg, err := Load(fullEnv(nil))
+	checkout := testCheckout(t, testConfigTOML+`
+[feedback]
+upstream = "github"
+repo = "example-org/agent-harness"
+findings_label = "harness-finding"
+project = "myproject"
+`)
+	cfg, err := Load(envAt(checkout, nil))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -84,12 +93,8 @@ func TestLoadSurfacesFeedbackConfig(t *testing.T) {
 }
 
 func TestLoadPropagatesProjectConfigError(t *testing.T) {
-	orig := projectLoader
-	t.Cleanup(func() { projectLoader = orig })
-	projectLoader = func(string) (ProjectConfig, error) {
-		return ProjectConfig{}, fmt.Errorf("boom: no config")
-	}
-	if _, err := Load(fullEnv(nil)); err == nil {
+	// A checkout with no .agent-harness/config.toml at all.
+	if _, err := Load(envAt(t.TempDir(), nil)); err == nil {
 		t.Fatal("want Load to propagate a project-config error, got nil")
 	}
 }
@@ -531,15 +536,7 @@ command = "c"
 // A Consumer pins the harness version its config is written for, and an older
 // binary must refuse rather than silently ignore the keys it does not know.
 func TestLoadRejectsAHarnessOlderThanTheConsumerPin(t *testing.T) {
-	orig := projectLoader
-	t.Cleanup(func() { projectLoader = orig })
-	projectLoader = func(string) (ProjectConfig, error) {
-		pc := testProjectConfig()
-		pc.MinHarnessVersion = "9.9"
-		return pc, nil
-	}
-
-	_, err := Load(fullEnv(nil), WithHarnessVersion("0.2.0"))
+	_, err := Load(envAt(testCheckout(t, withPin("9.9")), nil), WithHarnessVersion("0.2.0"))
 	if err == nil {
 		t.Fatal("Load must fail when the harness is older than min_harness_version")
 	}
@@ -553,15 +550,7 @@ func TestLoadRejectsAHarnessOlderThanTheConsumerPin(t *testing.T) {
 }
 
 func TestLoadAcceptsAHarnessNewerThanTheConsumerPin(t *testing.T) {
-	orig := projectLoader
-	t.Cleanup(func() { projectLoader = orig })
-	projectLoader = func(string) (ProjectConfig, error) {
-		pc := testProjectConfig()
-		pc.MinHarnessVersion = "0.2"
-		return pc, nil
-	}
-
-	if _, err := Load(fullEnv(nil), WithHarnessVersion("0.3.1")); err != nil {
+	if _, err := Load(envAt(testCheckout(t, withPin("0.2")), nil), WithHarnessVersion("0.3.1")); err != nil {
 		t.Fatalf("Load: %v", err)
 	}
 }
@@ -569,30 +558,14 @@ func TestLoadAcceptsAHarnessNewerThanTheConsumerPin(t *testing.T) {
 // A from-source build reports no version, so there is nothing to compare. The
 // maintainer working on the harness must not be blocked by a Consumer's pin.
 func TestLoadSkipsThePinForADevBuild(t *testing.T) {
-	orig := projectLoader
-	t.Cleanup(func() { projectLoader = orig })
-	projectLoader = func(string) (ProjectConfig, error) {
-		pc := testProjectConfig()
-		pc.MinHarnessVersion = "9.9"
-		return pc, nil
-	}
-
-	if _, err := Load(fullEnv(nil), WithHarnessVersion("dev")); err != nil {
+	if _, err := Load(envAt(testCheckout(t, withPin("9.9")), nil), WithHarnessVersion("dev")); err != nil {
 		t.Fatalf("a dev build must not be blocked by a pin: %v", err)
 	}
 }
 
 // An unparseable pin fails loud: a typo must not quietly disable the check.
 func TestLoadRejectsAMalformedPin(t *testing.T) {
-	orig := projectLoader
-	t.Cleanup(func() { projectLoader = orig })
-	projectLoader = func(string) (ProjectConfig, error) {
-		pc := testProjectConfig()
-		pc.MinHarnessVersion = "latest"
-		return pc, nil
-	}
-
-	if _, err := Load(fullEnv(nil), WithHarnessVersion("0.2.0")); err == nil {
+	if _, err := Load(envAt(testCheckout(t, withPin("latest")), nil), WithHarnessVersion("0.2.0")); err == nil {
 		t.Fatal("Load must reject a malformed min_harness_version")
 	}
 }
@@ -600,7 +573,7 @@ func TestLoadRejectsAMalformedPin(t *testing.T) {
 // No pin at all stays valid: the key is optional, and most Consumers will not set
 // it until a compatibility break gives them a reason to.
 func TestLoadAcceptsNoPin(t *testing.T) {
-	if _, err := Load(fullEnv(nil), WithHarnessVersion("0.2.0")); err != nil {
+	if _, err := Load(fullEnv(t, nil), WithHarnessVersion("0.2.0")); err != nil {
 		t.Fatalf("Load without a pin: %v", err)
 	}
 }
