@@ -73,7 +73,7 @@ runnable by hand against a ticket id before the next is added:
    complete fix. The merge-base with `main` is stale, so `TicketAlreadyOnMain`
    sees nothing and `ResolvedAdvisory` stays quiet when the fix *added* code. It's
    advisory (a resumed branch can hold *incomplete* work too), so instead of
-   skipping, the host swaps the `/tdd` prompt for `prompt.BuildTddResumedBranch`,
+   skipping, the host swaps the `/tdd` prompt for the `prompt.ResumedBranch` variant,
    which steers the agent to inspect the branch's existing commits (`git log
    main..HEAD`) and prefer verify-and-handoff over re-implementing.
 2. **`review BEH-NNN`** — run `/review-worktree` over the existing worktree, then

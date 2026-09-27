@@ -121,7 +121,7 @@ func Review(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Res
 	log.Event(fmt.Sprintf("fetched %s — %s", t.Identifier, t.Title))
 
 	// Review emits no findings (retrospective owns them) → no findings mount.
-	p := prompt.BuildReview(t, slug, worktreePath, cfg.BranchPrefix, cfg.Prompts.Review)
+	p := prompt.For(prompt.Review, prompt.Context{Ticket: t, Slug: slug, BranchPrefix: cfg.BranchPrefix, WorktreePath: worktreePath, Body: cfg.Prompts.Review})
 	reviewRun := hostio.AgentRun{Label: reviewSession, Model: cfg.ReviewModel, Prompt: p, Cap: cfg.ReviewTimeout}
 	prepRun := hostio.ShellRun{
 		Label: prepStep, Command: cfg.PostCreate, WorktreePath: worktreePath, Cap: cfg.ReviewTimeout,
@@ -521,7 +521,7 @@ func Review(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Res
 }
 
 // ciFixRunner returns the CI watch's fix callback: it launches a sandboxed Claude
-// session over the existing worktree, steered by BuildCIFix with the fetched
+// session over the existing worktree, steered by the CIFix prompt with the fetched
 // failing logs, then enforces ground truth — a non-zero session exit or a worktree
 // left dirty (the agent didn't commit) is a failure, so the harness never pushes
 // an unverified or self-reported-only fix. Each attempt gets a unique label, from
@@ -537,10 +537,13 @@ func ciFixRunner(h hostio.Host, cfg config.Config, log *runlog.Logger, slug stri
 		headBefore, _ := h.HeadSHA(slug)
 		log.Event(fmt.Sprintf("CI red — launching auto-fix session %d (cap %d min active)", attempt, int(cfg.ReviewTimeout.Minutes())))
 		res := h.Agent(hostio.AgentRun{
-			Label:  fmt.Sprintf("cifix-%d", attempt),
-			Model:  cfg.ReviewModel,
-			Prompt: prompt.BuildCIFix(t, slug, cfg.BranchPrefix, h.WorktreePath(slug), ciLogs, logAvailable),
-			Cap:    cfg.ReviewTimeout,
+			Label: fmt.Sprintf("cifix-%d", attempt),
+			Model: cfg.ReviewModel,
+			Prompt: prompt.For(prompt.CIFix, prompt.Context{
+				Ticket: t, Slug: slug, BranchPrefix: cfg.BranchPrefix, WorktreePath: h.WorktreePath(slug),
+				CILogs: ciLogs, CILogAvailable: logAvailable,
+			}),
+			Cap: cfg.ReviewTimeout,
 		})
 		if err := fixSessionError(res.Outcome, attempt); err != nil {
 			return err
@@ -565,7 +568,7 @@ func ciFixRunner(h hostio.Host, cfg config.Config, log *runlog.Logger, slug stri
 // when the proactive pre-push rebase hits a genuine content conflict (BEH-581) —
 // the dead-end that previously stranded a fully-reviewed, gate-green branch in a
 // worktree with no autonomous recovery. It mirrors ciFixRunner's pattern: a Claude
-// session over the existing worktree (steered by BuildRebaseFix to rebase onto
+// session over the existing worktree (steered by the RebaseFix prompt to rebase onto
 // origin/main, resolve, and commit), then ground-truth enforcement — the verdict
 // is never the agent's say-so but verify.RebaseResolution over the worktree's git
 // state (session exit, clean tree, branch actually rebased). On a clean resolution
@@ -581,10 +584,12 @@ func resolvePrePushConflict(
 	log.Event("review ↻ pre-push rebase hit a content conflict — launching a sandboxed conflict-resolution session (BEH-581)")
 	log.Event(fmt.Sprintf("launching conflict-resolution session (cap %d min active)", int(cfg.ReviewTimeout.Minutes())))
 	res := h.Agent(hostio.AgentRun{
-		Label:  "rebasefix",
-		Model:  cfg.ReviewModel,
-		Prompt: prompt.BuildRebaseFix(t, slug, cfg.BranchPrefix, h.WorktreePath(slug)),
-		Cap:    cfg.ReviewTimeout,
+		Label: "rebasefix",
+		Model: cfg.ReviewModel,
+		Prompt: prompt.For(prompt.RebaseFix, prompt.Context{
+			Ticket: t, Slug: slug, BranchPrefix: cfg.BranchPrefix, WorktreePath: h.WorktreePath(slug),
+		}),
+		Cap: cfg.ReviewTimeout,
 	})
 	log.Event(fmt.Sprintf("conflict-resolution session exited (code %d)", res.ExitCode))
 
