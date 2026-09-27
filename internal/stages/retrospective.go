@@ -106,7 +106,10 @@ func Retrospective(h hostio.Host, cfg config.Config, log *runlog.Logger, args Ar
 		return Result{Err: err}
 	}
 
-	p := prompt.BuildRetrospective(t, slug, toPromptFindings(prior), cfg.BranchPrefix, cfg.Prompts.Retro)
+	p := prompt.For(prompt.Retrospective, prompt.Context{
+		Ticket: t, Slug: slug, BranchPrefix: cfg.BranchPrefix, Body: cfg.Prompts.Retro,
+		Filed: toPromptFindings(prior),
+	})
 	run := hostio.AgentRun{
 		Label:       retrospectiveSession,
 		Model:       cfg.RetrospectiveModel,

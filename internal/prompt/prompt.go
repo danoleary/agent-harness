@@ -13,6 +13,7 @@
 package prompt
 
 import (
+	"fmt"
 	"strings"
 	"text/template"
 
@@ -39,6 +40,81 @@ import (
 // carry one Consumer's toolchain to every other Consumer's agent.
 const bashQuirkSteer = "Sandbox bash quirk (BEH-401/BEH-598/BEH-601/BEH-645): the bundled Claude CLI's Bash tool can surface opaque errors that look like a bug in your command but are an environment artifact, in four ways. (1) It intermittently mangles a single Bash call that BOTH pipes into `head`/`tail` AND uses a command substitution like `cd \"$(...)\"`, producing errors like `head: invalid number of bytes: 'set -euo pipefail; ...'` or `cd: too many arguments`. (2) When a plain command exits non-zero BY DESIGN, the tool can collapse that into a bare `Error` string with the real exit code and stderr stripped — e.g. `git merge-base HEAD origin/main` exits 1 when two commits share no common ancestor, which is an expected signal, not a failure. (3) A `VAR=value; cmd \"$VAR\"` assignment-then-use within ONE Bash call can expand `$VAR` to the EMPTY string: the failure is silent (empty output) or surfaces as a path with the prefix missing (e.g. `\"$DP/dist\"` becomes `/dist` → `cannot access '/dist'`). `&&`-chaining the assignment to its use (`VAR=value && cmd \"$VAR\"`) expands fine; `;`-separating it is what drops the variable. (4) THE WORST, because it makes a GREEN gate look RED: chaining trailing statements onto a GATE command in one Bash call — e.g. `<gate command> > /tmp/gate.log 2>&1; echo exit=$?; grep -i error /tmp/gate.log | head` — can concatenate those trailing statements as ARGUMENTS onto the gate's own command, so the underlying tool receives `echo exit=$? grep …` where it expected files or targets. It then fails with an argument/target complaint (a formatter reporting it matched no input files, a test runner reporting an unknown target) and your task runner reports a non-zero lifecycle exit — a spurious failure on a gate that actually PASSED. Work around all four: run one command per Bash call, prefer absolute paths over `cd \"$(...)\"`, and don't tack `| head -n N` onto a compound command; when a plain command returns a bare `Error`, do NOT assume it broke — re-run it capturing the exit code explicitly (append `; echo exit=$?`, or use `cmd || echo \"exit $?\"`) to tell an expected non-zero exit from a real failure; avoid intra-call shell variables — inline the absolute path, `&&`-chain instead of `;`, split into separate calls, or use the Grep/Glob tools with literal absolute paths; and run each configured verification gate as its OWN Bash call with NOTHING appended — no `; echo exit=$?`, no `> log 2>&1; grep … | head` — reading its exit status in a separate call, and if a gate reds with an argument/target complaint naming input it was never meant to receive, re-run it ALONE before treating it as a real failure. Retrying verbatim won't help in any case — split it up, inspect the exit code, drop the intra-call variable, or re-run the gate alone."
 
+// Stage names which sandboxed session a prompt drives. It is the one axis the
+// caller chooses; everything that varies within a Stage (resume state, filed
+// findings, CI logs) is a field of Context, so a new variant costs no interface.
+type Stage int
+
+const (
+	// Implement is the implementation session; Context.Resume picks how it enters
+	// its worktree.
+	Implement Stage = iota
+	// Review is the cold review session over the handed-off branch.
+	Review
+	// Retrospective is the terminal findings-only session.
+	Retrospective
+	// CIFix diagnoses and fixes a red CI check on the open PR (BEH-414).
+	CIFix
+	// RebaseFix resolves a genuine conflict in the pre-push rebase (BEH-581).
+	RebaseFix
+)
+
+// Resume says how an Implement session enters its worktree. The host picks it;
+// only the worktree instruction differs between them.
+type Resume int
+
+const (
+	// Fresh points the agent at the worktree the host just created.
+	Fresh Resume = iota
+	// ResumedBranch is for a ticket whose own branch already carries un-merged
+	// commits for it: inspect them first, prefer verify-and-handoff (BEH-554).
+	ResumedBranch
+	// AfterRefusal is the retry after a usage-policy refusal: the prior attempt's
+	// uncommitted work survives at Context.WorktreePath (BEH-389).
+	AfterRefusal
+)
+
+// Context is everything a Stage prompt is composed from. Body is the Consumer's
+// half of the ADR-0009 split — the only field a Consumer supplies; everything else
+// feeds the harness-owned envelope. Fields a Stage does not use are ignored.
+type Context struct {
+	Ticket       ticket.Ticket
+	Slug         string
+	BranchPrefix string
+	WorktreePath string
+
+	// Body is the Consumer-supplied prompt body from `.agent-harness/prompts/`.
+	// CIFix and RebaseFix invoke no skill and ignore it.
+	Body string
+
+	// Resume selects the Implement variant.
+	Resume Resume
+	// Filed lists the finding classes already filed, for a Retrospective re-run.
+	Filed []FiledFinding
+	// CILogs is the failing job log the host fetched for CIFix; CILogAvailable
+	// says whether it is a usable log or only an error marker (BEH-558).
+	CILogs         string
+	CILogAvailable bool
+}
+
+// For composes the `-p` prompt for Stage s: the envelope for that Stage wrapped
+// around ctx.Body. It panics on an unknown Stage, which is a programming error.
+func For(s Stage, ctx Context) string {
+	switch s {
+	case Implement:
+		return implement(ctx)
+	case Review:
+		return review(ctx)
+	case Retrospective:
+		return retrospective(ctx)
+	case CIFix:
+		return ciFix(ctx)
+	case RebaseFix:
+		return rebaseFix(ctx)
+	}
+	panic(fmt.Sprintf("prompt: unknown stage %d", s))
+}
+
 // bodyData is the template context available to a Consumer prompt body. A body
 // interpolates these with `{{.Field}}` (text/template) so herd's committed bodies
 // can name the ticket, slug, branch, and worktree without the harness hardcoding
@@ -53,18 +129,25 @@ type bodyData struct {
 }
 
 // renderBody interpolates the Consumer body's `{{.Field}}` placeholders against
-// d. A body is Consumer-controlled and may be malformed or empty; rather than
+// the Context. A body is Consumer-controlled and may be malformed or empty; rather than
 // fail the whole prompt, a parse/exec error falls back to the raw body verbatim —
 // quality is the Consumer's concern, the contract (which is envelope, not body)
 // is never at risk.
-func renderBody(body string, d bodyData) string {
-	tmpl, err := template.New("body").Parse(body)
+func renderBody(c Context) string {
+	tmpl, err := template.New("body").Parse(c.Body)
 	if err != nil {
-		return body
+		return c.Body
+	}
+	d := bodyData{
+		Identifier:   c.Ticket.Identifier,
+		Title:        c.Ticket.Title,
+		Slug:         c.Slug,
+		BranchPrefix: c.BranchPrefix,
+		WorktreePath: c.WorktreePath,
 	}
 	var b strings.Builder
 	if err := tmpl.Execute(&b, d); err != nil {
-		return body
+		return c.Body
 	}
 	return b.String()
 }
@@ -89,7 +172,7 @@ func defang(s string) string {
 }
 
 // join assembles a prompt from its sections, dropping empties and separating the
-// rest with a blank line — the format every Build* function shares.
+// rest with a blank line — the format every body-carrying Stage shares.
 func join(sections ...string) string {
 	kept := make([]string, 0, len(sections))
 	for _, s := range sections {
@@ -160,27 +243,28 @@ func tddFooter(id, branchPrefix, slug string) string {
 	)
 }
 
-// buildTdd composes an implementation-stage prompt: the Consumer body (which
-// invokes the skill and carries project conventions), the variant-specific
-// worktree instruction, the injected ticket context, and the non-overridable
-// contract footer. The three exported implementation builders differ only in
-// worktreeState.
-func buildTdd(t ticket.Ticket, slug, branchPrefix, body, worktreeState string) string {
-	d := bodyData{Identifier: t.Identifier, Title: t.Title, Slug: slug, BranchPrefix: branchPrefix}
+// implement composes an implementation-stage prompt: the Consumer body (which
+// invokes the skill, e.g. `/tdd`, and carries project conventions), the
+// Resume-specific worktree instruction, the injected ticket context, and the
+// non-overridable contract footer. The Resume variants differ only in the
+// worktree instruction.
+func implement(c Context) string {
+	var worktreeState string
+	switch c.Resume {
+	case ResumedBranch:
+		worktreeState = resumedBranchWorktreeState(c.Slug, c.BranchPrefix)
+	case AfterRefusal:
+		worktreeState = resumeWorktreeState(c.Slug, c.WorktreePath, c.BranchPrefix)
+	default:
+		worktreeState = freshWorktreeInstr(c.Slug, c.BranchPrefix)
+	}
 	return join(
-		renderBody(body, d),
+		renderBody(c),
 		worktreeState,
-		ticketContext(t),
+		ticketContext(c.Ticket),
 		"---",
-		tddFooter(t.Identifier, branchPrefix, slug),
+		tddFooter(c.Ticket.Identifier, c.BranchPrefix, c.Slug),
 	)
-}
-
-// BuildTdd builds the `-p` prompt for a fresh sandboxed implementation session.
-// The Consumer body invokes the skill (e.g. `/tdd`) and carries project
-// conventions; the harness wraps it in the non-overridable envelope.
-func BuildTdd(t ticket.Ticket, slug, branchPrefix, body string) string {
-	return buildTdd(t, slug, branchPrefix, body, freshWorktreeInstr(slug, branchPrefix))
 }
 
 // subIssuesSection renders the inlined child sub-issue specs for an umbrella/batch
@@ -219,14 +303,6 @@ func resumedBranchWorktreeState(slug, branchPrefix string) string {
 	)
 }
 
-// BuildTddResumedBranch builds the `-p` prompt the host swaps in for BuildTdd when
-// the dispatched ticket's own feature branch already carries un-merged commits
-// (BEH-554). It shares the implementation body and contract footer; only the
-// worktree instruction differs.
-func BuildTddResumedBranch(t ticket.Ticket, slug, branchPrefix, body string) string {
-	return buildTdd(t, slug, branchPrefix, body, resumedBranchWorktreeState(slug, branchPrefix))
-}
-
 // resumeWorktreeState is the worktree instruction for a *retry* of the
 // implementation session after a usage-policy refusal (BEH-389). The first attempt
 // already created the worktree and left its work uncommitted on disk (the
@@ -234,13 +310,6 @@ func BuildTddResumedBranch(t ticket.Ticket, slug, branchPrefix, body string) str
 // that existing worktree and commit the surviving work rather than recreate it.
 func resumeWorktreeState(slug, worktreePath, branchPrefix string) string {
 	return "IMPORTANT: a previous attempt was interrupted (a usage-policy refusal), but its work survives. The worktree ALREADY EXISTS at `" + worktreePath + "` on branch `" + branchPrefix + "/" + slug + "`, and it likely holds uncommitted changes from that attempt. Do NOT create a new worktree and do NOT run `new-worktree.sh` — that would fail on the already-existing branch. `cd` into the existing worktree, inspect what's there with `git status`/`git diff`, finish anything incomplete, run the gates, and commit the handoff. Recovering and committing that surviving diff is the whole point of this retry."
-}
-
-// BuildTddResume builds the `-p` prompt for a retry of the implementation session
-// after a usage-policy refusal (BEH-389). It shares the implementation body and
-// contract footer; only the worktree instruction differs.
-func BuildTddResume(t ticket.Ticket, slug, worktreePath, branchPrefix, body string) string {
-	return buildTdd(t, slug, branchPrefix, body, resumeWorktreeState(slug, worktreePath, branchPrefix))
 }
 
 // FiledFinding is an already-filed harness-improvement finding class surfaced to
@@ -271,19 +340,18 @@ const retroAudienceContract = "Classify EVERY finding with an `audience` field, 
 // contract: no code changes, no push, no tracker.
 const retroContractSteer = "This session is read-only and reaches no remote. Make NO code changes, do NOT commit or push, and do NOT touch Linear — do not call any `mcp__linear-server__*` tool. The harness reads `out.json` after the session and files each finding to Linear itself."
 
-// BuildRetrospective builds the `-p` prompt for the sandboxed retrospective
+// retrospective builds the `-p` prompt for the sandboxed retrospective
 // session (the terminal tool). The Consumer body points the session at the
 // ticket-keyed transcripts and the diff; the harness envelope guarantees the
 // findings-dropbox protocol, the tracker-off/read-only contract, and the
 // bash-quirk steer, plus the dynamic already-filed dedup context (BEH-539).
-func BuildRetrospective(t ticket.Ticket, slug string, filed []FiledFinding, branchPrefix, body string) string {
-	d := bodyData{Identifier: t.Identifier, Title: t.Title, Slug: slug, BranchPrefix: branchPrefix}
+func retrospective(c Context) string {
 	return join(
-		renderBody(body, d),
+		renderBody(c),
 		retroFindingsProtocol,
 		retroAudienceContract,
 		retroContractSteer,
-		alreadyFiledSection(filed),
+		alreadyFiledSection(c.Filed),
 		bashQuirkSteer,
 	)
 }
@@ -322,21 +390,20 @@ func reviewContractFooter(branchPrefix, slug string) string {
 	)
 }
 
-// BuildReview builds the `-p` prompt for the sandboxed review session (the second
+// review builds the `-p` prompt for the sandboxed review session (the second
 // tool). The Consumer body invokes the review skill and carries the cold-review /
 // lenses-first / disposition conventions; the harness envelope injects the ticket
 // context (the intent to review against) and the non-overridable contract footer.
-func BuildReview(t ticket.Ticket, slug, worktreePath, branchPrefix, body string) string {
-	d := bodyData{Identifier: t.Identifier, Title: t.Title, Slug: slug, BranchPrefix: branchPrefix, WorktreePath: worktreePath}
+func review(c Context) string {
 	return join(
-		renderBody(body, d),
-		ticketContext(t),
+		renderBody(c),
+		ticketContext(c.Ticket),
 		"---",
-		reviewContractFooter(branchPrefix, slug),
+		reviewContractFooter(c.BranchPrefix, c.Slug),
 	)
 }
 
-// BuildCIFix builds the `-p` prompt for a sandboxed session that diagnoses and
+// ciFix builds the `-p` prompt for a sandboxed session that diagnoses and
 // fixes a GitHub CI failure on the already-pushed PR (BEH-414). The PR is open
 // and red; local gates passed but CI didn't (env/toolchain/flake/lockfile skew),
 // so the harness fetched the failing job logs host-side and injects them here for
@@ -377,8 +444,9 @@ func ciFixLogSteer(slug, branchPrefix, ciLogs string, logAvailable bool) (logFra
 		}
 }
 
-func BuildCIFix(t ticket.Ticket, slug, branchPrefix, worktreePath, ciLogs string, logAvailable bool) string {
-	logFraming, job := ciFixLogSteer(slug, branchPrefix, defang(ciLogs), logAvailable)
+func ciFix(c Context) string {
+	t, slug, branchPrefix, worktreePath := c.Ticket, c.Slug, c.BranchPrefix, c.WorktreePath
+	logFraming, job := ciFixLogSteer(slug, branchPrefix, defang(c.CILogs), c.CILogAvailable)
 	lines := []string{
 		"A GitHub CI check is failing on the open PR for " + t.Identifier + ". The worktree already exists at `" + worktreePath + "` on branch `" + branchPrefix + "/" + slug + "` — work in it; do NOT create a new worktree.",
 		"",
@@ -413,17 +481,18 @@ func BuildCIFix(t ticket.Ticket, slug, branchPrefix, worktreePath, ciLogs string
 	return strings.Join(lines, "\n")
 }
 
-// BuildRebaseFix builds the `-p` prompt for the sandboxed conflict-resolution
+// rebaseFix builds the `-p` prompt for the sandboxed conflict-resolution
 // session the review stage launches when the proactive pre-push rebase hits a
 // genuine content conflict (BEH-581). The branch already passed the cold review +
 // the harness gate, but a sibling PR advanced origin/main underneath it and the
 // two diffs genuinely overlap, so the automatic replay can't apply. Rather than
 // dead-end and strand the reviewed work, the harness runs this session to rebase +
-// resolve in the worktree — mirroring BuildCIFix's local-commit-only contract. The
+// resolve in the worktree — mirroring ciFix's local-commit-only contract. The
 // harness then independently re-runs the gate host-side before pushing, so the
 // session never pushes or touches the remote/Linear itself. This prompt invokes no
 // skill, so it stays harness-composed (no Consumer body).
-func BuildRebaseFix(t ticket.Ticket, slug, branchPrefix, worktreePath string) string {
+func rebaseFix(c Context) string {
+	t, slug, branchPrefix, worktreePath := c.Ticket, c.Slug, c.BranchPrefix, c.WorktreePath
 	lines := []string{
 		"A pre-push rebase for " + t.Identifier + " hit a genuine content conflict. The branch already passed the cold review and the harness gate, but origin/main advanced underneath it (a sibling PR merged) and the changes overlap, so it cannot be replayed automatically. The worktree already exists at `" + worktreePath + "` on branch `" + branchPrefix + "/" + slug + "` — work in it; do NOT create a new worktree.",
 		"",

@@ -218,12 +218,13 @@ func Implementation(h hostio.Host, cfg config.Config, log *runlog.Logger, args A
 	// both miss, because the fix lives on the SAME branch as un-merged commits and may
 	// have ADDED code rather than deleting any. We don't skip (the branch can hold
 	// incomplete work) — instead we steer the session to verify-and-handoff over
-	// re-implementing by swapping in BuildTddResumedBranch.
-	p := prompt.BuildTdd(t, slug, cfg.BranchPrefix, cfg.Prompts.Implement)
+	// re-implementing by swapping in the ResumedBranch variant.
+	pctx := prompt.Context{Ticket: t, Slug: slug, BranchPrefix: cfg.BranchPrefix, Body: cfg.Prompts.Implement}
 	if adv := h.ResumedBranchAdvisory(slug, t.Identifier); adv != "" {
 		log.Event(adv)
-		p = prompt.BuildTddResumedBranch(t, slug, cfg.BranchPrefix, cfg.Prompts.Implement)
+		pctx.Resume = prompt.ResumedBranch
 	}
+	p := prompt.For(prompt.Implement, pctx)
 	findingsDir := log.FindingsDir(implementationSession)
 	if err := os.MkdirAll(findingsDir, 0o755); err != nil {
 		// Degrade a full-disk ENOSPC to a clear warning instead of an opaque hard
@@ -331,7 +332,9 @@ func Implementation(h hostio.Host, cfg config.Config, log *runlog.Logger, args A
 		if attempt > 1 {
 			// The retry resumes the existing worktree (it already holds the surviving
 			// diff) rather than recreating it (BEH-389).
-			attemptPrompt = prompt.BuildTddResume(t, slug, h.WorktreePath(slug), cfg.BranchPrefix, cfg.Prompts.Implement)
+			retry := pctx
+			retry.Resume, retry.WorktreePath = prompt.AfterRefusal, h.WorktreePath(slug)
+			attemptPrompt = prompt.For(prompt.Implement, retry)
 			attemptLabel = fmt.Sprintf("%s-retry%d", implementationSession, attempt)
 			log.Event(fmt.Sprintf(
 				"tdd ↻ usage-policy refusal on attempt %d — retrying once on the same ticket (BEH-389); the worktree diff survives on disk",
