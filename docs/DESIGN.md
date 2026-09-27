@@ -1087,10 +1087,14 @@ reader over a structured stream rather than a `--tui` flag on the daemon.
   between-ticket disk reclaim), a `loop.Limits` of cadences/ceilings/thresholds, a
   `loop.Clock` and a narrator — four fields where there were 27, and no feature
   switched on by a nil func. `loophost.Real` is the production adapter, so `cmd/loop`
-  is a composition root and nothing else. Both the review stage and the daemon's
-  committed-fix recovery finish a branch through the one `internal/ship` — push
-  force-with-lease, then the templated `gh pr create` — so the harness has a single
-  implementation of how it ships.
+  is a composition root and nothing else.
+- **ship lands the branch** ([ADR-0017](adr/0017-ship-lands-the-branch.md)). The review stage, the daemon's committed-fix
+  recovery and the CI watch's reactive rebase share one `internal/ship` sequence —
+  refetch, replay, disjoint guard, conflict hook, collapse check, push
+  force-with-lease, templated `gh pr create` — and each maps its one verdict
+  (Landed / Collapsed / Conflict / Disjoint / PushFailed / PRFailed) onto its own
+  disposition. Only the review supplies a conflict hook (its BEH-581
+  resolve-and-regate session). The CI watch reuses only the replay half.
 - **The worktree is a type** ([ADR-0015](adr/0015-the-worktree-is-a-type.md)). Below the host port, the harness's central
   noun has a name: `git.Open(checkout, branchPrefix).Worktree(slug)` carries the
   checkout, the branch and the worktree path together, and creating, gating,

@@ -29,6 +29,7 @@ import (
 	"github.com/danoleary/agent-harness/internal/filing"
 	gitpkg "github.com/danoleary/agent-harness/internal/git"
 	"github.com/danoleary/agent-harness/internal/session"
+	"github.com/danoleary/agent-harness/internal/ship"
 	"github.com/danoleary/agent-harness/internal/tracker"
 	"github.com/danoleary/agent-harness/internal/verify"
 )
@@ -188,10 +189,11 @@ type Findings interface {
 // implement it.
 //
 // It also satisfies [verify.GroundTruth] — the git-read subset the harness's
-// "did this Stage do its job?" decisions gather for themselves — so a Stage hands
-// verify the Host it already holds instead of re-packing the reads into a
-// parameter struct. The assertion below is what keeps the two in step: adding a
-// read to that port without adding it here stops compiling.
+// "did this Stage do its job?" decisions gather for themselves — and [ship.Port],
+// the slice that lands a branch, so a Stage hands either module the Host it already
+// holds instead of re-packing the calls into a parameter struct. The assertions
+// below keep them in step: adding a method to either port without adding it here
+// stops compiling.
 type Host interface {
 	Sandbox
 	Repo
@@ -202,4 +204,7 @@ type Host interface {
 	RunID() string
 }
 
-var _ verify.GroundTruth = (Host)(nil)
+var (
+	_ verify.GroundTruth = (Host)(nil)
+	_ ship.Port          = (Host)(nil)
+)
