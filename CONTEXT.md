@@ -31,6 +31,14 @@ slugs branches from and greps history with. The harness treats it as an opaque
 string supplied by the Tracker adapter.
 _Avoid_: ticket id, BEH number, issue number.
 
+**Lease**:
+One run's claim on one **Key** (`internal/lease`). It knows whether the ticket is
+held *right now*: selection hands the run a held lease (ADR-0003), a hand-passed
+run starts unheld and claims after preflight. A run settles its lease once —
+released to Todo, closed as a no-op, or kept by a shipped PR — and releasing an
+unheld lease touches nothing.
+_Avoid_: claim flag, pre-claimed.
+
 ### Prompts
 
 **Contract envelope**:

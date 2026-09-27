@@ -137,8 +137,8 @@ func TestResolveNextFoldsASelectionFailureIntoAnEmptyQueue(t *testing.T) {
 	trk.nextErr = errors.New("linear 503")
 	h, _ := hostFor(t, config.Config{}, trk)
 
-	if id, ok := h.ResolveNext(); ok || id != "" {
-		t.Errorf("ResolveNext() = (%q, %v), want (\"\", false) so the daemon idles and re-polls", id, ok)
+	if claim, ok := h.ResolveNext(); ok || claim != nil {
+		t.Errorf("ResolveNext() = (%v, %v), want (nil, false) so the daemon idles and re-polls", claim, ok)
 	}
 }
 
@@ -149,9 +149,9 @@ func TestResolveNextClaimsTheSelectedTicket(t *testing.T) {
 	trk.next, trk.nextOK = ticket.Ticket{Identifier: "PROJ-7"}, true
 	h, _ := hostFor(t, config.Config{}, trk)
 
-	id, ok := h.ResolveNext()
-	if !ok || id != "PROJ-7" {
-		t.Fatalf("ResolveNext() = (%q, %v), want (\"PROJ-7\", true)", id, ok)
+	claim, ok := h.ResolveNext()
+	if !ok || claim.Key() != "PROJ-7" || !claim.Held() {
+		t.Fatalf("ResolveNext() = (%v, %v), want a held lease on PROJ-7", claim, ok)
 	}
 	if len(trk.Claimed) != 1 || trk.Claimed[0] != "PROJ-7" {
 		t.Errorf("claimed %v, want [PROJ-7] — selection must claim (ADR-0003)", trk.Claimed)
@@ -199,16 +199,19 @@ func TestListInProgressClaimsSurfacesTheError(t *testing.T) {
 	}
 }
 
-// The three ticket mutations are the daemon's whole write surface on the board.
+// The three ticket mutations are the daemon's whole write surface on the board:
+// the reaper's release, and the close and comment it settles a run with.
 func TestTicketMutationsReachTheTracker(t *testing.T) {
 	trk := newQueueTracker()
+	trk.next, trk.nextOK = ticket.Ticket{Identifier: "PROJ-2"}, true
 	h, _ := hostFor(t, config.Config{}, trk)
 
 	if err := h.ReleaseTicket("PROJ-1"); err != nil {
 		t.Fatalf("ReleaseTicket() = %v", err)
 	}
-	if err := h.CloseTicket("PROJ-2"); err != nil {
-		t.Fatalf("CloseTicket() = %v", err)
+	claim, _ := h.ResolveNext()
+	if err := claim.Close(); err != nil {
+		t.Fatalf("Close() = %v", err)
 	}
 	if err := h.CommentTicket("PROJ-3", "breadcrumb"); err != nil {
 		t.Fatalf("CommentTicket() = %v", err)

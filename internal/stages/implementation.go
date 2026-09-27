@@ -9,6 +9,7 @@ import (
 	"github.com/danoleary/agent-harness/internal/config"
 	"github.com/danoleary/agent-harness/internal/filing"
 	"github.com/danoleary/agent-harness/internal/hostio"
+	"github.com/danoleary/agent-harness/internal/lease"
 	"github.com/danoleary/agent-harness/internal/loopstream"
 	"github.com/danoleary/agent-harness/internal/prompt"
 	"github.com/danoleary/agent-harness/internal/runlog"
@@ -36,50 +37,36 @@ const implementationSession = "implementation"
 // post_create hook after the host creates the worktree.
 const postCreateStep = "postcreate"
 
-// claimReleaser is the slice of the tracker the implementation stage's
-// claim/release path needs. An interface keeps the PreClaimed branching (ADR-0003)
-// unit-testable without a live tracker.
-type claimReleaser interface {
-	MoveToInProgress(identifier string) error
-	ReleaseToTodo(identifier string) error
-}
-
-// eventLogger is the runlog narration surface these claim helpers write to.
-type eventLogger interface{ Event(string) }
-
-// claimForImplementation moves the ticket to In Progress for the implementation
-// stage — unless selection already claimed it (preClaimed, the `pipeline --next`
-// path), in which case re-claiming is a redundant no-op and is skipped (ADR-0003).
-// On the hand-passed path preClaimed is false and it claims exactly as before,
-// after the Docker preflight (BEH-316 ordering intact). It returns an error only
-// when an actual claim mutation fails.
-func claimForImplementation(client claimReleaser, identifier string, preClaimed bool, log eventLogger) error {
-	if preClaimed {
-		log.Event(identifier + " already claimed during selection (--next) — skipping redundant claim")
+// claimForImplementation holds the ticket for the implementation stage. On the
+// hand-passed path nothing claimed it yet, so this is the claim, run after the
+// Docker preflight (BEH-316). A ticket selection claimed (ADR-0003) is already held
+// and costs no mutation — until a failed attempt releases it, when the pipeline's
+// retry claims it again rather than work a ticket sitting in Todo (#25).
+func claimForImplementation(l *lease.Lease, log *runlog.Logger) error {
+	if l.Held() {
+		log.Event(l.Key() + " already claimed — skipping redundant claim")
 		return nil
 	}
-	if err := client.MoveToInProgress(identifier); err != nil {
+	if err := l.Hold(); err != nil {
 		return err
 	}
-	log.Event(fmt.Sprintf("claimed %s → In Progress", identifier))
+	log.Event(fmt.Sprintf("claimed %s → In Progress", l.Key()))
 	return nil
 }
 
-// releaseIfPreClaimed returns a pre-claimed ticket to Todo after a Docker-preflight
-// failure (ADR-0003): selection dequeued (claimed) a ticket the host turns out not
-// to be able to work, so release it rather than strand it In Progress with no
-// worktree. A no-op on the hand-passed path — nothing was claimed before preflight
-// there, so BEH-316's claim-after-preflight ordering is untouched. Best-effort: a
-// release error is warned, never fatal, since the preflight error stays the verdict.
-func releaseIfPreClaimed(client claimReleaser, identifier string, preClaimed bool, log eventLogger) {
-	if !preClaimed {
+// releaseClaim returns a held ticket to Todo after an attempt that left nothing to
+// salvage, narrating why. A ticket the lease does not hold (the hand-passed path
+// before its claim) is left alone. Best-effort: a tracker hiccup is warned, never
+// fatal, since the failure that prompted it stays the verdict.
+func releaseClaim(l *lease.Lease, why string, log *runlog.Logger) {
+	if !l.Held() {
 		return
 	}
-	if err := client.ReleaseToTodo(identifier); err != nil {
-		log.Event("⚠ Docker preflight failed and releasing the pre-claimed ticket " + identifier + " back to Todo failed (" + err.Error() + ") — move it out of In Progress manually")
+	if err := l.Release(); err != nil {
+		log.Event("⚠ " + why + " and releasing " + l.Key() + " back to Todo failed (" + err.Error() + ") — move it out of In Progress manually")
 		return
 	}
-	log.Event("↩ released pre-claimed " + identifier + " back to Todo — Docker preflight failed before any work (ADR-0003)")
+	log.Event("↩ released " + l.Key() + " back to Todo — " + why)
 }
 
 // retryableEnvCrash reports whether a failed implementation attempt crashed
@@ -188,6 +175,10 @@ func Implementation(h hostio.Host, cfg config.Config, log *runlog.Logger, args A
 	if err != nil {
 		return Result{Err: err}
 	}
+	claim := args.Lease
+	if claim == nil {
+		claim = lease.Unheld(client, args.Identifier)
+	}
 
 	t, err := client.FetchTicket(args.Identifier)
 	if err != nil {
@@ -280,7 +271,7 @@ func Implementation(h hostio.Host, cfg config.Config, log *runlog.Logger, args A
 	// failure means we dequeued a ticket we can't work: release it back to Todo
 	// rather than strand it In Progress (a no-op on the hand-passed path).
 	if err := h.Preflight(); err != nil {
-		releaseIfPreClaimed(client, args.Identifier, args.PreClaimed, log)
+		releaseClaim(claim, "Docker preflight failed before any work (ADR-0003)", log)
 		// PreflightAbort marks this as environmental (full disk / daemon down), not a
 		// ticket failure, so the loop reclaims disk + backs off and the breaker stays
 		// blind to it — otherwise the same top-of-queue ticket racks up identical
@@ -290,7 +281,7 @@ func Implementation(h hostio.Host, cfg config.Config, log *runlog.Logger, args A
 
 	// Claim the ticket — unless selection already did on the --next path. On the
 	// hand-passed path this runs after preflight exactly as before (BEH-316).
-	if err := claimForImplementation(client, args.Identifier, args.PreClaimed, log); err != nil {
+	if err := claimForImplementation(claim, log); err != nil {
 		return Result{Err: err}
 	}
 
@@ -301,9 +292,7 @@ func Implementation(h hostio.Host, cfg config.Config, log *runlog.Logger, args A
 	// left no worktree (BEH-543).
 	if err := provisionWorktree(h, cfg, slug, log); err != nil {
 		log.Event("tdd ✗ host-side worktree provisioning failed: " + err.Error())
-		if rErr := client.ReleaseToTodo(args.Identifier); rErr != nil {
-			log.Event("⚠ releasing the claim after a provisioning failure also failed (" + rErr.Error() + ") — move " + args.Identifier + " out of In Progress manually")
-		}
+		releaseClaim(claim, "host-side worktree provisioning failed", log)
 		return Result{OK: false, Retryable: true}
 	}
 
@@ -462,11 +451,7 @@ func Implementation(h hostio.Host, cfg config.Config, log *runlog.Logger, args A
 			// run re-grabs it instead. Best-effort: a tracker hiccup here must not crash
 			// the stage — warn and leave it claimed. (The spending-cap abort is excluded:
 			// it's its own retry-after-reset class above.)
-			if rErr := client.ReleaseToTodo(args.Identifier); rErr != nil {
-				log.Event("⚠ environmental crash left no work and releasing the claim back to Todo failed (" + rErr.Error() + ") — move " + args.Identifier + " out of In Progress manually")
-			} else {
-				log.Event("↩ released claim — environmental crash left the worktree clean (no work salvageable); " + args.Identifier + " back to Todo for a later run to re-grab (BEH-543/BEH-707)")
-			}
+			releaseClaim(claim, "environmental crash left the worktree clean, no work salvageable (BEH-543/BEH-707)", log)
 		}
 	}
 

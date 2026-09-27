@@ -10,6 +10,7 @@ import (
 
 	"github.com/danoleary/agent-harness/internal/config"
 	"github.com/danoleary/agent-harness/internal/hostio"
+	"github.com/danoleary/agent-harness/internal/lease"
 	"github.com/danoleary/agent-harness/internal/runlog"
 	"github.com/danoleary/agent-harness/internal/sandbox"
 	"github.com/danoleary/agent-harness/internal/session"
@@ -105,17 +106,17 @@ func TestImplementationHappyPathClaimsProvisionsAndVerifies(t *testing.T) {
 // so a host that cannot launch a sandbox never strands a ticket In Progress. On the
 // --next path selection already claimed it, so a preflight failure must release it
 // back to Todo rather than leave a dequeued ticket nobody is working.
-func TestImplementationPreflightFailureReleasesAPreClaimedTicket(t *testing.T) {
+func TestImplementationPreflightFailureReleasesASelectedTicket(t *testing.T) {
 	h := hostio.NewFake()
 	h.PreflightErr = errors.New("insufficient free disk to launch a sandbox")
 
-	res := Implementation(h, stageCfg(), stageLog(t, "PROJ-2"), Args{Identifier: "PROJ-2", PreClaimed: true})
+	res := Implementation(h, stageCfg(), stageLog(t, "PROJ-2"), Args{Identifier: "PROJ-2", Lease: lease.Held(h.Trk, "PROJ-2")})
 
 	if res.Err == nil || res.Disposition != PreflightAborted {
 		t.Fatalf("a refused preflight is an environmental abort, got %+v", res)
 	}
 	if got := h.Trk.Released; len(got) != 1 || got[0] != "PROJ-2" {
-		t.Errorf("released = %v, want the pre-claimed ticket returned to Todo (ADR-0003)", got)
+		t.Errorf("released = %v, want the selected ticket returned to Todo (ADR-0003)", got)
 	}
 	if len(h.Agents) != 0 {
 		t.Errorf("nothing may launch after a refused preflight, got %v", labels(h.Agents))
@@ -365,5 +366,48 @@ func TestImplementationSurfacesATrackerFailureAsAHardError(t *testing.T) {
 
 	if res.Err == nil {
 		t.Fatalf("a tracker failure is a hard error, got %+v", res)
+	}
+}
+
+// #25: under the daemon the ticket arrives claimed by selection. A provisioning
+// failure releases it to Todo and asks the pipeline to retry; the retry must claim
+// it again rather than work a ticket another selector can now grab.
+func TestImplementationRetryAfterAReleaseReclaimsTheTicket(t *testing.T) {
+	h := hostio.NewFake()
+	h.Exists = false
+	h.CreateErr = errors.New("git worktree add: disk I/O error")
+	args := Args{Identifier: "PROJ-1", Lease: lease.Held(h.Trk, "PROJ-1")}
+
+	first := Implementation(h, stageCfg(), stageLog(t, "PROJ-1"), args)
+	if !first.Retryable {
+		t.Fatalf("a provisioning failure is a retryable environmental crash, got %+v", first)
+	}
+	h.CreateErr = nil
+	second := Implementation(h, stageCfg(), stageLog(t, "PROJ-1"), args)
+
+	if !second.OK {
+		t.Fatalf("the retry should hand off once provisioning recovers, got %+v", second)
+	}
+	if got := h.Trk.Released; len(got) != 1 || got[0] != "PROJ-1" {
+		t.Errorf("released = %v, want the failed attempt to return PROJ-1 to Todo", got)
+	}
+	if got := h.Trk.Claimed; len(got) != 1 || got[0] != "PROJ-1" {
+		t.Errorf("claimed = %v, want the retry to re-claim PROJ-1 before working it", got)
+	}
+}
+
+// A claim the tracker refuses is a hard error: nothing is provisioned or launched
+// for a ticket this run does not hold.
+func TestImplementationClaimFailureLaunchesNothing(t *testing.T) {
+	h := hostio.NewFake()
+	h.Trk.ClaimErr = errors.New("tracker unreachable")
+
+	res := Implementation(h, stageCfg(), stageLog(t, "PROJ-1"), Args{Identifier: "PROJ-1"})
+
+	if res.Err == nil {
+		t.Fatalf("a refused claim must surface as Result.Err, got %+v", res)
+	}
+	if len(h.Agents) != 0 {
+		t.Errorf("nothing may launch for an unclaimed ticket, got %v", labels(h.Agents))
 	}
 }

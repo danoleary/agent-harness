@@ -3,6 +3,7 @@ package loop
 import (
 	"time"
 
+	"github.com/danoleary/agent-harness/internal/lease"
 	"github.com/danoleary/agent-harness/internal/stages"
 )
 
@@ -30,6 +31,27 @@ type fakeHost struct {
 	pruneWorktrees func() (int, error)
 	cachePrune     func() error
 	dockerPrune    func() error
+
+	// leased is the lease ResolveNext last handed the loop, so a test can act as a
+	// stage that settles it mid-run.
+	leased *lease.Lease
+}
+
+// scriptedQueue is the tracker behind the fake's leases: a claim always succeeds
+// (selection already claimed), and a release or close lands in the same release /
+// closeTicket scripts the reaper's release uses, so a test asserts every tracker
+// mutation in one place.
+type scriptedQueue struct{ h *fakeHost }
+
+func (scriptedQueue) MoveToInProgress(string) error { return nil }
+func (q scriptedQueue) ReleaseToTodo(id string) error {
+	return q.h.ReleaseTicket(id)
+}
+func (q scriptedQueue) MoveToCanceled(id string) error {
+	if q.h.closeTicket == nil {
+		return nil
+	}
+	return q.h.closeTicket(id)
 }
 
 var _ Host = (*fakeHost)(nil)
@@ -55,11 +77,16 @@ func (h *fakeHost) FetchMain() error {
 	return h.fetchMain()
 }
 
-func (h *fakeHost) ResolveNext() (string, bool) {
+func (h *fakeHost) ResolveNext() (*lease.Lease, bool) {
 	if h.resolveNext == nil {
-		return "", false // an empty queue: the daemon idles and re-polls
+		return nil, false // an empty queue: the daemon idles and re-polls
 	}
-	return h.resolveNext()
+	id, ok := h.resolveNext()
+	if !ok {
+		return nil, false
+	}
+	h.leased = lease.Held(scriptedQueue{h}, id)
+	return h.leased, true
 }
 
 func (h *fakeHost) ReleaseTicket(id string) error {
@@ -67,13 +94,6 @@ func (h *fakeHost) ReleaseTicket(id string) error {
 		return nil
 	}
 	return h.release(id)
-}
-
-func (h *fakeHost) CloseTicket(id string) error {
-	if h.closeTicket == nil {
-		return nil
-	}
-	return h.closeTicket(id)
 }
 
 func (h *fakeHost) CommentTicket(id, body string) error {
@@ -97,11 +117,11 @@ func (h *fakeHost) TicketHasRemoteBranch(id string) bool {
 	return h.remoteBranch(id)
 }
 
-func (h *fakeHost) RunPipeline(id string) stages.Result {
+func (h *fakeHost) RunPipeline(claim *lease.Lease) stages.Result {
 	if h.runPipeline == nil {
 		return stages.Result{}
 	}
-	return h.runPipeline(id)
+	return h.runPipeline(claim.Key())
 }
 
 func (h *fakeHost) RecoverCommittedFix(id string) (stages.Result, bool) {

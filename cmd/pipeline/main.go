@@ -7,7 +7,7 @@
 // The ticket is either hand-passed (`pipeline BEH-NNN`) or auto-selected
 // (`pipeline --next`, DESIGN.md "Single-shot auto-select"): --next resolves the
 // top-of-queue eligible ticket and claims it during selection (ADR-0003), threading
-// PreClaimed into the implementation stage so the hand-passed path stays untouched.
+// the held lease into the implementation stage so the hand-passed path stays untouched.
 //
 // In-process, not subprocesses: it calls the same internal/stages bodies the
 // cmd/<tool> wrappers do, sharing one config load and one runlog, so it gets real
@@ -74,7 +74,7 @@ func main() {
 			os.Exit(sel.ExitCode)
 		}
 		args.Identifier = sel.Identifier
-		args.PreClaimed = sel.PreClaimed
+		args.Lease = sel.Lease
 	} else if args.DryRun {
 		// Hand-passed --dry-run is pipeline-level: print the plan and exit without
 		// claiming the ticket, launching a container, or touching Linear (DESIGN.md).
@@ -99,7 +99,7 @@ func main() {
 	// every container name and transcript, and the tracker client it resolves once.
 	host := hostio.New(cfg, log, runID, args.Verbose)
 
-	// Bind each stage to the shared host/cfg/log/args (--verbose and PreClaimed
+	// Bind each stage to the shared host/cfg/log/args (--verbose and the lease
 	// forward through args). The pipeline decides ordering; the stages do the work.
 	outcome := pipeline.Run(pipeline.Deps{
 		FetchMain:      host.FetchMain,
