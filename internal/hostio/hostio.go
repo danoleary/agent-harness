@@ -140,7 +140,8 @@ type Repo interface {
 	Checkpoint(slug, key, stage string) error
 	HeadSHA(slug string) (string, error)
 	EnsureCIRerunCommit(slug, headBefore string) error
-	GroundTruth(slug string) verify.GroundTruth
+	CommitsAhead(slug string) int
+	BranchDisjoint(slug string) bool
 	BranchDiffEmpty(slug string) bool
 	BranchDocsOnly(slug string) bool
 	BranchExists(slug string) bool
@@ -183,6 +184,12 @@ type Findings interface {
 
 // Host is the whole host-side surface one Stage needs. [Real] and [Fake]
 // implement it.
+//
+// It also satisfies [verify.GroundTruth] — the git-read subset the harness's
+// "did this Stage do its job?" decisions gather for themselves — so a Stage hands
+// verify the Host it already holds instead of re-packing the reads into a
+// parameter struct. The assertion below is what keeps the two in step: adding a
+// read to that port without adding it here stops compiling.
 type Host interface {
 	Sandbox
 	Repo
@@ -192,3 +199,5 @@ type Host interface {
 	// stamps into every container name and transcript. Stages narrate it.
 	RunID() string
 }
+
+var _ verify.GroundTruth = (Host)(nil)

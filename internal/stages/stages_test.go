@@ -18,7 +18,6 @@ import (
 	"github.com/danoleary/agent-harness/internal/sandbox"
 	"github.com/danoleary/agent-harness/internal/session"
 	"github.com/danoleary/agent-harness/internal/ticket"
-	"github.com/danoleary/agent-harness/internal/verify"
 )
 
 // BEH-571: fixSessionError maps a finished auto-fix session's outcome to the
@@ -323,27 +322,6 @@ func TestRetryableEnvCrash(t *testing.T) {
 	// fails identically, so the pipeline must not spend BEH-543's stage retry on it.
 	if retryableEnvCrash(session.Outcome{ExitCode: sandbox.ExitOOMKill, NoRealTurns: true}, false) {
 		t.Error("a deterministic no-real-turns crash must not be re-attempted (BEH-691)")
-	}
-}
-
-// disjointWorkTrapped recognises the BEH-609 recovery case: a failed tdd verdict
-// where the session DID produce a worktree and commit real work, but the branch
-// roots at a disjoint history, so the gate fails it even though the diff is
-// genuine. That work is recoverable by re-grafting onto a fresh base rather than
-// discarding the run and re-launching the same doomed pipeline. It must NOT fire on
-// the ordinary failure shapes (no worktree, empty diff, healthy-but-failing).
-func TestDisjointWorkTrapped(t *testing.T) {
-	if !disjointWorkTrapped(verify.GroundTruth{WorktreeExists: true, CommitsAhead: 3, DisjointHistory: true}) {
-		t.Error("worktree + committed work + disjoint history is trapped verified work — should be recoverable")
-	}
-	if disjointWorkTrapped(verify.GroundTruth{WorktreeExists: true, CommitsAhead: 3, DisjointHistory: false}) {
-		t.Error("a healthy (non-disjoint) branch is not the trapped-work case")
-	}
-	if disjointWorkTrapped(verify.GroundTruth{WorktreeExists: true, CommitsAhead: 0, DisjointHistory: true}) {
-		t.Error("a disjoint branch with no commit has no verified work to regraft")
-	}
-	if disjointWorkTrapped(verify.GroundTruth{WorktreeExists: false, DisjointHistory: true}) {
-		t.Error("no worktree means nothing was produced to recover")
 	}
 }
 

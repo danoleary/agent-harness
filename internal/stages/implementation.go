@@ -88,7 +88,7 @@ func releaseIfPreClaimed(client claimReleaser, identifier string, preClaimed boo
 // to completion and producing no handoff commit. Only the former is worth
 // re-attempting: it is the host momentarily wedging, not a code/config fault, so
 // the same run usually succeeds once it recovers. It keys on the session outcome,
-// NOT truth.WorktreeExists: the harness now pre-creates the worktree host-side
+// NOT the worktree-exists ground truth: the harness now pre-creates the worktree host-side
 // (BEH-636), so a crashed session still leaves the worktree present and the old
 // worktree-existence proxy is permanently false (BEH-707). outcome.Retryable()
 // already excludes a watchdog cap-kill (which ran a full session and has its own
@@ -98,20 +98,6 @@ func releaseIfPreClaimed(client claimReleaser, identifier string, preClaimed boo
 // Result.Retryable to decide whether to re-attempt the whole stage (BEH-543).
 func retryableEnvCrash(outcome session.Outcome, capAborted bool) bool {
 	return outcome.Retryable() && !capAborted
-}
-
-// disjointWorkTrapped reports whether a failed tdd verdict is the BEH-609
-// "verified work trapped on a disjoint branch" case: the session produced a
-// worktree AND committed real work, but the branch roots at a disjoint history
-// (an empty merge-base with origin/main — the BEH-355/BEH-500 condition), so the
-// gate fails it even though the diff is genuine. Re-launching can never escape
-// this — no in-sandbox work changes the branch's root commit — so the harness
-// instead re-grafts the branch's content diff onto a fresh base off origin/main
-// (Regraft) and re-verifies, rather than discarding the run and re-running the
-// same doomed pipeline. It must NOT fire on the ordinary failure shapes (no
-// worktree, empty diff, or a healthy branch that failed for another reason).
-func disjointWorkTrapped(truth verify.GroundTruth) bool {
-	return truth.WorktreeExists && truth.CommitsAhead > 0 && truth.DisjointHistory
 }
 
 // provisionWorktree creates the feature worktree + canonical branch host-side and
@@ -335,7 +321,6 @@ func Implementation(h hostio.Host, cfg config.Config, log *runlog.Logger, args A
 		))
 	}
 	var (
-		truth      verify.GroundTruth
 		result     verify.Result
 		capAborted bool
 		outcome    session.Outcome
@@ -383,9 +368,9 @@ func Implementation(h hostio.Host, cfg config.Config, log *runlog.Logger, args A
 			"session exited (code %d) — transcript at logs/%s/%s", outcome.ExitCode, args.Identifier, run.Transcript,
 		))
 
-		// Ground truth, never self-report.
-		truth = h.GroundTruth(slug)
-		result = verify.Tdd(truth)
+		// Ground truth, never self-report — verify reads the worktree and branch for
+		// itself off the same Host the stage holds.
+		result = verify.Tdd(h, slug)
 		capAborted = outcome.SpendingCapAbort
 
 		// Retry only the usage-policy refusal, and only while it left no handoff
@@ -394,7 +379,7 @@ func Implementation(h hostio.Host, cfg config.Config, log *runlog.Logger, args A
 		// prompt (which asserts the worktree already exists and forbids recreating
 		// it) would otherwise burn a whole session on a false premise. Everything
 		// else is the final verdict.
-		if result.OK || !outcome.UsagePolicyRefusal || !truth.WorktreeExists {
+		if result.OK || !outcome.UsagePolicyRefusal || !h.WorktreeExists(slug) {
 			break
 		}
 	}
@@ -407,24 +392,17 @@ func Implementation(h hostio.Host, cfg config.Config, log *runlog.Logger, args A
 	// fresh base off origin/main and re-verify; a clean regraft turns the trapped work
 	// into a healthy, handoff-able branch. A regraft failure falls through to the
 	// existing failed-verdict handling, which keeps the worktree for manual recovery.
-	if !result.OK && !capAborted && disjointWorkTrapped(truth) {
+	if !result.OK && !capAborted && result.DisjointWorkTrapped {
 		if rErr := h.Regraft(slug); rErr != nil {
 			log.Event("⚠ disjoint branch detected but the regraft failed (" + rErr.Error() + ") — keeping the worktree for manual recovery (BEH-609)")
 		} else {
 			log.Event("↻ verified work was trapped on a disjoint branch — re-grafted its content diff onto a fresh base off origin/main (BEH-609)")
-			truth = h.GroundTruth(slug)
-			result = verify.Tdd(truth)
+			result = verify.Tdd(h, slug)
 		}
 	}
 
 	if result.OK {
-		plural := "s"
-		if truth.CommitsAhead == 1 {
-			plural = ""
-		}
-		log.Event(fmt.Sprintf(
-			"tdd ✓ %s (%d commit%s ahead)", result.Reason, truth.CommitsAhead, plural,
-		))
+		log.Event("tdd ✓ " + result.Reason)
 		// The worktree now goes to a (possibly non-Linux) reviewer. Strip the
 		// Consumer-declared build artifacts the sandbox produced, so their
 		// platform-specific contents don't crash the reviewer's gates — the review
@@ -461,7 +439,7 @@ func Implementation(h hostio.Host, cfg config.Config, log *runlog.Logger, args A
 		// work is unverified and the run still fails (exit 1); the checkpoint only
 		// makes recovery cheap. The commit subject loudly marks it a checkpoint so a
 		// reviewer never mistakes it for a verified handoff.
-		if truth.WorktreeExists && !h.WorktreeClean(slug) {
+		if h.WorktreeExists(slug) && !h.WorktreeClean(slug) {
 			// "tdd", not implementationSession: the checkpoint subject is reviewer-
 			// facing, so it uses this stage's human name (matching its "tdd ✓/✗" logs)
 			// rather than the machine identifier used for container/transcript names.

@@ -58,10 +58,7 @@ func Retrospective(h hostio.Host, cfg config.Config, log *runlog.Logger, args Ar
 	// even on a *failed* slice ("exactly the run worth mining"), which routinely has
 	// transcripts but no branch — one real input is enough to proceed. A skip is a
 	// clean no-op, not a failure — return OK so it never reds the pipeline.
-	if pre := verify.RetrospectivePreconditions(verify.RetrospectiveInputs{
-		BranchExists:     h.BranchExists(slug),
-		PriorTranscripts: hasUpstreamTranscripts(log.Dir),
-	}); !pre.OK {
+	if pre := verify.RetrospectivePreconditions(h, slug, hasUpstreamTranscripts(log.Dir)); !pre.OK {
 		log.Event(fmt.Sprintf("retrospective ⊘ skipped %s — %s", args.Identifier, pre.Reason))
 		return Result{OK: true}
 	}
@@ -160,12 +157,7 @@ func Retrospective(h hostio.Host, cfg config.Config, log *runlog.Logger, args Ar
 	// a 137 kill — OOM or wall-clock cap — that struck after the read-heavy
 	// analysis but before the write (BEH-536), and a turn-0 no-op whose prompt
 	// crashed the session before any work (BEH-709).
-	result := verify.Retrospective(verify.RetrospectiveOutcome{
-		DropboxExists:    filing.DropboxExists(findingsDir),
-		SpendingCapAbort: outcome.SpendingCapAbort,
-		ExitCode:         outcome.ExitCode,
-		TurnZeroNoOp:     outcome.TurnZeroNoOp,
-	})
+	result := verify.Retrospective(filing.DropboxExists(findingsDir), outcome)
 	switch {
 	case result.OK:
 		log.Event("retrospective ✓ " + result.Reason)
@@ -200,13 +192,10 @@ func Retrospective(h hostio.Host, cfg config.Config, log *runlog.Logger, args Ar
 	// the branch has reached a PR (verify.WorktreeReap owns the rule and the why).
 	// The worktree tears down host-side; the real-path mount makes its .git pointer
 	// resolve from the main checkout.
-	pushed := h.BranchPushed(slug)
-	// && short-circuits, so an unpushed branch never spends the gh round-trip.
-	reap := verify.WorktreeReap(verify.WorktreeReapOutcome{
-		BranchPushed: pushed,
-		PRExists:     pushed && h.PRExists(slug),
-	})
-	if !reap.Reap {
+	// WorktreeReap checks the push first and returns, so an unpushed branch never
+	// spends the gh round-trip PRExists costs.
+	reap := verify.WorktreeReap(h, slug)
+	if !reap.OK {
 		log.Event("worktree kept — " + reap.Reason)
 	} else if err := h.RemoveWorktree(slug); err != nil {
 		log.Event("worktree kept — removal failed: " + err.Error())

@@ -114,9 +114,10 @@ worktree path. Both are now internal detail.
 - `hostio.Real`'s Repo/Remote halves become one-line forwards over `h.wt(slug)`.
   The adapter still binds the checkout and the prefix once (ADR-0013); it now hands
   down a value instead of three arguments.
-- `internal/git` still imports `internal/verify` for `Worktree.GroundTruth`'s return
-  type — the wrong-way dependency that issue #11 removes by moving the gather behind
-  the verify decision. This ADR supplies the type that change is written against.
+- `internal/git` imported `internal/verify` for `Worktree.GroundTruth`'s return type
+  — the wrong-way dependency ADR-0016 removed by moving the gather behind the verify
+  decision, splitting that method into `CommitsAhead` + `DisjointHistory`. This ADR
+  supplied the type that change was written against.
 - Tests that use a real temp repo build a `Worktree` over the production seam and so
   keep pinning the git contracts the scripted tests rest on. Both kinds now call the
   same methods.

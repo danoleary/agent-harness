@@ -502,9 +502,9 @@ loop:
   the diff with **zero** qualitative review, yet its gate re-run still runs green
   against the committed handoff. Substituting that mechanical gate for the review and
   pushing would open a PR nobody reviewed while reporting "clear to push" — a silent
-  single point of failure. So `verify.Review` gates the push on `ReviewComplete`
-  (the verdict was emitted, surfaced by `ReviewQualitative`) **in addition to** green
-  gates + a clean worktree: a verdict-absent review is fail-closed — no push, no PR,
+  single point of failure. So `verify.Review` gates the push on whether the verdict
+  was emitted (which it also reports separately, as `ReviewComplete`) **in addition
+  to** green gates + a clean worktree: a verdict-absent review is fail-closed — no push, no PR,
   worktree kept so a resumed review can finish before the branch ever ships. The
   BEH-494 retry-after-reset note already fired for the *session*; this is what makes
   the *pipeline* honour it instead of pushing past it.
@@ -683,7 +683,8 @@ whose log dir held only its own stream and whose branch never existed. The skip 
 deliberately BOTH-absent, not either-absent: the pipeline runs the retrospective
 even on a *failed* slice ("exactly the run worth mining"), which routinely has
 transcripts but no branch — skipping on a missing branch alone would suppress those.
-The decision is the pure `verify.RetrospectivePreconditions`.
+The decision is `verify.RetrospectivePreconditions`, which reads the branch off
+ground truth itself (ADR-0016).
 
 **Output — the findings dropbox**, kept deliberately simple and out-of-band:
 

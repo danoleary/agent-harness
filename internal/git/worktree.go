@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"github.com/danoleary/agent-harness/internal/proc"
-	"github.com/danoleary/agent-harness/internal/verify"
 )
 
 // Checkout is the Consumer's primary checkout on the host: the directory the
@@ -453,29 +452,36 @@ func (w Worktree) PushForceWithLease() error {
 	})
 }
 
-// GroundTruth reads the state a finished tdd session left behind. The sandbox
-// commits into the shared `.git` (bind-mounted), so the feature branch ref +
-// objects are visible from the main checkout without touching the worktree itself —
-// the harness never runs git inside a worktree for these reads (a worktree's `.git`
-// pointer is container-relative), only against the main checkout.
-func (w Worktree) GroundTruth() verify.GroundTruth {
-	commitsAhead := 0
-	// On any failure (branch doesn't exist / no upstream) treat as zero ahead.
+// CommitsAhead is the number of commits on the feature branch ahead of
+// origin/main — the ground truth that a finished tdd session actually left a
+// handoff. The sandbox commits into the shared `.git` (bind-mounted), so the
+// feature branch ref + objects are visible from the main checkout without touching
+// the worktree itself — the harness never runs git inside a worktree for these
+// reads (a worktree's `.git` pointer is container-relative), only against the main
+// checkout. On any failure (branch doesn't exist / no upstream) it reads as zero.
+func (w Worktree) CommitsAhead() int {
 	out, err := w.output("git", "-C", w.repo, "rev-list", "--count", "origin/main.."+w.branch)
-	if err == nil {
-		if n, perr := strconv.Atoi(strings.TrimSpace(string(out))); perr == nil {
-			commitsAhead = n
-		}
+	if err != nil {
+		return 0
 	}
+	n, err := strconv.Atoi(strings.TrimSpace(string(out)))
+	if err != nil {
+		return 0
+	}
+	return n
+}
 
-	// Disjoint history: the feature branch shares no common ancestor with origin/main
-	// (an empty merge-base — the BEH-355 condition). Only checked when the branch is
-	// ahead, so both refs resolve and a non-zero merge-base means genuine disjoint
-	// rather than an unresolved ref; an absent/zero-ahead branch already fails the
-	// CommitsAhead gate (BEH-597).
-	disjoint := commitsAhead > 0 && branchesDisjoint(w.run, w.repo, w.branch, "origin/main")
-
-	return verify.GroundTruth{WorktreeExists: w.Exists(), CommitsAhead: commitsAhead, DisjointHistory: disjoint}
+// DisjointHistory reports whether the feature branch shares no common ancestor with
+// origin/main (an empty merge-base — the BEH-355 condition). Like [Worktree.CommitsAhead]
+// it reads the branch ref from the main checkout, so the worktree need not exist.
+//
+// It answers false for a branch that is not ahead, which is what makes it safe to
+// call on its own: `git merge-base` also fails for an unresolvable ref, and without
+// the ahead check an absent branch would read as "disjoint" rather than as the
+// plain no-handoff failure it is (BEH-597). The cost is one extra `rev-list`, which
+// is the right trade for a predicate no caller can hold wrong.
+func (w Worktree) DisjointHistory() bool {
+	return w.CommitsAhead() > 0 && branchesDisjoint(w.run, w.repo, w.branch, "origin/main")
 }
 
 // BranchExists reports whether the feature branch resolves to a git revision in the

@@ -287,17 +287,14 @@ func Review(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Res
 	gateRes := runHostGate(gateStep)
 	gateExit := gateRes.Outcome.ExitCode
 
-	// The gate runs against the worktree's working tree (committed + uncommitted),
-	// but Push ships only the committed tip — so the push is authorised only when
-	// the worktree is also clean, guaranteeing what shipped is exactly what the gate
-	// validated (never the agent's say-so, and never an unverified working tree).
-	clean := h.WorktreeClean(slug)
-
-	// Did the qualitative seven-lens review actually run? The host-side gate re-run
-	// above authorises the push, but a green gate only proves the diff compiles — it
-	// is NOT a review. A session that ends before the "## Review:" verdict (an OOM
-	// mid-gate, or just stopping a turn short) leaves the diff unreviewed.
-	completeness := verify.ReviewQualitative(reviewOutcome.ExitCode, reviewOutcome.ReviewVerdictEmitted)
+	// verify.Review is the whole push gate: it re-reads the worktree's git state for
+	// itself (a clean tree, a non-empty diff against origin/main) and folds in the
+	// gate's exit code and what the session's stream reported, so the four boolean
+	// expressions that used to fill a parameter struct here live next to the truth
+	// table they feed. It also carries the two verdicts that ride along with the
+	// push decision — whether the qualitative review completed, and whether the one
+	// recoverable incompleteness class is worth another turn.
+	result := verify.Review(h, slug, gateExit, reviewOutcome)
 
 	// BEH-624: the cheapest incompleteness class to recover. A review that exits
 	// cleanly (code 0) one turn short of its verdict — over a clean worktree whose
@@ -306,16 +303,12 @@ func Review(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Res
 	// it in-stage (bounded) rather than discard the verified diff for a whole-pipeline
 	// re-review, mirroring the OOM / conflict-resolution re-launch pattern. Ground
 	// truth stays the harness gate + the emitted verdict, so nothing ships on
-	// self-report; verify.ReviewVerdictRetry gates eligibility (no retry on an OOM, a
-	// cap abort, a dirty tree, or a red gate). Re-gate after each re-launch: the review
-	// may have committed fixes, so the prior gate would be stale.
-	for attempt := 2; attempt <= reviewVerdictMaxAttempts && verify.ReviewVerdictRetry(verify.ReviewRetryInputs{
-		VerdictEmitted:   reviewOutcome.ReviewVerdictEmitted,
-		ExitCode:         reviewOutcome.ExitCode,
-		SpendingCapAbort: reviewOutcome.SpendingCapAbort,
-		WorktreeClean:    clean,
-		GatesGreen:       gateExit == 0,
-	}).Retry; attempt++ {
+	// self-report; Result.Retry gates eligibility (no retry on an OOM, a cap abort, a
+	// dirty tree, or a red gate). Re-gate after each re-launch: the review may have
+	// committed fixes, so the prior gate would be stale — and re-deciding through the
+	// same verify.Review call is what keeps the loop's condition and the push verdict
+	// from ever being computed from different state.
+	for attempt := 2; attempt <= reviewVerdictMaxAttempts && result.Retry; attempt++ {
 		log.Event(fmt.Sprintf(
 			"review ↻ session exited cleanly (code 0) one turn short of its verdict over a clean, gate-green worktree — re-launching review %d/%d (BEH-624)",
 			attempt-1, reviewVerdictMaxAttempts-1,
@@ -323,32 +316,25 @@ func Review(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Res
 		reviewOutcome = runReviewSession(attempt)
 		gateRes = runHostGate(fmt.Sprintf("%s-retry%d", gateStep, attempt))
 		gateExit = gateRes.Outcome.ExitCode
-		clean = h.WorktreeClean(slug)
-		completeness = verify.ReviewQualitative(reviewOutcome.ExitCode, reviewOutcome.ReviewVerdictEmitted)
+		result = verify.Review(h, slug, gateExit, reviewOutcome)
 	}
 
 	// Flag the final review completeness so the run log carries the signal rather than
 	// a green gate masquerading as a full review pass (BEH-525, from the BEH-499 OOM).
-	if !completeness.Complete {
-		log.Event("review ⚠ " + completeness.Reason)
-		fmt.Fprintln(os.Stderr, "warning: "+completeness.Reason)
+	if !result.ReviewComplete {
+		log.Event("review ⚠ " + result.ReviewCompleteReason)
+		fmt.Fprintln(os.Stderr, "warning: "+result.ReviewCompleteReason)
 	} else {
-		log.Event("review ✓ " + completeness.Reason)
+		log.Event("review ✓ " + result.ReviewCompleteReason)
 	}
 
 	// A review that ran but declared a blocked disposition found a Blocker/Important
 	// finding it could not autonomously resolve (BEH-580). The autonomous pipeline has
-	// no human to answer the skill's approval prompt, so this fails the push closed
-	// below rather than shipping the finding to a PR unaddressed (the BEH-439 leak).
+	// no human to answer the skill's approval prompt, so verify.Review fails the push
+	// closed rather than shipping the finding to a PR unaddressed (the BEH-439 leak).
 	if reviewOutcome.ReviewBlocked {
 		log.Event("review ⚠ verdict declared a blocked disposition — an unresolved blocker/important finding needs a human decision; will not push (BEH-580)")
 	}
-	// A clean worktree whose committed tip makes zero net change against origin/main is
-	// the BEH-603 recommend-close disposition: nothing to ship, so the ticket should be
-	// closed as a duplicate/superseded rather than opened as an empty-commit PR (the PR
-	// #642 mistake). Read host-side; checked inside verify.Review only when the tree is
-	// clean (a dirty tree's "empty" committed diff may hide uncommitted work).
-	emptyDiff := h.BranchDiffEmpty(slug)
 
 	// comment posts a best-effort tracker breadcrumb so a gate-green, reviewed branch
 	// that can't ship autonomously surfaces on the ticket instead of sitting silent in
@@ -359,12 +345,6 @@ func Review(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Res
 		}
 	}
 
-	// completeness gates the push closed (BEH-569): a green gate over a clean worktree
-	// is not enough — the review session must have emitted its verdict. A spending-cap
-	// abort / OOM that killed the review before it reviewed leaves the diff unreviewed,
-	// so the push fails closed and the worktree is kept for a resumed review rather than
-	// opening a PR on a gate re-run that nobody mistakes for a review.
-	result := verify.Review(verify.ReviewOutcome{GatesGreen: gateExit == 0, WorktreeClean: clean, ReviewComplete: completeness.Complete, ReviewBlocked: reviewOutcome.ReviewBlocked, EmptyDiff: emptyDiff})
 	// Recommend-close (BEH-603): a zero-net-diff branch is NOT a push and NOT a failure
 	// to retry. Keep the worktree as the audit artifact and return the disposition so
 	// the loop keeps the ticket In Progress for a human (never released to Todo, never
@@ -385,10 +365,11 @@ func Review(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Res
 		// line review-1 had started fixing (BEH-559). Checkpoint-commit them (mirroring
 		// the tdd stage's BEH-479 safety net) so the started work survives and the
 		// resuming review's merge-base diff includes it. Done AFTER the push decision
-		// above (made on the pre-checkpoint `clean`), so an unverified, half-applied fix
-		// is never pushed — only preserved. A no-op when the worktree is already clean
-		// (a red-but-clean gate has nothing uncommitted to recover).
-		if !clean {
+		// above (which verify.Review made over the same, pre-checkpoint tree), so an
+		// unverified, half-applied fix is never pushed — only preserved. A no-op when
+		// the worktree is already clean (a red-but-clean gate has nothing uncommitted
+		// to recover).
+		if !h.WorktreeClean(slug) {
 			if cErr := h.Checkpoint(slug, args.Identifier, reviewSession); cErr != nil {
 				log.Event("⚠ review session left uncommitted edits and the recovery checkpoint commit failed (" + cErr.Error() + ") — recover them manually at " + worktreePath)
 			} else {
@@ -469,7 +450,7 @@ func Review(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Res
 	// and a misleading "open the PR manually" hint for a branch with nothing to open).
 	// Route to the same recommend-close disposition instead: keep the worktree, push
 	// nothing, and let the loop flag the ticket for a human to close as superseded.
-	if postRebase := verify.PostRebasePush(h.BranchDiffEmpty(slug)); postRebase.RecommendClose {
+	if postRebase := verify.PostRebasePush(h, slug); postRebase.RecommendClose {
 		log.Event("review ⊘ " + postRebase.Reason + " — keeping worktree, nothing pushed; recommending close (BEH-680)")
 		return Result{OK: false, Disposition: RecommendClose}
 	}
@@ -607,12 +588,7 @@ func resolvePrePushConflict(
 
 	// Ground truth over the worktree, never the agent's report: did the session
 	// actually rebase onto origin/main and leave a clean tree?
-	verdict := verify.RebaseResolution(verify.RebaseResolutionOutcome{
-		SessionExit:      res.ExitCode,
-		SpendingCapAbort: res.SpendingCapAbort,
-		WorktreeClean:    h.WorktreeClean(slug),
-		Rebased:          h.IsRebased(slug),
-	})
+	verdict := verify.RebaseResolution(h, slug, res.Outcome)
 	if !verdict.OK {
 		// Restore a clean, on-branch worktree for the next resume (a failed session may
 		// have left it mid-rebase). Best-effort: a no-op when none is in progress.
