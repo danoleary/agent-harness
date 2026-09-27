@@ -25,19 +25,23 @@ import (
 // prompt bodies, and caps. Individual tests override what they are about.
 func stageCfg() config.Config {
 	return config.Config{
-		ProjectPath:          "/fake/checkout",
-		BranchPrefix:         "feat",
-		Image:                "example-agent-harness:latest",
-		PostCreate:           "pnpm install --frozen-lockfile",
-		Gates:                []config.Gate{{Name: "check", Command: "pnpm run check"}},
-		TddTimeout:           30 * time.Minute,
-		ReviewTimeout:        30 * time.Minute,
-		RetrospectiveTimeout: 20 * time.Minute,
-		SessionIdleTimeout:   5 * time.Minute,
-		Prompts: config.PromptBodies{
-			Implement: "implement the ticket",
-			Review:    "review the worktree",
-			Retro:     "retrospect the run",
+		Host: config.Host{
+			ProjectPath:          "/fake/checkout",
+			TddTimeout:           30 * time.Minute,
+			ReviewTimeout:        30 * time.Minute,
+			RetrospectiveTimeout: 20 * time.Minute,
+			SessionIdleTimeout:   5 * time.Minute,
+		},
+		Project: config.Project{
+			BranchPrefix: "feat",
+			Image:        "example-agent-harness:latest",
+			PostCreate:   "pnpm install --frozen-lockfile",
+			Gates:        []config.Gate{{Name: "check", Command: "pnpm run check"}},
+			Prompts: config.PromptBodies{
+				Implement: "implement the ticket",
+				Review:    "review the worktree",
+				Retro:     "retrospect the run",
+			},
 		},
 	}
 }

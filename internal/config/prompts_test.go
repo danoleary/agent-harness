@@ -91,12 +91,11 @@ func TestLoadPromptsBlankBodyIsAnError(t *testing.T) {
 
 // Load wires the loaded bodies onto Config so the stages can compose them.
 func TestLoadSourcesPromptBodies(t *testing.T) {
-	orig := promptsLoader
-	t.Cleanup(func() { promptsLoader = orig })
-	promptsLoader = func(string) (PromptBodies, error) {
-		return PromptBodies{Implement: "I", Review: "V", Retro: "R"}, nil
-	}
-	cfg, err := Load(fullEnv(nil))
+	checkout := testCheckout(t, testConfigTOML)
+	writePromptBody(t, checkout, "implement", "I")
+	writePromptBody(t, checkout, "review", "V")
+	writePromptBody(t, checkout, "retro", "R")
+	cfg, err := Load(envAt(checkout, nil))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}

@@ -6,7 +6,7 @@ import (
 )
 
 func TestLoadCIDefaults(t *testing.T) {
-	cfg, err := Load(fullEnv(nil))
+	cfg, err := Load(fullEnv(t, nil))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -31,7 +31,7 @@ func TestLoadCIDefaults(t *testing.T) {
 }
 
 func TestLoadCIHonoursOverrides(t *testing.T) {
-	cfg, err := Load(fullEnv(map[string]string{
+	cfg, err := Load(fullEnv(t, map[string]string{
 		"CI_MAX_FIX_ATTEMPTS":   "3",
 		"CI_FIX_BUDGET_MS":      "60000",
 		"CI_POLL_INTERVAL_MS":   "5000",
@@ -64,7 +64,7 @@ func TestLoadCIHonoursOverrides(t *testing.T) {
 
 func TestLoadCIMaxFixAttemptsFallback(t *testing.T) {
 	for _, value := range []string{"abc", "0", "-1", ""} {
-		cfg, err := Load(fullEnv(map[string]string{"CI_MAX_FIX_ATTEMPTS": value}))
+		cfg, err := Load(fullEnv(t, map[string]string{"CI_MAX_FIX_ATTEMPTS": value}))
 		if err != nil {
 			t.Fatalf("unexpected error for %q: %v", value, err)
 		}

@@ -8,14 +8,22 @@ import (
 	"time"
 )
 
-// fullEnv returns a getenv backed by a complete env, with overrides applied.
-// Setting an override to "" deletes that key (getenv returns "" for absent keys).
-func fullEnv(overrides map[string]string) Getenv {
+// fullEnv returns a getenv backed by a complete env whose PROJECT_PATH is a fresh
+// testCheckout, with overrides applied.
+func fullEnv(t *testing.T, overrides map[string]string) Getenv {
+	t.Helper()
+	return envAt(testCheckout(t, testConfigTOML), overrides)
+}
+
+// envAt returns a getenv backed by a complete env pointed at checkout, with
+// overrides applied. Setting an override to "" deletes that key (getenv returns ""
+// for absent keys).
+func envAt(checkout string, overrides map[string]string) Getenv {
 	base := map[string]string{
 		"ANTHROPIC_API_KEY": "sk-ant-x",
 		"GH_TOKEN":          "ghp_x",
 		"LINEAR_API_KEY":    "lin_x",
-		"PROJECT_PATH":      "/Users/dan/myproject",
+		"PROJECT_PATH":      checkout,
 	}
 	for k, v := range overrides {
 		base[k] = v
@@ -24,14 +32,15 @@ func fullEnv(overrides map[string]string) Getenv {
 }
 
 func TestLoadDefaults(t *testing.T) {
-	cfg, err := Load(fullEnv(nil))
+	checkout := testCheckout(t, testConfigTOML)
+	cfg, err := Load(envAt(checkout, nil))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if cfg.LinearAPIKey != "lin_x" {
 		t.Errorf("LinearAPIKey = %q, want lin_x", cfg.LinearAPIKey)
 	}
-	if cfg.ProjectPath != "/Users/dan/myproject" {
+	if cfg.ProjectPath != checkout {
 		t.Errorf("ProjectPath = %q", cfg.ProjectPath)
 	}
 	if cfg.Image != "myproject-agent-harness:latest" {
@@ -88,7 +97,7 @@ func TestLoadDefaults(t *testing.T) {
 // 15m cap under a 20m idle window, so its idle watchdog never fired and a stalled
 // review session burned to the hard cap instead of being reaped early (BEH-535/538).
 func TestHardCapsExceedIdleWindow(t *testing.T) {
-	cfg, err := Load(fullEnv(nil))
+	cfg, err := Load(fullEnv(t, nil))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -117,7 +126,7 @@ func TestHardCapsExceedIdleWindow(t *testing.T) {
 func TestLoadRejectsIdleWindowAtOrAboveAnyCap(t *testing.T) {
 	// idle = 5m sits above the 2m review / 3m retrospective / 1m tdd caps — the
 	// idle watchdog could never fire before any of those caps.
-	_, err := Load(fullEnv(map[string]string{
+	_, err := Load(fullEnv(t, map[string]string{
 		"TDD_TIMEOUT_MS":           "60000",  // 1m
 		"REVIEW_TIMEOUT_MS":        "120000", // 2m
 		"RETROSPECTIVE_TIMEOUT_MS": "180000", // 3m
@@ -132,7 +141,7 @@ func TestLoadRejectsIdleWindowAtOrAboveAnyCap(t *testing.T) {
 
 	// Boundary: idle EQUAL to a cap is still a failure — the cap is reached first
 	// (watchReason uses >=), so the idle watchdog never gets to fire.
-	_, err = Load(fullEnv(map[string]string{
+	_, err = Load(fullEnv(t, map[string]string{
 		"REVIEW_TIMEOUT_MS":       "300000", // 5m
 		"SESSION_IDLE_TIMEOUT_MS": "300000", // 5m — equal to the review cap
 	}))
@@ -143,7 +152,7 @@ func TestLoadRejectsIdleWindowAtOrAboveAnyCap(t *testing.T) {
 	// The large-refactor cap is a per-session hard cap too, so the idle window
 	// must stay below it as well — a mis-set large cap under the idle window would
 	// silently disable the idle watchdog for large-refactor sessions.
-	_, err = Load(fullEnv(map[string]string{
+	_, err = Load(fullEnv(t, map[string]string{
 		"TDD_LARGE_REFACTOR_TIMEOUT_MS": "60000",  // 1m
 		"SESSION_IDLE_TIMEOUT_MS":       "120000", // 2m — above the large cap
 	}))
@@ -153,7 +162,7 @@ func TestLoadRejectsIdleWindowAtOrAboveAnyCap(t *testing.T) {
 }
 
 func TestLoadHonoursOverrides(t *testing.T) {
-	cfg, err := Load(fullEnv(map[string]string{
+	cfg, err := Load(fullEnv(t, map[string]string{
 		"HARNESS_IMAGE":                 "custom:tag",
 		"PNPM_STORE_VOLUME":             "my-store",
 		"TDD_TIMEOUT_MS":                "60000",
@@ -199,7 +208,7 @@ func TestLoadHonoursOverrides(t *testing.T) {
 // docker arg that dies at run (exit 125) after the ticket is already claimed.
 // HARNESS_MODEL moves every stage; a per-stage variable overrides only its stage.
 func TestLoadPicksAModelPerStage(t *testing.T) {
-	cfg, err := Load(fullEnv(map[string]string{
+	cfg, err := Load(fullEnv(t, map[string]string{
 		"HARNESS_MODEL":       "claude-sonnet-5",
 		"RETROSPECTIVE_MODEL": "claude-haiku-4-5-20251001",
 	}))
@@ -218,14 +227,12 @@ func TestLoadPicksAModelPerStage(t *testing.T) {
 }
 
 func TestLoadEnvCacheVolumeWithoutPathDefaultsMount(t *testing.T) {
-	orig := projectLoader
-	t.Cleanup(func() { projectLoader = orig })
-	projectLoader = func(string) (ProjectConfig, error) {
-		pc := testProjectConfig()
-		pc.Cache = CacheConfig{} // a Consumer that declares no cache
-		return pc, nil
+	// A Consumer that declares no cache.
+	noCache := strings.Replace(testConfigTOML, "pnpm_store_volume = \"myproject-cache\"\n", "", 1)
+	if noCache == testConfigTOML {
+		t.Fatal("fixture drifted: testConfigTOML no longer declares pnpm_store_volume")
 	}
-	cfg, err := Load(fullEnv(map[string]string{"PNPM_STORE_VOLUME": "env-store"}))
+	cfg, err := Load(envAt(testCheckout(t, noCache), map[string]string{"PNPM_STORE_VOLUME": "env-store"}))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -243,7 +250,7 @@ func TestLoadEnvCacheVolumeWithoutPathDefaultsMount(t *testing.T) {
 // from this list — see TestLoadDoesNotRequireATrackerCredential.
 func TestLoadMissingRequired(t *testing.T) {
 	for _, key := range []string{"GH_TOKEN", "PROJECT_PATH"} {
-		_, err := Load(fullEnv(map[string]string{key: ""}))
+		_, err := Load(fullEnv(t, map[string]string{key: ""}))
 		if err == nil {
 			t.Errorf("expected error when %s missing", key)
 			continue
@@ -256,7 +263,7 @@ func TestLoadMissingRequired(t *testing.T) {
 
 // A subscription OAuth token alone (no ANTHROPIC_API_KEY) is a valid credential.
 func TestLoadAcceptsOAuthTokenOnly(t *testing.T) {
-	_, err := Load(fullEnv(map[string]string{
+	_, err := Load(fullEnv(t, map[string]string{
 		"ANTHROPIC_API_KEY":       "",
 		"CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat01-x",
 	}))
@@ -268,7 +275,7 @@ func TestLoadAcceptsOAuthTokenOnly(t *testing.T) {
 // The Anthropic API key is held host-side for the semantic dedup model call, and
 // the cheap dedup model defaults to a small model (BEH-573).
 func TestLoadExposesAnthropicKeyAndDedupModel(t *testing.T) {
-	cfg, err := Load(fullEnv(nil))
+	cfg, err := Load(fullEnv(t, nil))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -284,7 +291,7 @@ func TestLoadExposesAnthropicKeyAndDedupModel(t *testing.T) {
 // committed config), read only when tracker.kind=jira. They are optional at Load
 // — a non-jira consumer sets none — so their absence must not fail the load.
 func TestLoadExposesJiraSecrets(t *testing.T) {
-	cfg, err := Load(fullEnv(map[string]string{
+	cfg, err := Load(fullEnv(t, map[string]string{
 		"JIRA_BASE_URL":  "https://acme.atlassian.net",
 		"JIRA_EMAIL":     "bot@acme.co",
 		"JIRA_API_TOKEN": "jira_tok",
@@ -301,7 +308,7 @@ func TestLoadExposesJiraSecrets(t *testing.T) {
 // must still succeed with them empty (trackers.New is what fails loud on a jira
 // selection missing its auth, not Load).
 func TestLoadJiraSecretsOptional(t *testing.T) {
-	cfg, err := Load(fullEnv(nil))
+	cfg, err := Load(fullEnv(t, nil))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -314,7 +321,7 @@ func TestLoadJiraSecretsOptional(t *testing.T) {
 // header rejects an OAuth token (BEH-316), so the matcher is left unwired and
 // filing degrades to exact-match dedup. The credential check still passes.
 func TestLoadLeavesAnthropicKeyEmptyForOAuthOnly(t *testing.T) {
-	cfg, err := Load(fullEnv(map[string]string{
+	cfg, err := Load(fullEnv(t, map[string]string{
 		"ANTHROPIC_API_KEY":       "",
 		"CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat01-x",
 	}))
@@ -328,7 +335,7 @@ func TestLoadLeavesAnthropicKeyEmptyForOAuthOnly(t *testing.T) {
 
 // Neither Claude credential set → a clear error naming both vars.
 func TestLoadRequiresAClaudeCredential(t *testing.T) {
-	_, err := Load(fullEnv(map[string]string{
+	_, err := Load(fullEnv(t, map[string]string{
 		"ANTHROPIC_API_KEY":       "",
 		"CLAUDE_CODE_OAUTH_TOKEN": "",
 	}))
@@ -379,7 +386,7 @@ func TestLoadDotEnvAbsentFileIsNoOp(t *testing.T) {
 // knobs: the prior slices' hardcoded values, now env-overridable. The two run
 // ceilings default to unlimited (0) because the loop is deliberately long-running.
 func TestLoadLoopDefaults(t *testing.T) {
-	cfg, err := Load(fullEnv(nil))
+	cfg, err := Load(fullEnv(t, nil))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -412,7 +419,7 @@ func TestLoadLoopDefaults(t *testing.T) {
 // The disk-reclaim threshold is env-overridable in bytes, and an explicit 0 disables
 // reclaim entirely (a documented value, not a nonsensical one).
 func TestLoadDiskReclaimThresholdOverrideAndDisable(t *testing.T) {
-	cfg, err := Load(fullEnv(map[string]string{"LOOP_DISK_RECLAIM_THRESHOLD_BYTES": "10737418240"})) // 10 GiB
+	cfg, err := Load(fullEnv(t, map[string]string{"LOOP_DISK_RECLAIM_THRESHOLD_BYTES": "10737418240"})) // 10 GiB
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -420,7 +427,7 @@ func TestLoadDiskReclaimThresholdOverrideAndDisable(t *testing.T) {
 		t.Errorf("LoopDiskReclaimThreshold = %d, want %d (10 GiB)", cfg.LoopDiskReclaimThreshold, 10<<30)
 	}
 
-	cfg, err = Load(fullEnv(map[string]string{"LOOP_DISK_RECLAIM_THRESHOLD_BYTES": "0"}))
+	cfg, err = Load(fullEnv(t, map[string]string{"LOOP_DISK_RECLAIM_THRESHOLD_BYTES": "0"}))
 	if err != nil {
 		t.Fatalf("an explicit 0 (disable reclaim) must be accepted, got: %v", err)
 	}
@@ -432,7 +439,7 @@ func TestLoadDiskReclaimThresholdOverrideAndDisable(t *testing.T) {
 // A negative or unparseable threshold fails loud at load, naming the var.
 func TestLoadRejectsInvalidDiskReclaimThreshold(t *testing.T) {
 	for _, bad := range []string{"-1", "abc"} {
-		_, err := Load(fullEnv(map[string]string{"LOOP_DISK_RECLAIM_THRESHOLD_BYTES": bad}))
+		_, err := Load(fullEnv(t, map[string]string{"LOOP_DISK_RECLAIM_THRESHOLD_BYTES": bad}))
 		if err == nil {
 			t.Errorf("LOOP_DISK_RECLAIM_THRESHOLD_BYTES=%q should be rejected", bad)
 			continue
@@ -445,7 +452,7 @@ func TestLoadRejectsInvalidDiskReclaimThreshold(t *testing.T) {
 
 // Every loop knob is env-overridable; the *_MS knobs are milliseconds.
 func TestLoadLoopOverrides(t *testing.T) {
-	cfg, err := Load(fullEnv(map[string]string{
+	cfg, err := Load(fullEnv(t, map[string]string{
 		"LOOP_POLL_INTERVAL_MS":         "5000",   // 5s
 		"LOOP_CAP_BACKOFF_MS":           "120000", // 2m
 		"LOOP_MAX_CONSECUTIVE_FAILURES": "5",
@@ -483,7 +490,7 @@ func TestLoadLoopOverrides(t *testing.T) {
 // An explicit 0 for the two run ceilings is a valid value meaning "unlimited" — it
 // must not be rejected as nonsensical (it's the documented default).
 func TestLoadLoopCeilingsAcceptExplicitZero(t *testing.T) {
-	cfg, err := Load(fullEnv(map[string]string{
+	cfg, err := Load(fullEnv(t, map[string]string{
 		"LOOP_MAX_TICKETS":    "0",
 		"LOOP_MAX_RUNTIME_MS": "0",
 	}))
@@ -510,7 +517,7 @@ func TestLoadRejectsInvalidLoopKnobs(t *testing.T) {
 		"LOOP_MAX_RUNTIME_MS":           "abc", // must be an integer
 	}
 	for key, bad := range cases {
-		_, err := Load(fullEnv(map[string]string{key: bad}))
+		_, err := Load(fullEnv(t, map[string]string{key: bad}))
 		if err == nil {
 			t.Errorf("%s=%q should be rejected", key, bad)
 			continue
@@ -523,7 +530,7 @@ func TestLoadRejectsInvalidLoopKnobs(t *testing.T) {
 
 func TestLoadTimeoutFallback(t *testing.T) {
 	for _, value := range []string{"abc", "0", "-5", ""} {
-		cfg, err := Load(fullEnv(map[string]string{"TDD_TIMEOUT_MS": value}))
+		cfg, err := Load(fullEnv(t, map[string]string{"TDD_TIMEOUT_MS": value}))
 		if err != nil {
 			t.Fatalf("unexpected error for %q: %v", value, err)
 		}
@@ -845,7 +852,7 @@ func TestEnvFileInsideProjectExemptsTheMaskedLocation(t *testing.T) {
 // Which credential is needed depends on `tracker.kind`, which lives in the
 // project config, so the check belongs to trackers.New, not here.
 func TestLoadDoesNotRequireATrackerCredential(t *testing.T) {
-	cfg, err := Load(fullEnv(map[string]string{"LINEAR_API_KEY": ""}))
+	cfg, err := Load(fullEnv(t, map[string]string{"LINEAR_API_KEY": ""}))
 	if err != nil {
 		t.Fatalf("Load must not require a tracker credential of its own, got: %v", err)
 	}
@@ -856,11 +863,24 @@ func TestLoadDoesNotRequireATrackerCredential(t *testing.T) {
 
 // It must still be carried through when set — trackers.New reads it from here.
 func TestLoadCarriesTheLinearKeyWhenSet(t *testing.T) {
-	cfg, err := Load(fullEnv(nil))
+	cfg, err := Load(fullEnv(t, nil))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
 	if cfg.LinearAPIKey == "" {
 		t.Error("LinearAPIKey must be carried through to trackers.New")
+	}
+}
+
+// A knob is one row of Host.knobs, so a copy-pasted row that forgets to change its
+// key would silently overwrite the field of the row it was copied from.
+func TestHostKnobKeysAreUnique(t *testing.T) {
+	var h Host
+	seen := map[string]bool{}
+	for _, k := range h.knobs(func(string) string { return "" }) {
+		if seen[k.key] {
+			t.Errorf("knob %s is declared twice", k.key)
+		}
+		seen[k.key] = true
 	}
 }

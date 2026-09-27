@@ -68,12 +68,12 @@ var _ loop.Host = (*Real)(nil)
 // absolute one is taken as given.
 func TestStopFileResolvesRelativeToTheCheckout(t *testing.T) {
 	project := t.TempDir()
-	rel, _ := hostFor(t, config.Config{ProjectPath: project, StopFile: ".agent-harness/STOP"}, nil)
+	rel, _ := hostFor(t, config.Config{Host: config.Host{ProjectPath: project, StopFile: ".agent-harness/STOP"}}, nil)
 	if want := filepath.Join(project, ".agent-harness", "STOP"); rel.StopFile() != want {
 		t.Errorf("stop file = %q, want %q (a relative override hangs off PROJECT_PATH)", rel.StopFile(), want)
 	}
 
-	abs, _ := hostFor(t, config.Config{ProjectPath: project, StopFile: filepath.Join(t.TempDir(), "STOP")}, nil)
+	abs, _ := hostFor(t, config.Config{Host: config.Host{ProjectPath: project, StopFile: filepath.Join(t.TempDir(), "STOP")}}, nil)
 	if !filepath.IsAbs(abs.StopFile()) || filepath.Dir(abs.StopFile()) == project {
 		t.Errorf("stop file = %q, want the absolute override used as-is", abs.StopFile())
 	}
@@ -84,7 +84,7 @@ func TestStopFileResolvesRelativeToTheCheckout(t *testing.T) {
 func TestClearStopFileRemovesTheSentinelAndToleratesItsAbsence(t *testing.T) {
 	project := t.TempDir()
 	stop := filepath.Join(project, "STOP")
-	h, _ := hostFor(t, config.Config{ProjectPath: project, StopFile: stop}, nil)
+	h, _ := hostFor(t, config.Config{Host: config.Host{ProjectPath: project, StopFile: stop}}, nil)
 
 	if err := h.ClearStopFile(); err != nil {
 		t.Errorf("ClearStopFile() with no sentinel = %v, want nil (nothing to clear is success)", err)
@@ -104,7 +104,7 @@ func TestClearStopFileRemovesTheSentinelAndToleratesItsAbsence(t *testing.T) {
 func TestStopRequestedFoldsTheSentinelAndTheSignal(t *testing.T) {
 	project := t.TempDir()
 	stop := filepath.Join(project, "STOP")
-	h, _ := hostFor(t, config.Config{ProjectPath: project, StopFile: stop}, nil)
+	h, _ := hostFor(t, config.Config{Host: config.Host{ProjectPath: project, StopFile: stop}}, nil)
 
 	if h.StopRequested() {
 		t.Fatal("StopRequested() = true on a fresh daemon, want false")
@@ -242,7 +242,7 @@ func TestCachePruneIsANoOpWhenNoCommandIsDeclared(t *testing.T) {
 func TestCachePruneRunsTheDeclaredCommand(t *testing.T) {
 	project := t.TempDir()
 	marker := filepath.Join(project, "pruned")
-	h, _ := hostFor(t, config.Config{ProjectPath: project, CachePruneCommand: "echo ran > pruned"}, nil)
+	h, _ := hostFor(t, config.Config{Host: config.Host{ProjectPath: project}, Project: config.Project{CachePruneCommand: "echo ran > pruned"}}, nil)
 
 	if err := h.CachePrune(); err != nil {
 		t.Fatalf("CachePrune() = %v, want nil", err)
@@ -255,7 +255,7 @@ func TestCachePruneRunsTheDeclaredCommand(t *testing.T) {
 // A failing prune is an error the loop narrates and swallows — reclaim is never a
 // ticket outcome — so the error must carry the command's own output to be useful.
 func TestCachePruneSurfacesTheFailureOutput(t *testing.T) {
-	h, _ := hostFor(t, config.Config{CachePruneCommand: "echo nope >&2; exit 3"}, nil)
+	h, _ := hostFor(t, config.Config{Project: config.Project{CachePruneCommand: "echo nope >&2; exit 3"}}, nil)
 
 	err := h.CachePrune()
 	if err == nil {

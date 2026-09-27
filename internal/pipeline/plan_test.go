@@ -9,13 +9,17 @@ import (
 
 func planCfg() config.Config {
 	return config.Config{
-		Image:               "herd-agent-harness:latest",
-		ProjectPath:         "/herd",
-		CacheVolume:         "herd-pnpm-store",
-		CacheMountPath:      "/pnpm-store",
-		ImplementationModel: "claude-opus-5-5",
-		ReviewModel:         "claude-sonnet-5",
-		RetrospectiveModel:  "claude-haiku-4-5-20251001",
+		Host: config.Host{
+			ProjectPath:         "/herd",
+			ImplementationModel: "claude-opus-5-5",
+			ReviewModel:         "claude-sonnet-5",
+			RetrospectiveModel:  "claude-haiku-4-5-20251001",
+		},
+		Project: config.Project{
+			Image:          "herd-agent-harness:latest",
+			CacheVolume:    "herd-pnpm-store",
+			CacheMountPath: "/pnpm-store",
+		},
 	}
 }
 
