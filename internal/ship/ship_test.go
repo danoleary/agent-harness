@@ -1,4 +1,4 @@
-package ship
+package ship_test
 
 import (
 	"errors"
@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/danoleary/agent-harness/internal/hostio"
+	"github.com/danoleary/agent-harness/internal/ship"
 	"github.com/danoleary/agent-harness/internal/ticket"
 )
 
@@ -36,58 +37,116 @@ func recoverable() *hostio.Fake {
 
 func calls(h *hostio.Fake) string { return strings.Join(h.Calls, " ") }
 
-// --- Finish -----------------------------------------------------------------
+// --- Land -------------------------------------------------------------------
 
-// The tracer bullet: finishing a branch is force-with-lease + `gh pr create`, in
-// that order, and it hands back the PR URL the caller narrates.
-func TestFinishPushesForceWithLeaseThenOpensPR(t *testing.T) {
+// The tracer bullet: landing a branch is refetch → replay → force-with-lease push
+// → `gh pr create`, in that order, and it hands back the PR URL the caller narrates.
+func TestLandRebasesPushesAndOpensThePR(t *testing.T) {
 	h, log := hostio.NewFake(), &sink{}
-	out := Finish(h, log, "proj-1", ticket.Ticket{Identifier: "PROJ-1", Title: "a ticket"})
+	got := ship.Land(h, log, "proj-1", ticket.Ticket{Identifier: "PROJ-1", Title: "a ticket"}, nil)
 
-	if !out.OK() {
-		t.Fatalf("Finish() = %+v, want a pushed branch with an open PR", out)
+	if got.Verdict != ship.Landed || got.Err != nil {
+		t.Fatalf("Land() = %+v, want Landed", got)
 	}
-	if out.URL != h.PRURL {
-		t.Errorf("URL = %q, want the created PR's URL %q", out.URL, h.PRURL)
+	if got.URL != h.PRURL {
+		t.Errorf("URL = %q, want the created PR's URL %q", got.URL, h.PRURL)
 	}
-	if got := calls(h); !strings.Contains(got, "push-force proj-1 create-pr PROJ-1: a ticket") {
-		t.Errorf("calls = %v, want a force-with-lease push then a PR create carrying the templated title", h.Calls)
+	want := "fetch-main rebase proj-1 push-force proj-1 create-pr PROJ-1: a ticket"
+	if c := calls(h); c != want {
+		t.Errorf("calls = %q,\nwant %q", c, want)
 	}
-	if !log.saw("pushed feat/proj-1 to origin") {
-		t.Errorf("events = %v, want the push narrated", log.events)
+	if !log.saw("rebased feat/proj-1 onto origin/main") || !log.saw("pushed feat/proj-1 to origin") {
+		t.Errorf("events = %v, want the rebase and the push narrated", log.events)
 	}
 }
 
-// A failed push must not reach `gh pr create`: there is nothing on the remote to
-// open a PR against, and the caller keeps the worktree.
-func TestFinishStopsAtAFailedPush(t *testing.T) {
-	h, log := hostio.NewFake(), &sink{}
-	h.ForcePushErr = errors.New("remote rejected")
-
-	out := Finish(h, log, "proj-1", ticket.Ticket{Identifier: "PROJ-1"})
-
-	if out.Pushed || out.Err == nil {
-		t.Fatalf("Finish() = %+v, want an unpushed branch carrying the push error", out)
+// The verdict table: every way a landing can stop, what it leaves behind, and
+// whether anything reached origin. Every caller maps exactly these verdicts, so
+// a guard fixed here is fixed for the review, the recovery and the CI watch alike.
+func TestLandVerdicts(t *testing.T) {
+	cases := []struct {
+		name     string
+		scene    func(*hostio.Fake)
+		resolve  ship.Resolve
+		want     ship.Verdict
+		pushed   bool // did a push-force reach the host?
+		prCalled bool // did a create-pr reach the host?
+	}{
+		{"clean", func(*hostio.Fake) {}, nil, ship.Landed, true, true},
+		{"fetch failure is a warning", func(h *hostio.Fake) { h.FetchErr = errors.New("net down") }, nil, ship.Landed, true, true},
+		{"conflict, no hook", func(h *hostio.Fake) { h.RebaseVerdict = hostio.RebaseConflict }, nil, ship.Conflict, false, false},
+		{"conflict, hook gives up", func(h *hostio.Fake) { h.RebaseVerdict = hostio.RebaseConflict }, func() bool { return false }, ship.Conflict, false, false},
+		{"conflict, hook resolves", func(h *hostio.Fake) { h.RebaseVerdict = hostio.RebaseConflict }, func() bool { return true }, ship.Landed, true, true},
+		{"disjoint history", func(h *hostio.Fake) { h.RebaseVerdict = hostio.RebaseConflict; h.Disjoint = true }, nil, ship.Disjoint, false, false},
+		{"replay collapses the branch", func(h *hostio.Fake) { h.CollapseOnRebase = true }, nil, ship.Collapsed, false, false},
+		{"push rejected", func(h *hostio.Fake) { h.ForcePushErr = errors.New("remote rejected") }, nil, ship.PushFailed, true, false},
+		{"gh pr create fails", func(h *hostio.Fake) { h.CreatePRErr = errors.New("rate limited") }, nil, ship.PRFailed, true, true},
 	}
-	if strings.Contains(calls(h), "create-pr") {
-		t.Errorf("calls = %v, want no PR create after a failed push", h.Calls)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := hostio.NewFake()
+			tc.scene(h)
+
+			got := ship.Land(h, &sink{}, "proj-1", ticket.Ticket{Identifier: "PROJ-1"}, tc.resolve)
+
+			if got.Verdict != tc.want {
+				t.Fatalf("Verdict = %v, want %v (landing %+v)", got.Verdict, tc.want, got)
+			}
+			if (got.Err != nil) != (tc.want == ship.PushFailed || tc.want == ship.PRFailed) {
+				t.Errorf("Err = %v, want an error exactly on PushFailed/PRFailed", got.Err)
+			}
+			c := calls(h)
+			if strings.Contains(c, "push-force") != tc.pushed {
+				t.Errorf("calls = %v, push attempted = %v, want %v", h.Calls, !tc.pushed, tc.pushed)
+			}
+			if strings.Contains(c, "create-pr") != tc.prCalled {
+				t.Errorf("calls = %v, PR create attempted = %v, want %v", h.Calls, !tc.prCalled, tc.prCalled)
+			}
+		})
 	}
 }
 
-// A push that lands and a `gh pr create` that then fails is the state the two
-// dispositions differ on: the branch IS on the remote (so the caller must not
-// report "nothing pushed"), but no PR exists.
-func TestFinishReportsAPushedBranchWhenThePRCreateFails(t *testing.T) {
-	h, log := hostio.NewFake(), &sink{}
-	h.CreatePRErr = errors.New("gh: API rate limit exceeded")
+// A disjoint history is not a content conflict (BEH-597): no resolution session
+// can change a branch's root commit, so the hook must never be offered one.
+func TestLandNeverHandsADisjointBranchToTheConflictHook(t *testing.T) {
+	h := hostio.NewFake()
+	h.RebaseVerdict, h.Disjoint = hostio.RebaseConflict, true
+	called := false
 
-	out := Finish(h, log, "proj-1", ticket.Ticket{Identifier: "PROJ-1"})
+	ship.Land(h, &sink{}, "proj-1", ticket.Ticket{}, func() bool { called = true; return true })
 
-	if !out.Pushed {
-		t.Errorf("Pushed = false, want true — the branch reached origin before gh failed")
+	if called {
+		t.Error("the conflict hook ran for a disjoint branch; it must only see content conflicts")
 	}
-	if out.Err == nil || out.OK() {
-		t.Fatalf("Finish() = %+v, want the gh error surfaced", out)
+}
+
+// --- Replay -----------------------------------------------------------------
+
+// The rebase half the CI watch reuses: whatever stops the replay, the worktree is
+// restored to its branch so nothing is left mid-replay.
+func TestReplay(t *testing.T) {
+	cases := []struct {
+		name     string
+		scene    func(*hostio.Fake)
+		want     ship.Replayed
+		restored bool
+	}{
+		{"clean", func(*hostio.Fake) {}, ship.ReplayClean, false},
+		{"conflict", func(h *hostio.Fake) { h.RebaseVerdict = hostio.RebaseConflict }, ship.ReplayConflict, true},
+		{"disjoint", func(h *hostio.Fake) { h.RebaseVerdict = hostio.RebaseConflict; h.Disjoint = true }, ship.ReplayDisjoint, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := hostio.NewFake()
+			tc.scene(h)
+
+			if got := ship.Replay(h, "proj-1"); got != tc.want {
+				t.Fatalf("Replay() = %v, want %v", got, tc.want)
+			}
+			if strings.Contains(calls(h), "abort-rebase proj-1") != tc.restored {
+				t.Errorf("calls = %v, want abort-rebase = %v", h.Calls, tc.restored)
+			}
+		})
 	}
 }
 
@@ -112,7 +171,7 @@ func TestRecoverDeclinesWhenThereIsNothingToFinish(t *testing.T) {
 			h, log := recoverable(), &sink{}
 			tc.scene(h)
 
-			if got := Recover(h, log, "PROJ-1"); got.Attempted || got.Shipped {
+			if got := ship.Recover(h, log, "PROJ-1"); got.Attempted || got.Shipped {
 				t.Fatalf("Recover() = %+v, want the zero Recovery (the daemon releases as before)", got)
 			}
 			if c := calls(h); strings.Contains(c, "push") || strings.Contains(c, "create-pr") {
@@ -130,7 +189,7 @@ func TestRecoverDeclinesWhenThereIsNothingToFinish(t *testing.T) {
 func TestRecoverCompletesACommittedUnpushedFix(t *testing.T) {
 	h, log := recoverable(), &sink{}
 
-	got := Recover(h, log, "PROJ-1")
+	got := ship.Recover(h, log, "PROJ-1")
 
 	if !got.Attempted || !got.Shipped {
 		t.Fatalf("Recover() = %+v, want an attempted recovery that shipped", got)
@@ -151,7 +210,7 @@ func TestRecoverAbortsOnARebaseConflict(t *testing.T) {
 	h, log := recoverable(), &sink{}
 	h.RebaseVerdict = hostio.RebaseConflict
 
-	got := Recover(h, log, "PROJ-1")
+	got := ship.Recover(h, log, "PROJ-1")
 
 	if !got.Attempted || got.Shipped {
 		t.Fatalf("Recover() = %+v, want attempted but not shipped", got)
@@ -167,32 +226,39 @@ func TestRecoverAbortsOnARebaseConflict(t *testing.T) {
 	}
 }
 
-// emptyAfterRebase is a Host whose branch carries commits until the rebase
-// replays it, then carries none — a sibling PR landed the same fix while the
-// branch sat unpushed. `gh pr create` on that branch hard-fails ("No commits
-// between main and feat/…"), so the recovery must stop before the push.
-type emptyAfterRebase struct {
-	*hostio.Fake
-	rebased bool
-}
+// The disjoint-history guard used to live only in the review stage (BEH-597); a
+// recovery now gets it too, and says so rather than calling it a conflict.
+func TestRecoverNamesADisjointBranch(t *testing.T) {
+	h, log := recoverable(), &sink{}
+	h.RebaseVerdict, h.Disjoint = hostio.RebaseConflict, true
 
-func (h *emptyAfterRebase) Rebase(slug string) hostio.RebaseResult {
-	h.rebased = true
-	return h.Fake.Rebase(slug)
-}
-
-func (h *emptyAfterRebase) BranchDiffEmpty(slug string) bool { return h.rebased }
-
-func TestRecoverStopsWhenTheRebaseEmptiesTheBranch(t *testing.T) {
-	h, log := &emptyAfterRebase{Fake: recoverable()}, &sink{}
-
-	got := Recover(h, log, "PROJ-1")
+	got := ship.Recover(h, log, "PROJ-1")
 
 	if !got.Attempted || got.Shipped {
 		t.Fatalf("Recover() = %+v, want attempted but not shipped", got)
 	}
-	if strings.Contains(calls(h.Fake), "push-force") {
-		t.Errorf("calls = %v, want nothing pushed for a branch that became empty", h.Fake.Calls)
+	if strings.Contains(calls(h), "push-force") {
+		t.Errorf("calls = %v, want nothing pushed for a disjoint branch", h.Calls)
+	}
+	if !log.saw("disjoint history") {
+		t.Errorf("events = %v, want the disjoint history named", log.events)
+	}
+}
+
+// A sibling PR can land the same fix while the branch sat unpushed, so the rebase
+// empties it. `gh pr create` on that branch hard-fails ("No commits between main
+// and feat/…"), so the recovery must stop before the push.
+func TestRecoverStopsWhenTheRebaseEmptiesTheBranch(t *testing.T) {
+	h, log := recoverable(), &sink{}
+	h.CollapseOnRebase = true
+
+	got := ship.Recover(h, log, "PROJ-1")
+
+	if !got.Attempted || got.Shipped {
+		t.Fatalf("Recover() = %+v, want attempted but not shipped", got)
+	}
+	if strings.Contains(calls(h), "push-force") {
+		t.Errorf("calls = %v, want nothing pushed for a branch that became empty", h.Calls)
 	}
 	if !log.saw("became empty after rebase") {
 		t.Errorf("events = %v, want the empty branch narrated", log.events)
@@ -206,7 +272,7 @@ func TestRecoverDoesNotPushWhenTheTicketCannotBeFetched(t *testing.T) {
 	h, log := recoverable(), &sink{}
 	h.Trk.FetchErr = errors.New("linear boom")
 
-	got := Recover(h, log, "PROJ-1")
+	got := ship.Recover(h, log, "PROJ-1")
 
 	if !got.Attempted || got.Shipped {
 		t.Fatalf("Recover() = %+v, want attempted but not shipped", got)
@@ -237,7 +303,7 @@ func TestRecoverFallsThroughWhenShippingFails(t *testing.T) {
 			h, log := recoverable(), &sink{}
 			tc.scene(h)
 
-			got := Recover(h, log, "PROJ-1")
+			got := ship.Recover(h, log, "PROJ-1")
 
 			if !got.Attempted || got.Shipped {
 				t.Fatalf("Recover() = %+v, want attempted but not shipped", got)
@@ -255,7 +321,7 @@ func TestRecoverShipsThroughAFailedFetch(t *testing.T) {
 	h, log := recoverable(), &sink{}
 	h.FetchErr = errors.New("network down")
 
-	if got := Recover(h, log, "PROJ-1"); !got.Shipped {
+	if got := ship.Recover(h, log, "PROJ-1"); !got.Shipped {
 		t.Fatalf("Recover() = %+v, want the fix shipped despite the fetch warning", got)
 	}
 	if !log.saw("could not fetch origin/main") {

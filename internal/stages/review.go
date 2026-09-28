@@ -391,83 +391,58 @@ func Review(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Res
 	}
 	log.Event("review ✓ " + result.Reason)
 
-	// --- rebase onto the latest base, then push + PR (only on a green harness gate) ---
-	// Re-fetch origin/main right before the rebase: the earlier FetchMain ran before the
-	// multi-minute host gate re-run, and a sibling PR can merge *during* that gate — the
-	// exact long-pipeline staleness BEH-570 targets — so rebasing onto the pre-gate ref
-	// would still open a stale-base PR and lean on the (expensive) reactive CI-watch
-	// rebase. A fresh fetch here makes the proactive rebase replay onto the truly-latest
-	// base. Non-fatal like the earlier fetch: on failure we rebase onto the ref we have
-	// and the reactive path remains the backstop.
-	if err := h.FetchMain(); err != nil {
-		log.Event("review … warning: could not re-fetch origin/main before rebase: " + err.Error())
-	}
-
-	// Rebase onto origin/main before pushing so a sibling PR that merged during this long
-	// pipeline can't strand the branch on a stale base — the merge-conflict dead-end
-	// BEH-570 hit, where the conflict only surfaced post-PR in the CI watch and was left
-	// as a manual step. The worktree is clean here (verified just above), so the replay's
-	// reset --hard can't discard uncommitted work (BEH-618). A clean replay moves the tip
-	// onto the current base. A genuine content conflict no longer dead-ends (BEH-581):
-	// rather than strand ~30 min of reviewed, gate-green work, the harness launches a
+	// --- land the branch: rebase onto the latest base, then push + PR (only on a green harness gate) ---
+	// internal/ship owns the whole landing — the refetch (a sibling PR can merge during
+	// the multi-minute gate, BEH-570), the replay, the disjoint-history guard (BEH-597),
+	// the post-rebase collapse check (BEH-680), the force-with-lease push and the PR —
+	// the same sequence the daemon's committed-fix recovery and the CI watch's reactive
+	// rebase use, so the three can never drift on how the harness lands a branch. The
+	// worktree is clean here (verified just above), so the replay's reset --hard can't
+	// discard uncommitted work (BEH-618).
+	//
+	// The review contributes one thing: a genuine content conflict no longer dead-ends
+	// (BEH-581). Rather than strand ~30 min of reviewed, gate-green work, it launches a
 	// bounded sandboxed conflict-resolution session over the worktree (mirroring the
-	// post-PR ciFixRunner), re-runs the host gate on the resolved tree, and only then
-	// pushes. resolvePrePushConflict returns false when it could not land a clean,
-	// re-gated rebase — keeping the worktree and leaving a tracker breadcrumb so the
-	// work surfaces autonomously.
-	if h.Rebase(slug) == hostio.RebaseConflict {
-		// A disjoint history (no common ancestor with origin/main) is NOT a content
-		// conflict (BEH-597): the rebase collided trying to replay every one of the
-		// branch's disjoint commits, so the BEH-581 conflict-resolution session is the
-		// wrong tool — it would burn a sandbox re-discovering the empty merge-base. The
-		// tdd gate now fails this upstream (verify.Tdd's DisjointHistory check), so a
-		// disjoint branch should never reach here; this is the defence-in-depth backstop
-		// for a resumed/standalone review. Keep the worktree for manual recovery
-		// (`git reset --hard origin/main` + cherry-pick the handoff commits) and surface it.
-		if h.IsDisjoint(slug) {
-			h.AbortRebase(slug)
-			log.Event("review ✗ disjoint branch history — no common ancestor with origin/main; not a content conflict, needs manual recovery (BEH-597) — keeping worktree, nothing pushed")
-			comment(fmt.Sprintf(
-				"Branch `%s` has a disjoint history from `main` (no common ancestor / empty merge-base), so it cannot be rebased or merged as-is. This is not a content conflict — the handoff commits need to be re-applied onto current `main` (e.g. `git reset --hard origin/main` then cherry-pick them). The branch passed cold review and the harness gate; it is waiting in a worktree. (BEH-597)",
-				h.BranchName(slug),
-			))
-			return Result{OK: false}
-		}
-		resolved := resolvePrePushConflict(h, cfg, log, slug, t, comment,
+	// post-PR ciFixRunner) and re-runs the host gate on the resolved tree before ship
+	// pushes. The hook returns false when it could not land a clean, re-gated rebase,
+	// having already left a tracker breadcrumb so the work surfaces autonomously.
+	landing := ship.Land(h, log, slug, t, func() bool {
+		return resolvePrePushConflict(h, cfg, log, slug, t, comment,
 			func() session.Outcome { return runHostGate(gateStep + "-postrebase").Outcome })
-		if !resolved {
-			return Result{OK: false}
-		}
-	}
-	log.Event("rebased " + h.BranchName(slug) + " onto origin/main")
-
-	// Re-check the branch's emptiness AFTER the rebase, before the push (BEH-680). The
-	// pre-rebase BEH-603 EmptyDiff gate above ran on the stale tree; the rebase can
-	// collapse the branch to zero net change — a sibling PR landed the same fix during
-	// the multi-minute gate, or the BEH-581 conflict-resolution session skipped a
-	// now-empty commit — leaving it identical to origin/main. Pushing then and running
-	// `gh pr create` hard-fails with "No commits between main and feat/…" (a wasted push
-	// and a misleading "open the PR manually" hint for a branch with nothing to open).
-	// Route to the same recommend-close disposition instead: keep the worktree, push
-	// nothing, and let the loop flag the ticket for a human to close as superseded.
-	if postRebase := verify.PostRebasePush(h, slug); postRebase.RecommendClose {
-		log.Event("review ⊘ " + postRebase.Reason + " — keeping worktree, nothing pushed; recommending close (BEH-680)")
+	})
+	switch landing.Verdict {
+	case ship.Disjoint:
+		// A disjoint history (no common ancestor with origin/main) is NOT a content
+		// conflict: the replay collided on every one of the branch's disjoint commits, so
+		// the BEH-581 session is the wrong tool and ship never offers it. The tdd gate
+		// fails this upstream (verify.Tdd's DisjointHistory check), so this is the
+		// defence-in-depth backstop for a resumed/standalone review. Keep the worktree for
+		// manual recovery (`git reset --hard origin/main` + cherry-pick the handoff
+		// commits) and surface it.
+		log.Event("review ✗ disjoint branch history — no common ancestor with origin/main; not a content conflict, needs manual recovery (BEH-597) — keeping worktree, nothing pushed")
+		comment(fmt.Sprintf(
+			"Branch `%s` has a disjoint history from `main` (no common ancestor / empty merge-base), so it cannot be rebased or merged as-is. This is not a content conflict — the handoff commits need to be re-applied onto current `main` (e.g. `git reset --hard origin/main` then cherry-pick them). The branch passed cold review and the harness gate; it is waiting in a worktree. (BEH-597)",
+			h.BranchName(slug),
+		))
+		return Result{OK: false}
+	case ship.Conflict:
+		// resolvePrePushConflict already narrated why and left the breadcrumb.
+		return Result{OK: false}
+	case ship.Collapsed:
+		// The replay collapsed the branch to zero net change — a sibling PR landed the
+		// same fix during the gate. Route to the same recommend-close disposition as the
+		// pre-rebase BEH-603 check: keep the worktree, push nothing, and let the loop
+		// flag the ticket for a human to close as superseded.
+		log.Event("review ⊘ rebase collapsed the branch to zero net change against origin/main — keeping worktree, nothing pushed; recommending close (BEH-680)")
 		return Result{OK: false, Disposition: RecommendClose}
-	}
-
-	// Push and open the PR through the one host-side "finish a branch" implementation
-	// the daemon's committed-fix recovery also uses (internal/ship), so the two can
-	// never drift on how the harness ships a branch.
-	shipped := ship.Finish(h, log, slug, t)
-	if !shipped.Pushed {
-		log.Event("review ✗ push failed: " + shipped.Err.Error() + " — keeping worktree")
+	case ship.PushFailed:
+		log.Event("review ✗ push failed: " + landing.Err.Error() + " — keeping worktree")
+		return Result{OK: false}
+	case ship.PRFailed:
+		log.Event("review ✗ gh pr create failed: " + landing.Err.Error() + " — branch pushed, open the PR manually")
 		return Result{OK: false}
 	}
-	if shipped.Err != nil {
-		log.Event("review ✗ gh pr create failed: " + shipped.Err.Error() + " — branch pushed, open the PR manually")
-		return Result{OK: false}
-	}
-	log.Structured(loopstream.Record{Kind: loopstream.KindPROpened, Ticket: args.Identifier, Stage: "review", Message: "review ✓ PR opened: " + shipped.URL})
+	log.Structured(loopstream.Record{Kind: loopstream.KindPROpened, Ticket: args.Identifier, Stage: "review", Message: "review ✓ PR opened: " + landing.URL})
 
 	// The branch is pushed and the PR is open: from here on the ticket has "reached a
 	// pushed PR" regardless of how the CI watch turns out, so the loop's circuit

@@ -74,6 +74,13 @@ only "did this stage do its job?" — a Shipped run can be not-OK (CI red after 
 auto-fix budget) and an OK implementation is still NoPR (it never pushes).
 _Avoid_: outcome, signal, status.
 
+**Landing**:
+Taking a clean, committed branch to an open PR on the latest base (`ship.Land`):
+refetch, replay, disjoint guard, conflict hook, collapse check, push, PR. It ends in
+one verdict: **Landed**, **Collapsed**, **Conflict**, **Disjoint**, **PushFailed**
+or **PRFailed**. Each caller maps that verdict onto its own **Disposition**.
+_Avoid_: ship step, finish, push-and-PR.
+
 ### Sandbox
 
 **Sandbox base image**:

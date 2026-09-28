@@ -14,6 +14,7 @@ import (
 	"github.com/danoleary/agent-harness/internal/proc"
 	"github.com/danoleary/agent-harness/internal/runlog"
 	"github.com/danoleary/agent-harness/internal/semdedup"
+	"github.com/danoleary/agent-harness/internal/ship"
 	"github.com/danoleary/agent-harness/internal/tracker"
 	"github.com/danoleary/agent-harness/internal/trackers"
 )
@@ -346,16 +347,19 @@ func (h *Real) WatchCI(w CIWatch) ci.Outcome {
 // rebaseOntoBase is the reactive auto-rebase the CI watch invokes when a green PR
 // reads CONFLICTING against base (main moved underneath it after the push). It
 // refreshes origin/main — the conflict means main advanced since the pre-push
-// rebase, so we must replay onto the truly-latest base — rebases the worktree, and
-// on a clean replay force-with-lease re-pushes the rewritten branch. A genuine
-// content conflict returns RebaseConflict (branch left untouched) for a human; any
-// fetch/push failure is surfaced as an error the watch reports. Keeping it here is
-// what lets internal/ci stay free of internal/git (BEH-570).
+// rebase, so we must replay onto the truly-latest base — replays the worktree
+// through the same [ship.Replay] the pre-push landing uses (so the disjoint-history
+// guard is shared), and on a clean replay force-with-lease re-pushes the rewritten
+// branch. A content conflict or a disjoint history returns RebaseConflict with the
+// branch left on its original tip, for a human; any fetch/push failure is surfaced
+// as an error the watch reports. Unlike a landing, a failed fetch stops here: a
+// branch replayed onto a base we could not refresh would still read CONFLICTING.
+// Keeping it here is what lets internal/ci stay free of internal/git (BEH-570).
 func (h *Real) rebaseOntoBase(slug string) (ci.RebaseVerdict, error) {
 	if err := h.FetchMain(); err != nil {
 		return ci.RebaseConflict, fmt.Errorf("fetch %s before rebase: %w", baseRef, err)
 	}
-	if h.Rebase(slug) == gitpkg.RebaseConflict {
+	if ship.Replay(h, slug) != ship.ReplayClean {
 		return ci.RebaseConflict, nil
 	}
 	if err := h.PushForceWithLease(slug); err != nil {
