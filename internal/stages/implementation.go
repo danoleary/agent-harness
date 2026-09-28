@@ -163,7 +163,7 @@ func runPostCreate(h hostio.Host, cfg config.Config, slug string, log *runlog.Lo
 // those). Every host-side effect goes through h, so the whole body is reachable
 // from a test with hostio.NewFake().
 func Implementation(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Result {
-	slug := strings.ToLower(args.Identifier)
+	slug := ticket.Slug(args.Identifier)
 
 	dry := ""
 	if args.DryRun {

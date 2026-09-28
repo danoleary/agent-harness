@@ -411,6 +411,23 @@ func TestParseArgsRejectsNonTicketToken(t *testing.T) {
 	}
 }
 
+// A GitHub Issues Key is `#<number>` (ADR-0010), so a hand-passed GitHub ticket
+// must parse too — the Linear-shaped pattern alone rejected every one of them.
+func TestParseArgsAcceptsGitHubKey(t *testing.T) {
+	got, err := ParseArgs("pipeline", []string{"#30", "--dry-run"}, true)
+	if err != nil {
+		t.Fatalf("ParseArgs returned error: %v", err)
+	}
+	if got.Identifier != "#30" {
+		t.Errorf("Identifier = %q, want #30", got.Identifier)
+	}
+	for _, bad := range []string{"#", "30", "#3a"} {
+		if _, err := ParseArgs("pipeline", []string{bad}, true); err == nil {
+			t.Errorf("ParseArgs accepted %q, want error", bad)
+		}
+	}
+}
+
 // BEH-565: `pipeline --next` auto-selects a ticket, so it parses with no
 // identifier and sets Next. allowNext gates the flag to the pipeline (the three
 // standalone tools never select).

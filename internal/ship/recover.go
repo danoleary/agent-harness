@@ -1,6 +1,6 @@
 package ship
 
-import "strings"
+import "github.com/danoleary/agent-harness/internal/ticket"
 
 // Recovery is what the committed-fix recovery learned about one ticket.
 // Attempted is the "was there anything to finish?" signal the daemon branches on:
@@ -33,7 +33,7 @@ type Recovery struct {
 // worse than no attempt. Opening a PR is safe recovery, not a merge: CI and human
 // review still gate that.
 func Recover(h Port, log EventSink, key string) Recovery {
-	slug := strings.ToLower(key)
+	slug := ticket.Slug(key)
 
 	// A committed fix means a worktree that is there and clean: uncommitted edits are
 	// an in-progress or crashed run, not a finished-but-unpushed one, so those are

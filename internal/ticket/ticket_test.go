@@ -57,3 +57,19 @@ func TestIsLargeRefactor(t *testing.T) {
 		})
 	}
 }
+
+func TestSlug(t *testing.T) {
+	cases := map[string]string{
+		"BEH-362":  "beh-362",
+		"PROJ-7":   "proj-7",
+		"#30":      "gh-30",
+		" #30 ":    "gh-30",
+		"ABC-1#2":  "abc-1-2",
+		"Weird Id": "weird-id",
+	}
+	for key, want := range cases {
+		if got := Slug(key); got != want {
+			t.Errorf("Slug(%q) = %q, want %q", key, got, want)
+		}
+	}
+}

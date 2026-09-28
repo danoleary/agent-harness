@@ -24,6 +24,32 @@ type Ticket struct {
 	SubIssues []SubIssue
 }
 
+// Slug is the filesystem- and ref-safe name a Key's worktree and branch are keyed
+// off: `.claude/worktrees/<slug>` and `<branch_prefix>/<slug>`. A Linear or Jira
+// Key lowercases as-is (`BEH-362` → `beh-362`). A GitHub Key is `#30`, and a `#`
+// in a path or ref turns the rest of any unquoted shell line into a comment, so
+// it becomes `gh-30`. Anything else outside [a-z0-9-] collapses to one hyphen.
+func Slug(key string) string {
+	k := strings.ToLower(strings.TrimSpace(key))
+	if strings.HasPrefix(k, "#") {
+		k = "gh-" + k[1:]
+	}
+	var b strings.Builder
+	hyphen := false
+	for _, r := range k {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+			hyphen = false
+			continue
+		}
+		if !hyphen && b.Len() > 0 {
+			b.WriteByte('-')
+			hyphen = true
+		}
+	}
+	return strings.TrimSuffix(b.String(), "-")
+}
+
 // extractionVerbs signal that a ticket creates shared code (a new module,
 // component, or helper pulled out of existing files).
 var extractionVerbs = []string{"extract", "consolidate", "factor out", "pull out", "pull into", "de-duplicate", "deduplicate", "dedupe"}
