@@ -178,7 +178,8 @@ func TestReviewEmptyDiffRecommendsClose(t *testing.T) {
 func TestReviewPostRebaseEmptyDiffRecommendsClose(t *testing.T) {
 	h := hostio.NewFake()
 	h.DiffEmpty = false
-	res := Review(collapsing{h}, stageCfg(), stageLog(t, "PROJ-8"), Args{Identifier: "PROJ-8"})
+	h.CollapseOnRebase = true
+	res := Review(h, stageCfg(), stageLog(t, "PROJ-8"), Args{Identifier: "PROJ-8"})
 
 	if res.OK || res.Disposition != RecommendClose {
 		t.Fatalf("a branch the rebase collapsed to nothing recommends close (BEH-680), got %+v", res)
@@ -186,17 +187,6 @@ func TestReviewPostRebaseEmptyDiffRecommendsClose(t *testing.T) {
 	if strings.Contains(strings.Join(h.Calls, "|"), "push-force") {
 		t.Errorf("nothing may be pushed once the rebase collapsed the branch; calls = %v", h.Calls)
 	}
-}
-
-// collapsing is a Fake whose branch becomes a no-op against origin/main the moment
-// it is rebased — the BEH-680 race, where a sibling PR landed the same fix during
-// the multi-minute gate.
-type collapsing struct{ *hostio.Fake }
-
-func (c collapsing) Rebase(slug string) hostio.RebaseResult {
-	v := c.Fake.Rebase(slug)
-	c.Fake.DiffEmpty = true
-	return v
 }
 
 // The precondition: without a worktree there is nothing to review, and the stage
