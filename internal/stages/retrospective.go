@@ -3,7 +3,6 @@ package stages
 import (
 	"fmt"
 	"os"
-	"strings"
 
 	"github.com/danoleary/agent-harness/internal/config"
 	"github.com/danoleary/agent-harness/internal/filing"
@@ -78,7 +77,8 @@ func Retrospective(h hostio.Host, cfg config.Config, log *runlog.Logger, args Ar
 	}
 	log.Event(fmt.Sprintf("fetched %s — %s", t.Identifier, t.Title))
 
-	findingsDir := log.FindingsDir(retrospectiveSession)
+	subject := NewSubject(h, args.Identifier, log.Dir, t)
+	findingsDir := runlog.FindingsDir(subject.LogDir, retrospectiveSession)
 	if err := os.MkdirAll(findingsDir, 0o755); err != nil {
 		// A full host disk fails this mkdir with ENOSPC. The disk being full isn't the
 		// retrospective's fault and the in-sandbox agent can't fix it, so degrade to a
@@ -107,24 +107,10 @@ func Retrospective(h hostio.Host, cfg config.Config, log *runlog.Logger, args Ar
 		return Result{Err: err}
 	}
 
-	p := prompt.For(prompt.Retrospective, prompt.Context{
-		Ticket: t, Slug: slug, BranchPrefix: cfg.BranchPrefix, Body: cfg.Prompts.Retro,
-		Filed: toPromptFindings(prior),
-	})
-	run := hostio.AgentRun{
-		Label:       retrospectiveSession,
-		Model:       cfg.RetrospectiveModel,
-		Prompt:      p,
-		FindingsDir: findingsDir,
-		Cap:         cfg.RetrospectiveTimeout,
-	}
-
+	filed := toPromptFindings(prior)
 	if args.DryRun {
 		log.Event("dry-run — not launching the container")
-		fmt.Printf(
-			"\n--- prompt ---\n%s\n\n--- docker command ---\ndocker %s\n",
-			p, strings.Join(h.AgentPreview(run), " "),
-		)
+		fmt.Print(RetrospectivePlan(cfg, subject, filed).Render(h))
 		return Result{OK: true}
 	}
 
@@ -134,7 +120,7 @@ func Retrospective(h hostio.Host, cfg config.Config, log *runlog.Logger, args Ar
 	}
 
 	log.Structured(loopstream.Record{Kind: loopstream.KindSandboxLaunch, Ticket: args.Identifier, Stage: "retrospective", Message: fmt.Sprintf("launching sandbox (cap %d min active)", int(cfg.RetrospectiveTimeout.Minutes()))})
-	res := h.Agent(run)
+	res := h.Agent(retrospectiveRun(cfg, subject, filed))
 	outcome := res.Outcome
 	log.Event(fmt.Sprintf(
 		"session exited (code %d) — transcript at logs/%s/%s", outcome.ExitCode, args.Identifier, res.Transcript,

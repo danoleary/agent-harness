@@ -5,6 +5,12 @@ import (
 	"testing"
 
 	"github.com/danoleary/agent-harness/internal/config"
+	"github.com/danoleary/agent-harness/internal/hostio"
+	"github.com/danoleary/agent-harness/internal/prompt"
+	"github.com/danoleary/agent-harness/internal/runlog"
+	"github.com/danoleary/agent-harness/internal/sandbox"
+	"github.com/danoleary/agent-harness/internal/stages"
+	"github.com/danoleary/agent-harness/internal/ticket"
 )
 
 func planCfg() config.Config {
@@ -20,25 +26,6 @@ func planCfg() config.Config {
 			CacheVolume:    "herd-pnpm-store",
 			CacheMountPath: "/pnpm-store",
 		},
-	}
-}
-
-// Each stage's docker command carries that stage's model, never another's.
-func TestPlanPinsEachStageToItsOwnModel(t *testing.T) {
-	plan := Plan(planCfg(), "beh-527")
-	iReview := strings.Index(plan, "=== stage 2: review")
-	iRetro := strings.Index(plan, "=== stage 3: retrospective")
-	if iReview < 0 || iRetro < 0 {
-		t.Fatalf("plan is missing a stage header:\n%s", plan)
-	}
-	for _, c := range []struct{ section, want string }{
-		{plan[:iReview], "--model claude-opus-5-5"},
-		{plan[iReview:iRetro], "--model claude-sonnet-5"},
-		{plan[iRetro:], "--model claude-haiku-4-5-20251001"},
-	} {
-		if !strings.Contains(c.section, c.want) || strings.Count(c.section, "--model ") != 1 {
-			t.Errorf("stage section should pin exactly %q:\n%s", c.want, c.section)
-		}
 	}
 }
 
@@ -88,18 +75,6 @@ func TestPlanReflectsSkipAndAlwaysSemantics(t *testing.T) {
 	}
 }
 
-func TestPlanIncludesResolvedDockerCommandsPerStage(t *testing.T) {
-	plan := Plan(planCfg(), "BEH-1")
-	if n := strings.Count(plan, "docker run"); n < 3 {
-		t.Errorf("plan has %d `docker run` commands, want at least one per stage (>=3):\n%s", n, plan)
-	}
-	// The resolved command must carry the configured image — proof it is computed,
-	// not a placeholder.
-	if !strings.Contains(plan, "herd-agent-harness:latest") {
-		t.Errorf("plan docker commands do not reference the configured image:\n%s", plan)
-	}
-}
-
 func TestPlanNotesWorktreeAssumptionCaveat(t *testing.T) {
 	plan := Plan(planCfg(), "BEH-1")
 	low := strings.ToLower(plan)
@@ -114,38 +89,63 @@ func TestPlanUppercasesIdentifier(t *testing.T) {
 	}
 }
 
-// --- the review prep container is Consumer-declared (BEH-641) ---
-//
-// The prep that runs before the cold review session was a hardcoded
-// `cd web && pnpm install --frozen-lockfile` inside internal/sandbox — narrated
-// verbatim to a .NET Consumer, in a package CONTEXT.md says must never name
-// pnpm. It is the Consumer's post_create hook now, the same idempotent
-// provisioning the implementation stage runs.
-
-func TestPlanReviewPrepRunsTheConsumerPostCreate(t *testing.T) {
+// Plan is the three Stages' own plans concatenated, in order: every run a Stage
+// plans appears as the argv the Runner previews for it, and nothing else does.
+// (That a Stage's plan is what it launches is stages.TestPlanIsWhatTheStagesLaunch.)
+func TestPlanRendersEachStagesOwnRuns(t *testing.T) {
 	cfg := planCfg()
 	cfg.PostCreate = "dotnet restore"
-	plan := Plan(cfg, "PROJ-1")
+	cfg.Gates = []config.Gate{{Name: "test", Command: "dotnet test"}, {Name: "lint", Command: "dotnet format --verify-no-changes"}}
+	plan := Plan(cfg, "proj-1")
 
-	if !strings.Contains(plan, "prep docker command") {
-		t.Fatalf("plan must show the review prep container:\n%s", plan)
+	preview := hostio.NewPreview(cfg)
+	s := stages.NewSubject(preview, "PROJ-1", runlog.TicketDir(stages.LogsRoot(cfg), "PROJ-1"), ticket.Ticket{Identifier: "PROJ-1"})
+	var sessions, containers []string
+	for _, p := range []stages.StagePlan{
+		stages.ImplementationPlan(cfg, s, prompt.Fresh),
+		stages.ReviewPlan(cfg, s),
+		stages.RetrospectivePlan(cfg, s, nil),
+	} {
+		for _, a := range p.Agents() {
+			sessions = append(sessions, "docker "+strings.Join(preview.AgentPreview(a), " "))
+		}
+		for _, sh := range p.Shells() {
+			containers = append(containers, "docker "+strings.Join(preview.ShellPreview(sh), " "))
+		}
 	}
-	if !strings.Contains(plan, "dotnet restore") {
-		t.Errorf("review prep must run the Consumer's post_create:\n%s", plan)
+	if len(sessions) != 3 || len(containers) != 4 {
+		t.Fatalf("planned %d sessions / %d containers, want 3 / 4 (postcreate, prep, 2 gates)", len(sessions), len(containers))
 	}
-	if strings.Contains(plan, "pnpm install") {
-		t.Errorf("no compiled-in pnpm install may survive in the plan:\n%s", plan)
+	last := -1
+	for _, w := range sessions {
+		i := strings.Index(plan, w)
+		if i < 0 {
+			t.Fatalf("plan is missing a planned session:\n%s\n--- plan ---\n%s", w, plan)
+		}
+		if i < last {
+			t.Errorf("sessions out of stage order in plan")
+		}
+		last = i
+	}
+	for _, w := range containers {
+		if !strings.Contains(plan, w) {
+			t.Errorf("plan is missing a planned container:\n%s", w)
+		}
+	}
+	want := append(sessions, containers...)
+	if got := strings.Count(plan, "docker run"); got != len(want) {
+		t.Errorf("plan shows %d docker commands, the Stages plan %d", got, len(want))
 	}
 }
 
-// A Consumer with nothing to provision gets no prep container, and the plan must
-// say so rather than print one the run will never launch.
-func TestPlanReviewPrepSkippedWithNoPostCreate(t *testing.T) {
-	cfg := planCfg()
-	cfg.PostCreate = ""
-	plan := Plan(cfg, "PROJ-1")
-
-	if !strings.Contains(plan, "no post_create") {
-		t.Errorf("plan must say the prep container is skipped when no post_create is declared:\n%s", plan)
+// ADR-0013: the Runner mints every container name and a caller never does. The
+// plan has no run yet, so the Runner stamps placeholders where the run id and pid go.
+func TestPlanContainerNamesAreMintedByTheRunner(t *testing.T) {
+	plan := Plan(planCfg(), "BEH-1")
+	prefix := sandbox.ContainerPrefix("/herd")
+	for _, label := range []string{"implementation", "review", "retrospective"} {
+		if want := "--name " + prefix + "<run-id>-<pid>-" + label + " "; !strings.Contains(plan, want) {
+			t.Errorf("plan does not name the %s container %q:\n%s", label, want, plan)
+		}
 	}
 }

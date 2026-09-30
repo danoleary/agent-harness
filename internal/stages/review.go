@@ -3,7 +3,6 @@ package stages
 import (
 	"fmt"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/danoleary/agent-harness/internal/ci"
@@ -120,39 +119,23 @@ func Review(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Res
 	}
 	log.Event(fmt.Sprintf("fetched %s — %s", t.Identifier, t.Title))
 
-	// Review emits no findings (retrospective owns them) → no findings mount.
-	p := prompt.For(prompt.Review, prompt.Context{Ticket: t, Slug: slug, BranchPrefix: cfg.BranchPrefix, WorktreePath: worktreePath, Body: cfg.Prompts.Review})
-	reviewRun := hostio.AgentRun{Label: reviewSession, Model: cfg.ReviewModel, Prompt: p, Cap: cfg.ReviewTimeout}
-	prepRun := hostio.ShellRun{
-		Label: prepStep, Command: cfg.PostCreate, WorktreePath: worktreePath, Cap: cfg.ReviewTimeout,
-		Retry: hostio.Retry{
-			MaxAttempts: oomMaxAttempts,
-			Backoff:     session.ConstantBackoff(oomRetryBackoff),
-			Notify: func(attempt int, waited time.Duration) {
-				log.Event(fmt.Sprintf(
-					"review ↻ worktree prep OOM-killed (exit 137) — retry %d/%d after %s (BEH-524)",
-					attempt-1, oomMaxAttempts-1, waited,
-				))
-			},
+	subject := NewSubject(h, args.Identifier, log.Dir, t)
+	reviewSessionRun := reviewRun(cfg, subject)
+	prep := prepRun(cfg, worktreePath)
+	prep.Retry = hostio.Retry{
+		MaxAttempts: oomMaxAttempts,
+		Backoff:     session.ConstantBackoff(oomRetryBackoff),
+		Notify: func(attempt int, waited time.Duration) {
+			log.Event(fmt.Sprintf(
+				"review ↻ worktree prep OOM-killed (exit 137) — retry %d/%d after %s (BEH-524)",
+				attempt-1, oomMaxAttempts-1, waited,
+			))
 		},
 	}
 
 	if args.DryRun {
 		log.Event("dry-run — not launching the install, review, or gate containers")
-		// One gate container per config-declared named gate, run in order (BEH-634).
-		gatePreviews := make([]string, 0, len(cfg.Gates))
-		for _, g := range cfg.Gates {
-			preview := h.ShellPreview(hostio.ShellRun{Label: gateStep + "-" + g.Name, Command: g.Command, WorktreePath: worktreePath})
-			gatePreviews = append(gatePreviews, fmt.Sprintf("# gate %q\ndocker %s", g.Name, strings.Join(preview, " ")))
-		}
-		prepPreview := "(none — the Consumer declares no post_create)"
-		if cfg.PostCreate != "" {
-			prepPreview = "docker " + strings.Join(h.ShellPreview(prepRun), " ")
-		}
-		fmt.Printf(
-			"\n--- prompt ---\n%s\n\n--- prep docker command ---\n%s\n\n--- review docker command ---\ndocker %s\n\n--- gate docker commands ---\n%s\n",
-			p, prepPreview, strings.Join(h.AgentPreview(reviewRun), " "), strings.Join(gatePreviews, "\n\n"),
-		)
+		fmt.Print(ReviewPlan(cfg, subject).Render(h))
 		return Result{OK: true}
 	}
 
@@ -196,11 +179,11 @@ func Review(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Res
 		log.Event("review — no post_create declared; skipping worktree prep")
 	} else {
 		log.Event("prepping worktree (post_create) before the review session")
-		prep := h.Shell(prepRun)
-		if prep.ExitCode != 0 {
+		res := h.Shell(prep)
+		if res.ExitCode != 0 {
 			log.Event(fmt.Sprintf(
 				"review … warning: worktree prep exited %d after %d attempt(s) — session will provision in-session if needed",
-				prep.ExitCode, prep.Attempts,
+				res.ExitCode, res.Attempts,
 			))
 		}
 	}
@@ -210,7 +193,7 @@ func Review(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Res
 	// The BEH-624 in-stage re-launch below gets its own label, so the Runner mints it
 	// a distinct --name + transcript and it cannot collide with the first attempt.
 	runReviewSession := func(attempt int) session.Outcome {
-		run := reviewRun
+		run := reviewSessionRun
 		if attempt > 1 {
 			run.Label = fmt.Sprintf("%s-retry%d", reviewSession, attempt)
 		}
@@ -256,22 +239,18 @@ func Review(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Res
 		return runGates(cfg.Gates, func(g config.Gate) session.Outcome {
 			log.Event(fmt.Sprintf("review · gate %q: %s", g.Name, g.Command))
 			gateBackoff := session.ExponentialBackoff(gateOOMBackoffBase, gateOOMBackoffCap)
-			return h.Shell(hostio.ShellRun{
-				Label:        labelPrefix + "-" + g.Name,
-				Command:      g.Command,
-				WorktreePath: worktreePath,
-				Cap:          cfg.ReviewTimeout,
-				Retry: hostio.Retry{
-					MaxAttempts: gateOOMMaxAttempts,
-					Backoff:     gateBackoff,
-					Notify: func(attempt int, waited time.Duration) {
-						log.Event(fmt.Sprintf(
-							"review ↻ host-side gate %q OOM-killed (exit 137) — retry %d/%d after %s (BEH-530)",
-							g.Name, attempt-1, gateOOMMaxAttempts-1, waited,
-						))
-					},
+			run := gateRun(cfg, worktreePath, labelPrefix, g)
+			run.Retry = hostio.Retry{
+				MaxAttempts: gateOOMMaxAttempts,
+				Backoff:     gateBackoff,
+				Notify: func(attempt int, waited time.Duration) {
+					log.Event(fmt.Sprintf(
+						"review ↻ host-side gate %q OOM-killed (exit 137) — retry %d/%d after %s (BEH-530)",
+						g.Name, attempt-1, gateOOMMaxAttempts-1, waited,
+					))
 				},
-			}).Outcome
+			}
+			return h.Shell(run).Outcome
 		})
 	}
 

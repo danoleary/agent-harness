@@ -39,7 +39,7 @@ func MakeRunID(now time.Time) string {
 // New creates the ticket's log directory and returns a Logger writing into it.
 // ticketID is the human identifier (e.g. "BEH-370").
 func New(logsRoot, ticketID string) (*Logger, error) {
-	dir := filepath.Join(logsRoot, ticketID)
+	dir := TicketDir(logsRoot, ticketID)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
 	}
@@ -87,11 +87,23 @@ func StepFooter(exitCode int) string {
 	}
 }
 
+// TicketDir is the path of a ticket's log directory under logsRoot — the Dir a
+// [New] Logger writes into. It is not created, so a dry-run plan can name paths
+// under it without touching the disk.
+func TicketDir(logsRoot, ticketID string) string {
+	return filepath.Join(logsRoot, ticketID)
+}
+
 // FindingsDir is the path of a session's findings dropbox dir, under the ticket
 // dir (logs/<ticket-id>/findings/<session>/). It is not created — the caller
 // mounts it and is responsible for MkdirAll.
+func FindingsDir(ticketDir, session string) string {
+	return filepath.Join(ticketDir, "findings", session)
+}
+
+// FindingsDir is [FindingsDir] under this Logger's ticket dir.
 func (l *Logger) FindingsDir(session string) string {
-	return filepath.Join(l.Dir, "findings", session)
+	return FindingsDir(l.Dir, session)
 }
 
 // Event emits one concise narration line to the console and mirrors it to run.jsonl.
