@@ -210,7 +210,9 @@ var trackerNames = map[string]string{
 
 // trackerTools names, per tracker kind, the in-sandbox route that would reach it
 // and so must be forbidden by name: the Linear MCP the stock skills call, and the
-// `gh` CLI a GitHub-tracked sandbox holds a GH_TOKEN for. Jira has no such route.
+// `gh` CLI the stock skills reach for on a GitHub-tracked repo. The sandbox holds
+// no tracker credential (ADR-0002), so this is a steer, not the enforcement. Jira
+// has no such route.
 var trackerTools = map[string]string{
 	"linear": "do not call any `mcp__linear-server__*` tool, ",
 	"github": "do not run `gh issue`, ",

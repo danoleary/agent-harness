@@ -54,8 +54,9 @@ credential or MCP ever enters the sandbox.**
 The port reached the host but not the prompt. The contract envelope (ADR-0009)
 still told every sandbox "Do NOT touch Linear" and forbade only the Linear MCP, so
 a GitHub- or Jira-tracked agent was steered off a tracker it did not have and
-nothing named the one it did — a GitHub sandbox holds `GH_TOKEN` and could run
-`gh issue` (#35).
+nothing named the one it did, such as `gh issue` against a GitHub-tracked repo
+(#35). The sandbox still holds no tracker credential (ADR-0002); the steer is
+guidance, not the enforcement.
 
 **`prompt.Context` now carries the tracker kind, and every Stage's tracker-off
 steer reads "Do NOT touch the issue tracker (<name>)".** The in-sandbox route that

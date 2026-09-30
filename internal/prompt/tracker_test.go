@@ -67,8 +67,8 @@ func TestEnvelopeNamesOnlyTheConfiguredTracker(t *testing.T) {
 	}
 }
 
-// A GitHub-tracked sandbox holds GH_TOKEN, so the steer names the one tool that
-// would reach its tracker from inside it.
+// A GitHub-tracked envelope names the tool an agent would reach for to touch its
+// tracker, as the Linear one names the Linear MCP.
 func TestGitHubEnvelopeForbidsGhIssue(t *testing.T) {
 	for stage, p := range everyStage(t, "github") {
 		if !strings.Contains(p, "`gh issue`") {
