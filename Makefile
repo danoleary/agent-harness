@@ -30,10 +30,18 @@ build:
 # is the entrypoint; see cmd/agent-harness and ADR-0012.
 PREFIX ?= $(HOME)/.local
 STAGE_TOOLS = implementation review retrospective pipeline loop watch
+#
+# Binaries go in via copy-to-temp + mv, never a plain cp over the old file (same
+# as install.sh). macOS caches a binary's code signature per inode, so rewriting
+# an installed binary in place makes the kernel SIGKILL it on the next launch
+# ("Code Signature Invalid"); mv gives each install a fresh inode.
 install: build
 	@mkdir -p "$(PREFIX)/bin" "$(PREFIX)/libexec/agent-harness" "$(PREFIX)/share/agent-harness"
-	@cp bin/agent-harness "$(PREFIX)/bin/agent-harness"
-	@for tool in $(STAGE_TOOLS); do cp "bin/$$tool" "$(PREFIX)/libexec/agent-harness/$$tool"; done
+	@cp bin/agent-harness "$(PREFIX)/bin/agent-harness.tmp" && mv -f "$(PREFIX)/bin/agent-harness.tmp" "$(PREFIX)/bin/agent-harness"
+	@for tool in $(STAGE_TOOLS); do \
+		cp "bin/$$tool" "$(PREFIX)/libexec/agent-harness/$$tool.tmp" && \
+		mv -f "$(PREFIX)/libexec/agent-harness/$$tool.tmp" "$(PREFIX)/libexec/agent-harness/$$tool" || exit 1; \
+	done
 	@cp scripts/loop-start.sh "$(PREFIX)/libexec/agent-harness/loop-start.sh"
 	@cp README.md LICENSE .env.example "$(PREFIX)/share/agent-harness/"
 	@cp docs/CONSUMER.md "$(PREFIX)/share/agent-harness/CONSUMER.md"
