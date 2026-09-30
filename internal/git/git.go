@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/danoleary/agent-harness/internal/proc"
+	"github.com/danoleary/agent-harness/internal/ticket"
 )
 
 // commandRunner runs a command to completion, returning only its error.
@@ -225,7 +226,7 @@ const mainHistoryLookback = 50
 // mainHistoryReferences reports whether `git log` output contains a commit
 // referencing the exact ticket Key. The Key is tracker-agnostic (ADR-0010): the
 // match quotes it literally and makes no `BEH-` assumption, so a Jira `PROJ-123`
-// works identically. Matched on word boundaries so BEH-52 never matches BEH-521
+// works identically. Matched with no word character on either side so BEH-52 never matches BEH-521
 // and BEH-521 never matches BEH-5210 (a substring grep — what the finding
 // literally proposed — would conflate those), and case-insensitively because a
 // subject sometimes lower-cases the key.
@@ -245,9 +246,11 @@ func keyReferenced(text, key string) bool {
 
 // remoteBranchesReference reports whether `git ls-remote --heads` output contains a
 // branch name referencing the exact ticket Key, on word boundaries so a shorter key
-// is never a prefix-match of a longer branch's key.
+// is never a prefix-match of a longer branch's key. A branch carries the Key's
+// [ticket.Slug], not the Key itself — a GitHub `#30` is pushed as `…/gh-30` (#36) —
+// so the slug is what is matched.
 func remoteBranchesReference(lsRemoteOutput, key string) bool {
-	return keyReferenced(lsRemoteOutput, key)
+	return keyReferenced(lsRemoteOutput, ticket.Slug(key))
 }
 
 // porcelainHasRealChanges reports whether `git status --porcelain` output names any
