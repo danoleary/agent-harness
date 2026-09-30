@@ -233,11 +233,14 @@ func mainHistoryReferences(logOutput, key string) bool {
 	return keyReferenced(logOutput, key)
 }
 
-// keyReferenced reports whether text word-boundary-matches the ticket Key,
-// case-insensitively. Shared by the main-history scan and the remote-branch scan so
-// both apply identical, Key-agnostic word-boundary semantics (BEH-52 ≠ BEH-521).
+// keyReferenced reports whether text contains the ticket Key with no word
+// character on either side, case-insensitively. Shared by the main-history scan and
+// the remote-branch scan so both apply identical, Key-agnostic boundary semantics
+// (BEH-52 ≠ BEH-521, #3 ≠ #30). It is not `\b`: a GitHub Key starts with `#`, a
+// non-word character, so a `\b` before it only fires after a word character and
+// never on a real reference like "(#30)" or "closes #30".
 func keyReferenced(text, key string) bool {
-	return regexp.MustCompile(`(?i)\b` + regexp.QuoteMeta(key) + `\b`).MatchString(text)
+	return regexp.MustCompile(`(?i)(?:^|\W)` + regexp.QuoteMeta(key) + `(?:$|\W)`).MatchString(text)
 }
 
 // remoteBranchesReference reports whether `git ls-remote --heads` output contains a
