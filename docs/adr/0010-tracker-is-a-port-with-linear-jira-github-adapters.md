@@ -48,3 +48,18 @@ credential or MCP ever enters the sandbox.**
   status, GitHub label/column) — there is no universal queue concept.
 - The per-Stage CLI tools can run with a no-tracker/manual mode (Key + ticket text
   supplied directly), useful for local runs and for Consumers without a tracker.
+
+## Amendment, 2026-09-30: the envelope names the configured tracker
+
+The port reached the host but not the prompt. The contract envelope (ADR-0009)
+still told every sandbox "Do NOT touch Linear" and forbade only the Linear MCP, so
+a GitHub- or Jira-tracked agent was steered off a tracker it did not have and
+nothing named the one it did — a GitHub sandbox holds `GH_TOKEN` and could run
+`gh issue` (#35).
+
+**`prompt.Context` now carries the tracker kind, and every Stage's tracker-off
+steer reads "Do NOT touch the issue tracker (<name>)".** The in-sandbox route that
+would reach that tracker is forbidden by name only where one exists: the
+`mcp__linear-server__*` tools for Linear, `gh issue` for GitHub. The rest of the
+envelope (findings dropbox, already-filed list, sub-issue inlining) speaks of
+"the tracker", so Linear appears in a prompt only when Linear is configured.

@@ -155,7 +155,7 @@ func assertEnvelopeContract(t *testing.T, p, label, prefixSlug string) {
 	if !strings.Contains(p, "/findings/out.json") {
 		t.Errorf("%s: envelope dropped the findings-dropbox protocol", label)
 	}
-	if !regexp.MustCompile(`(?i)(do not|don't).*Linear`).MatchString(p) {
+	if !regexp.MustCompile(`(?i)do not touch the issue tracker`).MatchString(p) {
 		t.Errorf("%s: envelope dropped the tracker-off steer", label)
 	}
 	if !strings.Contains(p, prefixSlug) {
@@ -183,7 +183,7 @@ func TestRetrospectiveEnvelopeContractSurvivesEmptyBody(t *testing.T) {
 	if !strings.Contains(p, "/findings/out.json") {
 		t.Error("retro envelope dropped the findings-dropbox protocol")
 	}
-	if !regexp.MustCompile(`(?i)(do not|don't).*Linear`).MatchString(p) {
+	if !regexp.MustCompile(`(?i)do not touch the issue tracker`).MatchString(p) {
 		t.Error("retro envelope dropped the tracker-off steer")
 	}
 	assertCarriesBashQuirkSteer(t, p, "retro empty body")
@@ -204,7 +204,7 @@ func TestImplementHonorsConfiguredBranchPrefix(t *testing.T) {
 }
 
 // BEH-619: an umbrella/batch ticket defers its real work to sub-issues, but the
-// sandbox is isolated from Linear (ADR-0002) — so mid-session the agent can't
+// sandbox is isolated from the tracker (ADR-0002) — so mid-session the agent can't
 // fetch a child's spec and under-delivers (it reached for an unavailable
 // mcp__linear-server__get_issue and shipped 1 of ~9 children). The host fetches
 // each child host-side; the Implement prompt must inline every child's id + title + body,
@@ -234,8 +234,8 @@ func TestImplementInlinesSubIssueSpecs(t *testing.T) {
 		t.Error("prompt does not tell the agent to implement every sub-issue")
 	}
 	// Must say the children are already fetched / not to look them up (the sandbox
-	// can't reach Linear).
-	if !regexp.MustCompile(`(?i)(already.*fetch|do not.*look.*up|cannot reach Linear)`).MatchString(p) {
+	// can't reach the tracker).
+	if !regexp.MustCompile(`(?i)(already.*fetch|do not.*look.*up|cannot reach the issue tracker)`).MatchString(p) {
 		t.Error("prompt does not say the sub-issues are pre-fetched / unreachable from the sandbox")
 	}
 }
@@ -249,14 +249,14 @@ func TestImplementOmitsSubIssueSectionWhenNone(t *testing.T) {
 	}
 }
 
-func TestImplementSteersOffLinear(t *testing.T) {
+func TestImplementSteersOffTracker(t *testing.T) {
 	p := bImpl(t, sample, "beh-362")
 
 	if !regexp.MustCompile(`(?i)already.*(claimed|In Progress)`).MatchString(p) {
 		t.Error("prompt does not say the ticket is already claimed/In Progress")
 	}
-	if !regexp.MustCompile(`(?i)(do not|don't).*Linear`).MatchString(p) {
-		t.Error("prompt does not steer off Linear")
+	if !regexp.MustCompile(`(?i)do not touch the issue tracker`).MatchString(p) {
+		t.Error("prompt does not steer off the tracker")
 	}
 }
 
@@ -365,13 +365,13 @@ func TestImplementResumedBranchSteersToVerifyExistingCommits(t *testing.T) {
 }
 
 // The resumed-branch prompt must keep every cross-cutting steer the standard tdd
-// prompt carries — off Linear, findings to the dropbox, and the bash-quirk
+// prompt carries — off the tracker, findings to the dropbox, and the bash-quirk
 // workaround — so swapping it in never silently drops a guard.
 func TestImplementResumedBranchKeepsStandardSteers(t *testing.T) {
 	p := bResumed(t, sample, "beh-362")
 
-	if !regexp.MustCompile(`(?i)(do not|don't).*Linear`).MatchString(p) {
-		t.Error("resumed-branch prompt does not steer off Linear")
+	if !regexp.MustCompile(`(?i)do not touch the issue tracker`).MatchString(p) {
+		t.Error("resumed-branch prompt does not steer off the tracker")
 	}
 	if !strings.Contains(p, "/findings/out.json") {
 		t.Error("resumed-branch prompt missing the findings dropbox path")
@@ -426,7 +426,7 @@ func TestImplementRedirectsFindingsToDropbox(t *testing.T) {
 // already exist with the surviving diff. The resume prompt must steer the agent
 // to continue in that existing worktree and commit the work — never to recreate
 // it (which would fail on the already-existing branch) — while keeping every
-// other steer (Linear off, findings to the dropbox).
+// other steer (tracker off, findings to the dropbox).
 func TestImplementAfterRefusalSteersToExistingWorktree(t *testing.T) {
 	p := bResume(t, sample, "beh-362", sampleWorktree)
 
@@ -469,11 +469,11 @@ func TestImplementAfterRefusalCarriesBashQuirkSteer(t *testing.T) {
 	assertCarriesBashQuirkSteer(t, bResume(t, sample, "beh-362", sampleWorktree), "tdd resume prompt")
 }
 
-func TestImplementAfterRefusalStillSteersOffLinearAndToDropbox(t *testing.T) {
+func TestImplementAfterRefusalStillSteersOffTrackerAndToDropbox(t *testing.T) {
 	p := bResume(t, sample, "beh-362", sampleWorktree)
 
-	if !regexp.MustCompile(`(?i)(do not|don't).*Linear`).MatchString(p) {
-		t.Error("resume prompt does not steer off Linear")
+	if !regexp.MustCompile(`(?i)do not touch the issue tracker`).MatchString(p) {
+		t.Error("resume prompt does not steer off the tracker")
 	}
 	if !strings.Contains(p, "/findings/out.json") {
 		t.Error("resume prompt missing the findings dropbox path")
@@ -601,8 +601,8 @@ func TestRetrospectiveCarriesBashQuirkSteer(t *testing.T) {
 func TestRetrospectiveForbidsRemoteAndCodeChanges(t *testing.T) {
 	p := bRetro(t, sample, "beh-362", nil)
 
-	if !regexp.MustCompile(`(?i)(do not|don't).*Linear`).MatchString(p) {
-		t.Error("prompt does not steer off Linear")
+	if !regexp.MustCompile(`(?i)do not touch the issue tracker`).MatchString(p) {
+		t.Error("prompt does not steer off the tracker")
 	}
 	if !regexp.MustCompile(`(?i)(no|not?|don't).{0,20}(code|push|commit)`).MatchString(p) {
 		t.Error("prompt does not forbid code changes/push/commit")
@@ -695,11 +695,11 @@ func TestReviewSteersDispositionAndSelfResolve(t *testing.T) {
 	}
 }
 
-func TestReviewForbidsLinearAndFindings(t *testing.T) {
+func TestReviewForbidsTrackerAndFindings(t *testing.T) {
 	p := bReview(t, sample, "beh-362", sampleWorktree)
 
-	if !regexp.MustCompile(`(?i)(do not|don't).*Linear`).MatchString(p) {
-		t.Error("prompt does not steer off Linear")
+	if !regexp.MustCompile(`(?i)do not touch the issue tracker`).MatchString(p) {
+		t.Error("prompt does not steer off the tracker")
 	}
 	// Findings are retrospective's job now, not review's.
 	if !regexp.MustCompile(`(?i)(do not|don't|never).{0,30}finding`).MatchString(p) {

@@ -82,6 +82,10 @@ type Context struct {
 	Slug         string
 	BranchPrefix string
 	WorktreePath string
+	// Tracker is the configured tracker kind (`linear`, `github`, `jira`). The
+	// envelope's tracker-off steer names it and forbids the tool that would reach
+	// it (ADR-0010); empty names no tracker in particular.
+	Tracker string
 
 	// Body is the Consumer-supplied prompt body from `.agent-harness/prompts/`.
 	// CIFix and RebaseFix invoke no skill and ignore it.
@@ -197,18 +201,50 @@ func ticketContext(t ticket.Ticket) string {
 	return s
 }
 
+// trackerNames maps a tracker kind to the name the envelope shows the agent.
+var trackerNames = map[string]string{
+	"linear": "Linear",
+	"github": "GitHub Issues",
+	"jira":   "Jira",
+}
+
+// trackerTools names, per tracker kind, the in-sandbox route that would reach it
+// and so must be forbidden by name: the Linear MCP the stock skills call, and the
+// `gh` CLI a GitHub-tracked sandbox holds a GH_TOKEN for. Jira has no such route.
+var trackerTools = map[string]string{
+	"linear": "do not call any `mcp__linear-server__*` tool, ",
+	"github": "do not run `gh issue`, ",
+}
+
+// trackerOff is the envelope's tracker-off steer, shared by every Stage: the
+// harness performs every tracker interaction host-side and the sandbox touches
+// none (ADR-0010). It names the configured tracker — never Linear by default —
+// so a GitHub- or Jira-tracked agent is steered off the tracker it actually has
+// (#35). An unknown kind reads as itself; an empty one names no tracker.
+func trackerOff(kind string) string {
+	subject := "the issue tracker"
+	if kind != "" {
+		name, ok := trackerNames[kind]
+		if !ok {
+			name = kind
+		}
+		subject += " (" + name + ")"
+	}
+	return "Do NOT touch " + subject + ": " + trackerTools[kind] + "do not move the ticket, open, or comment on issues. The harness owns all tracker I/O (ADR-0010)."
+}
+
 // trackerOffSteer is the envelope's tracker-off contract for the implementation
 // stage: the ticket is already claimed host-side and the sandbox must not touch
-// the tracker (ADR-0001).
-func trackerOffSteer(id string) string {
-	return id + " is already claimed and moved to In Progress for you. Do NOT touch Linear — do not call any `mcp__linear-server__*` tool, do not move the ticket, do not open or comment on issues. The harness owns all Linear I/O."
+// the tracker.
+func trackerOffSteer(id, kind string) string {
+	return id + " is already claimed and moved to In Progress for you. " + trackerOff(kind)
 }
 
 // findingsDropboxProtocol is the envelope's findings-dropbox contract for the
 // implementation stage: harness/environment friction goes to `/findings/out.json`
 // in the `{title, body, kind, key}` shape the host-side filer reads, never to the
 // tracker directly.
-const findingsDropboxProtocol = "If you hit problems with the harness or environment itself (setup friction, systemic gaps, missing patterns) during your session retrospective, do NOT file Linear issues. Instead append them to `/findings/out.json` as a JSON array of `{title, body, kind, key}` objects (kind is a free-form category; key is a stable, lowercase failure-class slug like `sandbox-playwright-missing-deps` used to dedup re-runs — pick the same key any session would for this class of problem). The harness reads this file after the session and files the issues for you, skipping any whose key already has an open issue. If you have no findings, leave the file untouched."
+const findingsDropboxProtocol = "If you hit problems with the harness or environment itself (setup friction, systemic gaps, missing patterns) during your session retrospective, do NOT file issues in the tracker yourself. Instead append them to `/findings/out.json` as a JSON array of `{title, body, kind, key}` objects (kind is a free-form category; key is a stable, lowercase failure-class slug like `sandbox-playwright-missing-deps` used to dedup re-runs — pick the same key any session would for this class of problem). The harness reads this file after the session and files the issues for you, skipping any whose key already has an open issue. If you have no findings, leave the file untouched."
 
 // branchHandoffContract is the envelope's branch/handoff contract: the whole
 // pipeline (verify, push, PR, CI, review, rebase) keys off the canonical
@@ -234,10 +270,10 @@ func freshWorktreeInstr(slug, branchPrefix string) string {
 // (fresh, resumed-branch, retry). It structurally guarantees the four
 // non-overridable envelope items: branch/handoff contract, tracker-off steer,
 // findings-dropbox protocol, and bash-quirk steer.
-func tddFooter(id, branchPrefix, slug string) string {
+func tddFooter(id, kind, branchPrefix, slug string) string {
 	return join(
 		branchHandoffContract(branchPrefix, slug),
-		trackerOffSteer(id),
+		trackerOffSteer(id, kind),
 		findingsDropboxProtocol,
 		bashQuirkSteer,
 	)
@@ -263,7 +299,7 @@ func implement(c Context) string {
 		worktreeState,
 		ticketContext(c.Ticket),
 		"---",
-		tddFooter(c.Ticket.Identifier, c.BranchPrefix, c.Slug),
+		tddFooter(c.Ticket.Identifier, c.Tracker, c.BranchPrefix, c.Slug),
 	)
 }
 
@@ -279,7 +315,7 @@ func subIssuesSection(subs []ticket.SubIssue) string {
 		return ""
 	}
 	var b strings.Builder
-	b.WriteString("This is an umbrella/batch ticket: its real work lives in the sub-issues below, whose full specs are inlined here (already fetched for you — the sandbox CANNOT reach Linear, so do NOT try to look them up with `mcp__linear-server__*`). Implement EVERY sub-issue, not just the umbrella body above; if you defer one, say which and why in your handoff:")
+	b.WriteString("This is an umbrella/batch ticket: its real work lives in the sub-issues below, whose full specs are inlined here (already fetched for you — the sandbox CANNOT reach the issue tracker, so do NOT try to look them up). Implement EVERY sub-issue, not just the umbrella body above; if you defer one, say which and why in your handoff:")
 	for _, s := range subs {
 		b.WriteString("\n\n### " + s.Identifier + ": " + defang(s.Title))
 		if strings.TrimSpace(s.Description) != "" {
@@ -338,7 +374,12 @@ const retroAudienceContract = "Classify EVERY finding with an `audience` field, 
 
 // retroContractSteer is the retrospective stage's tracker-off + read-only
 // contract: no code changes, no push, no tracker.
-const retroContractSteer = "This session is read-only and reaches no remote. Make NO code changes, do NOT commit or push, and do NOT touch Linear — do not call any `mcp__linear-server__*` tool. The harness reads `out.json` after the session and files each finding to Linear itself."
+func retroContractSteer(kind string) string {
+	return join(
+		"This session is read-only and reaches no remote. Make NO code changes and do NOT commit or push. The harness reads `out.json` after the session and files each finding itself.",
+		trackerOff(kind),
+	)
+}
 
 // retrospective builds the `-p` prompt for the sandboxed retrospective
 // session (the terminal tool). The Consumer body points the session at the
@@ -350,7 +391,7 @@ func retrospective(c Context) string {
 		renderBody(c),
 		retroFindingsProtocol,
 		retroAudienceContract,
-		retroContractSteer,
+		retroContractSteer(c.Tracker),
 		alreadyFiledSection(c.Filed),
 		bashQuirkSteer,
 	)
@@ -365,7 +406,7 @@ func alreadyFiledSection(filed []FiledFinding) string {
 		return ""
 	}
 	var b strings.Builder
-	b.WriteString("This ticket has been through the pipeline before — the harness has ALREADY filed Linear issues for the finding classes below, so treat them as SETTLED. Do NOT re-investigate, re-derive, or re-file them (the harness would skip them on key anyway); spend your budget only on NEW friction introduced since the last retrospective:")
+	b.WriteString("This ticket has been through the pipeline before — the harness has ALREADY filed issues for the finding classes below, so treat them as SETTLED. Do NOT re-investigate, re-derive, or re-file them (the harness would skip them on key anyway); spend your budget only on NEW friction introduced since the last retrospective:")
 	for _, f := range filed {
 		b.WriteString("\n  - ")
 		if f.Key != "" {
@@ -379,12 +420,12 @@ func alreadyFiledSection(filed []FiledFinding) string {
 // reviewContractFooter is the review stage's contract footer. It structurally
 // guarantees the review analog of the four envelope items: the branch/handoff
 // contract (commit locally, the harness owns push/PR — ADR-0002), the tracker-off
-// steer (ADR-0001), the findings protocol (review emits NONE; retrospective owns
+// steer (ADR-0010), the findings protocol (review emits NONE; retrospective owns
 // findings), and the bash-quirk steer.
-func reviewContractFooter(branchPrefix, slug string) string {
+func reviewContractFooter(kind, branchPrefix, slug string) string {
 	return join(
 		"Apply your review fixes as a LOCAL commit on `"+branchPrefix+"/"+slug+"` and stop there. Do NOT push, do NOT run `gh`, do NOT open or raise a PR. The harness owns all remote git I/O (ADR-0002): it independently re-runs the quality gates host-side and, only if they pass, pushes the branch and opens the PR itself.",
-		"Do NOT touch Linear — do not call any `mcp__linear-server__*` tool, do not move the ticket, do not open or comment on issues. The harness owns all Linear I/O (ADR-0001).",
+		trackerOff(kind),
 		"Do NOT emit or file any harness-improvement findings, and do NOT write `/findings/out.json`. The retrospective tool, running last over every transcript, owns findings now — this is a deliberate change from the skill's default. Your only outputs are review fixes committed locally.",
 		bashQuirkSteer,
 	)
@@ -399,7 +440,7 @@ func review(c Context) string {
 		renderBody(c),
 		ticketContext(c.Ticket),
 		"---",
-		reviewContractFooter(c.BranchPrefix, c.Slug),
+		reviewContractFooter(c.Tracker, c.BranchPrefix, c.Slug),
 	)
 }
 
@@ -472,7 +513,7 @@ func ciFix(c Context) string {
 		"",
 		"Commit the fix LOCALLY and stop there. Do NOT push, do NOT run `gh`, do NOT open or comment on a PR. The harness owns all remote git I/O (ADR-0002): after you commit, it re-pushes the branch and re-polls CI itself.",
 		"",
-		"Do NOT touch Linear — do not call any `mcp__linear-server__*` tool, do not move the ticket, do not open or comment on issues. The harness owns all Linear I/O (ADR-0001).",
+		trackerOff(c.Tracker),
 		"",
 		"Do NOT emit or file any harness-improvement findings, and do NOT write `/findings/out.json`. The retrospective tool owns findings — your only output is the local fix commit, or no commit at all when there is nothing real to fix.",
 		"",
@@ -489,7 +530,7 @@ func ciFix(c Context) string {
 // dead-end and strand the reviewed work, the harness runs this session to rebase +
 // resolve in the worktree — mirroring ciFix's local-commit-only contract. The
 // harness then independently re-runs the gate host-side before pushing, so the
-// session never pushes or touches the remote/Linear itself. This prompt invokes no
+// session never pushes or touches the remote/tracker itself. This prompt invokes no
 // skill, so it stays harness-composed (no Consumer body).
 func rebaseFix(c Context) string {
 	t, slug, branchPrefix, worktreePath := c.Ticket, c.Slug, c.BranchPrefix, c.WorktreePath
@@ -523,7 +564,7 @@ func rebaseFix(c Context) string {
 		"",
 		"Leave the resolved rebase committed in the worktree and stop there. Do NOT push, do NOT run `gh`, do NOT open or comment on a PR. The harness owns all remote git I/O (ADR-0002): after you finish the rebase, it independently re-runs the quality gates host-side and, only if they pass, pushes the rebased branch and opens the PR itself.",
 		"",
-		"Do NOT touch Linear — do not call any `mcp__linear-server__*` tool, do not move the ticket, do not open or comment on issues. The harness owns all Linear I/O (ADR-0001).",
+		trackerOff(c.Tracker),
 		"",
 		"Do NOT emit or file any harness-improvement findings, and do NOT write `/findings/out.json`. The retrospective tool owns findings — your only output is the resolved, rebased worktree.",
 		"",
