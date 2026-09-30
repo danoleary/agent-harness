@@ -136,7 +136,8 @@ Design decisions, and why:
   mining.
 - **`--verbose`** forwards to all stages. **`--dry-run`** is pipeline-level: it
   prints the *plan* (ordered stages + each stage's resolved prompt/docker command
-  as best it can be computed) and explicitly notes that the review/retro commands
+  as best it can be computed — the Stages' own run specs, previewed through the
+  Runner with `<run-id>`/`<pid>` placeholders, ADR-0018) and explicitly notes that the review/retro commands
   assume impl's worktree/transcripts, which don't exist under dry-run. It claims
   nothing, launches nothing, touches no Linear. No subset/`--only`/resume flags —
   independence is already served by the three standalone binaries.
@@ -1082,6 +1083,11 @@ reader over a structured stream rather than a `--tui` flag on the daemon.
   `session.Options` the watchdog kills through, and the transcript filename, all
   from one label — so "the name must match the argv or the timeout kill misses"
   stops being a comment and becomes unrepresentable.
+- **The dry-run plan is the Stages' own run specs** ([ADR-0018](adr/0018-the-dry-run-plan-is-the-stages-own-run-specs.md)). Each Stage
+  builds each `AgentRun`/`ShellRun` in one place and both launches it and lists it
+  in its `StagePlan`; `--dry-run` renders that plan through `hostio.NewPreview`, the
+  Runner with placeholder run id and pid. A test pins the plans to what the Stages
+  actually launch over `hostio.Fake`.
 - **The daemon takes the same shape** ([ADR-0014](adr/0014-the-daemon-takes-a-host-limits-and-a-clock.md)). `loop.Run` takes a
   `loop.Host` (the STOP sentinel, the tracker queue, one ticket's pipeline run, the
   between-ticket disk reclaim), a `loop.Limits` of cadences/ceilings/thresholds, a

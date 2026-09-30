@@ -127,6 +127,15 @@ type Sandbox interface {
 	ShellPreview(ShellRun) []string
 }
 
+// Planner is the slice of [Host] a dry-run plan reads: where a ticket's worktree
+// and branch live, and the argv each run would launch with.
+type Planner interface {
+	WorktreePath(slug string) string
+	BranchName(slug string) string
+	AgentPreview(AgentRun) []string
+	ShellPreview(ShellRun) []string
+}
+
 // Repo is the git-facing half: everything that reads or mutates the Consumer
 // checkout and one ticket's worktree. Every method is keyed by the ticket slug —
 // the adapter holds the checkout path and the branch prefix, so a Stage names the

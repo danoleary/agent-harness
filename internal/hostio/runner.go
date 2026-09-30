@@ -3,6 +3,7 @@ package hostio
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/danoleary/agent-harness/internal/config"
@@ -27,7 +28,7 @@ type Runner struct {
 	prefix string
 	// pid disambiguates two runs started in the same (second-resolution) runID, so
 	// their containers get distinct names and distinct `docker kill` targets.
-	pid     int
+	pid     string
 	verbose bool
 	// run and sleep are the injected effects, so the naming and retry logic above
 	// is unit-testable without a Docker daemon or a real wait.
@@ -42,11 +43,28 @@ func NewRunner(cfg config.Config, log *runlog.Logger, runID string, verbose bool
 		log:     log,
 		runID:   runID,
 		prefix:  sandbox.ContainerPrefix(cfg.ProjectPath),
-		pid:     os.Getpid(),
+		pid:     strconv.Itoa(os.Getpid()),
 		verbose: verbose,
 		run:     session.Run,
 		sleep:   time.Sleep,
 	}
+}
+
+// Placeholders a preview stamps where a launch would stamp the run id and pid: a
+// dry-run has no run yet, and a deterministic plan is both honest about that and
+// trivially testable.
+const (
+	PreviewRunID = "<run-id>"
+	previewPID   = "<pid>"
+)
+
+// NewPreview is the host a dry-run plan renders through when no run exists: the
+// same Runner naming and argv building, stamped with placeholders instead of a
+// run id and pid. It is a [Planner], not a [Host], so nothing can launch through it.
+func NewPreview(cfg config.Config) Planner {
+	r := NewRunner(cfg, nil, PreviewRunID, false)
+	r.pid = previewPID
+	return &Real{Runner: r, cfg: cfg}
 }
 
 // RunID is the run this Runner stamps into every name it mints.
@@ -56,7 +74,7 @@ func (r *Runner) RunID() string { return r.runID }
 // (so one host running several projects never kills another's containers), the
 // run id, the pid, and the role label.
 func (r *Runner) name(label string) string {
-	return fmt.Sprintf("%s%s-%d-%s", r.prefix, r.runID, r.pid, label)
+	return fmt.Sprintf("%s%s-%s-%s", r.prefix, r.runID, r.pid, label)
 }
 
 // Agent launches one sandboxed claude session and returns its outcome together

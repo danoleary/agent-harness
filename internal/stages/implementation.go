@@ -133,22 +133,18 @@ func provisionWorktree(h hostio.Host, cfg config.Config, slug string, log *runlo
 // ticket.
 func runPostCreate(h hostio.Host, cfg config.Config, slug string, log *runlog.Logger) {
 	log.Event("provisioning worktree — running post_create toolchain setup")
-	res := h.Shell(hostio.ShellRun{
-		Label:        postCreateStep,
-		Command:      cfg.PostCreate,
-		WorktreePath: h.WorktreePath(slug),
-		Cap:          cfg.TddTimeout,
-		Retry: hostio.Retry{
-			MaxAttempts: oomMaxAttempts,
-			Backoff:     session.ConstantBackoff(oomRetryBackoff),
-			Notify: func(attempt int, waited time.Duration) {
-				log.Event(fmt.Sprintf(
-					"tdd ↻ post_create OOM-killed (exit 137) — retry %d/%d after %s (BEH-524)",
-					attempt-1, oomMaxAttempts-1, waited,
-				))
-			},
+	run := postCreateRun(cfg, h.WorktreePath(slug))
+	run.Retry = hostio.Retry{
+		MaxAttempts: oomMaxAttempts,
+		Backoff:     session.ConstantBackoff(oomRetryBackoff),
+		Notify: func(attempt int, waited time.Duration) {
+			log.Event(fmt.Sprintf(
+				"tdd ↻ post_create OOM-killed (exit 137) — retry %d/%d after %s (BEH-524)",
+				attempt-1, oomMaxAttempts-1, waited,
+			))
 		},
-	})
+	}
+	res := h.Shell(run)
 	if res.ExitCode != 0 {
 		log.Event(fmt.Sprintf(
 			"⚠ post_create exited %d — the worktree may lack toolchain deps; the session must install them before the gates run",
@@ -210,13 +206,14 @@ func Implementation(h hostio.Host, cfg config.Config, log *runlog.Logger, args A
 	// have ADDED code rather than deleting any. We don't skip (the branch can hold
 	// incomplete work) — instead we steer the session to verify-and-handoff over
 	// re-implementing by swapping in the ResumedBranch variant.
-	pctx := prompt.Context{Ticket: t, Slug: slug, BranchPrefix: cfg.BranchPrefix, Body: cfg.Prompts.Implement}
+	resume := prompt.Fresh
 	if adv := h.ResumedBranchAdvisory(slug, t.Identifier); adv != "" {
 		log.Event(adv)
-		pctx.Resume = prompt.ResumedBranch
+		resume = prompt.ResumedBranch
 	}
-	p := prompt.For(prompt.Implement, pctx)
-	findingsDir := log.FindingsDir(implementationSession)
+	subject := NewSubject(h, args.Identifier, log.Dir, t)
+	sessionRun := implementationRun(cfg, subject, resume)
+	findingsDir := sessionRun.FindingsDir
 	if err := os.MkdirAll(findingsDir, 0o755); err != nil {
 		// Degrade a full-disk ENOSPC to a clear warning instead of an opaque hard
 		// error (BEH-540); this runs before the claim, so nothing is left stranded.
@@ -236,16 +233,11 @@ func Implementation(h hostio.Host, cfg config.Config, log *runlog.Logger, args A
 	// inherently sequential (extract N modules, then rewire N call sites) and
 	// overran the ordinary cap mid-surgery, leaving an uncompilable checkpoint
 	// (BEH-441, BEH-688 Symptom 2).
-	sessionCap := tddCap(cfg, t)
+	sessionCap := sessionRun.Cap
 
 	if args.DryRun {
 		log.Event("dry-run — not claiming the ticket, not launching the container")
-		fmt.Printf(
-			"\n--- prompt ---\n%s\n\n--- docker command ---\ndocker %s\n",
-			p, strings.Join(h.AgentPreview(hostio.AgentRun{
-				Label: implementationSession, Model: cfg.ImplementationModel, Prompt: p, FindingsDir: findingsDir, Cap: sessionCap,
-			}), " "),
-		)
+		fmt.Print(ImplementationPlan(cfg, subject, resume).Render(h))
 		return Result{OK: true}
 	}
 
@@ -316,15 +308,12 @@ func Implementation(h hostio.Host, cfg config.Config, log *runlog.Logger, args A
 		outcome    session.Outcome
 	)
 	for attempt := 1; attempt <= maxTddAttempts; attempt++ {
-		attemptPrompt := p
-		attemptLabel := implementationSession
+		launch := sessionRun
 		if attempt > 1 {
 			// The retry resumes the existing worktree (it already holds the surviving
 			// diff) rather than recreating it (BEH-389).
-			retry := pctx
-			retry.Resume, retry.WorktreePath = prompt.AfterRefusal, h.WorktreePath(slug)
-			attemptPrompt = prompt.For(prompt.Implement, retry)
-			attemptLabel = fmt.Sprintf("%s-retry%d", implementationSession, attempt)
+			launch = implementationRun(cfg, subject, prompt.AfterRefusal)
+			launch.Label = fmt.Sprintf("%s-retry%d", implementationSession, attempt)
 			log.Event(fmt.Sprintf(
 				"tdd ↻ usage-policy refusal on attempt %d — retrying once on the same ticket (BEH-389); the worktree diff survives on disk",
 				attempt-1,
@@ -338,24 +327,18 @@ func Implementation(h hostio.Host, cfg config.Config, log *runlog.Logger, args A
 		// discards the whole ticket with no commit and strands it In Progress (BEH-543).
 		// Each launch retry re-runs the SAME prompt: a creation-time 125 left no
 		// worktree, so recreating is the correct recovery.
-		run := h.Agent(hostio.AgentRun{
-			Label:       attemptLabel,
-			Model:       cfg.ImplementationModel,
-			Prompt:      attemptPrompt,
-			FindingsDir: findingsDir,
-			Cap:         sessionCap,
-			Retry: hostio.Retry{
-				MaxAttempts: oomMaxAttempts,
-				Backoff:     session.ConstantBackoff(oomRetryBackoff),
-				Suffix:      "launch",
-				Notify: func(launch int, waited time.Duration) {
-					log.Event(fmt.Sprintf(
-						"tdd ↻ transient launch failure — retry %d/%d after %s (BEH-542)",
-						launch-1, oomMaxAttempts-1, waited,
-					))
-				},
+		launch.Retry = hostio.Retry{
+			MaxAttempts: oomMaxAttempts,
+			Backoff:     session.ConstantBackoff(oomRetryBackoff),
+			Suffix:      "launch",
+			Notify: func(launch int, waited time.Duration) {
+				log.Event(fmt.Sprintf(
+					"tdd ↻ transient launch failure — retry %d/%d after %s (BEH-542)",
+					launch-1, oomMaxAttempts-1, waited,
+				))
 			},
-		})
+		}
+		run := h.Agent(launch)
 		outcome = run.Outcome
 		log.Event(fmt.Sprintf(
 			"session exited (code %d) — transcript at logs/%s/%s", outcome.ExitCode, args.Identifier, run.Transcript,
