@@ -46,6 +46,7 @@ func TestPlanIsWhatTheStagesLaunch(t *testing.T) {
 		return session.Outcome{ReviewVerdictEmitted: true}
 	}
 	cfg := stageCfg()
+	cfg.ImplementationModel, cfg.ReviewModel, cfg.RetrospectiveModel = "impl-model", "review-model", "retro-model"
 	log := stageLog(t, "PROJ-1")
 	args := Args{Identifier: "PROJ-1"}
 
@@ -77,8 +78,15 @@ func TestPlanIsWhatTheStagesLaunch(t *testing.T) {
 	if got, want := shellsWithoutRetry(h.Shells), shellsWithoutRetry(shells); !reflect.DeepEqual(got, want) {
 		t.Errorf("shell runs launched != planned\nlaunched: %+v\nplanned:  %+v", got, want)
 	}
-	if len(agents) != 3 || len(shells) != 3 {
-		t.Errorf("plan has %d agent / %d shell runs, want 3 / 3 (impl, review, retro / postcreate, prep, gate)", len(agents), len(shells))
+	if len(agents) != 3 || len(shells) != 3 || len(h.Agents) != 3 {
+		t.Fatalf("plan has %d agent / %d shell runs, want 3 / 3 (impl, review, retro / postcreate, prep, gate)", len(agents), len(shells))
+	}
+	// Plan and launch share one builder, so agreement alone can't catch a builder
+	// that pins the wrong model: each session must carry its own Stage's model.
+	for i, want := range []string{"impl-model", "review-model", "retro-model"} {
+		if got := h.Agents[i].Model; got != want {
+			t.Errorf("session %q launched with model %q, want %q", h.Agents[i].Label, got, want)
+		}
 	}
 }
 
