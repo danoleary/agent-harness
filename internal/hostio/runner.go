@@ -54,7 +54,7 @@ func NewRunner(cfg config.Config, log *runlog.Logger, runID string, verbose bool
 // dry-run has no run yet, and a deterministic plan is both honest about that and
 // trivially testable.
 const (
-	PreviewRunID = "<run-id>"
+	previewRunID = "<run-id>"
 	previewPID   = "<pid>"
 )
 
@@ -62,7 +62,7 @@ const (
 // same Runner naming and argv building, stamped with placeholders instead of a
 // run id and pid. It is a [Planner], not a [Host], so nothing can launch through it.
 func NewPreview(cfg config.Config) Planner {
-	r := NewRunner(cfg, nil, PreviewRunID, false)
+	r := NewRunner(cfg, nil, previewRunID, false)
 	r.pid = previewPID
 	return &Real{Runner: r, cfg: cfg}
 }
