@@ -250,7 +250,7 @@ loop:
   # handoff strips node_modules (BEH-412); pre-install so the session doesn't pay it mid-gate. warn-only.
 
   --- review: /review-worktree (sandbox, 25 min cap) ---
-  run: claude -p "/review-worktree <worktree-path>  <injected ticket context + 'do not touch Linear; commit locally ONLY — do NOT push, do NOT run gh; do NOT emit findings (retrospective owns that)'>"
+  run: claude -p "/review-worktree <worktree-path>  <injected ticket context + 'do not touch the issue tracker; commit locally ONLY — do NOT push, do NOT run gh; do NOT emit findings (retrospective owns that)'>"
   # agent has no GH_TOKEN; it can only commit into the shared local .git
 
   --- review ground truth + push gate (harness, host-side) ---

@@ -154,11 +154,11 @@ func TestCIFixTellsAgentToReRunTheGate(t *testing.T) {
 	}
 }
 
-func TestCIFixSteersOffLinearAndFindings(t *testing.T) {
+func TestCIFixSteersOffTrackerAndFindings(t *testing.T) {
 	p := For(CIFix, Context{Ticket: sample, Slug: "beh-362", BranchPrefix: "feat", WorktreePath: sampleWorktree, CILogs: sampleCILogs, CILogAvailable: true})
 
-	if !regexp.MustCompile(`(?i)(do not|don't).*Linear`).MatchString(p) {
-		t.Error("prompt does not steer off Linear")
+	if !regexp.MustCompile(`(?i)do not touch the issue tracker`).MatchString(p) {
+		t.Error("prompt does not steer off the tracker")
 	}
 	if !regexp.MustCompile(`(?i)(do not|don't|never).{0,30}finding`).MatchString(p) {
 		t.Error("prompt does not steer off emitting findings")
