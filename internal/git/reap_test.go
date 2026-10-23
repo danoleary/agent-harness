@@ -41,6 +41,23 @@ func TestTicketHasRemoteBranchFindsPushedBranch(t *testing.T) {
 	}
 }
 
+// #36: a GitHub ticket's branch carries the slug `gh-30`, never the Key `#30`, so
+// the in-flight scan must match the slug or it silently reaps a live GitHub claim.
+func TestTicketHasRemoteBranchFindsGitHubKeyBranch(t *testing.T) {
+	author, host := newSharedRemote(t)
+
+	runGit(t, author, "checkout", "-q", "-b", "feat/gh-30")
+	commitAndPush(t, author, "wip (#30)")
+	runGit(t, author, "push", "-q", "origin", "feat/gh-30")
+
+	if !Open(host, testPrefix).TicketHasRemoteBranch("#30") {
+		t.Fatalf("#30's branch feat/gh-30 was pushed to origin — should be found")
+	}
+	if Open(host, testPrefix).TicketHasRemoteBranch("#3") {
+		t.Fatalf("#3 has no remote branch — must not match feat/gh-30")
+	}
+}
+
 // A git failure (no origin remote) must fail toward NOT reaping: return true so a
 // flaky ls-remote can never cause a live claim to be released. The safe direction is
 // the opposite of TicketAlreadyOnMain's — here a false negative would reap real work.

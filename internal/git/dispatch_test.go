@@ -63,6 +63,32 @@ func TestMainHistoryReferencesIsCaseInsensitive(t *testing.T) {
 	}
 }
 
+// #36: a GitHub Key starts with `#`, a non-word character, so a `\b` before it
+// never fires on a real reference like "(#30)" or "closes #30". The Key must be
+// matched on "not flanked by a word character" instead, which still keeps a
+// shorter Key from matching a longer one.
+func TestKeyReferencedMatchesGitHubKey(t *testing.T) {
+	cases := []struct {
+		text, key string
+		want      bool
+	}{
+		{"Fix foo (#30)", "#30", true},
+		{"closes #30", "#30", true},
+		{"#30: title", "#30", true},
+		{"fix: thing\n#30 at the start of a line", "#30", true},
+		{"Fix foo (#300)", "#30", false},
+		{"a#30b", "#30", false},
+		{"Fix foo (#30)", "#3", false},
+		{"(BEH-521)", "BEH-52", false},
+		{"(BEH-52)", "BEH-52", true},
+	}
+	for _, c := range cases {
+		if got := keyReferenced(c.text, c.key); got != c.want {
+			t.Errorf("keyReferenced(%q, %q) = %v, want %v", c.text, c.key, got, c.want)
+		}
+	}
+}
+
 // commitAndPush makes a commit with the given subject in dir and pushes main to
 // origin — modelling an author landing a PR on the shared remote.
 func commitAndPush(t *testing.T, dir, subject string) {
