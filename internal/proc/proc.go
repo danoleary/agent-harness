@@ -107,10 +107,29 @@ func wrapStderr(err error, stderr []byte) error {
 	if err == nil || errors.Is(err, ErrTimeout) {
 		return err
 	}
-	if line := lastNonEmptyLine(stderr); line != "" {
-		return fmt.Errorf("%w: %s", err, line)
+	line := lastNonEmptyLine(stderr)
+	if line == "" {
+		return err
 	}
-	return err
+	// A rejected push's last line is the uninformative "failed to push some refs";
+	// the reason (stale info, non-fast-forward, rejected by hook) is on git's
+	// per-ref status line above it, so carry that too (#48).
+	if rejected := pushRejection(stderr); rejected != "" && rejected != line {
+		return fmt.Errorf("%w: %s; %s", err, rejected, line)
+	}
+	return fmt.Errorf("%w: %s", err, line)
+}
+
+// pushRejection returns the first per-ref status line git push printed for a ref
+// it did not update (" ! [rejected] a -> a (stale info)", " ! [remote rejected] …"),
+// trimmed and with its column padding collapsed, or "" when there is none.
+func pushRejection(stderr []byte) string {
+	for _, l := range strings.Split(string(stderr), "\n") {
+		if l = strings.TrimSpace(l); strings.HasPrefix(l, "! [") {
+			return strings.Join(strings.Fields(l), " ")
+		}
+	}
+	return ""
 }
 
 // lastNonEmptyLine returns the final non-blank line of b, trimmed. git's fatal

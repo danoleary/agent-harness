@@ -494,7 +494,7 @@ func ciFixRunner(h hostio.Host, cfg config.Config, log *runlog.Logger, slug stri
 			Label: fmt.Sprintf("cifix-%d", attempt),
 			Model: cfg.ReviewModel,
 			Prompt: prompt.For(prompt.CIFix, prompt.Context{
-				Ticket: t, Slug: slug, BranchPrefix: cfg.BranchPrefix, WorktreePath: h.WorktreePath(slug),
+				Ticket: t, Slug: slug, BranchPrefix: cfg.BranchPrefix, Tracker: cfg.Tracker.Kind, WorktreePath: h.WorktreePath(slug),
 				CILogs: ciLogs, CILogAvailable: logAvailable,
 			}),
 			Cap: cfg.ReviewTimeout,
@@ -541,7 +541,7 @@ func resolvePrePushConflict(
 		Label: "rebasefix",
 		Model: cfg.ReviewModel,
 		Prompt: prompt.For(prompt.RebaseFix, prompt.Context{
-			Ticket: t, Slug: slug, BranchPrefix: cfg.BranchPrefix, WorktreePath: h.WorktreePath(slug),
+			Ticket: t, Slug: slug, BranchPrefix: cfg.BranchPrefix, Tracker: cfg.Tracker.Kind, WorktreePath: h.WorktreePath(slug),
 		}),
 		Cap: cfg.ReviewTimeout,
 	})

@@ -146,7 +146,7 @@ func postCreateRun(cfg config.Config, worktreePath string) hostio.ShellRun {
 // a usage-policy refusal re-enters the worktree the first attempt left, so only
 // that variant is told where it is (BEH-389).
 func implementationRun(cfg config.Config, s Subject, resume prompt.Resume) hostio.AgentRun {
-	pctx := prompt.Context{Ticket: s.Ticket, Slug: s.Slug, BranchPrefix: cfg.BranchPrefix, Body: cfg.Prompts.Implement, Resume: resume}
+	pctx := prompt.Context{Ticket: s.Ticket, Slug: s.Slug, BranchPrefix: cfg.BranchPrefix, Tracker: cfg.Tracker.Kind, Body: cfg.Prompts.Implement, Resume: resume}
 	if resume == prompt.AfterRefusal {
 		pctx.WorktreePath = s.WorktreePath
 	}
@@ -171,7 +171,7 @@ func reviewRun(cfg config.Config, s Subject) hostio.AgentRun {
 		Label: reviewSession,
 		Model: cfg.ReviewModel,
 		Prompt: prompt.For(prompt.Review, prompt.Context{
-			Ticket: s.Ticket, Slug: s.Slug, BranchPrefix: cfg.BranchPrefix, WorktreePath: s.WorktreePath, Body: cfg.Prompts.Review,
+			Ticket: s.Ticket, Slug: s.Slug, BranchPrefix: cfg.BranchPrefix, Tracker: cfg.Tracker.Kind, WorktreePath: s.WorktreePath, Body: cfg.Prompts.Review,
 		}),
 		Cap: cfg.ReviewTimeout,
 	}
@@ -190,7 +190,7 @@ func retrospectiveRun(cfg config.Config, s Subject, filed []prompt.FiledFinding)
 		Label: retrospectiveSession,
 		Model: cfg.RetrospectiveModel,
 		Prompt: prompt.For(prompt.Retrospective, prompt.Context{
-			Ticket: s.Ticket, Slug: s.Slug, BranchPrefix: cfg.BranchPrefix, Body: cfg.Prompts.Retro, Filed: filed,
+			Ticket: s.Ticket, Slug: s.Slug, BranchPrefix: cfg.BranchPrefix, Tracker: cfg.Tracker.Kind, Body: cfg.Prompts.Retro, Filed: filed,
 		}),
 		FindingsDir: runlog.FindingsDir(s.LogDir, retrospectiveSession),
 		Cap:         cfg.RetrospectiveTimeout,

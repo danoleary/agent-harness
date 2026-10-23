@@ -83,18 +83,18 @@ func TestRebaseFixSteersToPreserveBothIntents(t *testing.T) {
 	}
 }
 
-// The harness owns all remote I/O (ADR-0002) + all Linear I/O (ADR-0001): the
-// session commits the resolution locally and stops — no push, no gh, no Linear,
+// The harness owns all remote I/O (ADR-0002) + all tracker I/O (ADR-0010): the
+// session commits the resolution locally and stops — no push, no gh, no tracker,
 // no findings. It must NOT abort the rebase as an escape hatch (that would strand
 // the branch on its stale base — the very thing this session exists to fix).
-func TestRebaseFixForbidsRemoteLinearAndAbortEscape(t *testing.T) {
+func TestRebaseFixForbidsRemoteTrackerAndAbortEscape(t *testing.T) {
 	p := For(RebaseFix, Context{Ticket: sample, Slug: "beh-362", BranchPrefix: "feat", WorktreePath: sampleWorktree})
 
 	if !regexp.MustCompile(`(?i)do not push`).MatchString(p) {
 		t.Error("prompt must forbid pushing (the harness owns remote I/O)")
 	}
-	if !strings.Contains(p, "mcp__linear-server__") {
-		t.Error("prompt must forbid touching Linear")
+	if !regexp.MustCompile(`(?i)do not touch the issue tracker`).MatchString(p) {
+		t.Error("prompt must forbid touching the tracker")
 	}
 	if !regexp.MustCompile(`(?i)findings`).MatchString(p) {
 		t.Error("prompt must forbid emitting findings")

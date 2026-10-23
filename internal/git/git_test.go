@@ -1544,38 +1544,88 @@ func TestPushUsesNoVerifyAndCorrectArgs(t *testing.T) {
 }
 
 // BEH-570: after an auto-rebase rewrites the branch's history, the re-push to an
-// already-pushed branch must force — but safely. --force-with-lease refuses to
-// clobber remote commits the harness hasn't observed, and --no-verify skips the
-// host pre-push hook (same rationale as Push). It is retried like every remote op.
-func TestPushForceWithLeaseUsesLeaseAndNoVerify(t *testing.T) {
+// already-pushed branch must force — but safely. The lease is explicit, against the
+// tip just fetched into the tracking ref (#48), and --no-verify skips the host
+// pre-push hook (same rationale as Push). It is retried like every remote op.
+func TestPushForceWithLeaseFetchesThenLeasesOnTheFetchedTip(t *testing.T) {
 	clock := newFakeClock()
 	run, calls := scriptedRunner(0, nil)
+	output := func(string, ...string) ([]byte, error) { return []byte("abc123\n"), nil }
+	if err := fakeWorktree("beh-570", runners{run: run, output: output, sleep: clock.sleep, now: clock.now}).PushForceWithLease(); err != nil {
+		t.Fatalf("expected success, got %v", err)
+	}
+	wants := [][]string{
+		{"git", "-C", "/herd", "fetch", "-q", "origin", "+refs/heads/feat/beh-570:refs/remotes/origin/feat/beh-570"},
+		{"git", "-C", "/herd", "push", "--no-verify", "--force-with-lease=feat/beh-570:abc123", "origin", "feat/beh-570"},
+	}
+	if len(*calls) != len(wants) {
+		t.Fatalf("expected fetch then push, got %v", *calls)
+	}
+	for i, want := range wants {
+		if got := strings.Join((*calls)[i], " "); got != strings.Join(want, " ") {
+			t.Errorf("call %d = %q, want %q", i, got, strings.Join(want, " "))
+		}
+	}
+}
+
+// A branch that is not on the remote yet leases on "must not exist" rather than
+// failing the fetch: the empty expect is git's spelling of that.
+func TestPushForceWithLeaseExpectsAbsenceWhenTheRemoteHasNoBranch(t *testing.T) {
+	clock := newFakeClock()
+	run, calls := recordingRunner(func(args []string) error {
+		if hasArg(args, "fetch") {
+			return errors.New("exit status 128: fatal: couldn't find remote ref refs/heads/feat/beh-570")
+		}
+		return nil
+	})
 	if err := fakeWorktree("beh-570", runners{run: run, sleep: clock.sleep, now: clock.now}).PushForceWithLease(); err != nil {
 		t.Fatalf("expected success, got %v", err)
 	}
-	if len(*calls) != 1 {
-		t.Fatalf("expected exactly one attempt, got %d", len(*calls))
-	}
-	got := (*calls)[0]
-	want := []string{"git", "-C", "/herd", "push", "--no-verify", "--force-with-lease", "origin", "feat/beh-570"}
-	if len(got) != len(want) {
-		t.Fatalf("argv = %v, want %v", got, want)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("argv[%d] = %q, want %q (full: %v)", i, got[i], want[i], got)
-		}
+	if last := (*calls)[len(*calls)-1]; !hasArg(last, "--force-with-lease=feat/beh-570:") {
+		t.Fatalf("expected an empty-expect lease, got %v", last)
 	}
 }
 
 func TestPushForceWithLeaseRetriesThenSucceeds(t *testing.T) {
 	clock := newFakeClock()
 	run, calls := scriptedRunner(2, errors.New("exit status 128"))
-	if err := fakeWorktree("beh-570", runners{run: run, sleep: clock.sleep, now: clock.now}).PushForceWithLease(); err != nil {
+	output := func(string, ...string) ([]byte, error) { return []byte("abc123\n"), nil }
+	if err := fakeWorktree("beh-570", runners{run: run, output: output, sleep: clock.sleep, now: clock.now}).PushForceWithLease(); err != nil {
 		t.Fatalf("expected eventual success, got %v", err)
 	}
-	if len(*calls) != 3 {
-		t.Fatalf("expected 3 attempts (2 fail + 1 ok), got %d", len(*calls))
+	if len(*calls) != 4 {
+		t.Fatalf("expected 2 failed fetches, then fetch + push, got %d calls", len(*calls))
+	}
+}
+
+// #48, against real git: the remote has the branch at A, the local branch was
+// rebased to B (A is not an ancestor), and the main checkout has NO tracking ref
+// for it. A bare lease refuses this as "stale info" forever; the push must land.
+func TestPushForceWithLeaseLandsARebasedBranchWithNoTrackingRef(t *testing.T) {
+	author, host := newSharedRemote(t)
+	const slug = "beh-949"
+	branch := branchName(slug)
+
+	runGit(t, author, "checkout", "-q", "-b", branch)
+	runGit(t, author, "commit", "-q", "--allow-empty", "-m", "feat: first attempt (BEH-949)")
+	runGit(t, author, "push", "-q", "origin", branch)
+
+	runGit(t, host, "config", "user.email", "test@example.com")
+	runGit(t, host, "config", "user.name", "Test")
+	runGit(t, host, "checkout", "-q", "-b", branch, "origin/main")
+	runGit(t, host, "commit", "-q", "--allow-empty", "-m", "feat: rebased attempt (BEH-949)")
+	if execIn(host, "rev-parse", "--verify", "-q", "refs/remotes/origin/"+branch) == nil {
+		t.Fatal("setup: the host must not have a tracking ref for the branch")
+	}
+
+	if err := realWorktree(host, host, slug).PushForceWithLease(); err != nil {
+		t.Fatalf("the rebased branch must land, got %v", err)
+	}
+	local, _ := exec.Command("git", "-C", host, "rev-parse", branch).Output()
+	origin, _ := exec.Command("git", "-C", author, "remote", "get-url", "origin").Output()
+	remote, _ := exec.Command("git", "-C", strings.TrimSpace(string(origin)), "rev-parse", branch).Output()
+	if strings.TrimSpace(string(remote)) != strings.TrimSpace(string(local)) {
+		t.Fatalf("remote %q should now point at the local tip %q", remote, local)
 	}
 }
 
