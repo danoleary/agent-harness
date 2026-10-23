@@ -79,6 +79,19 @@ func TestRunSurfacesStderrLastLineOnNonZeroExit(t *testing.T) {
 	}
 }
 
+func TestRunSurfacesPushRejectionReasonAboveTheLastLine(t *testing.T) {
+	// A rejected push ends on "failed to push some refs"; the reason is on the
+	// per-ref status line before it, and a retrospective must be able to name it (#48).
+	err := Run(5*time.Second, "sh", "-c", `printf 'To origin\n ! [rejected]        feat/x -> feat/x (stale info)\nerror: failed to push some refs to origin\n' >&2; exit 1`)
+	if err == nil {
+		t.Fatal("expected a non-zero exit error, got nil")
+	}
+	got := err.Error()
+	if !strings.Contains(got, "! [rejected] feat/x -> feat/x (stale info)") || !strings.Contains(got, "failed to push some refs") {
+		t.Fatalf("expected both the rejection reason and git's last line, got %q", got)
+	}
+}
+
 func TestRunKeepsTimeoutIntactDespiteStderr(t *testing.T) {
 	// A command that prints to stderr then hangs is killed at the deadline; the
 	// stderr-surfacing must not clobber the ErrTimeout signal or its message —

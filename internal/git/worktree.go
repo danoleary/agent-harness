@@ -446,10 +446,41 @@ func (w Worktree) Push() error {
 // overwrite remote commits the harness hasn't observed (it never will here — the
 // harness owns the branch — but the lease is the correct, non-destructive force).
 // --no-verify and the transient-retry budget match Push.
+//
+// The lease is explicit, against the tip [Worktree.observeRemoteTip] just fetched
+// (#48). A bare --force-with-lease compares against refs/remotes/origin/<branch>,
+// and when that ref is missing — the main checkout never fetched the branch a prior
+// run pushed — git refuses with "stale info" on every attempt, forever.
 func (w Worktree) PushForceWithLease() error {
 	return w.withRetry(func() error {
-		return w.run("git", "-C", w.repo, "push", "--no-verify", "--force-with-lease", "origin", w.branch)
+		tip, err := w.observeRemoteTip()
+		if err != nil {
+			return err
+		}
+		return w.run("git", "-C", w.repo, "push", "--no-verify", "--force-with-lease="+w.branch+":"+tip, "origin", w.branch)
 	})
+}
+
+// remoteRefMissing is the stderr git prints when a fetched ref is not on the
+// remote, which proc.Run folds into the error as its last line.
+const remoteRefMissing = "couldn't find remote ref"
+
+// observeRemoteTip fetches the branch into its remote-tracking ref and returns the
+// tip it found there, or "" when the branch is not on the remote — the value an
+// explicit lease expects (an empty expect means "must not exist yet").
+func (w Worktree) observeRemoteTip() (string, error) {
+	tracking := "refs/remotes/origin/" + w.branch
+	if err := w.run("git", "-C", w.repo, "fetch", "-q", "origin", "+refs/heads/"+w.branch+":"+tracking); err != nil {
+		if strings.Contains(err.Error(), remoteRefMissing) {
+			return "", nil
+		}
+		return "", err
+	}
+	out, err := w.output("git", "-C", w.repo, "rev-parse", "--verify", tracking)
+	if err != nil {
+		return "", fmt.Errorf("read %s after fetch: %w", tracking, err)
+	}
+	return strings.TrimSpace(string(out)), nil
 }
 
 // CommitsAhead is the number of commits on the feature branch ahead of
