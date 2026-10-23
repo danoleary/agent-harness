@@ -210,7 +210,7 @@ func Implementation(h hostio.Host, cfg config.Config, log *runlog.Logger, args A
 	// have ADDED code rather than deleting any. We don't skip (the branch can hold
 	// incomplete work) — instead we steer the session to verify-and-handoff over
 	// re-implementing by swapping in the ResumedBranch variant.
-	pctx := prompt.Context{Ticket: t, Slug: slug, BranchPrefix: cfg.BranchPrefix, Body: cfg.Prompts.Implement}
+	pctx := prompt.Context{Ticket: t, Slug: slug, BranchPrefix: cfg.BranchPrefix, Tracker: cfg.Tracker.Kind, Body: cfg.Prompts.Implement}
 	if adv := h.ResumedBranchAdvisory(slug, t.Identifier); adv != "" {
 		log.Event(adv)
 		pctx.Resume = prompt.ResumedBranch

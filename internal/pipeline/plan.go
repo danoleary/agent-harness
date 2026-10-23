@@ -16,7 +16,7 @@ import (
 // with their skip/always semantics, each stage's resolved prompt + docker
 // command, and the caveat that review/retro assume impl's worktree + transcripts
 // which don't exist under dry-run. It is pure — it claims nothing, launches
-// nothing, and touches no Linear (the prompts are built from a stub ticket, so
+// nothing, and touches no tracker (the prompts are built from a stub ticket, so
 // the title/description are blank), which is why it lives apart from Run.
 //
 // The container names use literal <run-id>/<pid> placeholders rather than minting
@@ -25,7 +25,7 @@ import (
 func Plan(cfg config.Config, identifier string) string {
 	id := strings.ToUpper(identifier)
 	slug := ticket.Slug(identifier)
-	// Stub ticket: Linear is deliberately not fetched under dry-run, so the prompt
+	// Stub ticket: the tracker is deliberately not fetched under dry-run, so the prompt
 	// bodies show structure with an empty title/description ("best computable").
 	t := ticket.Ticket{Identifier: id}
 	wt := gitpkg.Open(cfg.ProjectPath, cfg.BranchPrefix).Worktree(slug)
@@ -43,7 +43,7 @@ func Plan(cfg config.Config, identifier string) string {
 	}
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "pipeline %s — dry-run plan (nothing launched, no ticket claimed, Linear untouched)\n", id)
+	fmt.Fprintf(&b, "pipeline %s — dry-run plan (nothing launched, no ticket claimed, tracker untouched)\n", id)
 	b.WriteString("\nstages, in order:\n")
 	b.WriteString("  1. implementation  — always runs first\n")
 	b.WriteString("  2. review          — only if implementation succeeded\n")
@@ -51,7 +51,7 @@ func Plan(cfg config.Config, identifier string) string {
 	b.WriteString("exit 0 iff every stage that ran succeeded.\n")
 
 	// --- implementation ---
-	implPrompt := prompt.For(prompt.Implement, prompt.Context{Ticket: t, Slug: slug, BranchPrefix: cfg.BranchPrefix, Body: cfg.Prompts.Implement})
+	implPrompt := prompt.For(prompt.Implement, prompt.Context{Ticket: t, Slug: slug, BranchPrefix: cfg.BranchPrefix, Tracker: cfg.Tracker.Kind, Body: cfg.Prompts.Implement})
 	implDocker := sandbox.BuildDockerRunArgs(sandbox.Config{
 		Image:          cfg.Image,
 		ProjectPath:    cfg.ProjectPath,
@@ -93,7 +93,7 @@ func Plan(cfg config.Config, identifier string) string {
 	}
 
 	// --- review ---
-	reviewPrompt := prompt.For(prompt.Review, prompt.Context{Ticket: t, Slug: slug, BranchPrefix: cfg.BranchPrefix, WorktreePath: worktreePath, Body: cfg.Prompts.Review})
+	reviewPrompt := prompt.For(prompt.Review, prompt.Context{Ticket: t, Slug: slug, BranchPrefix: cfg.BranchPrefix, Tracker: cfg.Tracker.Kind, WorktreePath: worktreePath, Body: cfg.Prompts.Review})
 	reviewDocker := sandbox.BuildDockerRunArgs(sandbox.Config{
 		Image:          cfg.Image,
 		ProjectPath:    cfg.ProjectPath,
@@ -123,8 +123,8 @@ func Plan(cfg config.Config, identifier string) string {
 	)
 
 	// --- retrospective ---
-	// Dry-run never fetches Linear, so there's no already-filed context to inject.
-	retroPrompt := prompt.For(prompt.Retrospective, prompt.Context{Ticket: t, Slug: slug, BranchPrefix: cfg.BranchPrefix, Body: cfg.Prompts.Retro})
+	// Dry-run never fetches the tracker, so there's no already-filed context to inject.
+	retroPrompt := prompt.For(prompt.Retrospective, prompt.Context{Ticket: t, Slug: slug, BranchPrefix: cfg.BranchPrefix, Tracker: cfg.Tracker.Kind, Body: cfg.Prompts.Retro})
 	retroDocker := sandbox.BuildDockerRunArgs(sandbox.Config{
 		Image:          cfg.Image,
 		ProjectPath:    cfg.ProjectPath,
@@ -138,7 +138,7 @@ func Plan(cfg config.Config, identifier string) string {
 	fmt.Fprintf(&b, "\n=== stage 3: retrospective (always) ===\n--- prompt ---\n%s\n\n--- docker command ---\n%s\n", retroPrompt, dockerLine(retroDocker))
 
 	fmt.Fprintf(&b,
-		"\nNote: the review and retrospective commands above assume implementation's worktree (%s) and its transcripts already exist. Under dry-run they do not — implementation never ran — so those commands are the plan, not a runnable state. Prompts show no ticket title/body because Linear is not fetched under dry-run.\n",
+		"\nNote: the review and retrospective commands above assume implementation's worktree (%s) and its transcripts already exist. Under dry-run they do not — implementation never ran — so those commands are the plan, not a runnable state. Prompts show no ticket title/body because the tracker is not fetched under dry-run.\n",
 		worktreePath,
 	)
 

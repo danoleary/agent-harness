@@ -121,7 +121,7 @@ func Review(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Res
 	log.Event(fmt.Sprintf("fetched %s — %s", t.Identifier, t.Title))
 
 	// Review emits no findings (retrospective owns them) → no findings mount.
-	p := prompt.For(prompt.Review, prompt.Context{Ticket: t, Slug: slug, BranchPrefix: cfg.BranchPrefix, WorktreePath: worktreePath, Body: cfg.Prompts.Review})
+	p := prompt.For(prompt.Review, prompt.Context{Ticket: t, Slug: slug, BranchPrefix: cfg.BranchPrefix, Tracker: cfg.Tracker.Kind, WorktreePath: worktreePath, Body: cfg.Prompts.Review})
 	reviewRun := hostio.AgentRun{Label: reviewSession, Model: cfg.ReviewModel, Prompt: p, Cap: cfg.ReviewTimeout}
 	prepRun := hostio.ShellRun{
 		Label: prepStep, Command: cfg.PostCreate, WorktreePath: worktreePath, Cap: cfg.ReviewTimeout,
@@ -515,7 +515,7 @@ func ciFixRunner(h hostio.Host, cfg config.Config, log *runlog.Logger, slug stri
 			Label: fmt.Sprintf("cifix-%d", attempt),
 			Model: cfg.ReviewModel,
 			Prompt: prompt.For(prompt.CIFix, prompt.Context{
-				Ticket: t, Slug: slug, BranchPrefix: cfg.BranchPrefix, WorktreePath: h.WorktreePath(slug),
+				Ticket: t, Slug: slug, BranchPrefix: cfg.BranchPrefix, Tracker: cfg.Tracker.Kind, WorktreePath: h.WorktreePath(slug),
 				CILogs: ciLogs, CILogAvailable: logAvailable,
 			}),
 			Cap: cfg.ReviewTimeout,
@@ -562,7 +562,7 @@ func resolvePrePushConflict(
 		Label: "rebasefix",
 		Model: cfg.ReviewModel,
 		Prompt: prompt.For(prompt.RebaseFix, prompt.Context{
-			Ticket: t, Slug: slug, BranchPrefix: cfg.BranchPrefix, WorktreePath: h.WorktreePath(slug),
+			Ticket: t, Slug: slug, BranchPrefix: cfg.BranchPrefix, Tracker: cfg.Tracker.Kind, WorktreePath: h.WorktreePath(slug),
 		}),
 		Cap: cfg.ReviewTimeout,
 	})

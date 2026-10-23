@@ -149,3 +149,25 @@ func TestPlanReviewPrepSkippedWithNoPostCreate(t *testing.T) {
 		t.Errorf("plan must say the prep container is skipped when no post_create is declared:\n%s", plan)
 	}
 }
+
+// The dry-run plan is how an operator sees the prompts a run would send (#35):
+// a GitHub-tracked project's plan must steer every stage off GitHub Issues and
+// never mention Linear.
+func TestPlanPromptsNameTheConfiguredTracker(t *testing.T) {
+	cfg := planCfg()
+	cfg.Tracker.Kind = "github"
+	plan := Plan(cfg, "#30")
+	if strings.Contains(plan, "Linear") {
+		t.Errorf("github-tracked plan mentions Linear:\n%s", plan)
+	}
+	iReview := strings.Index(plan, "=== stage 2: review")
+	iRetro := strings.Index(plan, "=== stage 3: retrospective")
+	if iReview < 0 || iRetro < 0 {
+		t.Fatalf("plan is missing a stage header:\n%s", plan)
+	}
+	for _, section := range []string{plan[:iReview], plan[iReview:iRetro], plan[iRetro:]} {
+		if !strings.Contains(section, "Do NOT touch the issue tracker (GitHub Issues)") {
+			t.Errorf("stage section lacks the GitHub tracker-off steer:\n%s", section)
+		}
+	}
+}
