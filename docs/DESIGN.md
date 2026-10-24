@@ -1139,6 +1139,7 @@ reader over a structured stream rather than a `--tui` flag on the daemon.
   | `LOOP_MAX_RUNTIME_MS` | `0` (unlimited) | optional ceiling: stop after T wall-clock |
   | `LOOP_DISK_RECLAIM_THRESHOLD_BYTES` | `8589934592` (8 GiB) | soft free-disk floor below which the loop prunes merged worktrees between tickets (ADR-0005); `0` disables reclaim |
   | `LOOP_CLAIM_TTL_MS` | `1800000` (30 min) | grace period after which an In Progress claim with no branch/PR is reaped back to Todo (§Stale-claim reaper) |
+  | `LOOP_KEEP_AWAKE` | `0` (off) | read by `scripts/loop-start.sh`, not the daemon: `1` attaches `caffeinate -is -w <loop pid>` so macOS idle sleep can't freeze a detached loop; released when the loop exits. `-s` needs AC power; a closed lid still sleeps outside clamshell mode; no `caffeinate` → warn and launch anyway |
   | `STOP_FILE` | `.agent-harness/STOP` | sentinel path; cleared at clean startup, `touch` to wind down |
 
   `LOOP_MAX_TICKETS`/`LOOP_MAX_RUNTIME_MS` default to **unlimited** because the loop
@@ -1155,7 +1156,10 @@ reader over a structured stream rather than a `--tui` flag on the daemon.
   `kill` only if needed). No supervisor means no auto-restart — a crash or a breaker
   trip stays down until the operator relaunches, which is the intended behaviour for
   the breaker (a human must look first). launchd/systemd is explicitly **deferred**;
-  if ever added, it must not auto-restart a clean exit.
+  if ever added, it must not auto-restart a clean exit. The one thing the launcher
+  adds besides the pidfile is opt-in: `LOOP_KEEP_AWAKE=1` attaches
+  `caffeinate -is -w <loop pid>`, whose lifetime `-w` ties to the daemon's, so it
+  needs no supervisor and no cleanup (#49).
 - **Exit-code contract (observability, supervisor-agnostic).** `0` = a *deliberate*
   terminal stop — STOP requested, circuit breaker tripped, or an optional
   `LOOP_MAX_*` ceiling reached. Non-zero = an *unexpected* crash (panic, docker

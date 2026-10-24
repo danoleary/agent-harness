@@ -92,6 +92,12 @@ The daemon shape pulls in the apparatus that makes it safe to leave running:
 - No supervisor in v1 means a crash or a breaker trip stays down until the operator
   relaunches — intended for the breaker, acceptable for a crash. launchd/systemd is
   a documented future step, unblocked by the exit-code contract.
+- An unsupervised daemon is also at the mercy of host sleep: macOS idle sleep
+  freezes it mid-run. Rather than a supervisor or `pmset` changes, the launcher
+  takes an opt-in `LOOP_KEEP_AWAKE=1` that attaches `caffeinate -is -w <loop pid>`
+  to the daemon (#49). `-w` makes the assertion share the daemon's lifetime, so
+  every exit path releases it without a cleanup step, and the standalone-process
+  shape stays intact.
 - A "poison" top-of-queue ticket (released to Todo on a no-worktree crash, then
   re-selected) trips the breaker within 3 iterations rather than spinning forever;
   quarantine-and-continue is a deferred follow-up, not built in v1.

@@ -427,5 +427,135 @@ else
     echo -e "${GREEN}PASS${NC}"
 fi
 
+# --- LOOP_KEEP_AWAKE: caffeinate is tied to the daemon's lifetime (#49) -----
+#
+# Idle sleep freezes the daemon mid-run, so an opt-in key makes the launcher hold
+# a `caffeinate -is -w <loop pid>` assertion. A stub caffeinate on PATH (the way
+# LOOP_BIN stubs the daemon) records its argv and, like the real `-w`, lives
+# exactly as long as the pid it waits on.
+CAFF_BIN="$TEST_DIR/caffbin"
+CAFF_RECORD="$TEST_DIR/caffeinate-argv"
+mkdir -p "$CAFF_BIN"
+cat > "$CAFF_BIN/caffeinate" <<EOF
+#!/bin/bash
+echo "\$*" >> "$CAFF_RECORD"
+waited=""
+while [ \$# -gt 0 ]; do
+    if [ "\$1" = "-w" ]; then waited="\$2"; shift; fi
+    shift
+done
+[ -n "\$waited" ] || exit 64
+while kill -0 "\$waited" 2>/dev/null; do sleep 0.1; done
+EOF
+chmod +x "$CAFF_BIN/caffeinate"
+
+# Poll for up to ~2s for a pid to be gone.
+wait_for_exit() {
+    i=0
+    while [ "$i" -lt 20 ]; do
+        kill -0 "$1" 2>/dev/null || return 0
+        sleep 0.1
+        i=$((i + 1))
+    done
+    return 1
+}
+
+echo -n "loop-start.sh starts no caffeinate and prints nothing extra when LOOP_KEEP_AWAKE is unset or 0 ... "
+rm -f "$CAFF_RECORD"
+off_out="$(PATH="$CAFF_BIN:$PATH" env -u LOOP_KEEP_AWAKE LOOP_BIN="$FAKE_BIN" LOOP_PIDFILE="$TEST_DIR/off.pid" LOOP_LOGFILE="$TEST_DIR/off.log" "$SCRIPT_PATH" 2>&1)"
+STARTED_PIDS="$STARTED_PIDS $(cat "$TEST_DIR/off.pid" 2>/dev/null || true)"
+zero_out="$(PATH="$CAFF_BIN:$PATH" LOOP_KEEP_AWAKE=0 LOOP_BIN="$FAKE_BIN" LOOP_PIDFILE="$TEST_DIR/zero.pid" LOOP_LOGFILE="$TEST_DIR/zero.log" "$SCRIPT_PATH" 2>&1)"
+STARTED_PIDS="$STARTED_PIDS $(cat "$TEST_DIR/zero.pid" 2>/dev/null || true)"
+sleep 0.3
+if [ -f "$CAFF_RECORD" ]; then
+    echo -e "${RED}FAIL${NC} - caffeinate was started with the setting off: $(cat "$CAFF_RECORD")"
+    exit 1
+elif [ "$(printf '%s\n' "$off_out" | wc -l | tr -d ' ')" != "3" ] || [ "$(printf '%s\n' "$zero_out" | wc -l | tr -d ' ')" != "3" ]; then
+    echo -e "${RED}FAIL${NC} - launch output changed with the setting off: $off_out / $zero_out"
+    exit 1
+else
+    echo -e "${GREEN}PASS${NC}"
+fi
+
+echo -n "loop-start.sh holds caffeinate -is -w <loop pid> with LOOP_KEEP_AWAKE=1, released when the loop exits ... "
+rm -f "$CAFF_RECORD"
+on_out="$(PATH="$CAFF_BIN:$PATH" LOOP_KEEP_AWAKE=1 LOOP_BIN="$FAKE_BIN" LOOP_PIDFILE="$TEST_DIR/on.pid" LOOP_LOGFILE="$TEST_DIR/on.log" "$SCRIPT_PATH" 2>&1)"
+on_pid="$(cat "$TEST_DIR/on.pid" 2>/dev/null || true)"
+caff_pid="$(printf '%s\n' "$on_out" | sed -n 's/.*keeping system awake while loop runs (caffeinate pid \([0-9]*\)).*/\1/p')"
+STARTED_PIDS="$STARTED_PIDS $on_pid $caff_pid"
+wait_for_log "$CAFF_RECORD" "is" || true
+if [ -z "$caff_pid" ]; then
+    echo -e "${RED}FAIL${NC} - no 'keeping system awake' startup line naming the caffeinate pid: $on_out"
+    exit 1
+elif [ "$(cat "$CAFF_RECORD" 2>/dev/null)" != "-is -w $on_pid" ]; then
+    echo -e "${RED}FAIL${NC} - caffeinate argv was '$(cat "$CAFF_RECORD" 2>/dev/null)', want '-is -w $on_pid'"
+    exit 1
+elif ! kill -0 "$caff_pid" 2>/dev/null; then
+    echo -e "${RED}FAIL${NC} - caffeinate pid $caff_pid is not running after launch"
+    exit 1
+else
+    kill "$on_pid" 2>/dev/null || true
+    if ! wait_for_exit "$caff_pid"; then
+        echo -e "${RED}FAIL${NC} - caffeinate pid $caff_pid outlived the loop it was tied to"
+        exit 1
+    fi
+    echo -e "${GREEN}PASS${NC}"
+fi
+
+echo -n "loop-start.sh reads LOOP_KEEP_AWAKE from the env file, and the environment outranks it ... "
+AWAKE_HARNESS="$TEST_DIR/harness-awake"
+mkdir -p "$AWAKE_HARNESS/scripts" "$AWAKE_HARNESS/bin"
+cp "$SCRIPT_PATH" "$AWAKE_HARNESS/scripts/loop-start.sh"
+cp "$FAKE_BIN" "$AWAKE_HARNESS/bin/loop"
+AWAKE_PROJ="$TEST_DIR/consumer-awake"
+mkdir -p "$AWAKE_PROJ"
+{
+    echo "PROJECT_PATH=\"$AWAKE_PROJ\""
+    echo "LOOP_KEEP_AWAKE=\"1\""
+} > "$AWAKE_HARNESS/.env"
+rm -f "$CAFF_RECORD"
+( cd "$AWAKE_HARNESS" && PATH="$CAFF_BIN:$PATH" env -u PROJECT_PATH -u LOOP_KEEP_AWAKE ./scripts/loop-start.sh > /dev/null 2>&1 )
+STARTED_PIDS="$STARTED_PIDS $(cat "$AWAKE_PROJ/.agent-harness/loop.pid" 2>/dev/null || true)"
+wait_for_log "$CAFF_RECORD" "is" || true
+from_file="$(cat "$CAFF_RECORD" 2>/dev/null || true)"
+kill "$(cat "$AWAKE_PROJ/.agent-harness/loop.pid")" 2>/dev/null || true
+rm -f "$CAFF_RECORD" "$AWAKE_PROJ/.agent-harness/loop.pid"
+( cd "$AWAKE_HARNESS" && PATH="$CAFF_BIN:$PATH" LOOP_KEEP_AWAKE=0 env -u PROJECT_PATH ./scripts/loop-start.sh > /dev/null 2>&1 )
+STARTED_PIDS="$STARTED_PIDS $(cat "$AWAKE_PROJ/.agent-harness/loop.pid" 2>/dev/null || true)"
+sleep 0.3
+if [ -z "$from_file" ]; then
+    echo -e "${RED}FAIL${NC} - LOOP_KEEP_AWAKE=1 in the .env did not start caffeinate"
+    exit 1
+elif [ -f "$CAFF_RECORD" ]; then
+    echo -e "${RED}FAIL${NC} - LOOP_KEEP_AWAKE=0 in the environment did not outrank the .env"
+    exit 1
+else
+    echo -e "${GREEN}PASS${NC}"
+fi
+
+echo -n "loop-start.sh warns and still starts the loop when caffeinate is not on PATH ... "
+# A PATH holding only the tools the launcher and the fake daemon use — so no
+# caffeinate, even on a Mac where /usr/bin has one.
+NOCAFF_BIN="$TEST_DIR/nocaffbin"
+mkdir -p "$NOCAFF_BIN"
+for tool in bash dirname mkdir cat rm grep tail cut sed nohup sleep env; do
+    ln -s "$(command -v "$tool")" "$NOCAFF_BIN/$tool"
+done
+nocaff_err="$(PATH="$NOCAFF_BIN" LOOP_KEEP_AWAKE=1 LOOP_BIN="$FAKE_BIN" LOOP_PIDFILE="$TEST_DIR/nocaff.pid" LOOP_LOGFILE="$TEST_DIR/nocaff.log" "$NOCAFF_BIN/bash" "$SCRIPT_PATH" 2>&1 >/dev/null)" && nocaff_rc=0 || nocaff_rc=$?
+nocaff_pid="$(cat "$TEST_DIR/nocaff.pid" 2>/dev/null || true)"
+STARTED_PIDS="$STARTED_PIDS $nocaff_pid"
+if [ "$nocaff_rc" != "0" ]; then
+    echo -e "${RED}FAIL${NC} - launch failed (exit $nocaff_rc) when caffeinate is missing: $nocaff_err"
+    exit 1
+elif [ -z "$nocaff_pid" ] || ! kill -0 "$nocaff_pid" 2>/dev/null; then
+    echo -e "${RED}FAIL${NC} - the loop did not start when caffeinate is missing"
+    exit 1
+elif ! printf '%s' "$nocaff_err" | grep -q "caffeinate"; then
+    echo -e "${RED}FAIL${NC} - expected a caffeinate warning on stderr, got: '$nocaff_err'"
+    exit 1
+else
+    echo -e "${GREEN}PASS${NC}"
+fi
+
 echo
 echo -e "${GREEN}All tests passed!${NC}"

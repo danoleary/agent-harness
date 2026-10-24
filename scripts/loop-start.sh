@@ -86,18 +86,27 @@ LOOP_BIN="${LOOP_BIN:-$HARNESS_DIR/bin/loop}"
 # If nothing resolves it, fall back to the harness dir so a bare `loop-start.sh`
 # still launches something inspectable rather than failing on an unset variable.
 harness_config_home="${XDG_CONFIG_HOME:-${HOME:-}/.config}"
-for env_candidate in \
-    "${HARNESS_ENV_FILE:-}" \
-    "$HARNESS_DIR/.env" \
-    "$PWD/.agent-harness/.env" \
-    "${harness_config_home}/agent-harness/.env"; do
-    [ -n "${PROJECT_PATH:-}" ] && break
-    [ -n "$env_candidate" ] || continue
-    [ -f "$env_candidate" ] || continue
-    # A single grepped assignment, not `source`: the env file holds live
-    # credentials and must not be evaluated by this shell.
-    PROJECT_PATH="$(grep -E '^PROJECT_PATH=' "$env_candidate" | tail -n 1 | cut -d= -f2- | sed -e 's/^["'"'"']//' -e 's/["'"'"']$//' || true)"
-done
+
+# env_file_value KEY prints KEY's value from the first env file above that assigns
+# it, or nothing. A single grepped assignment, not `source`: the env file holds
+# live credentials and must not be evaluated by this shell.
+env_file_value() {
+    for env_candidate in \
+        "${HARNESS_ENV_FILE:-}" \
+        "$HARNESS_DIR/.env" \
+        "$PWD/.agent-harness/.env" \
+        "${harness_config_home}/agent-harness/.env"; do
+        [ -n "$env_candidate" ] || continue
+        [ -f "$env_candidate" ] || continue
+        env_value="$(grep -E "^$1=" "$env_candidate" | tail -n 1 | cut -d= -f2- | sed -e 's/^["'"'"']//' -e 's/["'"'"']$//' || true)"
+        if [ -n "$env_value" ]; then
+            printf '%s\n' "$env_value"
+            return 0
+        fi
+    done
+}
+
+PROJECT_PATH="${PROJECT_PATH:-$(env_file_value PROJECT_PATH)}"
 
 if [ -n "${PROJECT_PATH:-}" ]; then
     RUNTIME_DIR="$PROJECT_PATH/.agent-harness"
@@ -154,3 +163,26 @@ echo "$loop_pid" > "$LOOP_PIDFILE"
 echo "loop started (pid $loop_pid); logging to $LOOP_LOGFILE"
 echo "  stop gracefully:  touch ${RUNTIME_DIR}/STOP"
 echo "  hard kill:        kill $loop_pid"
+
+# Optional: hold a sleep assertion for as long as the daemon lives (#49). Idle
+# sleep freezes the loop mid-run and a sandbox container can hit its timeouts;
+# locking the screen does not, so nothing else in an unattended run prevents it.
+# Opt-in, resolved like PROJECT_PATH (environment first, then the env file).
+#
+# `-w` ties caffeinate to the daemon's pid, so a STOP, a crash or a breaker trip
+# releases the assertion with no cleanup step here. `-i` blocks idle sleep; `-s`
+# blocks system sleep, but only on AC power. Closing the lid still sleeps the Mac
+# unless it is in clamshell mode. Where caffeinate does not exist (Linux) the
+# launch goes ahead with a warning — keeping awake is a convenience, not a
+# precondition for running.
+LOOP_KEEP_AWAKE="${LOOP_KEEP_AWAKE:-$(env_file_value LOOP_KEEP_AWAKE)}"
+case "$LOOP_KEEP_AWAKE" in
+    1|true|TRUE|True|yes|YES|Yes)
+        if command -v caffeinate >/dev/null 2>&1; then
+            nohup caffeinate -is -w "$loop_pid" >/dev/null 2>&1 &
+            echo "  keeping system awake while loop runs (caffeinate pid $!)"
+        else
+            echo "warning: LOOP_KEEP_AWAKE is set but caffeinate is not on PATH; the system may sleep while the loop runs" >&2
+        fi
+        ;;
+esac
