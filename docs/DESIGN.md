@@ -1106,6 +1106,11 @@ reader over a structured stream rather than a `--tui` flag on the daemon.
   `loop.Clock` and a narrator — four fields where there were 27, and no feature
   switched on by a nil func. `loophost.Real` is the production adapter, so `cmd/loop`
   is a composition root and nothing else.
+- **A loop is a Source and a Pipeline** ([ADR-0019](adr/0019-a-loop-is-a-source-and-a-pipeline.md), proposed). The daemon chores
+  (stop, idle, cap backoff, breaker, disk reclaim) stay shared. Where the work
+  comes from (a tracker queue, or PRs that are conflicting or red) and what runs
+  on each item are pluggable. Consumers will declare loops in `[[loops]]`, using
+  a fixed set of Steps written in Go, each with its own ground-truth check.
 - **ship lands the branch** ([ADR-0017](adr/0017-ship-lands-the-branch.md)). The review stage, the daemon's committed-fix
   recovery and the CI watch's reactive rebase share one `internal/ship` sequence —
   refetch, replay, disjoint guard, conflict hook, collapse check, push
