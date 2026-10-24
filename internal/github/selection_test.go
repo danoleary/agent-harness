@@ -208,7 +208,7 @@ func readyIssue(n, totalBlockedBy int) map[string]any {
 
 // blockedByPath is the dependencies endpoint SelectNextTicket reads for issue n.
 func blockedByPath(n int) string {
-	return fmt.Sprintf("GET /repos/acme/widgets/issues/%d/dependencies/blocked_by", n)
+	return fmt.Sprintf("GET /repos/acme/widgets/issues/%d/dependencies/blocked_by?per_page=100", n)
 }
 
 // TestSelectNextTicketSkipsOpenBlocker pins GitHub's native "blocked by"

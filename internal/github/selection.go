@@ -30,9 +30,9 @@ func (c *Client) selectQuery() string {
 // unassigned, ready-labelled issue that is not Blocked-labelled, not a pull
 // request (the issues API returns PRs too), and not blocked by a still-open issue.
 // A failed blocker read is an error, not an unblocked ticket (fail closed). It is
-// a PURE READ — claim-on-select
-// (ADR-0003) is the caller composing it with MoveToInProgress — so dry-run can
-// resolve a ticket without mutating GitHub. ok=false means the queue is empty.
+// a PURE READ — claim-on-select (ADR-0003) is the caller composing it with
+// MoveToInProgress — so dry-run can resolve a ticket without mutating GitHub.
+// ok=false means the queue is empty.
 func (c *Client) SelectNextTicket() (ticket.Ticket, bool, error) {
 	data, err := c.transport("GET", c.selectQuery(), nil)
 	if err != nil {
@@ -88,9 +88,11 @@ func (c *Client) eligible(iss issue) (bool, error) {
 }
 
 // openBlocker returns the number of the first still-open issue blocking issue n,
-// or 0 when every blocker is closed.
+// or 0 when every blocker is closed. per_page=100 reads every blocker in one page
+// (GitHub caps an issue's blocked-by list below that), so an open blocker past the
+// default page of 30 is never missed.
 func (c *Client) openBlocker(n int) (int, error) {
-	data, err := c.transport("GET", c.issuesPath(strconv.Itoa(n))+"/dependencies/blocked_by", nil)
+	data, err := c.transport("GET", c.issuesPath(strconv.Itoa(n))+"/dependencies/blocked_by?per_page=100", nil)
 	if err != nil {
 		return 0, fmt.Errorf("read blockers of %s: %w", numberToKey(n), err)
 	}

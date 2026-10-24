@@ -7,7 +7,8 @@
 // sandbox boundary.
 //
 // The interface stays LCD: GitHub-unique shapes (task-list vs sub-issues,
-// open/closed vs Linear workflow states, no native priority) are normalised to the port's vocabulary or dropped, never leaked out.
+// open/closed vs Linear workflow states, no native priority) are normalised to
+// the port's vocabulary or dropped, never leaked out.
 package github
 
 import (
