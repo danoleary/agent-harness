@@ -189,7 +189,7 @@ type Host interface {
 
 // Limits are the daemon's operator-facing knobs: the cadences it waits on, the
 // ceilings it winds down at, and the thresholds that switch the two optional
-// between-ticket chores on. They are values, not behaviour — which is the point.
+// between-item chores on. They are values, not behaviour — which is the point.
 // Every "is this feature on?" question the daemon answers is answered here, by a
 // number an operator sets (DESIGN.md §cmd/loop config knobs), never by whether
 // some func happened to be wired at the composition root.
@@ -214,26 +214,26 @@ type Limits struct {
 	// and wake records bookend the wait.
 	CapBackoffHeartbeat time.Duration
 	// ClaimTTL is the grace period past a claim's StartedAt before a no-branch/no-PR
-	// claim is reaped back to Todo. It must comfortably clear the claim→first-push
+	// claim is reaped back to its Source. It must comfortably clear the claim→first-push
 	// window so a healthy mid-work agent is never mistaken for a dead one. A
 	// non-positive value disables reaping — the loop makes no reaper query at all.
 	ClaimTTL time.Duration
 	// DiskReclaimThreshold is the soft free-disk floor (bytes) below which the loop
-	// proactively reclaims host disk between tickets, BEFORE the hard 5 GiB sandbox
+	// proactively reclaims host disk between items, BEFORE the hard 5 GiB sandbox
 	// preflight floor would refuse a launch (ADR-0005). Zero disables reclaim entirely
 	// — the loop then makes no statfs/prune calls at all.
 	DiskReclaimThreshold uint64
 	// MaxConsecutiveFailures is the circuit-breaker threshold: after this many
-	// consecutive tickets fail to reach a pushed PR, the daemon trips and winds down
+	// consecutive items fail to reach a pushed PR, the daemon trips and winds down
 	// (DESIGN.md §Circuit breaker). A non-positive value disables the breaker.
 	MaxConsecutiveFailures int
-	// MaxTickets is the optional ceiling on *attempted* tickets: once this many
-	// tickets have been run, the daemon winds down on the clean stop path (a
+	// MaxTickets is the optional ceiling on *attempted* items (the knob keeps its
+	// ticket-loop name, `max_tickets`): once this many items have been run, the daemon winds down on the clean stop path (a
 	// deliberate stop, not a failure) — the AFK safety valve. Zero or negative means
 	// unlimited (DESIGN.md §cmd/loop config knobs).
 	MaxTickets int
 	// MaxRuntime is the optional wall-clock ceiling: once the daemon has been running
-	// this long, it winds down on the clean stop path at the next between-ticket
+	// this long, it winds down on the clean stop path at the next between-item
 	// checkpoint. Zero or negative means unlimited (DESIGN.md §cmd/loop config knobs).
 	MaxRuntime time.Duration
 }
@@ -257,8 +257,9 @@ type Deps struct {
 }
 
 // Run is the daemon spine. Startup clears the stale STOP sentinel, checks the
-// credentials (exiting 1 if they are rejected) and fetches main; then it loops: stop-check → select → (idle+re-poll if empty | run+fetch
-// if a ticket) — winding down cleanly between tickets on a stop request. It
+// credentials (exiting 1 if they are rejected) and fetches main; then it loops:
+// stop-check → select → (idle+re-poll if empty | run+fetch if an item) — winding
+// down cleanly between items on a stop request. It
 // returns the process exit code: 0 on a deliberate stop or empty-then-stop, the
 // daemon never failing merely because the queue ran dry.
 func Run(d Deps) int {
@@ -281,37 +282,37 @@ func Run(d Deps) int {
 	b := newBreaker(d.Limits.MaxConsecutiveFailures)
 	attempted := 0
 	for {
-		// Stop only ever lands BETWEEN tickets — a graceful, per-ticket checkpoint
-		// (DESIGN.md "Stop control"): stopping mid-ticket would strand a worktree.
+		// Stop only ever lands BETWEEN items — a graceful, per-item checkpoint
+		// (DESIGN.md "Stop control"): stopping mid-item would strand a worktree.
 		if d.Host.StopRequested() {
 			return d.stopped("stop requested")
 		}
 
 		// Optional AFK wall-clock ceiling: once the daemon has run for MaxRuntime, wind
-		// down on the same clean stop path between tickets — a deliberate stop, not a
+		// down on the same clean stop path between items — a deliberate stop, not a
 		// failure (DESIGN.md §cmd/loop config knobs). Zero/negative = unlimited.
 		if d.Limits.MaxRuntime > 0 && clock.Now().Sub(start) >= d.Limits.MaxRuntime {
 			return d.stopped("max runtime reached")
 		}
 
-		// Optional AFK ceiling: once MaxTickets tickets have been attempted, wind down
+		// Optional AFK ceiling: once MaxTickets items have been attempted, wind down
 		// on the same clean stop path as STOP — a deliberate stop, not a failure
-		// (DESIGN.md §cmd/loop config knobs). Checked here, between tickets, so the
-		// (N+1)th ticket is never even selected. Zero/negative = unlimited.
+		// (DESIGN.md §cmd/loop config knobs). Checked here, between items, so the
+		// (N+1)th item is never even selected. Zero/negative = unlimited.
 		if d.Limits.MaxTickets > 0 && attempted >= d.Limits.MaxTickets {
 			return d.stopped("max tickets reached")
 		}
 
-		// Reclaim disk between tickets, before selecting the next one, when no sandbox
+		// Reclaim disk between items, before selecting the next one, when no sandbox
 		// is active (ADR-0005). Gated on a cheap statfs so a healthy disk costs nothing;
-		// a failed prune is narrated and swallowed — reclaim is never a ticket outcome
+		// a failed prune is narrated and swallowed — reclaim is never an item outcome
 		// and never touches the breaker.
 		d.reclaimDisk()
 
-		// Reap claims stranded In Progress by a dead agent (no branch/PR past the TTL),
-		// returning them to Todo BEFORE selecting — so a reaped ticket is selectable on
-		// this very pass rather than occupying the lane forever (BEH-677). Best-effort:
-		// a failed list/release is narrated and swallowed, never a ticket outcome.
+		// Reap claims stranded by a dead agent (no branch/PR past the TTL), returning
+		// them to the Source BEFORE selecting — so a reaped item is selectable on this
+		// very pass rather than occupying the lane forever (BEH-677). Best-effort: a
+		// failed list/release is narrated and swallowed, never an item outcome.
 		d.reapStaleClaims()
 
 		item, claim, ok, err := d.Source.Next()
@@ -319,7 +320,7 @@ func Run(d Deps) int {
 			// Say plainly that this is not an empty queue — the two used to log the
 			// same idle line, so a dead token idled for minutes looking healthy. The
 			// error rides on the structured record so `watch` shows it too. Then idle
-			// and re-poll anyway: a tracker hiccup at 3am must not end the run.
+			// and re-poll anyway: a Source hiccup at 3am must not end the run.
 			d.Log.Structured(loopstream.Record{Kind: loopstream.KindIdle, Message: fmt.Sprintf("loop — could not read the ticket queue (not an empty queue): %v; re-polling in %s", err, d.Limits.PollInterval)})
 			d.idleWait()
 			continue
@@ -334,7 +335,7 @@ func Run(d Deps) int {
 			d.idleWait()
 			continue
 		}
-		// Run the full pipeline over the claimed ticket. Count it as attempted before
+		// Run the Pipeline over the claimed item. Count it as attempted before
 		// any outcome branching — a cap-aborted run was still an attempt, so it counts
 		// toward the MaxTickets ceiling like any other.
 		key := item.Key
@@ -453,16 +454,16 @@ func Run(d Deps) int {
 			d.comment(key, "Autonomous run finished with no PR for this ticket — released back to Todo so a later run can re-grab it. Repeated occurrences here mean the ticket keeps failing to ship; see the run logs for the cause.")
 		}
 
-		// Fold the ticket into the breaker. The success signal is "did it reach a
-		// pushed PR?" — not the pipeline exit code — so a hard-but-shipped ticket
-		// (retrospective failed, CI red after budget) resets the counter, while a
-		// ticket that never produced a PR increments it (DESIGN.md §Circuit breaker).
+		// Fold the item into the breaker. The success signal is "did it reach a
+		// pushed PR?" — not the pipeline exit code — so a hard-but-shipped item
+		// (retrospective failed, CI red after budget) resets the counter, while an
+		// item that never produced a PR increments it (DESIGN.md §Circuit breaker).
 		b.record(key, outcome)
 		if b.tripped() {
 			// Trip on the SAME graceful wind-down path as a STOP (exit, not pause): it
-			// forces a human to investigate before more tickets are consumed, since 3
+			// forces a human to investigate before more items are consumed, since 3
 			// identical failures are almost always environmental (expired auth, broken
-			// base build) that would sink the next ticket too.
+			// base build) that would sink the next item too.
 			d.Log.Structured(loopstream.Record{Kind: loopstream.KindBreakerTrip, Ticket: key, Message: "loop ✗ " + b.report() + " — winding down; fix the environment and relaunch"})
 			return d.stopped("circuit breaker tripped")
 		}
@@ -502,7 +503,7 @@ func (d Deps) close(claim *lease.Lease) bool {
 	return true
 }
 
-// reclaimDisk proactively frees host disk between tickets when free space has
+// reclaimDisk proactively frees host disk between items when free space has
 // fallen below the soft DiskReclaimThreshold, BEFORE the hard MinFreeDiskBytes
 // sandbox floor would refuse a launch (ADR-0005). The named goal is dead worktrees,
 // so the squash-merge-aware worktree prune runs first; if free space is still below
@@ -512,9 +513,9 @@ func (d Deps) close(claim *lease.Lease) bool {
 // Three invariants, all from ADR-0005:
 //   - Gated on a cheap statfs: a healthy disk (or a zero threshold, or an
 //     unreadable statfs) makes no prune / gh / shell calls at all.
-//   - Never a ticket outcome: a failed statfs/prune is narrated and swallowed; the
+//   - Never an item outcome: a failed statfs/prune is narrated and swallowed; the
 //     loop continues and the circuit breaker is never touched (the breaker keys only
-//     on "did the ticket reach a pushed PR?", ADR-0004).
+//     on "did the item reach a pushed PR?", ADR-0004).
 //   - Narrate only when it acts: a reclaim line is emitted only when a prune actually
 //     removed a worktree or moved free disk up; a healthy or no-op iteration is silent.
 //
@@ -584,11 +585,11 @@ func (d Deps) reclaimDisk() {
 	}
 }
 
-// reapStaleClaims releases In Progress claims stranded by a dead agent back to Todo
-// (BEH-677). The harness moves a ticket to In Progress on claim, but an agent that
-// dies (sandbox OOM/timeout/crash) before pushing leaves the ticket occupying the
-// lane forever, never re-grabbed. Each pass lists the agent-claimed In Progress set
-// and releases a claim when ALL hold: it is older than ClaimTTL, has no linked PR,
+// reapStaleClaims releases claims stranded by a dead agent back to their Source
+// (BEH-677). The harness claims an item on selection (for a ticket, by moving it to
+// In Progress), but an agent that dies (sandbox OOM/timeout/crash) before pushing
+// leaves the item occupying the lane forever, never re-grabbed. Each pass lists the
+// Source's claims and releases a claim when ALL hold: it is older than ClaimTTL, has no linked PR,
 // and has no remote branch.
 //
 // The grace TTL is load-bearing: a healthy agent between claim and first push looks
@@ -596,9 +597,9 @@ func (d Deps) reclaimDisk() {
 // alone would kill live work (the BEH-447 race). The TTL is the only thing that tells
 // them apart, so it is never skipped.
 //
-// Best-effort, never a ticket outcome (like reclaimDisk): a non-positive TTL
+// Best-effort, never an item outcome (like reclaimDisk): a non-positive TTL
 // disables it silently; a list/release failure is narrated and swallowed so a
-// Linear hiccup can never crash the daemon.
+// Source hiccup can never crash the daemon.
 func (d Deps) reapStaleClaims() {
 	if d.Limits.ClaimTTL <= 0 {
 		return // reaping disabled
