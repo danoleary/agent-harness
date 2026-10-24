@@ -1,6 +1,7 @@
 # ADR-0014: The daemon takes a Host, Limits and a Clock
 
-- Status: Accepted; `internal/ship` extended by ADR-0017
+- Status: Accepted; `internal/ship` extended by ADR-0017; `loop.Host` split into
+  Host, Source and Pipeline by ADR-0019 (#73)
 - Date: 2026-09-20
 
 ## Context

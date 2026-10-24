@@ -1,15 +1,16 @@
-// Package loop is the autonomous daemon spine: it drives the single-ticket
-// pipeline (internal/pipeline) over the ready-for-agent queue in a long-running
-// for{}, with graceful between-ticket stop control (DESIGN.md "The loop" +
-// "Stop control") and a circuit breaker that winds the daemon down when it is
-// repeatedly failing to ship. Everything that leaves the process is injected as
-// one [Host] (with the operator knobs beside it in [Limits] and the time seam in
+// Package loop is the autonomous daemon spine: it drives a [Pipeline] over the
+// items a [Source] yields — today the ticket Stages over the tracker's
+// ready-for-agent queue — in a long-running for{}, with graceful between-item stop
+// control (DESIGN.md "The loop" + "Stop control") and a circuit breaker that winds
+// the daemon down when it is repeatedly failing to ship. A loop is a Source plus a
+// Pipeline (ADR-0019); the daemon's own chores that leave the process are injected
+// as one [Host] (with the operator knobs beside it in [Limits] and the time seam in
 // [Clock]), so the sequencing — startup, select→run→repeat, idle-and-re-poll on an
-// empty queue, stop between tickets, trip-and-exit at the breaker threshold — is
+// empty queue, stop between items, trip-and-exit at the breaker threshold — is
 // unit-testable without Docker, a tracker, or real signals.
 //
-// A spending-cap abort is handled as a control-flow signal, not a ticket verdict:
-// the run's ticket is released back to Todo and the daemon enters a long
+// A spending-cap abort is handled as a control-flow signal, not an item verdict:
+// the run's item is released back to its Source and the daemon enters a long
 // interruptible backoff before re-polling (auto-resuming once the cap window
 // resets) — see Run. The breaker is deliberately blind to a cap abort (it is a
 // retry-after-reset control signal, not a ship failure) — see breaker.go.
@@ -24,14 +25,15 @@ import (
 	"github.com/danoleary/agent-harness/internal/stages"
 )
 
-// StaleClaim is one agent-claimed In Progress ticket the between-ticket reaper
-// evaluates (BEH-677): when it was claimed (StartedAt) and whether a PR is linked.
-// A claim older than ClaimTTL with no linked PR and no remote branch was abandoned
-// by a dead agent (sandbox OOM/timeout/crash before pushing) and is released back to
-// Todo so it stops occupying the In Progress lane. The grace TTL is what keeps a
-// healthy agent mid-work (which looks identical — no branch/PR yet) from being reaped.
+// StaleClaim is one agent-held claim on a [Source] item that the between-item
+// reaper evaluates (BEH-677): when it was claimed (StartedAt) and whether a PR is
+// linked. A claim older than ClaimTTL with no linked PR and no remote branch was
+// abandoned by a dead agent (sandbox OOM/timeout/crash before pushing) and is
+// released back to its Source so it stops occupying the lane. The grace TTL is what
+// keeps a healthy agent mid-work (which looks identical — no branch/PR yet) from
+// being reaped.
 type StaleClaim struct {
-	Identifier  string
+	Key         string
 	StartedAt   time.Time
 	HasLinkedPR bool
 }
@@ -61,11 +63,80 @@ type SystemClock struct{}
 func (SystemClock) Now() time.Time        { return time.Now() }
 func (SystemClock) Sleep(d time.Duration) { time.Sleep(d) }
 
-// Host is everything the daemon does that leaves the process: the stop-signal
-// filesystem, the tracker queue, one ticket's pipeline run, and the host disk it
-// reclaims between tickets. It is the loop's half of the port ADR-0013 drew for
-// the Stages — same shape, wider lifetime: a Stage's host is bound to one run of
-// one ticket, the daemon's outlives every ticket it works.
+// WorkItem is one unit of work a [Source] hands the daemon: a tracker ticket
+// today, an open PR tomorrow (ADR-0019). The daemon reads only Key — to narrate,
+// comment and count the item in the breaker — and passes the whole item through to
+// the [Pipeline], so what a Source means by an item stays the Source's business.
+type WorkItem struct {
+	// Key names the item: the tracker Key for a ticket. It is what the lease is on,
+	// what the breaker reports, and what every narration and breadcrumb names.
+	Key string
+	// Branch is the branch the Pipeline will push for the item: for a ticket, the
+	// slugged feature branch `<branch_prefix>/<slug>` the Stages create.
+	Branch string
+}
+
+// Source is where the daemon's work comes from and where its claims are kept: the
+// queue it polls, the claims the reaper sweeps, and the breadcrumbs it leaves on an
+// item it gives back (ADR-0019). The ticket Source is the tracker's ready queue
+// (loophost.TicketSource); the daemon never learns which tracker, or that it is a
+// tracker at all.
+type Source interface {
+	// Next selects and claims the next eligible item, returning it with the run's
+	// held lease on it and ok=false when there is nothing to do. The loop settles
+	// the run through that lease — release, close, or keep — so an item a Pipeline
+	// already released is never released twice (#25). A non-nil err means the
+	// source could not be read or the claim failed: NOT an empty queue, and
+	// narrated as such, though the daemon still idles and re-polls.
+	Next() (item WorkItem, claim *lease.Lease, ok bool, err error)
+	// Claims returns the items this source holds claimed that the reaper evaluates
+	// each pass (BEH-677). A list error is warned and swallowed (best-effort, never
+	// fatal): the reaper is host-side cleanup, never an item's outcome. Reaping is
+	// switched off by a non-positive [Limits.ClaimTTL], not by the absence of an
+	// implementation.
+	Claims() ([]StaleClaim, error)
+	// HasRemoteBranch reports whether a branch was pushed for the item — the second
+	// "has work in flight" signal (alongside StaleClaim.HasLinkedPR) that spares a
+	// claim from reaping. It must fail SAFE toward true (don't reap on a flaky read).
+	HasRemoteBranch(key string) bool
+	// Release gives a stale claim back for the reaper (BEH-677): an item some
+	// earlier, dead run claimed, which this daemon holds no lease on. A release
+	// failure is narrated, not fatal.
+	Release(key string) error
+	// Comment posts a breadcrumb on an item the run gave back, noting the run died
+	// and why (BEH-590), so an item that keeps failing is visible where its owner
+	// looks rather than silently bouncing. Best-effort: a post failure is tolerated
+	// (the release is what matters; the comment is the breadcrumb).
+	Comment(key, body string) error
+}
+
+// Pipeline is what happens to one [WorkItem]: for a ticket, the
+// implementation→review→retrospective Stages (loophost.TicketPipeline). The loop
+// branches only on the Disposition it returns (ADR-0019).
+type Pipeline interface {
+	// Run works one claimed item and returns the run's folded Result — the loop
+	// branches on its Disposition (did it ship? was it aborted?), never on an
+	// opaque exit code.
+	Run(item WorkItem, claim *lease.Lease) stages.Result
+	// Recover attempts to FINISH a no-PR run whose fix was already committed on its
+	// branch but never pushed/PR'd — the recovered-checkpoint / verify-only state
+	// where the review stage left a gate-green, clean commit yet never reached a PR
+	// (BEH-713, the BEH-649 infinite Todo↔In-Progress bounce). It returns the
+	// completion outcome (a Shipped Disposition is the success signal) and
+	// attempted=true ONLY when there was such a committed-but-no-PR state to finish;
+	// attempted=false means there is nothing to recover (a genuine OOM/crash/empty-
+	// diff no-PR run), so the loop falls through to the normal release. Host-side
+	// (push + open PR), never the loop reimplementing the review machinery; a
+	// completion failure just falls through to the release, so a flaky push can't
+	// strand the item claimed.
+	Recover(item WorkItem) (outcome stages.Result, attempted bool)
+}
+
+// Host is the daemon's own chores, the ones no [Source] or [Pipeline] owns: the
+// stop-signal filesystem, the startup credential check, keeping main fresh, and the
+// host disk it reclaims between items. It is the loop's half of the port ADR-0013
+// drew for the Stages — same shape, wider lifetime: a Stage's host is bound to one
+// run of one ticket, the daemon's outlives every item it works.
 //
 // It is one interface rather than a field per operation because a field per
 // operation is a seam per operation, each with one real adapter — and because a
@@ -76,63 +147,19 @@ type Host interface {
 	// ClearStopFile removes any stale STOP sentinel left by a prior run, so a
 	// leftover file can't make a fresh daemon stop before doing any work.
 	ClearStopFile() error
-	// CheckAccess proves, once at startup, that the daemon's credentials work: the
-	// tracker answers a read, and GitHub accepts GH_TOKEN. A failure is fatal —
-	// the operator is at the terminal when the daemon starts, which is the cheapest
+	// CheckAccess proves, once at startup, that the daemon's credentials work: its
+	// Source answers a read, and GitHub accepts GH_TOKEN. A failure is fatal — the
+	// operator is at the terminal when the daemon starts, which is the cheapest
 	// moment to learn a token is dead; discovered later it reads as an idle queue.
 	CheckAccess() error
 	// StopRequested folds the two stop signals — the SIGINT flag and the
 	// .agent-harness/STOP sentinel — into one predicate, checked at every
-	// between-ticket checkpoint and between idle ticks (DESIGN.md "Two signals,
+	// between-item checkpoint and between idle ticks (DESIGN.md "Two signals,
 	// one check").
 	StopRequested() bool
 	// FetchMain fast-forwards the primary checkout's origin/main, at startup and
-	// after every ticket ("pull main after every session").
+	// after every item ("pull main after every session").
 	FetchMain() error
-
-	// ResolveNext selects and claims the top-of-queue eligible ticket, returning
-	// the run's held lease on it and ok=false when the queue is empty. The loop
-	// settles the run through that lease — release to Todo, close, or keep — so a
-	// ticket a stage already released is never released twice (#25). A non-nil err
-	// means the queue could not be read or the claim failed: NOT an empty queue,
-	// and narrated as such, though the daemon still idles and re-polls.
-	ResolveNext() (claim *lease.Lease, ok bool, err error)
-	// ReleaseTicket returns a stale claim to Todo for the reaper (BEH-677): a ticket
-	// some earlier, dead run claimed, which this daemon holds no lease on. A release
-	// failure is narrated, not fatal.
-	ReleaseTicket(identifier string) error
-	// CommentTicket posts a breadcrumb on the released ticket noting the run died and
-	// why (BEH-590), so a repeatedly-failing ticket is visible on the board rather
-	// than silently bouncing Todo↔In Progress. Best-effort: a post failure is
-	// tolerated (the release is what matters; the comment is the breadcrumb).
-	CommentTicket(identifier, body string) error
-	// ListInProgressClaims returns the agent-claimed In Progress tickets the reaper
-	// evaluates each pass (BEH-677). A list error is warned and swallowed
-	// (best-effort, never fatal): the reaper is host-side cleanup, never a ticket
-	// outcome. Reaping is switched off by a non-positive [Limits.ClaimTTL], not by
-	// the absence of an implementation.
-	ListInProgressClaims() ([]StaleClaim, error)
-	// TicketHasRemoteBranch reports whether a branch was pushed for the ticket — the
-	// second "has work in flight" signal (alongside StaleClaim.HasLinkedPR) that spares
-	// a claim from reaping. It must fail SAFE toward true (don't reap on a flaky read).
-	TicketHasRemoteBranch(identifier string) bool
-
-	// RunPipeline runs the full implementation→review→retrospective pipeline over
-	// one ticket and returns the run's folded Result — the loop branches on its
-	// Disposition (did it ship? was it aborted?), never on the opaque exit code.
-	RunPipeline(claim *lease.Lease) stages.Result
-	// RecoverCommittedFix attempts to FINISH a no-PR run whose fix was already
-	// committed on its branch but never pushed/PR'd — the recovered-checkpoint /
-	// verify-only state where the review stage left a gate-green, clean commit yet
-	// never reached a PR (BEH-713, the BEH-649 infinite Todo↔In-Progress bounce). It
-	// returns the completion outcome (a Shipped Disposition is the success signal) and
-	// attempted=true ONLY when there was such a committed-but-no-PR state to finish;
-	// attempted=false means there is nothing to recover (a genuine OOM/crash/empty-diff
-	// no-PR run), so the loop falls through to the normal release. Host-side (push +
-	// open PR), never the loop reimplementing the review machinery; a completion
-	// failure just falls through to the release, so a flaky push can't strand the
-	// ticket In Progress.
-	RecoverCommittedFix(identifier string) (outcome stages.Result, attempted bool)
 
 	// FreeDisk reports the bytes available on the worktrees volume via a cheap statfs;
 	// it gates the reclaim step so a healthy disk triggers no shell-out / gh calls. A
@@ -211,11 +238,15 @@ type Limits struct {
 	MaxRuntime time.Duration
 }
 
-// Deps are the loop's injectable dependencies: the host it acts through, the
-// knobs it acts by, the clock it waits on, and the sink it narrates to
-// (ADR-0014).
+// Deps are the loop's injectable dependencies: the work it draws from and what it
+// does with each item (ADR-0019), the host its own chores act through, the knobs
+// it acts by, the clock it waits on, and the sink it narrates to (ADR-0014).
 type Deps struct {
-	// Host is every operation that leaves the process.
+	// Source is where the work comes from and where its claims are kept.
+	Source Source
+	// Pipeline is what happens to one item.
+	Pipeline Pipeline
+	// Host is every daemon chore that leaves the process.
 	Host Host
 	// Limits are the cadences, ceilings and thresholds.
 	Limits Limits
@@ -283,7 +314,7 @@ func Run(d Deps) int {
 		// a failed list/release is narrated and swallowed, never a ticket outcome.
 		d.reapStaleClaims()
 
-		claim, ok, err := d.Host.ResolveNext()
+		item, claim, ok, err := d.Source.Next()
 		if err != nil {
 			// Say plainly that this is not an empty queue — the two used to log the
 			// same idle line, so a dead token idled for minutes looking healthy. The
@@ -306,8 +337,8 @@ func Run(d Deps) int {
 		// Run the full pipeline over the claimed ticket. Count it as attempted before
 		// any outcome branching — a cap-aborted run was still an attempt, so it counts
 		// toward the MaxTickets ceiling like any other.
-		identifier := claim.Key()
-		outcome := d.Host.RunPipeline(claim)
+		key := item.Key
+		outcome := d.Pipeline.Run(item, claim)
 		attempted++
 
 		// A spending-cap abort is a control-flow signal, NOT a ticket verdict
@@ -319,12 +350,12 @@ func Run(d Deps) int {
 		// the cap window resets. A shipped PR wins, and the pipeline's fold already
 		// settled that: a CapAborted run is one where nothing shipped.
 		if outcome.Disposition == stages.CapAborted {
-			d.Log.Structured(loopstream.Record{Kind: loopstream.KindCapAbort, Ticket: identifier, Message: "loop — spending-cap abort on " + identifier + "; releasing to Todo"})
+			d.Log.Structured(loopstream.Record{Kind: loopstream.KindCapAbort, Ticket: key, Message: "loop — spending-cap abort on " + key + "; releasing to Todo"})
 			if err := claim.Release(); err != nil {
-				d.Log.Event("loop … warning: could not release " + identifier + " to Todo after cap abort: " + err.Error())
+				d.Log.Event("loop … warning: could not release " + key + " to Todo after cap abort: " + err.Error())
 			}
-			d.comment(identifier, "Autonomous run aborted by the Anthropic spending cap before it could ship — released back to Todo. The daemon backs off and auto-resumes once the cap window resets, so this should retry on its own.")
-			d.capBackoffWait(identifier, outcome.CapResetAt)
+			d.comment(key, "Autonomous run aborted by the Anthropic spending cap before it could ship — released back to Todo. The daemon backs off and auto-resumes once the cap window resets, so this should retry on its own.")
+			d.capBackoffWait(key, outcome.CapResetAt)
 			continue
 		}
 
@@ -339,7 +370,7 @@ func Run(d Deps) int {
 		// — the pattern that was stopping the daemon and forcing a manual relaunch. Like
 		// a cap abort, the disposition already settles that nothing shipped.
 		if outcome.Disposition == stages.PreflightAborted {
-			d.Log.Structured(loopstream.Record{Kind: loopstream.KindTicketReleased, Ticket: identifier, Message: "loop — Docker preflight abort on " + identifier + " (environmental: full disk / daemon down); reclaiming disk and backing off before re-poll — breaker-neutral"})
+			d.Log.Structured(loopstream.Record{Kind: loopstream.KindTicketReleased, Ticket: key, Message: "loop — Docker preflight abort on " + key + " (environmental: full disk / daemon down); reclaiming disk and backing off before re-poll — breaker-neutral"})
 			d.reclaimDisk()
 			d.interruptibleSleep(d.Limits.PollInterval)
 			continue
@@ -364,16 +395,16 @@ func Run(d Deps) int {
 		// A completion that still can't reach a PR, or nothing to recover, falls through to
 		// the normal release below.
 		if outcome.Disposition == stages.NoPR {
-			if completed, attempted := d.Host.RecoverCommittedFix(identifier); attempted {
+			if completed, attempted := d.Pipeline.Recover(item); attempted {
 				if completed.Disposition == stages.Shipped {
 					d.Log.Structured(loopstream.Record{
 						Kind:    loopstream.KindPROpened,
-						Ticket:  identifier,
-						Message: "loop — " + identifier + " had a committed, gate-green fix that was never pushed; completed it (pushed + opened PR) instead of releasing (BEH-713)",
+						Ticket:  key,
+						Message: "loop — " + key + " had a committed, gate-green fix that was never pushed; completed it (pushed + opened PR) instead of releasing (BEH-713)",
 					})
 					outcome.Disposition = stages.Shipped
 				} else {
-					d.Log.Event("loop … " + identifier + " committed-fix recovery did not reach a PR; falling through to the no-PR release")
+					d.Log.Event("loop … " + key + " committed-fix recovery did not reach a PR; falling through to the no-PR release")
 				}
 			}
 		}
@@ -392,18 +423,18 @@ func Run(d Deps) int {
 		// falls through to the normal after-ticket fold below.
 		switch outcome.Disposition {
 		case stages.RecommendClose:
-			closed := d.closeTicket(claim)
-			msg := "loop — " + identifier + " makes no net change against main; closing it as a duplicate/superseded (BEH-682)"
+			closed := d.close(claim)
+			msg := "loop — " + key + " makes no net change against main; closing it as a duplicate/superseded (BEH-682)"
 			// The breadcrumb must reflect what actually happened: only claim the ticket was
 			// moved to Canceled when the close succeeded, else a Linear/tracker hiccup would
 			// post "closed" on a ticket still In Progress and suppress the human safety valve.
 			note := "This ticket is a duplicate/superseded, so the run closed it (moved it to Canceled) rather than shipping an empty-commit change; reopen it if that was wrong."
 			if !closed {
-				msg = "loop — " + identifier + " makes no net change against main; could not auto-close — left In Progress for a human to close as a duplicate/superseded (BEH-603)"
+				msg = "loop — " + key + " makes no net change against main; could not auto-close — left In Progress for a human to close as a duplicate/superseded (BEH-603)"
 				note = "This ticket is a duplicate/superseded and should be closed, but the run could not auto-close it — please close it manually as a duplicate/superseded. It was left In Progress."
 			}
-			d.Log.Structured(loopstream.Record{Kind: loopstream.KindRecommendClose, Ticket: identifier, Message: msg})
-			d.comment(identifier, "Autonomous run found this branch makes zero net change against `main` (an empty diff) — there is nothing to ship. "+note+" If a PR was already opened (the branch only became a no-op after the pre-push rebase) it is a no-op and should be closed too. It was deliberately NOT released to Todo so it won't be re-picked and re-run to the same conclusion. See the run logs for the cause.")
+			d.Log.Structured(loopstream.Record{Kind: loopstream.KindRecommendClose, Ticket: key, Message: msg})
+			d.comment(key, "Autonomous run found this branch makes zero net change against `main` (an empty diff) — there is nothing to ship. "+note+" If a PR was already opened (the branch only became a no-op after the pre-push rebase) it is a no-op and should be closed too. It was deliberately NOT released to Todo so it won't be re-picked and re-run to the same conclusion. See the run logs for the cause.")
 		case stages.NoPR:
 			// Release-on-no-PR (BEH-590): a run that finished WITHOUT opening a pushed PR —
 			// any non-cap failure mode: OOM, sandbox crash, a review stage that died before
@@ -415,24 +446,24 @@ func Run(d Deps) int {
 			// (a Shipped disposition) is the success signal — never released, even on a non-zero
 			// exit (CI red after the auto-fix budget). Best-effort: a Linear hiccup here is
 			// warned, never fatal — the daemon must keep running.
-			d.Log.Structured(loopstream.Record{Kind: loopstream.KindTicketReleased, Ticket: identifier, Message: "loop — " + identifier + " produced no PR; releasing back to Todo so it isn't stranded In Progress (BEH-590)"})
+			d.Log.Structured(loopstream.Record{Kind: loopstream.KindTicketReleased, Ticket: key, Message: "loop — " + key + " produced no PR; releasing back to Todo so it isn't stranded In Progress (BEH-590)"})
 			if err := claim.Release(); err != nil {
-				d.Log.Event("loop … warning: could not release " + identifier + " to Todo after a no-PR run: " + err.Error())
+				d.Log.Event("loop … warning: could not release " + key + " to Todo after a no-PR run: " + err.Error())
 			}
-			d.comment(identifier, "Autonomous run finished with no PR for this ticket — released back to Todo so a later run can re-grab it. Repeated occurrences here mean the ticket keeps failing to ship; see the run logs for the cause.")
+			d.comment(key, "Autonomous run finished with no PR for this ticket — released back to Todo so a later run can re-grab it. Repeated occurrences here mean the ticket keeps failing to ship; see the run logs for the cause.")
 		}
 
 		// Fold the ticket into the breaker. The success signal is "did it reach a
 		// pushed PR?" — not the pipeline exit code — so a hard-but-shipped ticket
 		// (retrospective failed, CI red after budget) resets the counter, while a
 		// ticket that never produced a PR increments it (DESIGN.md §Circuit breaker).
-		b.record(identifier, outcome)
+		b.record(key, outcome)
 		if b.tripped() {
 			// Trip on the SAME graceful wind-down path as a STOP (exit, not pause): it
 			// forces a human to investigate before more tickets are consumed, since 3
 			// identical failures are almost always environmental (expired auth, broken
 			// base build) that would sink the next ticket too.
-			d.Log.Structured(loopstream.Record{Kind: loopstream.KindBreakerTrip, Ticket: identifier, Message: "loop ✗ " + b.report() + " — winding down; fix the environment and relaunch"})
+			d.Log.Structured(loopstream.Record{Kind: loopstream.KindBreakerTrip, Ticket: key, Message: "loop ✗ " + b.report() + " — winding down; fix the environment and relaunch"})
 			return d.stopped("circuit breaker tripped")
 		}
 	}
@@ -448,22 +479,22 @@ func (d Deps) stopped(reason string) int {
 	return 0
 }
 
-// comment posts a best-effort breadcrumb on a released ticket (BEH-590). A post
+// comment posts a best-effort breadcrumb on a released item (BEH-590). A post
 // failure is narrated rather than fatal — the release already happened, and a
 // missing breadcrumb must never sink the daemon (mirrors AddComment's best-effort
 // contract).
-func (d Deps) comment(identifier, body string) {
-	if err := d.Host.CommentTicket(identifier, body); err != nil {
-		d.Log.Event("loop … warning: could not comment on " + identifier + " after release: " + err.Error())
+func (d Deps) comment(key, body string) {
+	if err := d.Source.Comment(key, body); err != nil {
+		d.Log.Event("loop … warning: could not comment on " + key + " after release: " + err.Error())
 	}
 }
 
-// closeTicket moves a recommend-close ticket to the terminal canceled state (BEH-682)
+// close moves a recommend-close item to the terminal canceled state (BEH-682)
 // and reports whether it succeeded. It is best-effort like comment: a close failure
 // degrades to false, and the caller falls back to the pre-BEH-682 disposition (keep
 // In Progress for a human to close) rather than crashing the daemon — a tracker
 // hiccup must never sink the loop.
-func (d Deps) closeTicket(claim *lease.Lease) bool {
+func (d Deps) close(claim *lease.Lease) bool {
 	if err := claim.Close(); err != nil {
 		d.Log.Event("loop … warning: could not close " + claim.Key() + " as superseded (leaving it In Progress for a human): " + err.Error())
 		return false
@@ -572,7 +603,7 @@ func (d Deps) reapStaleClaims() {
 	if d.Limits.ClaimTTL <= 0 {
 		return // reaping disabled
 	}
-	claims, err := d.Host.ListInProgressClaims()
+	claims, err := d.Source.Claims()
 	if err != nil {
 		d.Log.Event("loop … warning: could not list In Progress claims for reaping (skipping): " + err.Error())
 		return
@@ -585,19 +616,19 @@ func (d Deps) reapStaleClaims() {
 		if c.HasLinkedPR {
 			continue // shipped or mid-review — there is work to show for the claim
 		}
-		if d.Host.TicketHasRemoteBranch(c.Identifier) {
+		if d.Source.HasRemoteBranch(c.Key) {
 			continue // a branch is in flight even without a PR yet
 		}
 		d.Log.Structured(loopstream.Record{
 			Kind:    loopstream.KindTicketReleased,
-			Ticket:  c.Identifier,
-			Message: "loop — reaping stale claim " + c.Identifier + " (In Progress past TTL with no branch/PR); releasing to Todo (BEH-677)",
+			Ticket:  c.Key,
+			Message: "loop — reaping stale claim " + c.Key + " (In Progress past TTL with no branch/PR); releasing to Todo (BEH-677)",
 		})
-		if err := d.Host.ReleaseTicket(c.Identifier); err != nil {
-			d.Log.Event("loop … warning: could not reap stale claim " + c.Identifier + " to Todo: " + err.Error())
+		if err := d.Source.Release(c.Key); err != nil {
+			d.Log.Event("loop … warning: could not reap stale claim " + c.Key + " to Todo: " + err.Error())
 			continue
 		}
-		d.comment(c.Identifier, "Autonomous reaper released this claim back to Todo: it sat In Progress past the claim TTL with no branch and no linked PR, so the agent that claimed it almost certainly died before pushing (sandbox OOM/timeout/crash). A later run can now re-grab it.")
+		d.comment(c.Key, "Autonomous reaper released this claim back to Todo: it sat In Progress past the claim TTL with no branch and no linked PR, so the agent that claimed it almost certainly died before pushing (sandbox OOM/timeout/crash). A later run can now re-grab it.")
 	}
 }
 
@@ -627,20 +658,20 @@ func (d Deps) clock() Clock {
 // mid-backoff is honoured within one tick (the wake record is suppressed on stop —
 // the top-of-loop wind-down narration takes over). A non-positive TickInterval
 // degrades to a single silent total sleep, like interruptibleSleep.
-func (d Deps) capBackoffWait(identifier string, resetTime time.Time) {
+func (d Deps) capBackoffWait(key string, resetTime time.Time) {
 	now := d.clock().Now()
 	total := d.capBackoffDuration(now, resetTime)
 	wake := now.Add(total)
 	wakeStr := wake.UTC().Format("15:04Z")
 	d.Log.Structured(loopstream.Record{
 		Kind:    loopstream.KindCapBackoff,
-		Ticket:  identifier,
+		Ticket:  key,
 		Message: fmt.Sprintf("loop — capped; backing off %s, next re-poll ~%s", total, wakeStr),
 	})
 
 	if d.Limits.TickInterval <= 0 {
 		d.clock().Sleep(total)
-		d.Log.Structured(loopstream.Record{Kind: loopstream.KindCapBackoff, Ticket: identifier, Message: "loop — cap backoff elapsed; re-polling for " + identifier})
+		d.Log.Structured(loopstream.Record{Kind: loopstream.KindCapBackoff, Ticket: key, Message: "loop — cap backoff elapsed; re-polling for " + key})
 		return
 	}
 
@@ -657,13 +688,13 @@ func (d Deps) capBackoffWait(identifier string, resetTime time.Time) {
 			remaining := total - (waited + d.Limits.TickInterval)
 			d.Log.Structured(loopstream.Record{
 				Kind:    loopstream.KindCapBackoff,
-				Ticket:  identifier,
+				Ticket:  key,
 				Message: fmt.Sprintf("loop — still capped; ~%s remaining, re-poll ~%s", remaining, wakeStr),
 			})
 			sinceBeat = 0
 		}
 	}
-	d.Log.Structured(loopstream.Record{Kind: loopstream.KindCapBackoff, Ticket: identifier, Message: "loop — cap backoff elapsed; re-polling for " + identifier})
+	d.Log.Structured(loopstream.Record{Kind: loopstream.KindCapBackoff, Ticket: key, Message: "loop — cap backoff elapsed; re-polling for " + key})
 }
 
 // capResetMargin is added past the parsed reset time so the daemon wakes just AFTER the

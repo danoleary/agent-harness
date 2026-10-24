@@ -39,6 +39,24 @@ released to Todo, closed as a no-op, or kept by a shipped PR — and releasing a
 unheld lease touches nothing.
 _Avoid_: claim flag, pre-claimed.
 
+### The loop
+
+**Source**:
+Where a loop's work comes from and where its claims are kept (`loop.Source`): the
+queue it polls, the claims the reaper sweeps, the breadcrumbs it leaves. The
+tracker's ready queue is the first Source (ADR-0019).
+_Avoid_: queue, feed (a queue is one kind of Source).
+
+**Work item**:
+One unit of work a **Source** yields (`loop.WorkItem`): a **Key** and the branch
+the **Pipeline** will push. For a ticket, the Key is the tracker Key and the
+branch is `<branch_prefix>/<slug>`.
+_Avoid_: job, task, ticket (a ticket is one kind of Work item).
+
+**Pipeline** (of a loop):
+What a loop does to one **Work item** (`loop.Pipeline`): for a ticket, the three
+**Stages**. The daemon branches only on the **Disposition** it returns.
+
 ### Prompts
 
 **Contract envelope**:
@@ -138,6 +156,6 @@ findings** are filed as issues (default off; ADR-0011).
   Resolved: **host** = the machine/process doing remote I/O; **Consumer** = the
   repo being worked. ADR-0001 used "host" only in the first sense.
 - "job" was used for both a Stage and the whole pipeline. Resolved: **Stage** is
-  the single-role unit; the three together are the **pipeline**.
+  the single-role unit; the three together are the ticket loop's **pipeline**.
 - "Linear" was used as a synonym for the issue tracker. Resolved: Linear is one
   **Tracker** adapter; the concept is **Tracker** (ADR-0010).

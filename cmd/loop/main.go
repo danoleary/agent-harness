@@ -7,9 +7,10 @@
 //
 // The sequencing lives in internal/loop (unit-tested without Docker, a tracker or
 // real signals) and the host-side I/O it drives in internal/loophost (the
-// production loop.Host). This entrypoint is the composition root: it loads config,
-// opens the narration stream, builds the one host, wires the signal handler, and
-// hands the daemon its knobs.
+// production loop.Host, and the ticket loop's loop.Source and loop.Pipeline —
+// ADR-0019). This entrypoint is the composition root: it loads config, opens the
+// narration stream, builds the host, the ticket Source and the ticket Pipeline,
+// wires the signal handler, and hands the daemon its knobs.
 //
 // Stop control (DESIGN.md "Stop control"):
 //   - SIGINT (Ctrl-C) flips a flag and logs "will stop after current ticket"; the
@@ -114,14 +115,17 @@ func main() {
 		os.Exit(1)
 	}
 
-	host := loophost.New(cfg, log, client)
+	source := loophost.NewTicketSource(cfg, log, client)
+	host := loophost.NewDaemon(cfg, source.CheckAccess)
 	installSignalHandler(host, log)
 
 	os.Exit(loop.Run(loop.Deps{
-		Host:   host,
-		Limits: limitsFrom(cfg),
-		Clock:  loop.SystemClock{},
-		Log:    log,
+		Source:   source,
+		Pipeline: loophost.NewTicketPipeline(log),
+		Host:     host,
+		Limits:   limitsFrom(cfg),
+		Clock:    loop.SystemClock{},
+		Log:      log,
 	}))
 }
 
@@ -149,7 +153,7 @@ func limitsFrom(cfg config.Config) loop.Limits {
 // graceful wind-down; a second is a hard abort that kills any running harness
 // container and exits now. Subsequent signals after the first are handled by the
 // same goroutine.
-func installSignalHandler(host *loophost.Real, log loop.Narrator) {
+func installSignalHandler(host *loophost.Daemon, log loop.Narrator) {
 	ch := make(chan os.Signal, 2)
 	signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM)
 	go func() {

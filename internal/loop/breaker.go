@@ -30,14 +30,14 @@ func newBreaker(threshold int) *breaker { return &breaker{threshold: threshold} 
 // refusal before any ticket work (so a poison top-of-queue ticket can't trip the
 // breaker in seconds on identical 2s failures); and a recommend-close is a correct
 // terminal no-op, neither a ship nor a failure (BEH-603).
-func (b *breaker) record(identifier string, o stages.Result) {
+func (b *breaker) record(key string, o stages.Result) {
 	switch o.Disposition {
 	case stages.Shipped:
 		b.streak = nil
 	case stages.CapAborted, stages.PreflightAborted, stages.RecommendClose:
 		// neutral — blind by design
 	default:
-		b.streak = append(b.streak, identifier)
+		b.streak = append(b.streak, key)
 	}
 }
 
