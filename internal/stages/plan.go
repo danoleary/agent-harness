@@ -109,7 +109,8 @@ func ImplementationPlan(cfg config.Config, s Subject, resume prompt.Resume) Stag
 
 // ReviewPlan is what [Review] launches for s: the post_create re-provision, the
 // cold review session, then one container per declared Gate, in order (BEH-634).
-func ReviewPlan(cfg config.Config, s Subject) StagePlan {
+// prior is the verdict a previous review emitted over the same HEAD (#44), or nil.
+func ReviewPlan(cfg config.Config, s Subject, prior *prompt.PriorReview) StagePlan {
 	var steps []Step
 	if cfg.PostCreate != "" {
 		run := prepRun(cfg, s.WorktreePath)
@@ -117,7 +118,7 @@ func ReviewPlan(cfg config.Config, s Subject) StagePlan {
 	} else {
 		steps = append(steps, Step{Title: prepStep, Note: "(none — the Consumer declares no post_create)"})
 	}
-	run := reviewRun(cfg, s)
+	run := reviewRun(cfg, s, prior)
 	steps = append(steps, Step{Title: reviewSession, Agent: &run})
 	for _, g := range cfg.Gates {
 		run := gateRun(cfg, s.WorktreePath, gateStep, g)
@@ -166,12 +167,13 @@ func prepRun(cfg config.Config, worktreePath string) hostio.ShellRun {
 
 // reviewRun is the cold /review-worktree session. Review emits no findings
 // (retrospective owns them), so it mounts no dropbox.
-func reviewRun(cfg config.Config, s Subject) hostio.AgentRun {
+func reviewRun(cfg config.Config, s Subject, prior *prompt.PriorReview) hostio.AgentRun {
 	return hostio.AgentRun{
 		Label: reviewSession,
 		Model: cfg.ReviewModel,
 		Prompt: prompt.For(prompt.Review, prompt.Context{
 			Ticket: s.Ticket, Slug: s.Slug, BranchPrefix: cfg.BranchPrefix, Tracker: cfg.Tracker.Kind, WorktreePath: s.WorktreePath, Body: cfg.Prompts.Review,
+			PriorReview: prior,
 		}),
 		Cap: cfg.ReviewTimeout,
 	}

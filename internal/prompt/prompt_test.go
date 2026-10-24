@@ -833,3 +833,34 @@ func TestRebaseFixDefangsPoisonedTicketBody(t *testing.T) {
 		t.Errorf("rebase-fix prompt carries a live %q directive opener from the ticket body", bangBacktick)
 	}
 }
+
+// #44: a re-run whose branch carries no commit since the last review is told what
+// that review concluded and over which commits, and steered to re-emit the same
+// Disposition after the gate rather than manufacture a churn commit.
+func TestReviewOverAnUnchangedBranchCarriesThePriorVerdict(t *testing.T) {
+	p := For(Review, Context{
+		Ticket: sample, Slug: "beh-362", WorktreePath: sampleWorktree, BranchPrefix: testPrefix, Body: exampleBody(t, "review"),
+		PriorReview: &PriorReview{Head: "abc1234", Disposition: "Disposition: clear — all findings resolved"},
+	})
+	for _, want := range []string{"origin/main..abc1234", "Disposition: clear — all findings resolved"} {
+		if !strings.Contains(p, want) {
+			t.Errorf("prompt missing %q:\n%s", want, p)
+		}
+	}
+	if !regexp.MustCompile(`(?i)re-emit`).MatchString(p) {
+		t.Error("prompt does not steer the review to re-emit the prior Disposition")
+	}
+	if !regexp.MustCompile(`(?i)(do not|don't|never)[^.]{0,60}commit`).MatchString(p) {
+		t.Error("prompt does not steer the review off committing over an unchanged branch")
+	}
+	assertEnvelopeContract(t, p, "review over an unchanged branch", "feat/beh-362")
+}
+
+// A first review — or one whose branch moved since the last — gets no prior-review
+// section: it reviews cold, exactly as before.
+func TestReviewWithoutAPriorVerdictIsCold(t *testing.T) {
+	p := bReview(t, sample, "beh-362", sampleWorktree)
+	if strings.Contains(p, "re-emit") {
+		t.Errorf("a first review must carry no prior-review section:\n%s", p)
+	}
+}

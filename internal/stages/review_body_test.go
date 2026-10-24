@@ -534,3 +534,72 @@ func TestReviewUnrunnableGateIsReportedAsTheEnvironment(t *testing.T) {
 		}
 	}
 }
+
+// #44: a re-run whose implementation added no commits hands the review the verdict
+// the last review emitted and the range it covered, so the reviewer re-emits it
+// instead of re-deriving it and stacking a churn commit. The first review is cold.
+func TestReviewReRunOverAnUnchangedBranchIsToldThePriorVerdict(t *testing.T) {
+	h := hostio.NewFake()
+	h.AgentOutcome = session.Outcome{ReviewVerdictEmitted: true, ReviewDisposition: "Disposition: clear — nothing to fix"}
+	log := stageLog(t, "PROJ-40")
+
+	Review(h, stageCfg(), log, Args{Identifier: "PROJ-40"})
+	Review(h, stageCfg(), log, Args{Identifier: "PROJ-40"})
+
+	if len(h.Agents) != 2 {
+		t.Fatalf("agent runs = %v, want one review session per run", labels(h.Agents))
+	}
+	if strings.Contains(h.Agents[0].Prompt, "UNCHANGED SINCE THE LAST REVIEW") {
+		t.Error("the first review has no prior verdict and must review cold")
+	}
+	for _, want := range []string{"origin/main..abc1234", "Disposition: clear — nothing to fix"} {
+		if !strings.Contains(h.Agents[1].Prompt, want) {
+			t.Errorf("the re-run's review prompt is missing %q", want)
+		}
+	}
+}
+
+// A branch that moved since the last review — the implementation re-run added a
+// commit — is reviewed cold: the prior verdict covered different commits.
+func TestReviewReRunOverAMovedBranchReviewsCold(t *testing.T) {
+	h := hostio.NewFake()
+	h.AgentOutcome = session.Outcome{ReviewVerdictEmitted: true, ReviewDisposition: "Disposition: clear — nothing to fix"}
+	log := stageLog(t, "PROJ-41")
+
+	Review(h, stageCfg(), log, Args{Identifier: "PROJ-41"})
+	h.Head = "def5678"
+	Review(h, stageCfg(), log, Args{Identifier: "PROJ-41"})
+
+	if strings.Contains(h.Agents[1].Prompt, "UNCHANGED SINCE THE LAST REVIEW") {
+		t.Error("a branch with new commits since the last review must be reviewed cold")
+	}
+}
+
+// Landing rebases the branch, rewriting every SHA. The verdict still covers the
+// landed commits, so a re-run over the landed tip is told it.
+func TestReviewRecordsTheLandedHeadAsReviewed(t *testing.T) {
+	h := hostio.NewFake()
+	h.AgentOutcome = session.Outcome{ReviewVerdictEmitted: true, ReviewDisposition: "Disposition: clear — nothing to fix"}
+	h.HeadOnRebase = "fed9876"
+	log := stageLog(t, "PROJ-42")
+
+	Review(h, stageCfg(), log, Args{Identifier: "PROJ-42"})
+	Review(h, stageCfg(), log, Args{Identifier: "PROJ-42"})
+
+	if !strings.Contains(h.Agents[1].Prompt, "origin/main..fed9876") {
+		t.Errorf("the re-run over the landed tip must be told the prior verdict; prompt:\n%s", h.Agents[1].Prompt)
+	}
+}
+
+// A review that never reached a Disposition left no verdict to carry forward.
+func TestReviewWithoutADispositionRecordsNothing(t *testing.T) {
+	h := hostio.NewFake()
+	log := stageLog(t, "PROJ-43")
+
+	Review(h, stageCfg(), log, Args{Identifier: "PROJ-43"})
+	Review(h, stageCfg(), log, Args{Identifier: "PROJ-43"})
+
+	if strings.Contains(h.Agents[1].Prompt, "UNCHANGED SINCE THE LAST REVIEW") {
+		t.Error("no Disposition was emitted, so there is no prior verdict to hand on")
+	}
+}
