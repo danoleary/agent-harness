@@ -15,7 +15,7 @@ var checkRunsProbeArgs = []string{"api", "repos/{owner}/{repo}/commits/main/chec
 // PreflightMessage is the actionable warning surfaced when GH_TOKEN cannot read
 // check runs. The PR will still ship (the watch degrades gracefully) — this just
 // tells the operator early, before the expensive run, why CI won't be watched.
-const PreflightMessage = "GH_TOKEN cannot read check runs — the post-PR CI-watch needs a classic `repo`-scoped PAT (SSO-authorized for the org); fine-grained PATs lack the Checks permission. The PR will still ship, but CI won't be watched or auto-fixed (BEH-476)."
+const PreflightMessage = "GH_TOKEN cannot read check runs — the post-PR CI-watch needs a classic `repo`-scoped PAT (SSO-authorized for the org); fine-grained PATs lack the Checks permission. The PR will still ship, but CI won't be watched or auto-fixed."
 
 // ChecksReadable probes whether GH_TOKEN can read the Checks API before a run
 // commits to the CI-watch phase. It returns (false, PreflightMessage) only when

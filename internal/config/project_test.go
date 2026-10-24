@@ -695,3 +695,91 @@ func TestQueueHintNamesTheHumanGate(t *testing.T) {
 		}
 	}
 }
+
+// assertMentions fails the test for each want the error's message lacks.
+func assertMentions(t *testing.T, err error, wants ...string) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("want an error mentioning %q, got nil", wants)
+	}
+	for _, want := range wants {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error should mention %q, got:\n%v", want, err)
+		}
+	}
+}
+
+// Two independent mistakes are reported in one error, so a newcomer fixes them in
+// one pass rather than meeting them one run at a time.
+func TestLoadProjectReportsEveryValidationError(t *testing.T) {
+	dir := t.TempDir()
+	writeProjectConfig(t, dir, `
+[[gates]]
+name = "check"
+`)
+	_, err := LoadProject(dir)
+	assertMentions(t, err, "image", "tracker.kind is required", `gates[0] ("check") has no command`, "3 problems")
+}
+
+// A TOML syntax error names the line and column it sits at, and the file.
+func TestLoadProjectParseErrorHasLineAndColumn(t *testing.T) {
+	dir := t.TempDir()
+	writeProjectConfig(t, dir, "image = \"x\nkind = 1\n") // unterminated string
+	_, err := LoadProject(dir)
+	assertMentions(t, err, "config.toml:1:11", "basic strings cannot have new lines", "line 1, column 11")
+}
+
+// A table this harness does not know is a warning, not a failure: a config written
+// for a newer harness must still load on an older one (the min_harness_version
+// story), so the key is named and the load goes on.
+func TestLoadProjectWarnsOnAnUnknownTable(t *testing.T) {
+	dir := t.TempDir()
+	writeProjectConfig(t, dir, testConfigTOML+`
+[trackr]
+kind = "github"
+`)
+	pc, err := LoadProject(dir)
+	if err != nil {
+		t.Fatalf("an unknown table should not fail the load, got: %v", err)
+	}
+	if len(pc.Warnings) != 1 || !strings.Contains(pc.Warnings[0], "trackr") || !strings.Contains(pc.Warnings[0], "config.toml:23:2") {
+		t.Errorf("Warnings = %q, want one naming trackr at its line", pc.Warnings)
+	}
+}
+
+// When a misspelt table is the reason a required key reads as missing, the error
+// says so instead of only "tracker.kind is required".
+func TestLoadProjectExplainsAMissingKeyByTheUnknownTable(t *testing.T) {
+	dir := t.TempDir()
+	writeProjectConfig(t, dir, `
+image = "x"
+[trackr]
+kind = "github"
+[[gates]]
+name = "check"
+command = "c"
+`)
+	_, err := LoadProject(dir)
+	assertMentions(t, err, "tracker.kind is required", "unknown key trackr", "config.toml:3:2")
+}
+
+// A checkout with no .agent-harness/ directory at all is told that directly, with
+// a pointer at the example, rather than a raw "no such file" on config.toml.
+func TestLoadProjectMissingHarnessDir(t *testing.T) {
+	dir := t.TempDir()
+	_, err := LoadProject(dir)
+	assertMentions(t, err, dir+" has no .agent-harness/ directory", "example/.agent-harness")
+	if strings.Contains(err.Error(), "no such file") {
+		t.Errorf("error should not be a raw os error, got: %v", err)
+	}
+}
+
+// The directory exists but config.toml is missing: name the file and the example.
+func TestLoadProjectMissingConfigFile(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, ".agent-harness"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_, err := LoadProject(dir)
+	assertMentions(t, err, "config.toml does not exist", "example/.agent-harness/config.toml")
+}

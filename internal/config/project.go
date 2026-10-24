@@ -1,7 +1,10 @@
 package config
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -87,10 +90,10 @@ type ProjectConfig struct {
 	// break gives them a reason to.
 	//
 	// It exists because an older harness reading a newer config does not fail: TOML
-	// keys it does not know are ignored, so a renamed field reverts to a default and
-	// an unknown gate is skipped, while the run still reports success. The pin turns
-	// that into an error the operator reads at startup instead of a wrong run they
-	// find out about later.
+	// keys it does not know draw a warning and are otherwise ignored, so a renamed
+	// field reverts to a default and an unknown gate is skipped, while the run still
+	// reports success. The pin turns that into an error the operator reads at
+	// startup instead of a wrong run they find out about later.
 	MinHarnessVersion string `toml:"min_harness_version"`
 	// Tracker holds the non-secret tracker selection names (was the hardcoded
 	// Linear label UUIDs + ready/blocked label names).
@@ -99,6 +102,12 @@ type ProjectConfig struct {
 	// harness-audience findings go. Default (empty/`off`) keeps them in the local
 	// artifact dir; `github` files them to the configured public harness repo.
 	Feedback FeedbackConfig `toml:"feedback"`
+
+	// Warnings name the keys and tables in the file that this harness does not
+	// read, each with its file:line:column. They are not errors: a config written
+	// for a newer harness must still load on an older one, which is the case
+	// min_harness_version exists for. The caller prints them.
+	Warnings []string `toml:"-"`
 }
 
 // FeedbackConfig selects where the harness routes harness-audience findings
@@ -247,24 +256,114 @@ func ProjectDir(checkoutPath string) string {
 	return filepath.Join(checkoutPath, ProjectDirName)
 }
 
+// exampleConfigURL is where a Consumer with no config finds a complete one to copy.
+const exampleConfigURL = "https://github.com/danoleary/agent-harness/tree/main/example/.agent-harness"
+
 // LoadProject reads and parses `<checkoutPath>/.agent-harness/config.toml`. It
 // fails loud on a missing or malformed file — a Consumer with no committed
-// config is a misconfiguration, not a defaultable state (ADR-0008).
+// config is a misconfiguration, not a defaultable state (ADR-0008). Every
+// validation problem is reported in one error, so a newcomer fixes them in one
+// pass. A key the harness does not know is a warning (ProjectConfig.Warnings),
+// not a failure.
 func LoadProject(checkoutPath string) (ProjectConfig, error) {
-	path := filepath.Join(ProjectDir(checkoutPath), "config.toml")
+	dir := ProjectDir(checkoutPath)
+	path := filepath.Join(dir, "config.toml")
 	raw, err := os.ReadFile(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return ProjectConfig{}, missingConfigError(checkoutPath, dir, path)
+	}
 	if err != nil {
 		return ProjectConfig{}, fmt.Errorf("reading project config %s: %w", path, err)
 	}
+
 	var pc ProjectConfig
-	if err := toml.Unmarshal(raw, &pc); err != nil {
-		return ProjectConfig{}, fmt.Errorf("parsing project config %s: %w", path, err)
+	dec := toml.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	err = dec.Decode(&pc)
+	// The strict decoder still fills every key it knows before it reports the ones
+	// it does not, so an unknown key costs a warning and nothing else.
+	var unknown *toml.StrictMissingError
+	if errors.As(err, &unknown) {
+		pc.Warnings = unknownKeyWarnings(path, unknown)
+		err = nil
 	}
+	if err != nil {
+		return ProjectConfig{}, parseError(path, err)
+	}
+
 	pc.applyDefaults()
-	if err := pc.validate(); err != nil {
-		return ProjectConfig{}, fmt.Errorf("invalid project config %s: %w", path, err)
+	if problems := pc.validate(); len(problems) > 0 {
+		return ProjectConfig{}, invalidConfigError(path, problems, pc.Warnings)
 	}
 	return pc, nil
+}
+
+// missingConfigError says which of the two is missing — the whole
+// .agent-harness/ directory, or only its config.toml — and points at the example.
+func missingConfigError(checkoutPath, dir, path string) error {
+	if _, err := os.Stat(dir); errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf(
+			"%s has no %s/ directory, so there is no project config to read.\n"+
+				"The harness reads the Consumer's config.toml and per-Stage prompts from it.\n"+
+				"Fix: copy example/%s/ from the agent-harness repository (%s) into %s and edit its config.toml",
+			checkoutPath, ProjectDirName, ProjectDirName, exampleConfigURL, checkoutPath)
+	}
+	return fmt.Errorf(
+		"%s does not exist.\n"+
+			"The harness reads the sandbox image, tracker, and gates from it.\n"+
+			"Fix: copy example/%s/config.toml from the agent-harness repository (%s) to %s and edit it",
+		path, ProjectDirName, exampleConfigURL, path)
+}
+
+// parseError puts the file:line:column of a TOML syntax error first, the way a
+// compiler does, then the offending lines, then the fix.
+func parseError(path string, err error) error {
+	var de *toml.DecodeError
+	if !errors.As(err, &de) {
+		return fmt.Errorf("parsing project config %s: %w", path, err)
+	}
+	row, col := de.Position()
+	return fmt.Errorf(
+		"parsing project config %s:%d:%d: %s\n%s\n"+
+			"Fix: correct the TOML at line %d, column %d of %s",
+		path, row, col, strings.TrimPrefix(de.Error(), "toml: "), de.String(), row, col, path)
+}
+
+// unknownKeyWarnings renders one warning per key or table the harness does not
+// read, at its position in the file.
+func unknownKeyWarnings(path string, e *toml.StrictMissingError) []string {
+	warnings := make([]string, 0, len(e.Errors))
+	for _, de := range e.Errors {
+		row, col := de.Position()
+		warnings = append(warnings, fmt.Sprintf(
+			"%s:%d:%d: unknown key %s, ignored — fix its spelling, or upgrade agent-harness if it is newer than this binary",
+			path, row, col, strings.Join(de.Key(), ".")))
+	}
+	return warnings
+}
+
+// invalidConfigError lists every validation problem together. When the file also
+// has keys the harness does not know, it lists those too: a misspelt table is the
+// usual reason a required key reads as missing.
+func invalidConfigError(path string, problems, warnings []string) error {
+	noun := "problem"
+	if len(problems) > 1 {
+		noun = "problems"
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "invalid project config %s (%d %s):\n", path, len(problems), noun)
+	for _, p := range problems {
+		fmt.Fprintf(&b, "  - %s\n", p)
+	}
+	if len(warnings) > 0 {
+		b.WriteString("The file also has keys this harness does not read; a misspelt one reads as missing:\n")
+		for _, w := range warnings {
+			fmt.Fprintf(&b, "  - %s\n", w)
+		}
+	}
+	fmt.Fprintf(&b, "Fix: correct each problem above in %s; example/%s/config.toml in the agent-harness repository (%s) is a complete config",
+		path, ProjectDirName, exampleConfigURL)
+	return errors.New(b.String())
 }
 
 // defaultBranchPrefix is the canonical worktree branch prefix when a Consumer
@@ -300,13 +399,14 @@ func (pc *ProjectConfig) applyDefaults() {
 // validate fails loud on a Consumer misconfiguration: a missing image, tracker
 // kind, or gate list is not a defaultable state — there is no sane cross-project
 // default (ADR-0008), so the harness must refuse to launch rather than silently
-// fall back.
-func (pc *ProjectConfig) validate() error {
+// fall back. It returns every problem it finds, not only the first.
+func (pc *ProjectConfig) validate() []string {
+	var problems []string
 	if pc.Image == "" && pc.Dockerfile == "" {
-		return fmt.Errorf("a sandbox image source is required: set either `image` (a prebuilt ref to pull) or `dockerfile` (a Consumer Dockerfile FROM the base to build)")
+		problems = append(problems, "a sandbox image source is required: set either `image` (a prebuilt ref to pull) or `dockerfile` (a Consumer Dockerfile FROM the base to build)")
 	}
 	if pc.Tracker.Kind == "" {
-		return fmt.Errorf("tracker.kind is required")
+		problems = append(problems, "tracker.kind is required: set it under [tracker] to \"linear\", \"github\", or \"jira\"")
 	}
 	// Linear scopes selection by team key and gates it on the ready label. Neither
 	// has a defensible default — an empty team key would query every team the
@@ -314,32 +414,32 @@ func (pc *ProjectConfig) validate() error {
 	// blast-radius gate — so both fail loud here rather than at the first poll.
 	if pc.Tracker.Kind == "linear" {
 		if pc.Tracker.TeamKey == "" {
-			return fmt.Errorf("tracker.team_key is required for kind=linear (the Linear team the selector is scoped to, e.g. \"BEH\")")
+			problems = append(problems, "tracker.team_key is required for kind=linear (the Linear team the selector is scoped to, e.g. \"ENG\")")
 		}
 		if pc.Tracker.ReadyLabel == "" {
-			return fmt.Errorf("tracker.ready_label is required for kind=linear (the human-applied gate that makes a ticket eligible for unattended work)")
+			problems = append(problems, "tracker.ready_label is required for kind=linear (the human-applied gate that makes a ticket eligible for unattended work)")
 		}
 	}
 	if len(pc.Gates) == 0 {
-		return fmt.Errorf("at least one [[gates]] entry is required")
+		problems = append(problems, "at least one [[gates]] entry is required")
 	}
 	for i, g := range pc.Gates {
 		if g.Name == "" {
-			return fmt.Errorf("gates[%d].name is required", i)
+			problems = append(problems, fmt.Sprintf("gates[%d].name is required", i))
 		}
 		if g.Command == "" {
-			return fmt.Errorf("gates[%d] (%q) has no command", i, g.Name)
+			problems = append(problems, fmt.Sprintf("gates[%d] (%q) has no command", i, g.Name))
 		}
 	}
 	// The generalized cache surface has no implicit mount path — a Consumer that
 	// declares a volume must declare where it mounts (BEH-635).
 	if pc.Cache.Volume != "" && pc.Cache.Path == "" {
-		return fmt.Errorf("cache.path is required when cache.volume is set")
+		problems = append(problems, "cache.path is required when cache.volume is set")
 	}
 	if err := pc.Feedback.validate(); err != nil {
-		return err
+		problems = append(problems, err.Error())
 	}
-	return nil
+	return problems
 }
 
 // validate rejects the two feedback misconfigurations that would otherwise

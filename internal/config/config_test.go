@@ -884,3 +884,60 @@ func TestHostKnobKeysAreUnique(t *testing.T) {
 		seen[k.key] = true
 	}
 }
+
+// PROJECT_PATH must be absolute: a relative one would resolve against whatever
+// directory the harness happens to start in.
+func TestLoadRejectsARelativeProjectPath(t *testing.T) {
+	_, err := Load(fullEnv(t, map[string]string{"PROJECT_PATH": "proj"}))
+	assertMentions(t, err, `PROJECT_PATH is "proj"`, "must be absolute")
+}
+
+// PROJECT_PATH must exist; saying so beats a "no such file" on a file inside it.
+func TestLoadRejectsAProjectPathThatDoesNotExist(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "nope")
+	_, err := Load(fullEnv(t, map[string]string{"PROJECT_PATH": missing}))
+	assertMentions(t, err, "PROJECT_PATH is "+missing, "does not exist", "must exist")
+	if strings.Contains(err.Error(), "config.toml") {
+		t.Errorf("error should be about PROJECT_PATH, not a file under it: %v", err)
+	}
+}
+
+// A missing credential says which .env files were searched and where to make the
+// token, and every missing one is reported together.
+func TestLoadMissingCredentialsSaySearchedFilesAndWhereToGetThem(t *testing.T) {
+	wd := t.TempDir()
+	_, err := Load(fullEnv(t, map[string]string{
+		"GH_TOKEN":                "",
+		"ANTHROPIC_API_KEY":       "",
+		"CLAUDE_CODE_OAUTH_TOKEN": "",
+		"HOME":                    "/home/op",
+	}), WithWorkingDir(wd))
+	assertMentions(t, err,
+		"GH_TOKEN is not set",
+		"https://github.com/settings/tokens/new?scopes=repo&description=agent-harness",
+		"no Claude credential is set",
+		"https://platform.claude.com/settings/keys",
+		"claude setup-token",
+		filepath.Join(wd, ".env")+" (not found)",
+		"/home/op/.config/agent-harness/.env (not found)",
+	)
+}
+
+// A subscription token in ANTHROPIC_API_KEY passes a presence check but fails
+// later as "Invalid API key"; reject it at load and say where it belongs.
+func TestLoadRejectsAnOAuthTokenInTheAPIKey(t *testing.T) {
+	_, err := Load(fullEnv(t, map[string]string{"ANTHROPIC_API_KEY": "sk-ant-oat01-abc"}))
+	assertMentions(t, err, "ANTHROPIC_API_KEY", "sk-ant-oat01-", "move it to CLAUDE_CODE_OAUTH_TOKEN")
+}
+
+// A warning from the project config reaches the caller of Load, which prints it.
+func TestLoadCarriesProjectConfigWarnings(t *testing.T) {
+	checkout := testCheckout(t, testConfigTOML+"\n[trackr]\nkind = \"github\"\n")
+	cfg, err := Load(envAt(checkout, nil))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.Warnings) != 1 || !strings.Contains(cfg.Warnings[0], "trackr") {
+		t.Errorf("Warnings = %q, want the unknown-table warning", cfg.Warnings)
+	}
+}
