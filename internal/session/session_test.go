@@ -465,3 +465,16 @@ func TestPumpStderrTeesAllAndReturnsBoundedTail(t *testing.T) {
 		t.Errorf("tail should end at the last non-empty line, got: %q", tail[len(tail)-1])
 	}
 }
+
+// pumpStdout carries the verdict's Disposition line through (#44), so the review
+// stage can record what this review concluded for a re-run over the same commits.
+func TestPumpStdoutReportsTheReviewDisposition(t *testing.T) {
+	blocked := pumpStdout(strings.NewReader(lineToolUse+"\n"+lineBlocked+"\n"+lineResult), "x.jsonl", false, &fakeLog{}, &bytes.Buffer{})
+	if want := "Disposition: blocked — needs a human call"; blocked.reviewDisposition != want {
+		t.Errorf("reviewDisposition = %q, want %q", blocked.reviewDisposition, want)
+	}
+	none := pumpStdout(strings.NewReader(lineToolUse+"\n"+lineVerdict+"\n"+lineResult), "x.jsonl", false, &fakeLog{}, &bytes.Buffer{})
+	if none.reviewDisposition != "" {
+		t.Errorf("a verdict with no Disposition line reports none, got %q", none.reviewDisposition)
+	}
+}

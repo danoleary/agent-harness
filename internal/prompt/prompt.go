@@ -95,6 +95,9 @@ type Context struct {
 	Resume Resume
 	// Filed lists the finding classes already filed, for a Retrospective re-run.
 	Filed []FiledFinding
+	// PriorReview is the verdict a prior review emitted over exactly the commits
+	// now on the branch, for a Review re-run (#44); nil reviews cold.
+	PriorReview *PriorReview
 	// CILogs is the failing job log the host fetched for CIFix; CILogAvailable
 	// says whether it is a usable log or only an error marker (BEH-558).
 	CILogs         string
@@ -359,6 +362,15 @@ type FiledFinding struct {
 	Title string
 }
 
+// PriorReview is the verdict a prior review session emitted, handed to a Review
+// re-run whose branch has not moved since (#44). Head is the commit that review
+// covered — the range is `origin/main..Head` — and Disposition is its verdict line
+// verbatim ("Disposition: clear — <reason>").
+type PriorReview struct {
+	Head        string
+	Disposition string
+}
+
 // retroFindingsProtocol is the retrospective stage's findings-dropbox contract:
 // unlike the implementation stage, the retrospective's ONLY output is findings, so
 // it must always write the file — an absent file means the step never ran.
@@ -426,9 +438,9 @@ func alreadyFiledSection(filed []FiledFinding) string {
 // findings), and the bash-quirk steer.
 func reviewContractFooter(kind, branchPrefix, slug string) string {
 	return join(
-		"Apply your review fixes as a LOCAL commit on `"+branchPrefix+"/"+slug+"` and stop there. Do NOT push, do NOT run `gh`, do NOT open or raise a PR. The harness owns all remote git I/O (ADR-0002): it independently re-runs the quality gates host-side and, only if they pass, pushes the branch and opens the PR itself.",
+		"Apply any review fixes as a LOCAL commit on `"+branchPrefix+"/"+slug+"` and stop there; a review that finds nothing to fix makes no commit. Do NOT push, do NOT run `gh`, do NOT open or raise a PR. The harness owns all remote git I/O (ADR-0002): it independently re-runs the quality gates host-side and, only if they pass, pushes the branch and opens the PR itself.",
 		trackerOff(kind),
-		"Do NOT emit or file any harness-improvement findings, and do NOT write `/findings/out.json`. The retrospective tool, running last over every transcript, owns findings now — this is a deliberate change from the skill's default. Your only outputs are review fixes committed locally.",
+		"Do NOT emit or file any harness-improvement findings, and do NOT write `/findings/out.json`. The retrospective tool, running last over every transcript, owns findings now — this is a deliberate change from the skill's default. Your only outputs are your report and any review fixes committed locally.",
 		bashQuirkSteer,
 	)
 }
@@ -441,9 +453,22 @@ func review(c Context) string {
 	return join(
 		renderBody(c),
 		ticketContext(c.Ticket),
+		priorReviewSection(c.PriorReview),
 		"---",
 		reviewContractFooter(c.Tracker, c.BranchPrefix, c.Slug),
 	)
+}
+
+// priorReviewSection tells a Review re-run that the diff it is handed was already
+// reviewed (#44). Without it a re-run whose implementation added no commits got the
+// same cold envelope as a first pass, re-derived a verdict that already existed, and
+// — to have something to fix — stacked a cosmetic "Review fixes" commit on the last
+// one. Empty when there is no prior verdict: a first review reads as it always did.
+func priorReviewSection(p *PriorReview) string {
+	if p == nil {
+		return ""
+	}
+	return "IMPORTANT — UNCHANGED SINCE THE LAST REVIEW: a prior review of this ticket already covered exactly the commits now on the branch (`origin/main.." + p.Head + "`, HEAD `" + p.Head + "`) and emitted:\n\n    " + defang(p.Disposition) + "\n\nNo commit has landed since. Confirm HEAD is still `" + p.Head + "` (`git rev-parse HEAD`); if it is not, ignore this note and review cold. If it is, do NOT re-review the diff from scratch and do NOT commit just to have something to show: run the gate, then emit your `## Review:` report and re-emit that same Disposition line. Commit a fix ONLY for a real defect — a spec, correctness or invariant failure, not a cosmetic tidy-up — and name it in the report."
 }
 
 // ciFix builds the `-p` prompt for a sandboxed session that diagnoses and

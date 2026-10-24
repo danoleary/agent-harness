@@ -594,3 +594,31 @@ func TestNarratesShortSessionWithOutputAsSuccess(t *testing.T) {
 		t.Errorf("short session with real output should narrate success, got: %q", out)
 	}
 }
+
+// #44: the harness records the verdict's Disposition line so a re-run's review can
+// be told what the prior review concluded over the same commits. Only a line inside
+// a "## Review:" report counts; the trailing reason is carried verbatim.
+func TestReviewDispositionExtractsTheVerdictLine(t *testing.T) {
+	verdict := func(text string) string {
+		return mustJSON(t, map[string]any{
+			"type":    "assistant",
+			"message": map[string]any{"content": []any{map[string]any{"type": "text", "text": text}}},
+		})
+	}
+	for name, tc := range map[string]struct {
+		line string
+		want string
+		ok   bool
+	}{
+		"clear":            {verdict("## Review: #1\n\nFindings:\n- none\n\nDisposition: clear — all resolved\n"), "Disposition: clear — all resolved", true},
+		"blocked":          {verdict("## Review: #1\n\nDisposition: blocked — needs a human"), "Disposition: blocked — needs a human", true},
+		"no disposition":   {verdict("## Review: #1\n\nGate: green"), "", false},
+		"outside a report": {verdict("Disposition: clear — talking about it"), "", false},
+		"malformed":        {"{not json", "", false},
+	} {
+		got, ok := ReviewDisposition(tc.line)
+		if got != tc.want || ok != tc.ok {
+			t.Errorf("%s: ReviewDisposition = %q, %v; want %q, %v", name, got, ok, tc.want, tc.ok)
+		}
+	}
+}
