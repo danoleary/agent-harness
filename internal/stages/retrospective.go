@@ -90,13 +90,14 @@ func Retrospective(h hostio.Host, cfg config.Config, log *runlog.Logger, args Ar
 		}
 		return Result{Err: err}
 	}
-	// Gather the finding classes a prior pipeline run already filed (the team's
-	// open findings + this ticket's prior dropbox) so the session can treat them
-	// as settled instead of re-deriving them (BEH-539). MUST run before
+	// Gather the finding classes already filed (the team's open findings, every
+	// open harness finding across all tickets, and this ticket's prior dropbox) so
+	// the session treats them as settled and reuses their keys instead of
+	// re-deriving them under new ones (BEH-539, #65). MUST run before
 	// ClearDropbox, which is about to wipe that prior dropbox.
 	prior := h.AlreadyFiled(findingsDir, t.TeamID)
 	if len(prior) > 0 {
-		log.Event(fmt.Sprintf("retrospective re-run: %d already-filed finding class(es) passed to the session as settled context", len(prior)))
+		log.Event(fmt.Sprintf("retrospective: %d already-filed finding class(es) passed to the session as settled context", len(prior)))
 	}
 
 	// Clear any stale dropbox from a prior retrospective run of this ticket before

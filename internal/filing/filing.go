@@ -272,7 +272,13 @@ func (r Router) fileTo(sink tracker.FindingsSink, fs []findings.Finding, teamID,
 			tracked[matchKey(f.Key, f.Title)] = existing
 			continue
 		}
-		// 3. No match — file a new issue.
+		// 3. No match — file a new issue, flagged in its body when it closely
+		// matches an open one by token overlap: the same class under a drifted key
+		// (#65). A flag, not a skip — the heuristic may be wrong.
+		if dup, ok := probableDuplicateIssue(f, open); ok {
+			r.Log.Event(fmt.Sprintf("finding ⚠ %q is a probable duplicate of %s (close token overlap) — filing anyway, flagged", f.Title, dup.Identifier))
+			f.Body += fmt.Sprintf("\n\n_Probable duplicate of %s (%s) — the harness found a close key/title match among open findings. Check before triaging._", dup.Identifier, dup.Title)
+		}
 		created, err := sink.FileFinding(f, tracker.FileFindingOptions{
 			TeamID: teamID, RelatedKey: relatedIdentifier,
 		})
@@ -334,6 +340,17 @@ func (r Router) semanticMatch(f findings.Finding, open []tracker.ExistingFinding
 	return tracker.ExistingFinding{}, false
 }
 
+// probableDuplicateIssue returns the first open finding f closely matches by
+// token overlap (probablyDuplicate), if any.
+func probableDuplicateIssue(f findings.Finding, open []tracker.ExistingFinding) (tracker.ExistingFinding, bool) {
+	for _, e := range open {
+		if probablyDuplicate(f, e.Key, e.Title) {
+			return e, true
+		}
+	}
+	return tracker.ExistingFinding{}, false
+}
+
 // openTracked returns the already-filed harness findings both keyed by match key
 // (for the exact short-circuit) and as an ordered slice (the candidate set for
 // the semantic pass), limited to OPEN issues — a closed/canceled match must not
@@ -366,9 +383,13 @@ type PriorFinding struct {
 	Title string
 }
 
-// AlreadyFiled returns the deduped set of finding classes a retrospective re-run
-// should treat as settled (BEH-539): the Project sink's OPEN filed findings, merged with
-// any classes left in this ticket's prior dropbox. It MUST be called before
+// AlreadyFiled returns the deduped set of finding classes a retrospective
+// should treat as settled (BEH-539): the Project sink's OPEN filed findings, every
+// open harness-audience finding across ALL tickets (#65) — the Upstream sink's
+// open issues when wired, else the local artifact dir — and any classes left in
+// this ticket's prior dropbox. The harness set is global because harness keys
+// drift: without it each ticket's session coins its own slug for a class another
+// ticket already filed, and key dedup never fires. It MUST be called before
 // ClearDropbox wipes that dropbox. Best-effort (ADR-0001): a tracker search
 // failure degrades to the dropbox classes alone and narrates, never crashes. The
 // result is sorted (key, then title) so the injected prompt is deterministic.
@@ -393,6 +414,23 @@ func (r Router) AlreadyFiled(findingsDir, teamID string) []PriorFinding {
 				continue
 			}
 			add(e.Key, e.Title)
+		}
+	}
+
+	// Every open harness finding, whichever ticket surfaced it (#65).
+	if r.Upstream != nil {
+		if existing, err := r.Upstream.Sink.SearchFindings(r.Upstream.Container); err != nil {
+			r.Log.Event("retrospective context ⚠ upstream harness-finding lookup failed, settled context omits them: " + err.Error())
+		} else {
+			for _, e := range existing {
+				if !e.Closed {
+					add(e.Key, e.Title)
+				}
+			}
+		}
+	} else {
+		for _, rec := range readHarnessFindings(r.HarnessDir) {
+			add(rec.Key, rec.Title)
 		}
 	}
 
