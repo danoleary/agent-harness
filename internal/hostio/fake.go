@@ -162,7 +162,7 @@ func (f *Fake) AgentPreview(a AgentRun) []string {
 }
 
 func (f *Fake) ShellPreview(s ShellRun) []string {
-	return []string{"run", "--name", "fake-" + s.Label, "bash", "-lc", s.Command}
+	return []string{"run", "--name", "fake-" + s.Label, "bash", "-c", s.Command}
 }
 
 // --- repo ---

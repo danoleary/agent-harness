@@ -194,6 +194,20 @@ func TestGateRunArgsMountCheckoutAndPnpmStore(t *testing.T) {
 	}
 }
 
+// Gates and post_create must see the same PATH as the agent session, which runs
+// `claude` directly under the image's ENV. A login shell (`bash -l`) sources
+// /etc/profile, and Debian's assigns PATH unconditionally, wiping a toolchain
+// directory the Consumer's Dockerfile added with `ENV PATH=...` — the session
+// went green and the harness's own gate re-run went red with exit 127 (#38).
+func TestWorktreeCommandArgsRunCommandInNonLoginShell(t *testing.T) {
+	args := BuildWorktreeCommandArgs(GateConfig{Image: "img"}, "go test ./...")
+
+	want := []string{"img", "bash", "-c", "go test ./..."}
+	if got := args[len(args)-len(want):]; !slices.Equal(got, want) {
+		t.Errorf("worktree command must run as `bash -c <command>` after the image, got tail %q", got)
+	}
+}
+
 func TestGateRunArgsNameContainerForKill(t *testing.T) {
 	args := BuildWorktreeCommandArgs(GateConfig{ContainerName: "example-harness-gate-1"}, "pnpm run check")
 	if !slices.Contains(valuesForFlag(args, "--name"), "example-harness-gate-1") {
