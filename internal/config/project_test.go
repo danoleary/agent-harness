@@ -678,3 +678,20 @@ command = "c"
 		t.Errorf("TeamKey = %q", pc.Tracker.TeamKey)
 	}
 }
+
+func TestQueueHintNamesTheHumanGate(t *testing.T) {
+	cases := []struct {
+		tc   TrackerConfig
+		want string
+	}{
+		{TrackerConfig{Kind: "github", ReadyLabel: "ready-for-agent"}, "label a ticket `ready-for-agent` to queue it"},
+		{TrackerConfig{Kind: "linear", ReadyLabel: "agent-ready"}, "label a ticket `agent-ready` to queue it"},
+		{TrackerConfig{Kind: "jira", ReadyJQL: "labels = ready"}, "only tickets matching tracker.ready_jql are eligible"},
+		{TrackerConfig{Kind: "github"}, ""},
+	}
+	for _, c := range cases {
+		if got := c.tc.QueueHint(); got != c.want {
+			t.Errorf("%+v.QueueHint() = %q, want %q", c.tc, got, c.want)
+		}
+	}
+}

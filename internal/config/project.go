@@ -216,6 +216,19 @@ type TrackerConfig struct {
 	CanceledTransition   string `toml:"cancel_transition"`
 }
 
+// QueueHint tells an operator looking at an empty queue how a ticket gets into
+// it — the human gate the selector requires — so "queue empty" names its own
+// remedy instead of reading the same as a broken poll.
+func (tc TrackerConfig) QueueHint() string {
+	switch {
+	case tc.Kind == "jira" && tc.ReadyJQL != "":
+		return "only tickets matching tracker.ready_jql are eligible"
+	case tc.ReadyLabel != "":
+		return fmt.Sprintf("label a ticket `%s` to queue it", tc.ReadyLabel)
+	}
+	return ""
+}
+
 // ProjectDirName is the single directory the harness owns inside a Consumer
 // checkout (ADR-0008): the committed surface (config.toml, prompts/) and the
 // runtime artifacts it writes per project (logs/, the STOP sentinel,

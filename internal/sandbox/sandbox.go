@@ -2,6 +2,8 @@
 package sandbox
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"os/exec"
@@ -386,17 +388,41 @@ func BuildWorktreeCommandArgs(c GateConfig, command string) []string {
 // dockerfile is passed with `-f` (so a Consumer's `.agent-harness/Dockerfile` is
 // found regardless of the context root's own `Dockerfile`), and buildContext is
 // the directory the build runs in.
+//
+// The image is labelled with the Dockerfile's fingerprint (DockerfileLabel), which
+// is how Preflight later tells an image built from an older Dockerfile — a base
+// pin or claude CLI bump since — from a current one.
 func BuildImage(image, dockerfile, buildContext string) error {
 	fmt.Fprintf(os.Stderr,
-		"sandbox image %q not present — building it now from %s (first run, or it was pruned; this takes a few minutes)…\n",
+		"building sandbox image %q from %s (first run, pruned, or the Dockerfile changed; this takes a few minutes)…\n",
 		image, dockerfile,
 	)
-	cmd := exec.Command("docker", "build", "-t", image, "-f", dockerfile, buildContext) // allow-unbounded-exec: docker build can take minutes, streams user-visible progress
+	args := []string{"build", "-t", image, "-f", dockerfile}
+	if fp, err := DockerfileFingerprint(dockerfile); err == nil {
+		args = append(args, "--label", DockerfileLabel+"="+fp)
+	}
+	cmd := exec.Command("docker", append(args, buildContext)...) // allow-unbounded-exec: docker build can take minutes, streams user-visible progress
 	// Build chatter is diagnostic, not harness output — keep it off stdout so a
 	// caller parsing stdout (e.g. --dry-run) stays clean.
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
+}
+
+// DockerfileLabel is the image label BuildImage stamps with the fingerprint of the
+// Dockerfile it built from.
+const DockerfileLabel = "org.agent-harness.dockerfile-sha256"
+
+// DockerfileFingerprint is the sha256 of a Dockerfile's bytes. It covers what an
+// upgrade changes — the FROM pin on the base and the ARG pins in it — but not
+// files the Dockerfile COPYs from the build context.
+func DockerfileFingerprint(path string) (string, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:]), nil
 }
 
 // PullImage pulls a prebuilt sandbox image, streaming docker's progress. It is
@@ -457,7 +483,8 @@ func PreflightFor(image, herdPath, dockerfileRel string) PreflightConfig {
 // to a run (claiming the ticket, mutating Linear state) — first that free disk is
 // above the floor, then that the Docker daemon is reachable, then that the sandbox
 // image is present locally, resolving it on miss by BUILDING (when a Consumer
-// Dockerfile is declared) or PULLING (when a prebuilt image is named). A bare
+// Dockerfile is declared) or PULLING (when a prebuilt image is named), and
+// rebuilding a built image whose Dockerfile has changed since. A bare
 // missing image otherwise surfaces only as exit 125 *after* the ticket is already
 // claimed with no worktree (BEH-316); and because every session runs `docker run
 // --rm`, the image is left unreferenced between runs, so a `docker system prune -a`
@@ -505,8 +532,36 @@ func Preflight(pc PreflightConfig) error {
 				pc.Image, what, reasonOr(out, err),
 			)
 		}
+		return nil
 	}
 
+	return pc.rebuildIfStale()
+}
+
+// rebuildIfStale rebuilds a present image whose DockerfileLabel doesn't match the
+// Consumer Dockerfile as it is now — including an image built before the label
+// existed. Without it, resolve-on-miss reused the old image forever: an operator
+// who upgraded the harness kept running the old base and claude CLI until they
+// found `docker rmi` themselves. The pull path has no Dockerfile to compare, and an
+// unreadable Dockerfile skips the check, leaving the build to report it.
+func (pc PreflightConfig) rebuildIfStale() error {
+	if pc.Dockerfile == "" {
+		return nil
+	}
+	want, err := DockerfileFingerprint(pc.Dockerfile)
+	if err != nil {
+		return nil
+	}
+	out, err := pc.Run("docker", "image", "inspect", "-f", `{{ index .Config.Labels "`+DockerfileLabel+`" }}`, pc.Image)
+	if err == nil && strings.TrimSpace(string(out)) == want {
+		return nil
+	}
+	if err := pc.Build(pc.Image, pc.Dockerfile, pc.BuildContext); err != nil {
+		return fmt.Errorf(
+			"sandbox image %q is out of date with %s and the rebuild failed — run `docker build -t %s -f %s %s` manually (%s)",
+			pc.Image, pc.Dockerfile, pc.Image, pc.Dockerfile, pc.BuildContext, err,
+		)
+	}
 	return nil
 }
 

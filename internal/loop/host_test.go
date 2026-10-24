@@ -17,6 +17,8 @@ import (
 // loophost.Real) instead of sixteen with one apiece.
 type fakeHost struct {
 	clearStop      func() error
+	checkAccess    func() error
+	selectErr      error
 	stopRequested  func() bool
 	fetchMain      func() error
 	resolveNext    func() (string, bool)
@@ -63,6 +65,13 @@ func (h *fakeHost) ClearStopFile() error {
 	return h.clearStop()
 }
 
+func (h *fakeHost) CheckAccess() error {
+	if h.checkAccess == nil {
+		return nil
+	}
+	return h.checkAccess()
+}
+
 func (h *fakeHost) StopRequested() bool {
 	if h.stopRequested == nil {
 		return false
@@ -77,16 +86,19 @@ func (h *fakeHost) FetchMain() error {
 	return h.fetchMain()
 }
 
-func (h *fakeHost) ResolveNext() (*lease.Lease, bool) {
+func (h *fakeHost) ResolveNext() (*lease.Lease, bool, error) {
+	if h.selectErr != nil {
+		return nil, false, h.selectErr
+	}
 	if h.resolveNext == nil {
-		return nil, false // an empty queue: the daemon idles and re-polls
+		return nil, false, nil // an empty queue: the daemon idles and re-polls
 	}
 	id, ok := h.resolveNext()
 	if !ok {
-		return nil, false
+		return nil, false, nil
 	}
 	h.leased = lease.Held(scriptedQueue{h}, id)
-	return h.leased, true
+	return h.leased, true, nil
 }
 
 func (h *fakeHost) ReleaseTicket(id string) error {

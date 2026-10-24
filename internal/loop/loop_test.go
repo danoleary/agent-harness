@@ -1936,3 +1936,52 @@ func TestUnsetClockDefaultsToSystemTime(t *testing.T) {
 		t.Error("SystemClock.Sleep() returned early, want a real wait")
 	}
 }
+
+// A rejected credential at startup stops the daemon before it polls: exit 1, the
+// reason narrated, and no selection attempted. Discovered later, a dead token
+// read as an idle queue.
+func TestStartupAccessFailureExitsBeforePolling(t *testing.T) {
+	r := &recorder{}
+	resolved := false
+	code := Run(Deps{
+		Host: &fakeHost{
+			checkAccess: func() error { return errors.New("GH_TOKEN check failed: GitHub HTTP 401") },
+			resolveNext: func() (string, bool) { resolved = true; return "", false },
+		},
+		Clock: testClock{},
+		Log:   r,
+	})
+	if code != 1 {
+		t.Errorf("exit code = %d, want 1", code)
+	}
+	if resolved {
+		t.Error("the daemon polled the queue after its credentials were rejected")
+	}
+	if k, ok := r.kindFor("not starting: GH_TOKEN check failed"); !ok || k != loopstream.KindLoopStopped {
+		t.Errorf("want a loop-stopped record naming the failure; events = %v", r.events)
+	}
+}
+
+// A queue read failure is narrated as one, never as "queue empty", and the
+// daemon still idles and re-polls rather than exiting.
+func TestQueueReadFailureIsNotNarratedAsAnEmptyQueue(t *testing.T) {
+	r := &recorder{}
+	code := Run(Deps{
+		Host: &fakeHost{
+			selectErr:     errors.New("GitHub HTTP 401: Bad credentials"),
+			stopRequested: stopAfter(2),
+		},
+		Limits: Limits{PollInterval: time.Second, TickInterval: time.Second},
+		Clock:  testClock{},
+		Log:    r,
+	})
+	if code != 0 {
+		t.Errorf("exit code = %d, want 0 (it idled, then stopped on request)", code)
+	}
+	if r.saw("queue empty") {
+		t.Errorf("a failed read was narrated as an empty queue; events = %v", r.events)
+	}
+	if k, ok := r.kindFor("could not read the ticket queue (not an empty queue): GitHub HTTP 401"); !ok || k != loopstream.KindIdle {
+		t.Errorf("want an idle record carrying the read failure; events = %v", r.events)
+	}
+}

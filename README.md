@@ -145,8 +145,14 @@ The harness declares no skill of its own. Each of the three prompt bodies names
 the skill its stage invokes, and all three are required: a missing or blank body
 fails at config load rather than running a stage with nothing to invoke.
 
-The sandbox image builds (or pulls) itself on first run. To control when that
-~minutes-long build happens, pre-build it: `make base-image` from a checkout.
+The sandbox image builds (or pulls) itself on first run, and a built image is
+rebuilt automatically when its Dockerfile changes — say, after an upgrade bumps the
+base pin — so you never need to `docker rmi` it. To control when that
+~minutes-long build happens, pre-build it:
+`docker build -t <image> -f .agent-harness/Dockerfile .agent-harness`.
+
+When the daemon starts it checks `GH_TOKEN` and the tracker credential, and exits
+straight away with the reason if either is rejected.
 
 ## Run it
 

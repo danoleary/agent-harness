@@ -76,6 +76,11 @@ type Host interface {
 	// ClearStopFile removes any stale STOP sentinel left by a prior run, so a
 	// leftover file can't make a fresh daemon stop before doing any work.
 	ClearStopFile() error
+	// CheckAccess proves, once at startup, that the daemon's credentials work: the
+	// tracker answers a read, and GitHub accepts GH_TOKEN. A failure is fatal —
+	// the operator is at the terminal when the daemon starts, which is the cheapest
+	// moment to learn a token is dead; discovered later it reads as an idle queue.
+	CheckAccess() error
 	// StopRequested folds the two stop signals — the SIGINT flag and the
 	// .agent-harness/STOP sentinel — into one predicate, checked at every
 	// between-ticket checkpoint and between idle ticks (DESIGN.md "Two signals,
@@ -88,8 +93,10 @@ type Host interface {
 	// ResolveNext selects and claims the top-of-queue eligible ticket, returning
 	// the run's held lease on it and ok=false when the queue is empty. The loop
 	// settles the run through that lease — release to Todo, close, or keep — so a
-	// ticket a stage already released is never released twice (#25).
-	ResolveNext() (claim *lease.Lease, ok bool)
+	// ticket a stage already released is never released twice (#25). A non-nil err
+	// means the queue could not be read or the claim failed: NOT an empty queue,
+	// and narrated as such, though the daemon still idles and re-polls.
+	ResolveNext() (claim *lease.Lease, ok bool, err error)
 	// ReleaseTicket returns a stale claim to Todo for the reaper (BEH-677): a ticket
 	// some earlier, dead run claimed, which this daemon holds no lease on. A release
 	// failure is narrated, not fatal.
@@ -218,8 +225,8 @@ type Deps struct {
 	Log Narrator
 }
 
-// Run is the daemon spine. Startup clears the stale STOP sentinel and fetches
-// main; then it loops: stop-check → select → (idle+re-poll if empty | run+fetch
+// Run is the daemon spine. Startup clears the stale STOP sentinel, checks the
+// credentials (exiting 1 if they are rejected) and fetches main; then it loops: stop-check → select → (idle+re-poll if empty | run+fetch
 // if a ticket) — winding down cleanly between tickets on a stop request. It
 // returns the process exit code: 0 on a deliberate stop or empty-then-stop, the
 // daemon never failing merely because the queue ran dry.
@@ -228,6 +235,10 @@ func Run(d Deps) int {
 	// so a leftover sentinel can't abort a fresh daemon before it does any work.
 	if err := d.Host.ClearStopFile(); err != nil {
 		d.Log.Event("loop … warning: could not clear stale STOP sentinel: " + err.Error())
+	}
+	if err := d.Host.CheckAccess(); err != nil {
+		d.Log.Structured(loopstream.Record{Kind: loopstream.KindLoopStopped, Message: "loop — not starting: " + err.Error()})
+		return 1
 	}
 	if err := d.Host.FetchMain(); err != nil {
 		d.Log.Event("loop … warning: could not fast-forward origin/main at startup: " + err.Error())
@@ -272,14 +283,23 @@ func Run(d Deps) int {
 		// a failed list/release is narrated and swallowed, never a ticket outcome.
 		d.reapStaleClaims()
 
-		claim, ok := d.Host.ResolveNext()
+		claim, ok, err := d.Host.ResolveNext()
+		if err != nil {
+			// Say plainly that this is not an empty queue — the two used to log the
+			// same idle line, so a dead token idled for minutes looking healthy. The
+			// error rides on the structured record so `watch` shows it too. Then idle
+			// and re-poll anyway: a tracker hiccup at 3am must not end the run.
+			d.Log.Structured(loopstream.Record{Kind: loopstream.KindIdle, Message: fmt.Sprintf("loop — could not read the ticket queue (not an empty queue): %v; re-polling in %s", err, d.Limits.PollInterval)})
+			d.idleWait()
+			continue
+		}
 		if !ok {
 			// The daemon difference from `pipeline --next`: an empty queue is a
 			// normal steady state, so the loop idles for PollInterval and re-polls
 			// rather than exiting (DESIGN.md "The loop"). The idle is broken into
 			// short ticks that re-check stop, so a SIGINT/sentinel landing mid-idle
 			// is honoured within one TickInterval, not a whole poll interval later.
-			d.Log.Structured(loopstream.Record{Kind: loopstream.KindIdle, Message: "loop — queue empty; idling before re-poll"})
+			d.Log.Structured(loopstream.Record{Kind: loopstream.KindIdle, Message: fmt.Sprintf("loop — queue empty; re-polling in %s", d.Limits.PollInterval)})
 			d.idleWait()
 			continue
 		}

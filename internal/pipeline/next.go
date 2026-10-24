@@ -33,6 +33,10 @@ type NextSelection struct {
 	// ExitCode is the process exit code when Proceed is false: 0 for an empty queue
 	// or a dry-run preview (both clean), 1 for a selection or claim failure.
 	ExitCode int
+	// Err is the selection or claim failure behind ExitCode 1, so the daemon can
+	// tell "the tracker is unreachable" from "nothing to do" — the two looked the
+	// same in the loop log, and a dead token idled as an empty queue for minutes.
+	Err error
 }
 
 // ResolveNext implements `pipeline --next` ticket resolution (DESIGN.md
@@ -40,17 +44,23 @@ type NextSelection struct {
 // dryRun — claim it (claim-on-select dequeue, ADR-0003). An empty queue is a clean
 // exit 0 (a normal steady state); a dry-run resolves the real ticket and previews
 // the plan without claiming (the guarantee tightens from "touches no Linear" to
-// "mutates no Linear"). A selection or claim failure exits 1.
-func ResolveNext(r NextResolver, dryRun bool, log Narrator) NextSelection {
+// "mutates no Linear"). A selection or claim failure exits 1. queueHint, when
+// set, is appended to the empty-queue narration so it says how a ticket gets
+// queued (config.TrackerConfig.QueueHint).
+func ResolveNext(r NextResolver, dryRun bool, queueHint string, log Narrator) NextSelection {
 	t, ok, err := r.SelectNextTicket()
 	if err != nil {
 		log.Event("pipeline — ticket selection failed: " + err.Error())
-		return NextSelection{ExitCode: 1}
+		return NextSelection{ExitCode: 1, Err: err}
 	}
 	if !ok {
 		// A normal steady state, not a failure — the loop will later wrap --next and
 		// reads this exit-0 as "nothing to do" without remapping codes.
-		log.Event("no eligible ticket — queue empty")
+		msg := "no eligible ticket — queue empty"
+		if queueHint != "" {
+			msg += "; " + queueHint
+		}
+		log.Event(msg)
 		return NextSelection{ExitCode: 0}
 	}
 	if dryRun {
@@ -62,7 +72,7 @@ func ResolveNext(r NextResolver, dryRun bool, log Narrator) NextSelection {
 	claim := lease.Unheld(r, t.Identifier)
 	if err := claim.Hold(); err != nil {
 		log.Event(fmt.Sprintf("pipeline — claiming %s failed: %v", t.Identifier, err))
-		return NextSelection{ExitCode: 1}
+		return NextSelection{ExitCode: 1, Err: err}
 	}
 	log.Structured(loopstream.Record{
 		Kind:    loopstream.KindTicketSelected,

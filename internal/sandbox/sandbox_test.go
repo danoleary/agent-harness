@@ -2,6 +2,8 @@ package sandbox
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strconv"
@@ -845,5 +847,96 @@ func TestPreflightAllowsLaunchAtTheFloor(t *testing.T) {
 	atFloor := func(string) (uint64, error) { return MinFreeDiskBytes, nil }
 	if err := Preflight(pf(run, noBuild(t), atFloor)); err != nil {
 		t.Errorf("Preflight should allow launch with free space exactly at the floor, got: %v", err)
+	}
+}
+
+// staleFixture writes a real Dockerfile so the staleness check has something to
+// fingerprint, and returns the build-path config for it plus that fingerprint.
+func staleFixture(t *testing.T, run func(string, ...string) ([]byte, error), build func(string, string, string) error) (PreflightConfig, string) {
+	t.Helper()
+	df := filepath.Join(t.TempDir(), "Dockerfile")
+	if err := os.WriteFile(df, []byte("FROM ghcr.io/danoleary/agent-harness-base:0.6.0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fp, err := DockerfileFingerprint(df)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pc := pf(run, build, plentyDisk)
+	pc.Dockerfile, pc.BuildContext = df, filepath.Dir(df)
+	return pc, fp
+}
+
+// An image built from an older Dockerfile (a base pin or CLI bump since) is
+// rebuilt, not reused: resolve-on-miss alone kept every upgraded operator on the
+// old base until they found `docker rmi` themselves.
+func TestPreflightRebuildsAnImageBuiltFromAnOlderDockerfile(t *testing.T) {
+	builds := 0
+	build := func(string, string, string) error { builds++; return nil }
+	run := fakeDocker(map[string][]reply{
+		"info": one([]byte("Server Version: 27.0.0"), nil),
+		"image": {
+			{[]byte(`[{"Id":"sha256:abc"}]`), nil}, // present
+			{[]byte("0123stale\n"), nil},           // ...but labelled with another Dockerfile
+		},
+	}, nil)
+	pc, _ := staleFixture(t, run, build)
+	if err := Preflight(pc); err != nil {
+		t.Fatalf("Preflight() = %v, want a rebuild then pass", err)
+	}
+	if builds != 1 {
+		t.Errorf("builds = %d, want 1 (the image is stale)", builds)
+	}
+}
+
+// An image that predates the label (`<no value>`) is treated as stale too.
+func TestPreflightRebuildsAnUnlabelledImage(t *testing.T) {
+	builds := 0
+	run := fakeDocker(map[string][]reply{
+		"info":  one(nil, nil),
+		"image": {{nil, nil}, {[]byte("<no value>\n"), nil}},
+	}, nil)
+	pc, _ := staleFixture(t, run, func(string, string, string) error { builds++; return nil })
+	if err := Preflight(pc); err != nil || builds != 1 {
+		t.Errorf("Preflight() = %v with %d builds, want nil and 1", err, builds)
+	}
+}
+
+// An image whose label matches the current Dockerfile is reused as-is.
+func TestPreflightReusesAnImageBuiltFromTheCurrentDockerfile(t *testing.T) {
+	var calls []string
+	byVerb := map[string][]reply{"info": one(nil, nil)}
+	pc, fp := staleFixture(t, fakeDocker(byVerb, &calls), noBuild(t))
+	byVerb["image"] = []reply{{nil, nil}, {[]byte(fp + "\n"), nil}}
+	if err := Preflight(pc); err != nil {
+		t.Errorf("Preflight() = %v, want nil", err)
+	}
+	if !strings.Contains(strings.Join(calls, "\n"), DockerfileLabel) {
+		t.Errorf("Preflight never read the image's %s label; calls = %v", DockerfileLabel, calls)
+	}
+}
+
+// A failed rebuild names the image as stale and gives the manual command.
+func TestPreflightSurfacesAFailedRebuild(t *testing.T) {
+	run := fakeDocker(map[string][]reply{
+		"info":  one(nil, nil),
+		"image": {{nil, nil}, {[]byte("old\n"), nil}},
+	}, nil)
+	pc, _ := staleFixture(t, run, func(string, string, string) error { return errFake })
+	err := Preflight(pc)
+	if err == nil || !strings.Contains(err.Error(), "out of date") || !strings.Contains(err.Error(), "docker build") {
+		t.Errorf("Preflight() = %v, want an out-of-date rebuild failure with the manual command", err)
+	}
+}
+
+func TestDockerfileFingerprintTracksContent(t *testing.T) {
+	dir := t.TempDir()
+	a, b := filepath.Join(dir, "a"), filepath.Join(dir, "b")
+	_ = os.WriteFile(a, []byte("FROM base:0.5.0\n"), 0o644)
+	_ = os.WriteFile(b, []byte("FROM base:0.6.0\n"), 0o644)
+	fa, _ := DockerfileFingerprint(a)
+	fb, _ := DockerfileFingerprint(b)
+	if fa == "" || fa == fb {
+		t.Errorf("fingerprints %q and %q should be non-empty and differ", fa, fb)
 	}
 }
