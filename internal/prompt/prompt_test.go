@@ -575,6 +575,25 @@ func TestRetrospectiveListsAlreadyFiledFindingsOnRerun(t *testing.T) {
 	}
 }
 
+// #65: the settled list spans every ticket's open findings, so the prompt must
+// not claim they were filed for THIS ticket, and must tell the session to reuse
+// a listed key verbatim when its finding is the same failure class — the only
+// way key dedup fires across tickets.
+func TestRetrospectiveTellsSessionToReuseAnOpenKey(t *testing.T) {
+	p := bRetro(t, sample, "beh-362", []FiledFinding{
+		{Key: "host-gate-missing-toolchain-reported-as-red-gate", Title: "Host gate exit 127 misreported"},
+	})
+	if strings.Contains(p, "This ticket has been through the pipeline before") {
+		t.Error("settled list is global now; the prompt must not attribute it to this ticket")
+	}
+	if !regexp.MustCompile(`(?i)across all tickets`).MatchString(p) {
+		t.Error("prompt does not say the settled list spans all tickets")
+	}
+	if !regexp.MustCompile(`(?i)reuse (its|that|the listed) key`).MatchString(p) {
+		t.Error("prompt does not tell the session to reuse an existing key for the same class")
+	}
+}
+
 // A title-only finding (no explicit key) must still appear in the settled list.
 func TestRetrospectiveListsTitleOnlyAlreadyFiledFinding(t *testing.T) {
 	p := bRetro(t, sample, "beh-362", []FiledFinding{
