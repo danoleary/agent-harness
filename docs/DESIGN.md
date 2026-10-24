@@ -259,7 +259,7 @@ loop:
   # agent has no GH_TOKEN; it can only commit into the shared local .git
   # re-run over an unchanged branch (#44): the stage records each verdict's Disposition line
   # and the HEAD it covered in logs/<KEY>/review-verdict.json (re-recorded at the landed tip).
-  # When HEAD still matches, the envelope tells the session the prior verdict and the range
+  # When HEAD still matches and that verdict was clear (a blocked one waits on a human), the envelope tells the session the prior verdict and the range
   # origin/main..<head>: run the gate, re-emit that Disposition, commit only for a real defect.
 
   --- review ground truth + push gate (harness, host-side) ---

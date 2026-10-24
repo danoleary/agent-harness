@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/danoleary/agent-harness/internal/prompt"
 )
@@ -17,9 +18,15 @@ type reviewRecord struct {
 	Disposition string `json:"disposition"`
 }
 
-// readPriorReview returns the recorded verdict when it covered exactly head — the
-// branch has gained no commit since that review — and nil otherwise, so a moved
-// branch, a missing or unreadable record, or an unknown HEAD all review cold.
+// clearDisposition leads the only verdict worth carrying forward.
+const clearDisposition = "Disposition: clear"
+
+// readPriorReview returns the recorded verdict when it was clear and covered
+// exactly head — the branch has gained no commit since that review — and nil
+// otherwise, so a moved branch, a missing or unreadable record, or an unknown HEAD
+// all review cold. A blocked verdict is never carried forward: it waits on a human
+// decision that lands on the ticket, not the branch, so re-emitting it over the
+// same HEAD would keep the ticket blocked after the human answered.
 func readPriorReview(logDir, head string) *prompt.PriorReview {
 	if head == "" {
 		return nil
@@ -29,7 +36,7 @@ func readPriorReview(logDir, head string) *prompt.PriorReview {
 		return nil
 	}
 	var r reviewRecord
-	if json.Unmarshal(raw, &r) != nil || r.Head != head || r.Disposition == "" {
+	if json.Unmarshal(raw, &r) != nil || r.Head != head || !strings.HasPrefix(r.Disposition, clearDisposition) {
 		return nil
 	}
 	return &prompt.PriorReview{Head: r.Head, Disposition: r.Disposition}

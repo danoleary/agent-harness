@@ -81,6 +81,8 @@ covered, in the ticket's log dir, and when the branch HEAD still matches, the
 envelope carries both** (#44). The section tells the session to run the gate and
 re-emit that Disposition, committing only for a real defect. It sits in the
 envelope, not the body, because only the harness knows the branch has not moved.
+Only a clear verdict is carried forward: a blocked one waits on a human answer that
+lands on the ticket, not the branch, so re-emitting it would never unblock.
 It is additive: a first review, or one over a moved branch, reads exactly as
 before. The Consumer body still owns how the review is done; the envelope only
 states a fact about the diff.

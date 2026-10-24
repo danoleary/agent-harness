@@ -603,3 +603,18 @@ func TestReviewWithoutADispositionRecordsNothing(t *testing.T) {
 		t.Error("no Disposition was emitted, so there is no prior verdict to hand on")
 	}
 }
+
+// A blocked verdict waits on a human answer that lands on the ticket, not the
+// branch: a re-run over the same HEAD reviews cold rather than re-emit the block.
+func TestReviewReRunAfterABlockedVerdictReviewsCold(t *testing.T) {
+	h := hostio.NewFake()
+	h.AgentOutcome = session.Outcome{ReviewVerdictEmitted: true, ReviewBlocked: true, ReviewDisposition: "Disposition: blocked — needs a human call"}
+	log := stageLog(t, "PROJ-44")
+
+	Review(h, stageCfg(), log, Args{Identifier: "PROJ-44"})
+	Review(h, stageCfg(), log, Args{Identifier: "PROJ-44"})
+
+	if strings.Contains(h.Agents[1].Prompt, "UNCHANGED SINCE THE LAST REVIEW") {
+		t.Error("a blocked verdict must not be carried forward to a re-run")
+	}
+}
