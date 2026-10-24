@@ -2,7 +2,10 @@ package git
 
 import (
 	"fmt"
+	"io/fs"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -77,22 +80,69 @@ func extractCitedSymbols(description string) []string {
 //   - proposed: symbols named in an add/introduce/extraction context — the ones
 //     the ticket exists to CREATE. Their absence is expected for new work, never a
 //     resolved signal, so they get a soft "verify premise" verdict (BEH-629/674).
+//
+// qualifier records, for a symbol cited package-qualified (`tea.Model`), the
+// lowercase package name in front of it, so the advisory can drop the symbol
+// when that package isn't one the repo owns (#69).
 type citedSymbols struct {
-	expected []string
-	proposed []string
+	expected  []string
+	proposed  []string
+	qualifier map[string]string
+}
+
+// qualifiedChain matches a dotted selector inside a backtick span —
+// `tea.Model`, `pgx.Conn.Close`, `syncLog.participantJoined`. Only a chain
+// whose head is shaped like a package name (all lowercase) is treated as
+// package-qualified; a mixed-case head is a local value, not a package.
+var qualifiedChain = regexp.MustCompile(`[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+`)
+
+// isPackageName reports whether a selector head is shaped like a Go package
+// name: lowercase letters and digits, letter-led.
+func isPackageName(s string) bool {
+	for i, r := range s {
+		if !(r >= 'a' && r <= 'z' || i > 0 && r >= '0' && r <= '9') {
+			return false
+		}
+	}
+	return s != ""
+}
+
+// qualifiedRange is the byte range of a package-qualified selector tail within
+// a span, and the package that qualifies it.
+type qualifiedRange struct {
+	start, end int
+	pkg        string
+}
+
+// spanQualifiers finds a span's package-qualified selector tails: in
+// `*tea.Program` the range of `Program` maps to `tea`.
+func spanQualifiers(inner string) []qualifiedRange {
+	var out []qualifiedRange
+	for _, loc := range qualifiedChain.FindAllStringIndex(inner, -1) {
+		chain := inner[loc[0]:loc[1]]
+		dot := strings.IndexByte(chain, '.')
+		if head := chain[:dot]; isPackageName(head) {
+			out = append(out, qualifiedRange{start: loc[0] + dot + 1, end: loc[1], pkg: head})
+		}
+	}
+	return out
 }
 
 // classifyCitedSymbols walks each backtick span, drops prose keywords and known
 // third-party package symbols (BEH-629), and sorts each surviving mixed-case
 // identifier into expected vs proposed by whether an add/introduce/extraction verb
-// sits immediately before its span. Order-preserving and de-duplicated across buckets.
+// sits immediately before its span. A symbol cited behind a package-shaped
+// qualifier has that qualifier recorded (#69). Order-preserving and de-duplicated
+// across buckets.
 func classifyCitedSymbols(description string) citedSymbols {
-	var c citedSymbols
+	c := citedSymbols{qualifier: map[string]string{}}
 	seen := map[string]bool{}
 	for _, loc := range backtickSpan.FindAllStringSubmatchIndex(description, -1) {
 		spanStart, inner := loc[0], description[loc[2]:loc[3]]
 		proposed := inAddContext(description[:spanStart])
-		for _, sym := range wordIdentifier.FindAllString(inner, -1) {
+		qualified := spanQualifiers(inner)
+		for _, w := range wordIdentifier.FindAllStringIndex(inner, -1) {
+			sym := inner[w[0]:w[1]]
 			if !isMixedCaseIdentifier(sym) || isProseWord(sym) || hasVendorPrefix(sym) {
 				continue
 			}
@@ -100,6 +150,11 @@ func classifyCitedSymbols(description string) citedSymbols {
 				continue
 			}
 			seen[sym] = true
+			for _, q := range qualified {
+				if w[0] >= q.start && w[1] <= q.end {
+					c.qualifier[sym] = q.pkg
+				}
+			}
 			if proposed {
 				c.proposed = append(c.proposed, sym)
 			} else {
@@ -186,6 +241,99 @@ func inAddContext(preceding string) bool {
 	return false
 }
 
+// localPackage reports whether any declared source root holds a directory named
+// pkg (the root itself included) — the shape of a package the repo owns, so a
+// symbol qualified by it is repo code. A qualifier with no such directory names
+// a dependency or the standard library (`tea`, `http`), whose symbols can never
+// appear under the source roots, so the advisory drops them (#69). Vendored and
+// installed dependency trees don't count as local. An unreadable root counts as
+// "not local", which only ever drops a symbol (the safe direction).
+func localPackage(srcRoots []string, pkg string) bool {
+	found := false
+	for _, root := range srcRoots {
+		_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+			if err != nil || !d.IsDir() {
+				return nil
+			}
+			name := d.Name()
+			if path != root && (name == "vendor" || name == "node_modules" || strings.HasPrefix(name, ".")) {
+				return filepath.SkipDir
+			}
+			if name == pkg {
+				found = true
+				return filepath.SkipAll
+			}
+			return nil
+		})
+		if found {
+			return true
+		}
+	}
+	return false
+}
+
+// dependencyModules returns the module paths the go.mod governing the source
+// roots requires — found by walking up from each root to the nearest go.mod. A
+// root with no go.mod above it (a non-Go Consumer) contributes nothing.
+func dependencyModules(srcRoots []string) []string {
+	var mods []string
+	seen := map[string]bool{}
+	for _, root := range srcRoots {
+		for dir := filepath.Clean(root); ; dir = filepath.Dir(dir) {
+			data, err := os.ReadFile(filepath.Join(dir, "go.mod"))
+			if err == nil {
+				for _, m := range goModRequires(string(data)) {
+					if !seen[m] {
+						seen[m] = true
+						mods = append(mods, m)
+					}
+				}
+				break
+			}
+			if filepath.Dir(dir) == dir {
+				break
+			}
+		}
+	}
+	return mods
+}
+
+// goModRequires extracts the module paths from a go.mod's require directives,
+// both the single-line and the parenthesized block form.
+func goModRequires(gomod string) []string {
+	var mods []string
+	inBlock := false
+	for _, line := range strings.Split(gomod, "\n") {
+		if i := strings.Index(line, "//"); i >= 0 {
+			line = line[:i]
+		}
+		fields := strings.Fields(line)
+		switch {
+		case len(fields) == 0:
+		case inBlock && fields[0] == ")":
+			inBlock = false
+		case inBlock:
+			mods = append(mods, fields[0])
+		case fields[0] == "require" && len(fields) > 1 && fields[1] == "(":
+			inBlock = true
+		case fields[0] == "require" && len(fields) > 1:
+			mods = append(mods, fields[1])
+		}
+	}
+	return mods
+}
+
+// namedDependency returns the first go.mod dependency whose module path the
+// ticket text names, or "" when it names none.
+func namedDependency(srcRoots []string, description string) string {
+	for _, m := range dependencyModules(srcRoots) {
+		if strings.Contains(description, m) {
+			return m
+		}
+	}
+	return ""
+}
+
 // symbolPresent reports whether ANY declared source root contains a whole-word
 // occurrence of the symbol. Any-root rather than all-roots keeps the fail-quiet
 // contract: a symbol found anywhere in the Consumer's source is present, so a
@@ -242,6 +390,12 @@ func symbolPresentIn(srcRoot, symbol string) bool {
 // premise" note that never says "recommend close" — that dangerous verdict on a
 // to-be-added symbol (`beforeSend` in BEH-626) is exactly backwards and could get
 // a valid, unstarted ticket wrongly closed.
+//
+// Dependency symbols are not repo code (#69). A symbol cited behind a package
+// qualifier the repo doesn't own (`tea.Model`) is dropped before the check: it
+// can never appear under the source roots. And when the ticket names one of the
+// go.mod dependencies by module path, a missing bare symbol may be that
+// dependency's, so the verdict downgrades to the soft "verify premise" note.
 func ResolvedAdvisory(srcRoots []string, identifier, description string) string {
 	// No declared source root means no signal to read: skip the advisory rather
 	// than scan a guessed path. Omitting `source_roots` disables the check, the
@@ -251,9 +405,18 @@ func ResolvedAdvisory(srcRoots []string, identifier, description string) string 
 		return ""
 	}
 	cited := classifyCitedSymbols(description)
+	local := map[string]bool{}
 	missing := func(syms []string) []string {
 		var out []string
 		for _, sym := range syms {
+			if pkg := cited.qualifier[sym]; pkg != "" {
+				if _, ok := local[pkg]; !ok {
+					local[pkg] = localPackage(srcRoots, pkg)
+				}
+				if !local[pkg] {
+					continue
+				}
+			}
 			if !symbolPresent(srcRoots, sym) {
 				out = append(out, sym)
 			}
@@ -262,6 +425,12 @@ func ResolvedAdvisory(srcRoots []string, identifier, description string) string 
 	}
 	missingExpected := missing(cited.expected)
 	if len(missingExpected) > 0 {
+		if dep := namedDependency(srcRoots, description); dep != "" {
+			return fmt.Sprintf(
+				"ℹ %s cites symbol(s) not in source: %s — the ticket names the dependency %s, so these may be its symbols rather than repo code; not a sign the ticket is resolved. Verify the premise, then implement.",
+				identifier, strings.Join(missingExpected, ", "), dep,
+			)
+		}
 		return fmt.Sprintf(
 			"⚠ %s cites symbol(s) absent from source: %s — likely already resolved (possibly by a sibling ticket's merge). Verify the premise still holds before implementing; recommend close if the work has already landed.",
 			identifier, strings.Join(missingExpected, ", "),
