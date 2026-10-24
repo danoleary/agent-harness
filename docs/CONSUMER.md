@@ -47,7 +47,7 @@ Non-secret, project-specific values. Never put a credential here.
 ```toml
 # The sandbox image. Declare EXACTLY ONE of these two shapes:
 #
-#   dockerfile = "..."   -> the harness BUILDS this on a local image miss
+#   dockerfile = "..."   -> the harness BUILDS this on a local image miss, and rebuilds it when the Dockerfile changes
 #   image      = "..."   -> a prebuilt, base-compatible ref it PULLS on a miss
 #
 # Declaring neither is a hard error at config load: there is no sane

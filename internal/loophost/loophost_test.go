@@ -129,16 +129,51 @@ func TestStopRequestedFoldsTheSentinelAndTheSignal(t *testing.T) {
 
 // --- queue ------------------------------------------------------------------
 
-// A selection or claim failure must fold into "no ticket": the daemon idles and
-// re-polls rather than dying on one bad poll — a tracker hiccup at 3am cannot be
-// allowed to end an unattended run.
-func TestResolveNextFoldsASelectionFailureIntoAnEmptyQueue(t *testing.T) {
+// A selection failure comes back as an error, not an empty queue: the daemon
+// still idles and re-polls on it, but must be able to say the read failed — the
+// two used to look identical, so a dead token idled as "queue empty".
+func TestResolveNextReturnsASelectionFailureAsAnError(t *testing.T) {
 	trk := newQueueTracker()
 	trk.nextErr = errors.New("linear 503")
 	h, _ := hostFor(t, config.Config{}, trk)
 
-	if claim, ok := h.ResolveNext(); ok || claim != nil {
-		t.Errorf("ResolveNext() = (%v, %v), want (nil, false) so the daemon idles and re-polls", claim, ok)
+	claim, ok, err := h.ResolveNext()
+	if ok || claim != nil || !errors.Is(err, trk.nextErr) {
+		t.Errorf("ResolveNext() = (%v, %v, %v), want (nil, false, linear 503)", claim, ok, err)
+	}
+}
+
+// The empty queue is not an error.
+func TestResolveNextEmptyQueueIsNotAnError(t *testing.T) {
+	h, _ := hostFor(t, config.Config{}, newQueueTracker())
+	if claim, ok, err := h.ResolveNext(); ok || claim != nil || err != nil {
+		t.Errorf("ResolveNext() = (%v, %v, %v), want (nil, false, nil)", claim, ok, err)
+	}
+}
+
+// CheckAccess fails on a rejected GH_TOKEN before touching the tracker, and on a
+// tracker that rejects the read — naming the tracker so the operator knows which
+// credential to fix.
+func TestCheckAccessRejectsADeadTokenOrTracker(t *testing.T) {
+	trk := newQueueTracker()
+	h, _ := hostFor(t, config.Config{}, trk)
+	dead := errors.New("GH_TOKEN check failed")
+	h.checkToken = func() error { return dead }
+	if err := h.CheckAccess(); !errors.Is(err, dead) {
+		t.Errorf("CheckAccess() = %v, want the token failure", err)
+	}
+
+	h.checkToken = func() error { return nil }
+	trk.nextErr = errors.New("HTTP 401")
+	h.cfg.Tracker.Kind = "linear"
+	err := h.CheckAccess()
+	if !errors.Is(err, trk.nextErr) || !strings.Contains(err.Error(), "linear tracker") {
+		t.Errorf("CheckAccess() = %v, want the tracker failure naming the linear tracker", err)
+	}
+
+	trk.nextErr = nil
+	if err := h.CheckAccess(); err != nil {
+		t.Errorf("CheckAccess() = %v with both credentials good, want nil", err)
 	}
 }
 
@@ -149,7 +184,7 @@ func TestResolveNextClaimsTheSelectedTicket(t *testing.T) {
 	trk.next, trk.nextOK = ticket.Ticket{Identifier: "PROJ-7"}, true
 	h, _ := hostFor(t, config.Config{}, trk)
 
-	claim, ok := h.ResolveNext()
+	claim, ok, _ := h.ResolveNext()
 	if !ok || claim.Key() != "PROJ-7" || !claim.Held() {
 		t.Fatalf("ResolveNext() = (%v, %v), want a held lease on PROJ-7", claim, ok)
 	}
@@ -209,7 +244,7 @@ func TestTicketMutationsReachTheTracker(t *testing.T) {
 	if err := h.ReleaseTicket("PROJ-1"); err != nil {
 		t.Fatalf("ReleaseTicket() = %v", err)
 	}
-	claim, _ := h.ResolveNext()
+	claim, _, _ := h.ResolveNext()
 	if err := claim.Close(); err != nil {
 		t.Fatalf("Close() = %v", err)
 	}

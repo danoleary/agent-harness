@@ -36,7 +36,7 @@ func TestResolveNextSelectsAndClaims(t *testing.T) {
 	r := &fakeResolver{ticket: ticket.Ticket{Identifier: "BEH-100", Priority: "Urgent"}, ok: true}
 	rec := &recorder{}
 
-	sel := ResolveNext(r, false, rec)
+	sel := ResolveNext(r, false, "", rec)
 
 	if !sel.Proceed {
 		t.Fatal("a selected ticket on a real run should Proceed")
@@ -65,7 +65,7 @@ func TestResolveNextEmptyQueueExitsZeroWithoutClaiming(t *testing.T) {
 	r := &fakeResolver{ok: false}
 	rec := &recorder{}
 
-	sel := ResolveNext(r, false, rec)
+	sel := ResolveNext(r, false, "", rec)
 
 	if sel.Proceed {
 		t.Error("an empty queue must not Proceed")
@@ -87,7 +87,7 @@ func TestResolveNextDryRunResolvesButDoesNotClaim(t *testing.T) {
 	r := &fakeResolver{ticket: ticket.Ticket{Identifier: "BEH-101"}, ok: true}
 	rec := &recorder{}
 
-	sel := ResolveNext(r, true, rec)
+	sel := ResolveNext(r, true, "", rec)
 
 	if sel.Proceed {
 		t.Error("dry-run must not Proceed to running the pipeline")
@@ -114,7 +114,7 @@ func TestResolveNextSelectionErrorExitsOne(t *testing.T) {
 	r := &fakeResolver{selErr: errors.New("linear down")}
 	rec := &recorder{}
 
-	sel := ResolveNext(r, false, rec)
+	sel := ResolveNext(r, false, "", rec)
 
 	if sel.Proceed {
 		t.Error("a selection error must not Proceed")
@@ -125,6 +125,19 @@ func TestResolveNextSelectionErrorExitsOne(t *testing.T) {
 	if len(r.moved) != 0 {
 		t.Errorf("a selection error must claim nothing, claimed %v", r.moved)
 	}
+	if sel.Err == nil {
+		t.Error("a selection error must be handed back in Err, so the daemon can tell it from an empty queue")
+	}
+}
+
+// The empty-queue narration carries the hint, so an operator staring at an idle
+// daemon is told how to give it work.
+func TestResolveNextEmptyQueueNarratesTheHint(t *testing.T) {
+	rec := &recorder{}
+	ResolveNext(&fakeResolver{}, false, "label a ticket `ready-for-agent` to queue it", rec)
+	if !rec.saw("queue empty; label a ticket `ready-for-agent` to queue it") {
+		t.Errorf("expected the hint in the empty-queue narration; events = %v", rec.events)
+	}
 }
 
 // A claim failure after a successful select is a hard error: exit 1, do not
@@ -133,7 +146,7 @@ func TestResolveNextClaimErrorExitsOne(t *testing.T) {
 	r := &fakeResolver{ticket: ticket.Ticket{Identifier: "BEH-102"}, ok: true, moveErr: errors.New("linear down")}
 	rec := &recorder{}
 
-	sel := ResolveNext(r, false, rec)
+	sel := ResolveNext(r, false, "", rec)
 
 	if sel.Proceed {
 		t.Error("a claim failure must not Proceed")

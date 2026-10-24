@@ -22,6 +22,7 @@ import (
 
 	"github.com/danoleary/agent-harness/internal/config"
 	gitpkg "github.com/danoleary/agent-harness/internal/git"
+	"github.com/danoleary/agent-harness/internal/github"
 	"github.com/danoleary/agent-harness/internal/hostio"
 	"github.com/danoleary/agent-harness/internal/lease"
 	"github.com/danoleary/agent-harness/internal/loop"
@@ -55,6 +56,9 @@ type Real struct {
 	cfg    config.Config
 	log    loop.Narrator
 	client tracker.Tracker
+	// checkToken proves GH_TOKEN is accepted. A field so a test can stand in for
+	// the network; New wires the real GitHub probe.
+	checkToken func() error
 
 	// stopFile is the absolute path of the STOP sentinel: one of the daemon's two
 	// stop signals, and the only one an operator can raise from another shell.
@@ -74,7 +78,13 @@ func New(cfg config.Config, log loop.Narrator, client tracker.Tracker) *Real {
 	if !filepath.IsAbs(stopFile) {
 		stopFile = filepath.Join(cfg.ProjectPath, stopFile)
 	}
-	return &Real{cfg: cfg, log: log, client: client, stopFile: stopFile}
+	return &Real{
+		cfg:        cfg,
+		log:        log,
+		client:     client,
+		checkToken: func() error { return github.CheckToken(github.NewTransport(cfg.GitHubToken)) },
+		stopFile:   stopFile,
+	}
 }
 
 // --- stop control -----------------------------------------------------------
@@ -118,16 +128,33 @@ func (h *Real) checkout() gitpkg.Checkout {
 
 func (h *Real) FetchMain() error { return h.checkout().FetchMain() }
 
+// CheckAccess proves both host credentials work before the daemon polls: GH_TOKEN
+// (every Consumer pushes and opens PRs with it, whatever its tracker) and the
+// tracker's own, via one side-effect-free selection read — the same call every
+// poll makes, so passing here means polls can succeed.
+func (h *Real) CheckAccess() error {
+	if err := h.checkToken(); err != nil {
+		return err
+	}
+	if _, _, err := h.client.SelectNextTicket(); err != nil {
+		return fmt.Errorf("the %s tracker rejected a queue read — check its credentials and the tracker config: %w", h.cfg.Tracker.Kind, err)
+	}
+	return nil
+}
+
 // ResolveNext selects and claims the top-of-queue ticket. It is always a real run,
 // never a dry-run: the loop claims-on-select (ADR-0003) so a concurrent selection
-// can't grab the same ticket. A selection/claim failure is folded into "no ticket"
-// — the daemon idles and re-polls rather than crashing on one bad poll.
-func (h *Real) ResolveNext() (*lease.Lease, bool) {
-	sel := pipeline.ResolveNext(h.client, false, h.log)
-	if !sel.Proceed {
-		return nil, false
+// can't grab the same ticket. A selection/claim failure comes back as err, which
+// the daemon narrates as a failed read — not an empty queue — before re-polling.
+func (h *Real) ResolveNext() (*lease.Lease, bool, error) {
+	sel := pipeline.ResolveNext(h.client, false, h.cfg.Tracker.QueueHint(), h.log)
+	if sel.Err != nil {
+		return nil, false, sel.Err
 	}
-	return sel.Lease, true
+	if !sel.Proceed {
+		return nil, false, nil
+	}
+	return sel.Lease, true, nil
 }
 
 func (h *Real) ReleaseTicket(id string) error { return h.client.ReleaseToTodo(id) }

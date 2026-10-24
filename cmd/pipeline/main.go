@@ -65,7 +65,7 @@ func main() {
 		// the per-ticket logger feeds, so a single-shot `pipeline --next` is viewable by
 		// cmd/watch too (ADR-0005). A single-shot run does not truncate — only the daemon does.
 		console := runlog.NewConsole(loopstream.NewStream(loopstream.PathUnder(stages.LogsRoot(cfg))))
-		sel := pipeline.ResolveNext(client, args.DryRun, console)
+		sel := pipeline.ResolveNext(client, args.DryRun, cfg.Tracker.QueueHint(), console)
 		if !sel.Proceed {
 			// Dry-run resolved a real ticket: print its plan before exiting.
 			if args.DryRun && sel.Identifier != "" {
