@@ -25,6 +25,11 @@ future, deferred launchd/systemd unit.
 - Fails loud if `bin/loop` isn't built/executable, rather than `nohup`'ing a
   non-existent path (which would record a pidfile for an instantly-dead process).
 - `nohup bin/loop >> <log> 2>&1 &`, then writes `$!` to the pidfile.
+- With `LOOP_KEEP_AWAKE=1` (environment first, then the env file, like
+  `PROJECT_PATH`), detaches `caffeinate -is -w <loop pid>` so macOS idle sleep
+  can't freeze the loop; `-w` releases it when the loop exits, however it exits.
+  `-s` needs AC power, and a closed lid still sleeps outside clamshell mode. No
+  `caffeinate` on `PATH` → a warning on stderr, and the launch goes ahead.
 
 Paths default to `bin/loop`, `loop.pid`, and `loop.log` under the harness dir and
 are env-overridable (`LOOP_BIN` / `LOOP_PIDFILE` / `LOOP_LOGFILE`) — the overrides

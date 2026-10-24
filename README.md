@@ -173,6 +173,13 @@ exits. When you trust it, hand it the queue:
 agent-harness start
 ```
 
+On a Mac, idle sleep freezes the daemon mid-run. Set `LOOP_KEEP_AWAKE=1` (in the
+environment or your `.env`) and `start` holds a `caffeinate -is -w <loop pid>`
+assertion that is released when the loop exits, however it exits. `-s` only
+blocks system sleep on AC power, and closing the lid still sleeps the Mac unless
+it is in clamshell mode. Where there is no `caffeinate` (Linux), `start` warns and
+launches anyway.
+
 **Watch it run** — a read-only live view of the current ticket and stage, tailing
 the global event stream (`logs/loop.jsonl`) the daemon and the pipeline write. It
 never controls the loop (Ctrl-C quits the viewer, not the daemon), and works
