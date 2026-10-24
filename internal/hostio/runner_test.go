@@ -38,7 +38,7 @@ func testRunner(t *testing.T, outcomes ...session.Outcome) (*Runner, *[]launch) 
 			Image: "myproject-agent-harness:latest",
 		},
 	}, log, "20260920-101500", false)
-	r.pid = 4242
+	r.pid = "4242"
 	r.sleep = func(time.Duration) {}
 	r.run = func(args []string, opts session.Options) session.Outcome {
 		seen = append(seen, launch{args: args, opts: opts})
@@ -254,5 +254,31 @@ func TestRunnerZeroRetryRunsOnce(t *testing.T) {
 
 	if res.Attempts != 1 || len(*seen) != 1 {
 		t.Errorf("attempts = %d / launches = %d, want exactly one", res.Attempts, len(*seen))
+	}
+}
+
+// A dry-run plan previews through the same Runner, so the Runner still mints the
+// name — it just has no run to stamp it with yet, so it stamps placeholders. The
+// preview host resolves the ticket's worktree like the real one and launches
+// nothing (it has no Agent or Shell to call).
+func TestPreviewNamesContainersWithPlaceholders(t *testing.T) {
+	cfg := config.Config{
+		Host:    config.Host{ProjectPath: "/Users/dan/my-project"},
+		Project: config.Project{Image: "myproject-agent-harness:latest", BranchPrefix: "feat"},
+	}
+	p := NewPreview(cfg)
+
+	agent := p.AgentPreview(AgentRun{Label: "implementation", Model: "claude-opus-5-5"})
+	shell := p.ShellPreview(ShellRun{Label: "gate-check", Command: "go test ./...", WorktreePath: "/wt"})
+
+	prefix := sandbox.ContainerPrefix("/Users/dan/my-project")
+	if got, want := flagValue(agent, "--name"), prefix+"<run-id>-<pid>-implementation"; got != want {
+		t.Errorf("agent preview --name = %q, want %q", got, want)
+	}
+	if got, want := flagValue(shell, "--name"), prefix+"<run-id>-<pid>-gate-check"; got != want {
+		t.Errorf("shell preview --name = %q, want %q", got, want)
+	}
+	if got, want := p.BranchName("proj-1"), "feat/proj-1"; got != want {
+		t.Errorf("preview branch = %q, want %q", got, want)
 	}
 }
