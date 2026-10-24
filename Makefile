@@ -1,5 +1,5 @@
 # Agent harness — Go toolchain shortcuts. Requires Go 1.26+.
-.PHONY: build install uninstall base-image test implementation review retrospective pipeline loop watch vet fmt fmt-check check-exec check-bash3 check-buildvcs check-ci check-scripts check tidy
+.PHONY: build install uninstall base-image release test implementation review retrospective pipeline loop watch vet fmt fmt-check check-exec check-bash3 check-buildvcs check-ci check-scripts check tidy
 
 # Build the tool binaries into ./bin.
 #
@@ -67,6 +67,15 @@ BASE_IMAGE ?= agent-harness-base:dev
 base-image:
 	docker build -f Dockerfile.base -t $(BASE_IMAGE) .
 
+# Cut a release in one command (scripts/release.sh): bump every base-image pin to
+# the new version (and the sandbox claude CLI with CLAUDE_VERSION=...), run
+# `make check`, commit, tag, push main + tag atomically, then watch the release
+# workflow publish the binaries and the base image. VERSION is vX.Y.Z or
+# patch|minor|major; ARGS passes --dry-run / --no-wait through, e.g.
+#   make release VERSION=minor ARGS=--dry-run
+release:
+	@test -n "$(VERSION)" || { echo "usage: make release VERSION=<vX.Y.Z|patch|minor|major> [CLAUDE_VERSION=...] [ARGS=--dry-run]"; exit 2; }
+	@./scripts/release.sh "$(VERSION)" $(if $(CLAUDE_VERSION),--claude-version "$(CLAUDE_VERSION)") $(ARGS)
 
 # Run the full test suite. -buildvcs=false: see the build target (BEH-459).
 test:
