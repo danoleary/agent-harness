@@ -258,6 +258,9 @@ loop:
   re-run each config-declared named gate (BEH-634) in its own throwaway container, in
     order, on feat/beh-nnn — herd's are `pnpm run check` then `pnpm run typecheck`; a Go
     Consumer's would be `go test ./...`. Stops at the first red and reports it by name.
+    Each gate (and post_create) runs as a NON-login `bash -c <command>`, so it sees the image's ENV
+    PATH exactly as the session does — a login shell's /etc/profile reset PATH on Debian and turned
+    a green session into a red gate on `command not found` (#38).
   docs-only short-circuit (BEH-687): if the branch's net diff against origin/main touches ONLY
     documentation/prose paths no gate reads (root markdown, `docs/**` — NOT anything under a module
     source tree like `web/`, NOT the skill trees `.agents/`/`.claude/` whose SKILL.md files feed the

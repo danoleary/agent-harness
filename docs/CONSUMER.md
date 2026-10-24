@@ -210,6 +210,12 @@ RUN apt-get update \
 ENV HARNESS_CHOWN_PATHS=/opt/my-baked-tool
 ```
 
+Put your toolchain on `PATH` with `ENV PATH=...` in the Dockerfile. The agent
+session, the `post_create` hook and every gate all see that same image `PATH`:
+the harness runs `post_create` and gates as a non-login `bash -c <command>`,
+so `/etc/profile` and `~/.profile` are **not** sourced. Anything a gate needs
+must come from the image's `ENV`, not from a login-shell profile script.
+
 Pin the immutable semver tag, never `:latest`. A base bump should be a
 deliberate, reviewable edit, not a silent floating pull.
 

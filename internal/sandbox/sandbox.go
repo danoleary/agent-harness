@@ -352,6 +352,13 @@ type GateConfig struct {
 // BEH-529) expresses that in its own config, not here; CI's full build is the
 // backstop the harness watches post-PR via ci.WatchAndFix.
 //
+// The command runs under a NON-login `bash -c` so it inherits the image's ENV
+// exactly as the agent session (which execs `claude` directly) does: gates and
+// sessions must see the same PATH. A login shell would source /etc/profile,
+// which on Debian assigns PATH unconditionally and wipes a toolchain directory a
+// Consumer's Dockerfile added with `ENV PATH=...` — a green session, then a red
+// gate re-run on `command not found` (#38).
+//
 // For the gate case this is the harness's OWN ground truth — never the agent's
 // self-report — and the push gate (DESIGN.md).
 func BuildWorktreeCommandArgs(c GateConfig, command string) []string {
@@ -376,7 +383,7 @@ func BuildWorktreeCommandArgs(c GateConfig, command string) []string {
 	args = append(args,
 		"-w", c.WorktreePath,
 		c.Image,
-		"bash", "-lc", command,
+		"bash", "-c", command,
 	)
 
 	return args
