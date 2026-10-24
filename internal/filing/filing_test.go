@@ -1057,3 +1057,23 @@ func TestProbablyDuplicate(t *testing.T) {
 		}
 	}
 }
+
+// A local record already flagged as a probable duplicate stays out of the settled
+// list: its canonical class is listed, and offering both keys would invite the
+// session to keep the drifted one alive.
+func TestAlreadyFiledOmitsFlaggedProbableDuplicates(t *testing.T) {
+	harnessDir := filepath.Join(t.TempDir(), "harness-findings")
+	writeHarnessRecord(t, harnessDir, "#46", findings.Finding{
+		Title: "Host gate exit 127 misreported", Key: "host-gate-missing-toolchain-reported-as-red-gate",
+	})
+	writeHarnessRecord(t, harnessDir, "#50", findings.Finding{
+		Title: "Gate re-run without the toolchain reads red", Key: "gate-rerun-missing-toolchain-reported-as-red-gate",
+	})
+
+	got := Router{Project: sink(nil, noExisting(), nil), HarnessDir: harnessDir, Log: &recorder{}}.AlreadyFiled(t.TempDir(), "team-uuid")
+
+	want := []PriorFinding{{Key: "host-gate-missing-toolchain-reported-as-red-gate", Title: "Host gate exit 127 misreported"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("AlreadyFiled = %+v, want only the canonical class %+v", got, want)
+	}
+}

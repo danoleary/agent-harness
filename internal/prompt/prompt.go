@@ -414,7 +414,7 @@ func alreadyFiledSection(filed []FiledFinding) string {
 	for _, f := range filed {
 		b.WriteString("\n  - ")
 		if f.Key != "" {
-			b.WriteString(f.Key + " — ")
+			b.WriteString(defang(f.Key) + " — ")
 		}
 		b.WriteString(defang(f.Title))
 	}

@@ -430,7 +430,12 @@ func (r Router) AlreadyFiled(findingsDir, teamID string) []PriorFinding {
 		}
 	} else {
 		for _, rec := range readHarnessFindings(r.HarnessDir) {
-			add(rec.Key, rec.Title)
+			// A record already flagged as a probable duplicate is a drifted key for
+			// a class listed under its canonical key; listing it too would hand the
+			// session two keys to choose between — the drift this list exists to end.
+			if rec.ProbableDuplicateOf == "" {
+				add(rec.Key, rec.Title)
+			}
 		}
 	}
 
