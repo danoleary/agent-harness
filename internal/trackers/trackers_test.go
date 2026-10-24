@@ -93,6 +93,15 @@ func TestNewJiraRequiresAuthSecrets(t *testing.T) {
 	if !strings.Contains(strings.ToLower(err.Error()), "jira") {
 		t.Errorf("error should name the missing jira secrets, got: %v", err)
 	}
+	// Only the missing two are named, and the fix says where to make the token.
+	for _, want := range []string{"JIRA_EMAIL", "JIRA_API_TOKEN", "https://id.atlassian.com/manage-profile/security/api-tokens"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error should mention %q, got: %v", want, err)
+		}
+	}
+	if !strings.HasPrefix(err.Error(), "JIRA_EMAIL and JIRA_API_TOKEN are not set") {
+		t.Errorf("error should lead with exactly the missing secrets, got: %v", err)
+	}
 }
 
 // An unknown kind must fail loud, naming the kind — the harness refuses to launch
@@ -120,6 +129,9 @@ func TestNewLinearRequiresItsAPIKey(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "LINEAR_API_KEY") {
 		t.Errorf("error should name the missing credential, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "https://linear.app/settings/account/security") {
+		t.Errorf("error should say where to make a Linear API key, got: %v", err)
 	}
 }
 

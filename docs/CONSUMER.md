@@ -94,10 +94,10 @@ prune_command = "dotnet nuget locals all --clear"
 
 # The oldest harness this config is written for. Optional — set it when you start
 # relying on a key or behaviour a given release introduced. An older binary
-# reading a newer config does not fail on its own: it ignores the keys it does not
-# know, so an unknown gate is skipped and a renamed field reverts to a default
-# while the run still reports success. The pin turns that into an error at
-# startup. Check what you are running with `agent-harness --version`.
+# reading a newer config does not fail on its own: it warns about the keys it
+# does not know and otherwise ignores them, so an unknown gate is skipped and a
+# renamed field reverts to a default while the run still reports success. The pin
+# turns that into an error at startup. Check what you are running with `agent-harness --version`.
 min_harness_version = "0.2"
 
 # Which tracker, and its NON-SECRET selection names. The API credential is
@@ -167,6 +167,12 @@ command = "dotnet test"
 name = "lint"
 command = "dotnet format --verify-no-changes"
 ```
+
+The harness checks this file before any sandbox launches. A syntax error is
+reported at its `config.toml:line:column`. Every validation problem is listed in
+one error, so you can fix them all in one pass. A key or table the harness does
+not read is a warning, not an error, so a config written for a newer harness
+still loads; if it is a typo (`[trackr]`), the warning names it and its line.
 
 ### 2. `.agent-harness/prompts/`
 

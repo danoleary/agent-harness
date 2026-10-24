@@ -22,6 +22,11 @@ func TestExampleConsumerConfigLoads(t *testing.T) {
 	if err != nil {
 		t.Fatalf("example Consumer config failed to load: %v", err)
 	}
+	// Every key the example teaches must be one this harness reads; a warning here
+	// means the example documents a key that does nothing.
+	if len(pc.Warnings) != 0 {
+		t.Errorf("example config has keys this harness does not know: %q", pc.Warnings)
+	}
 
 	if pc.Image == "" || pc.Tracker.Kind == "" || len(pc.Gates) == 0 {
 		t.Errorf("example config is under-populated: %+v", pc)

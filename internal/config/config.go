@@ -4,6 +4,7 @@ package config
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -220,6 +221,9 @@ type Project struct {
 	// bind-mounted checkout's `.agent-harness/prompts/` (ADR-0009). The harness
 	// composes each body inside its non-overridable contract envelope.
 	Prompts PromptBodies
+	// Warnings are the project config's non-fatal findings — keys this harness
+	// does not read — for the caller to print (ProjectConfig.Warnings).
+	Warnings []string
 }
 
 const (
@@ -266,14 +270,6 @@ const (
 // Getenv looks up an environment variable by name, returning "" when unset.
 type Getenv func(string) string
 
-func requireEnv(get Getenv, key string) (string, error) {
-	v := get(key)
-	if v == "" {
-		return "", fmt.Errorf("missing required env var: %s", key)
-	}
-	return v, nil
-}
-
 // Option adjusts how Load resolves configuration. It exists so a test can pin the
 // harness version the Consumer's `min_harness_version` is checked against, rather
 // than depending on the linker flags of the binary under test.
@@ -281,12 +277,19 @@ type Option func(*loadOptions)
 
 type loadOptions struct {
 	harnessVersion string
+	workingDir     string
 }
 
 // WithHarnessVersion overrides the harness version used for the compatibility
 // check. Production passes nothing and gets version.Version.
 func WithHarnessVersion(v string) Option {
 	return func(o *loadOptions) { o.harnessVersion = v }
+}
+
+// WithWorkingDir names the directory the harness was started in, so a missing
+// credential error can list the .env files ResolveEnvFile searched from it.
+func WithWorkingDir(dir string) Option {
+	return func(o *loadOptions) { o.workingDir = dir }
 }
 
 // Load resolves the harness config: the Host half from the environment, then the
@@ -297,7 +300,7 @@ func Load(get Getenv, opts ...Option) (Config, error) {
 	for _, opt := range opts {
 		opt(&options)
 	}
-	host, err := loadHost(get)
+	host, err := loadHost(get, options.workingDir)
 	if err != nil {
 		return Config{}, err
 	}
@@ -308,23 +311,25 @@ func Load(get Getenv, opts ...Option) (Config, error) {
 	return Config{Host: host, Project: project}, nil
 }
 
+// Where an operator makes each credential the harness asks for.
+const (
+	gitHubTokenURL  = "https://github.com/settings/tokens/new?scopes=repo&description=agent-harness"
+	anthropicKeyURL = "https://platform.claude.com/settings/keys"
+)
+
+// oauthTokenPrefix marks a Claude subscription token from `claude setup-token`.
+const oauthTokenPrefix = "sk-ant-oat01-"
+
 // loadHost reads the harness side's half from the environment. The Claude
 // credential is the only secret that crosses the sandbox boundary (ADR-0002); it
 // is validated for presence here but not returned — it flows into the container
 // via docker's `-e NAME` reading the harness's own inherited environment, so it
 // never sits in our argv. GH_TOKEN is validated host-side too but stays host-only
 // (the harness's own push + `gh pr create`); it never enters the container.
-func loadHost(get Getenv) (Host, error) {
-	// Exactly one Claude credential is required: a long-lived API key
-	// (ANTHROPIC_API_KEY) or a subscription OAuth token (CLAUDE_CODE_OAUTH_TOKEN,
-	// from `claude setup-token`). The latter must NOT be set as ANTHROPIC_API_KEY
-	// — Claude Code would send it via x-api-key and Anthropic rejects it (BEH-316).
-	if get("ANTHROPIC_API_KEY") == "" && get("CLAUDE_CODE_OAUTH_TOKEN") == "" {
-		return Host{}, fmt.Errorf(
-			"missing Claude credential: set ANTHROPIC_API_KEY (sk-ant-api03-…) " +
-				"or CLAUDE_CODE_OAUTH_TOKEN (sk-ant-oat01-… from `claude setup-token`)",
-		)
-	}
+//
+// The credentials and PROJECT_PATH are checked together and reported in one
+// error, so an operator with an empty environment fixes it in one pass.
+func loadHost(get Getenv, workingDir string) (Host, error) {
 	h := Host{
 		// The tracker credential is NOT required here: which one is needed depends
 		// on the Consumer's `tracker.kind`, which lives in the project config.
@@ -332,18 +337,51 @@ func loadHost(get Getenv) (Host, error) {
 		// GitHub-Issues-only Consumer could not start the harness at all (BEH-641).
 		// trackers.New owns the per-kind check, alongside the Jira triple's.
 		LinearAPIKey:    get("LINEAR_API_KEY"),
+		GitHubToken:     get("GH_TOKEN"),
 		JiraBaseURL:     get("JIRA_BASE_URL"),
 		JiraEmail:       get("JIRA_EMAIL"),
 		JiraAPIToken:    get("JIRA_API_TOKEN"),
 		AnthropicAPIKey: get("ANTHROPIC_API_KEY"),
+		ProjectPath:     get("PROJECT_PATH"),
 	}
-	var err error
-	if h.GitHubToken, err = requireEnv(get, "GH_TOKEN"); err != nil {
-		return Host{}, err
+
+	var problems []string
+	missingVar := false
+	// Exactly one Claude credential is required: a long-lived API key
+	// (ANTHROPIC_API_KEY) or a subscription OAuth token (CLAUDE_CODE_OAUTH_TOKEN,
+	// from `claude setup-token`). The latter must NOT be set as ANTHROPIC_API_KEY
+	// — Claude Code would send it via x-api-key and Anthropic rejects it as an
+	// invalid key, long after this load passed (BEH-316).
+	switch {
+	case h.AnthropicAPIKey == "" && get("CLAUDE_CODE_OAUTH_TOKEN") == "":
+		missingVar = true
+		problems = append(problems,
+			"no Claude credential is set. Every Stage runs a Claude session, which needs one.\n"+
+				"  Fix: set ANTHROPIC_API_KEY to an API key from "+anthropicKeyURL+", or, for a Claude "+
+				"subscription, run `claude setup-token` and set CLAUDE_CODE_OAUTH_TOKEN to the token it prints.")
+	case strings.HasPrefix(h.AnthropicAPIKey, oauthTokenPrefix):
+		problems = append(problems,
+			"ANTHROPIC_API_KEY holds a Claude subscription token ("+oauthTokenPrefix+"…), not an API key. "+
+				"It is sent as an API key, which Anthropic rejects as invalid.\n"+
+				"  Fix: move it to CLAUDE_CODE_OAUTH_TOKEN and unset ANTHROPIC_API_KEY.")
 	}
-	if h.ProjectPath, err = requireEnv(get, "PROJECT_PATH"); err != nil {
-		return Host{}, err
+	if h.GitHubToken == "" {
+		missingVar = true
+		problems = append(problems,
+			"GH_TOKEN is not set. The harness pushes branches and opens pull requests with it, "+
+				"and reads GitHub Issues with it when tracker.kind = \"github\".\n"+
+				"  Fix: create a classic token with the repo scope at "+gitHubTokenURL+" and set GH_TOKEN to it.")
 	}
+	if h.ProjectPath == "" {
+		missingVar = true
+	}
+	if p := projectPathProblem(h.ProjectPath); p != "" {
+		problems = append(problems, p)
+	}
+	if len(problems) > 0 {
+		return Host{}, hostError(problems, missingVar, get, workingDir)
+	}
+
 	for _, k := range h.knobs(get) {
 		if err := k.resolve(get(k.key)); err != nil {
 			return Host{}, err
@@ -353,6 +391,65 @@ func loadHost(get Getenv) (Host, error) {
 		return Host{}, err
 	}
 	return h, nil
+}
+
+// projectPathProblem checks PROJECT_PATH names an existing directory by an
+// absolute path. A relative one would resolve against whatever directory the
+// harness happened to start in, and a missing one surfaced as a "no such file" on
+// a config file inside it, pointing the operator at the wrong thing.
+func projectPathProblem(path string) string {
+	const what = "PROJECT_PATH names the Consumer checkout the harness works: the repository that holds .agent-harness/."
+	if path == "" {
+		return "PROJECT_PATH is not set. " + what + "\n" +
+			"  Fix: set PROJECT_PATH to the absolute path of that checkout."
+	}
+	if !filepath.IsAbs(path) {
+		fix := "set PROJECT_PATH to the absolute path of that checkout"
+		if abs, err := filepath.Abs(path); err == nil {
+			fix += ", e.g. " + abs
+		}
+		return fmt.Sprintf("PROJECT_PATH is %q, a relative path; it must be absolute. %s\n  Fix: %s.", path, what, fix)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Sprintf("PROJECT_PATH is %s, which does not exist; it must exist. %s\n"+
+			"  Fix: clone the repository there, or set PROJECT_PATH to where it is checked out.", path, what)
+	}
+	if !info.IsDir() {
+		return fmt.Sprintf("PROJECT_PATH is %s, which is a file; it must be a directory. %s\n"+
+			"  Fix: set PROJECT_PATH to the checkout's root directory.", path, what)
+	}
+	return ""
+}
+
+// hostError reports every environment problem together. When a variable is
+// unset it also lists the .env files the harness looked in, in the order it
+// looked, since "not set" usually means "not in the file I thought was read".
+func hostError(problems []string, missingVar bool, get Getenv, workingDir string) error {
+	var b strings.Builder
+	if len(problems) == 1 {
+		b.WriteString("the harness environment has a problem:\n")
+	} else {
+		fmt.Fprintf(&b, "the harness environment has %d problems:\n", len(problems))
+	}
+	for _, p := range problems {
+		fmt.Fprintf(&b, "- %s\n", p)
+	}
+	if missingVar {
+		b.WriteString("Searched for a .env file in this order (only the first one found is read):\n")
+		loaded := ResolveEnvFile(get, workingDir)
+		for _, c := range EnvFileCandidates(get, workingDir) {
+			state := "not found"
+			if c == loaded {
+				state = "read"
+			} else if fileExists(c) {
+				state = "found, not read: an earlier file won"
+			}
+			fmt.Fprintf(&b, "  %s (%s)\n", c, state)
+		}
+		b.WriteString("Put each missing variable in one of those files as NAME=value, or export it.")
+	}
+	return errors.New(strings.TrimRight(b.String(), "\n"))
 }
 
 // knobs is the table of Host's env-tunable settings, one row per knob: the env
@@ -447,6 +544,7 @@ func loadProject(get Getenv, checkout, harnessVersion string) (Project, error) {
 		Tracker:               pc.Tracker,
 		Feedback:              pc.Feedback,
 		Prompts:               prompts,
+		Warnings:              pc.Warnings,
 	}, nil
 }
 
@@ -549,36 +647,44 @@ const (
 // Only an existing file is returned, so an operator who exports the variables
 // directly gets "" and no file is read.
 func ResolveEnvFile(getenv Getenv, workingDir string) string {
-	if explicit := getenv("HARNESS_ENV_FILE"); explicit != "" {
-		if fileExists(explicit) {
-			return explicit
-		}
-	}
-
-	if workingDir != "" {
-		candidate := filepath.Join(workingDir, EnvFileName)
-		if fileExists(candidate) {
-			return candidate
-		}
-	}
-
-	// The in-repo location, from cwd and then from an exported PROJECT_PATH.
-	for _, root := range []string{workingDir, getenv("PROJECT_PATH")} {
-		if root == "" {
-			continue
-		}
-		candidate := InRepoEnvFile(root)
-		if fileExists(candidate) {
-			return candidate
-		}
-	}
-
-	if candidate := EnvFileHint(getenv); candidate != "" {
+	for _, candidate := range EnvFileCandidates(getenv, workingDir) {
 		if fileExists(candidate) {
 			return candidate
 		}
 	}
 	return ""
+}
+
+// EnvFileCandidates is every path ResolveEnvFile considers, in its order, whether
+// or not the file exists. A missing-credential error lists them so the operator
+// sees where the harness looked.
+func EnvFileCandidates(getenv Getenv, workingDir string) []string {
+	var candidates []string
+	add := func(path string) {
+		for _, c := range candidates {
+			if c == path {
+				return
+			}
+		}
+		candidates = append(candidates, path)
+	}
+
+	if explicit := getenv("HARNESS_ENV_FILE"); explicit != "" {
+		add(explicit)
+	}
+	if workingDir != "" {
+		add(filepath.Join(workingDir, EnvFileName))
+	}
+	// The in-repo location, from cwd and then from an exported PROJECT_PATH.
+	for _, root := range []string{workingDir, getenv("PROJECT_PATH")} {
+		if root != "" {
+			add(InRepoEnvFile(root))
+		}
+	}
+	if hint := EnvFileHint(getenv); hint != "" {
+		add(hint)
+	}
+	return candidates
 }
 
 // InRepoEnvFile is the credential file a Consumer may commit-adjacent inside its

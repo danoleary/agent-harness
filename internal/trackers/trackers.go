@@ -50,7 +50,8 @@ func New(tc config.TrackerConfig, secrets Secrets) (tracker.Tracker, error) {
 	switch tc.Kind {
 	case "linear":
 		if secrets.LinearKey == "" {
-			return nil, fmt.Errorf("kind=linear requires the host-only secret LINEAR_API_KEY")
+			return nil, fmt.Errorf("LINEAR_API_KEY is not set. tracker.kind = \"linear\" reads and claims tickets with it.\n" +
+				"Fix: create a personal API key at https://linear.app/settings/account/security and set LINEAR_API_KEY to it")
 		}
 		return linear.NewClient(linear.NewTransport(secrets.LinearKey), linear.Options{
 			TeamKey:         tc.TeamKey,
@@ -72,8 +73,15 @@ func New(tc config.TrackerConfig, secrets Secrets) (tracker.Tracker, error) {
 			Assignee:   tc.Assignee,
 		}), nil
 	case "jira":
-		if secrets.JiraBaseURL == "" || secrets.JiraEmail == "" || secrets.JiraToken == "" {
-			return nil, fmt.Errorf("kind=jira requires the host-only secrets JIRA_BASE_URL, JIRA_EMAIL, and JIRA_API_TOKEN")
+		if missing := missingJiraSecrets(secrets); len(missing) > 0 {
+			verb := "is"
+			if len(missing) > 1 {
+				verb = "are"
+			}
+			return nil, fmt.Errorf("%s %s not set. tracker.kind = \"jira\" signs in to the Jira site (JIRA_BASE_URL, e.g. "+
+				"https://acme.atlassian.net) as an account (JIRA_EMAIL) with an API token (JIRA_API_TOKEN).\n"+
+				"Fix: create an API token at https://id.atlassian.com/manage-profile/security/api-tokens and set the missing variables",
+				strings.Join(missing, " and "), verb)
 		}
 		return jira.NewClient(jira.NewTransport(secrets.JiraBaseURL, secrets.JiraEmail, secrets.JiraToken), secrets.JiraBaseURL, jira.Options{
 			ProjectKey:           tc.ProjectKey,
@@ -88,6 +96,22 @@ func New(tc config.TrackerConfig, secrets Secrets) (tracker.Tracker, error) {
 	default:
 		return nil, fmt.Errorf("unsupported tracker kind %q (supported: linear, github, jira)", tc.Kind)
 	}
+}
+
+// missingJiraSecrets names the unset members of the Jira Basic-auth triple, so the
+// error asks for exactly what is missing.
+func missingJiraSecrets(s Secrets) []string {
+	var missing []string
+	for _, v := range []struct{ name, value string }{
+		{"JIRA_BASE_URL", s.JiraBaseURL},
+		{"JIRA_EMAIL", s.JiraEmail},
+		{"JIRA_API_TOKEN", s.JiraToken},
+	} {
+		if v.value == "" {
+			missing = append(missing, v.name)
+		}
+	}
+	return missing
 }
 
 // splitRepo parses a github "owner/name" into its parts, failing loud on a value

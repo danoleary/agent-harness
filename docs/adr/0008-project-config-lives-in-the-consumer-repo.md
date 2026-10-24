@@ -57,3 +57,10 @@ herd-specific `pnpm install`/`tokens:build`/Playwright steps become herd's
   parameterized by **Key** + `branch_prefix` instead of hardcoded `BEH`/`feat`.
 - A Consumer can strand work only by mis-declaring `branch_prefix`; the host now
   owns the canonical branch, so the old `fix/<slug>` silent-strand class is closed.
+- A key or table in `config.toml` that this harness does not read is a
+  **warning, not an error** (#53). Committed config versions with the Consumer's
+  code, not with the harness binary, so a config written for a newer harness must
+  still load on an older one. `min_harness_version` is how a Consumer turns that
+  into a hard stop. The warning names the key at its `line:column`, so a typo like
+  `[trackr]` is visible without breaking forward compatibility. Validation
+  problems are still hard errors, and all of them are reported together.

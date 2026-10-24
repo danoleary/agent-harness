@@ -282,9 +282,12 @@ func LoadConfig() (config.Config, error) {
 	envFile := config.ResolveEnvFile(os.Getenv, wd)
 	config.LoadDotEnv(envFile)
 
-	cfg, err := config.Load(os.Getenv)
+	cfg, err := config.Load(os.Getenv, config.WithWorkingDir(wd))
 	if err != nil {
 		return cfg, err
+	}
+	for _, w := range cfg.Warnings {
+		fmt.Fprintf(os.Stderr, "warning: %s\n", w)
 	}
 
 	// The credential file must not live inside the Consumer checkout: every stage
