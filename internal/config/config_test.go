@@ -941,3 +941,11 @@ func TestLoadCarriesProjectConfigWarnings(t *testing.T) {
 		t.Errorf("Warnings = %q, want the unknown-table warning", cfg.Warnings)
 	}
 }
+
+// PROJECT_PATH usually lives in the same .env file as the credentials, so an unset
+// one lists the searched files too.
+func TestLoadUnsetProjectPathSaysSearchedFiles(t *testing.T) {
+	wd := t.TempDir()
+	_, err := Load(fullEnv(t, map[string]string{"PROJECT_PATH": ""}), WithWorkingDir(wd))
+	assertMentions(t, err, "PROJECT_PATH is not set", filepath.Join(wd, ".env")+" (not found)")
+}

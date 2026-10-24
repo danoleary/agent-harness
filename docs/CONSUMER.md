@@ -89,8 +89,8 @@ prune_command = "dotnet nuget locals all --clear"
 # relying on a key or behaviour a given release introduced. An older binary
 # reading a newer config does not fail on its own: it warns about the keys it
 # does not know and otherwise ignores them, so an unknown gate is skipped and a
-# renamed field reverts to a default while the run still reports success. The pin turns that into an error at
-# startup. Check what you are running with `agent-harness --version`.
+# renamed field reverts to a default while the run still reports success. The pin
+# turns that into an error at startup. Check what you are running with `agent-harness --version`.
 min_harness_version = "0.2"
 
 # Which tracker, and its NON-SECRET selection names. The API credential is

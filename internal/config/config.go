@@ -346,7 +346,7 @@ func loadHost(get Getenv, workingDir string) (Host, error) {
 	}
 
 	var problems []string
-	missingCredential := false
+	missingVar := false
 	// Exactly one Claude credential is required: a long-lived API key
 	// (ANTHROPIC_API_KEY) or a subscription OAuth token (CLAUDE_CODE_OAUTH_TOKEN,
 	// from `claude setup-token`). The latter must NOT be set as ANTHROPIC_API_KEY
@@ -354,7 +354,7 @@ func loadHost(get Getenv, workingDir string) (Host, error) {
 	// invalid key, long after this load passed (BEH-316).
 	switch {
 	case h.AnthropicAPIKey == "" && get("CLAUDE_CODE_OAUTH_TOKEN") == "":
-		missingCredential = true
+		missingVar = true
 		problems = append(problems,
 			"no Claude credential is set. Every Stage runs a Claude session, which needs one.\n"+
 				"  Fix: set ANTHROPIC_API_KEY to an API key from "+anthropicKeyURL+", or, for a Claude "+
@@ -366,17 +366,20 @@ func loadHost(get Getenv, workingDir string) (Host, error) {
 				"  Fix: move it to CLAUDE_CODE_OAUTH_TOKEN and unset ANTHROPIC_API_KEY.")
 	}
 	if h.GitHubToken == "" {
-		missingCredential = true
+		missingVar = true
 		problems = append(problems,
 			"GH_TOKEN is not set. The harness pushes branches and opens pull requests with it, "+
 				"and reads GitHub Issues with it when tracker.kind = \"github\".\n"+
 				"  Fix: create a classic token with the repo scope at "+gitHubTokenURL+" and set GH_TOKEN to it.")
 	}
+	if h.ProjectPath == "" {
+		missingVar = true
+	}
 	if p := projectPathProblem(h.ProjectPath); p != "" {
 		problems = append(problems, p)
 	}
 	if len(problems) > 0 {
-		return Host{}, hostError(problems, missingCredential, get, workingDir)
+		return Host{}, hostError(problems, missingVar, get, workingDir)
 	}
 
 	for _, k := range h.knobs(get) {
@@ -419,20 +422,20 @@ func projectPathProblem(path string) string {
 	return ""
 }
 
-// hostError reports every environment problem together. When a credential is
-// missing it also lists the .env files the harness looked in, in the order it
+// hostError reports every environment problem together. When a variable is
+// unset it also lists the .env files the harness looked in, in the order it
 // looked, since "not set" usually means "not in the file I thought was read".
-func hostError(problems []string, missingCredential bool, get Getenv, workingDir string) error {
+func hostError(problems []string, missingVar bool, get Getenv, workingDir string) error {
 	var b strings.Builder
 	if len(problems) == 1 {
-		b.WriteString("the harness environment is incomplete:\n")
+		b.WriteString("the harness environment has a problem:\n")
 	} else {
 		fmt.Fprintf(&b, "the harness environment has %d problems:\n", len(problems))
 	}
 	for _, p := range problems {
 		fmt.Fprintf(&b, "- %s\n", p)
 	}
-	if missingCredential {
+	if missingVar {
 		b.WriteString("Searched for a .env file in this order (only the first one found is read):\n")
 		loaded := ResolveEnvFile(get, workingDir)
 		for _, c := range EnvFileCandidates(get, workingDir) {
