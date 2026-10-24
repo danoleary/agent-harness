@@ -213,6 +213,16 @@ ENV HARNESS_CHOWN_PATHS=/opt/my-baked-tool
 Pin the immutable semver tag, never `:latest`. A base bump should be a
 deliberate, reviewable edit, not a silent floating pull.
 
+`post_create` and every gate run as `bash -lc <command>`, and a login shell's
+`/etc/profile` **resets `PATH`**. A toolchain you put on `PATH` only with
+`ENV PATH=...` is visible in the session and missing from the gate, which then
+exits 127 on a branch that passed in-session. Install to a directory already on
+the default `PATH` (`/usr/local/bin`, `/usr/bin`), symlink into one, or re-add
+your directory in an `/etc/profile.d/*.sh`. Other `ENV` vars survive a login
+shell. Check with
+`docker run --rm -e PROJECT_PATH=/tmp <image> bash -lc 'command -v <tool>'`, or run
+`scripts/check-sandbox-image.sh <image> <tool>...` from the harness repo.
+
 ## Secrets
 
 Host-only, as environment variables. **Never** in `config.toml`.
