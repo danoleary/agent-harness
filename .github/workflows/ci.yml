@@ -68,3 +68,27 @@ jobs:
           push: false
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  self-image:
+    runs-on: ubuntu-latest
+    name: Self-hosting image runs the gate's toolchain
+    # A Gate runs `bash -lc` through the entrypoint, and a login shell's
+    # /etc/profile resets PATH — so a toolchain on PATH only via Dockerfile ENV is
+    # invisible to the Gate, and `make check` exits 127 host-side (#40). Build this
+    # repo's own sandbox image and probe it the way a Gate runs it.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Build the base under the pinned tag
+        # Build the base from THIS commit and tag it as the ref the self image
+        # pins, rather than pulling it: on a release commit that pin names a base
+        # release.yml has not published yet. The runner is throwaway, so the
+        # local tag shadows nothing.
+        run: |
+          set -euo pipefail
+          pin="$(sed -n 's/^FROM \(ghcr\.io\/[^ ]*agent-harness-base:[^ ]*\).*/\1/p' .agent-harness/Dockerfile)"
+          test -n "$pin" || { echo "no base pin in .agent-harness/Dockerfile"; exit 1; }
+          docker build -f Dockerfile.base -t "$pin" .
+      - name: Build the self-hosting image
+        run: docker build -f .agent-harness/Dockerfile -t agent-harness-self:ci .agent-harness
+      - name: Probe the toolchain in a login shell
+        run: ./scripts/check-sandbox-image.sh agent-harness-self:ci go gofmt

@@ -92,6 +92,37 @@ make release VERSION=patch ARGS=--dry-run             # show the diff, change no
 ./scripts/test-release.sh
 ```
 
+## check-sandbox-image.sh
+
+Probe a built sandbox image for its toolchain the way a Gate sees it (#40).
+
+### Purpose
+
+The harness runs `post_create` and every Gate as `bash -lc <command>` through the
+base image's entrypoint. A login shell sources `/etc/profile`, which **resets
+`PATH`**, so a toolchain put on `PATH` only by a Dockerfile `ENV PATH=...` is
+there in the session and gone in the Gate: `make check` exited 127 host-side on a
+branch that had passed it in-session. This probe runs the image the same way
+(`docker run --rm -e PROJECT_PATH=/tmp <image> bash -lc ...`) and fails, naming
+each tool, if one does not resolve.
+
+It needs a docker daemon and a built image, so it is **not** part of `make check`
+(which stays offline-runnable). CI's `self-image` job builds the base and this
+repo's `.agent-harness/Dockerfile`, then runs it. bash-3.2-safe.
+
+### Usage
+
+```bash
+./scripts/check-sandbox-image.sh agent-harness-self:latest          # go gofmt
+./scripts/check-sandbox-image.sh my-consumer:latest dotnet node     # any tools
+```
+
+### Testing
+
+```bash
+./scripts/test-check-sandbox-image.sh   # a fake docker; no daemon needed
+```
+
 ## check-buildvcs.sh
 
 Guard against VCS-stamping Go commands in Makefiles that omit `-buildvcs=false`
