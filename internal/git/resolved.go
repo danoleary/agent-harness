@@ -8,61 +8,136 @@ import (
 	"strings"
 )
 
-// backtickSpan matches an inline-code span in the ticket markdown — the only
-// place the harness trusts a token to be a literal code reference rather than
-// prose. Restricting extraction to backtick spans is what keeps the advisory
-// guard quiet: an English sentence that merely happens to contain a camelCase
-// word is never scanned.
-var backtickSpan = regexp.MustCompile("`([^`]+)`")
+// codeSpans returns the inline-code spans in ticket markdown — the only place the
+// harness trusts a token to be a literal code reference rather than prose — as
+// [spanStart, innerStart, innerEnd] offsets. Restricting extraction to code spans
+// is what keeps the advisory guard quiet: an English sentence that merely happens
+// to contain a camelCase word is never scanned.
+//
+// A span opens on a run of N backticks and closes on the next run of exactly N,
+// as in CommonMark; a run with no partner is literal text. Pairing single
+// backticks blindly (the old "`([^`]+)`" pattern) let one odd backtick — a fence,
+// or a double-backtick span quoting a backtick — shift every later pair by
+// one, so the prose BETWEEN spans was read as code (#66). Callers strip fenced
+// blocks first (stripFencedCode).
+func codeSpans(s string) [][3]int {
+	var spans [][3]int
+	for i := 0; i < len(s); {
+		if s[i] != '`' {
+			i++
+			continue
+		}
+		n := backtickRun(s, i)
+		end := -1
+		for j := i + n; j < len(s); {
+			if s[j] != '`' {
+				j++
+				continue
+			}
+			m := backtickRun(s, j)
+			if m == n {
+				end = j
+				break
+			}
+			j += m
+		}
+		if end < 0 {
+			i += n
+			continue
+		}
+		spans = append(spans, [3]int{i, i + n, end})
+		i = end + n
+	}
+	return spans
+}
+
+// backtickRun returns the length of the run of backticks starting at s[i].
+func backtickRun(s string, i int) int {
+	n := 0
+	for i+n < len(s) && s[i+n] == '`' {
+		n++
+	}
+	return n
+}
+
+// stripFencedCode blanks every fenced code block (``` or ~~~, three or more,
+// indented at most three spaces) out of ticket markdown, leaving an empty line in
+// its place. A fence holds a code sample or a log, not symbols the ticket expects
+// in source, and its backticks would otherwise be paired as inline spans (#66).
+// A fence closes on a line of the same character at least as long as the opener;
+// an unclosed fence runs to the end of the body, as in CommonMark.
+func stripFencedCode(s string) string {
+	var out []string
+	var fence string
+	for _, line := range strings.Split(s, "\n") {
+		marker := fenceMarker(line)
+		switch {
+		case fence == "" && marker != "":
+			fence = marker
+			out = append(out, "")
+		case fence == "":
+			out = append(out, line)
+		case marker != "" && marker[0] == fence[0] && len(marker) >= len(fence) &&
+			strings.TrimSpace(strings.TrimLeft(line, " ")[len(marker):]) == "":
+			fence = ""
+		}
+	}
+	return strings.Join(out, "\n")
+}
+
+// fenceMarker returns the run of three or more backticks or tildes that opens a
+// fence line, or "" when the line is not a fence. As in CommonMark, a backtick run
+// followed by more backticks on the same line (```x``` is the syntax) is an inline
+// span, not a fence — treating it as one would swallow the rest of the body.
+func fenceMarker(line string) string {
+	trimmed := strings.TrimLeft(line, " ")
+	if len(line)-len(trimmed) > 3 || len(trimmed) < 3 || (trimmed[0] != '`' && trimmed[0] != '~') {
+		return ""
+	}
+	n := 0
+	for n < len(trimmed) && trimmed[n] == trimmed[0] {
+		n++
+	}
+	if n < 3 || (trimmed[0] == '`' && strings.ContainsRune(trimmed[n:], '`')) {
+		return ""
+	}
+	return trimmed[:n]
+}
 
 // wordIdentifier matches a whole letter-led word token (anchored at a word
 // boundary by RE2's greedy left-to-right scan, so it never starts mid-word). The
-// mixed-case precision filter is applied in Go afterwards rather than baked into
+// isCodeIdentifier precision filter is applied in Go afterwards rather than baked into
 // the pattern: anchoring it on a leading *lowercase* letter was the BEH-557 bug —
 // a PascalCase identifier like `GiphyGrid` then matched starting at its first
 // inner lowercase char (`iphyGrid`), silently dropping the leading capital.
 var wordIdentifier = regexp.MustCompile(`[A-Za-z][A-Za-z0-9]*`)
 
-// isMixedCaseIdentifier is the precision filter: a code symbol the advisory will
-// grep for must carry both a lowercase and an uppercase letter. That admits both
-// lower-camelCase (`syncLog`) and PascalCase (`GiphyGrid`) while excluding the
-// noise a finding quotes alongside them — plain words (`grep`, `delete`, `ts`),
-// commit SHAs (`aab6cc98f`), and all-caps ticket keys (`BEH-435`), none of which
-// a source grep should chase.
-func isMixedCaseIdentifier(s string) bool {
-	var hasLower, hasUpper bool
-	for _, r := range s {
+// isCodeIdentifier is the precision filter: a code symbol the advisory will grep
+// for must carry both a lowercase and an uppercase letter, and either an inner
+// capital or a digit. That admits lower-camelCase (`syncLog`), PascalCase with two
+// humps (`GiphyGrid`) and digit-bearing names (`Base64`) while excluding the noise
+// a finding quotes alongside them — plain words (`grep`, `delete`, `ts`), commit
+// SHAs (`aab6cc98f`), all-caps ticket keys (`BEH-435`), and a single capitalised
+// English word (`Notes`, `Fixes`), whose one capital only starts a sentence or
+// heading (#66). Underscores never reach here: wordIdentifier splits on them.
+func isCodeIdentifier(s string) bool {
+	var hasLower, hasUpper, innerUpper, hasDigit bool
+	for i, r := range s {
 		switch {
 		case r >= 'a' && r <= 'z':
 			hasLower = true
 		case r >= 'A' && r <= 'Z':
 			hasUpper = true
+			innerUpper = innerUpper || i > 0
+		case r >= '0' && r <= '9':
+			hasDigit = true
 		}
 	}
-	return hasLower && hasUpper
+	return hasLower && hasUpper && (innerUpper || hasDigit)
 }
 
-// gitTrailerKeyword is the set of Git close-verb keywords a ticket quotes in a
-// `Fixes HERD-2T` / `Closes …` / `Resolves …` line. They are mixed-case English
-// (leading capital + lowercase tail), so isMixedCaseIdentifier admits them, yet
-// they are never repo symbols — `Fixes` was one of the three false positives that
-// made BEH-626 read as "already resolved — recommend close". Matched
-// case-insensitively so `fixes`/`FIXES` are dropped too. Suppressing them only
-// ever removes an advisory (the safe direction).
-var gitTrailerKeyword = map[string]bool{
-	"fix": true, "fixes": true, "fixed": true,
-	"close": true, "closes": true, "closed": true,
-	"resolve": true, "resolves": true, "resolved": true,
-}
-
-// isProseWord reports whether a mixed-case token is prose the extractor must not
-// chase — currently the Git close-verb keywords above.
-func isProseWord(sym string) bool {
-	return gitTrailerKeyword[strings.ToLower(sym)]
-}
-
-// extractCitedSymbols returns the distinct mixed-case code identifiers a ticket
-// description names inside backtick spans — lower-camelCase and PascalCase alike —
+// extractCitedSymbols returns the distinct code identifiers a ticket description
+// names inside inline-code spans — lower-camelCase and PascalCase alike —
 // the symbols whose continued existence the advisory guard checks (both the
 // expected-present and to-be-created buckets, combined and order-preserving).
 func extractCitedSymbols(description string) []string {
@@ -82,18 +157,19 @@ type citedSymbols struct {
 	proposed []string
 }
 
-// classifyCitedSymbols walks each backtick span, drops prose keywords and known
-// third-party package symbols (BEH-629), and sorts each surviving mixed-case
+// classifyCitedSymbols walks each inline-code span outside fenced blocks, drops
+// known third-party package symbols (BEH-629), and sorts each surviving code
 // identifier into expected vs proposed by whether an add/introduce/extraction verb
 // sits immediately before its span. Order-preserving and de-duplicated across buckets.
 func classifyCitedSymbols(description string) citedSymbols {
 	var c citedSymbols
 	seen := map[string]bool{}
-	for _, loc := range backtickSpan.FindAllStringSubmatchIndex(description, -1) {
-		spanStart, inner := loc[0], description[loc[2]:loc[3]]
-		proposed := inAddContext(description[:spanStart])
+	description = stripFencedCode(description)
+	for _, span := range codeSpans(description) {
+		inner := description[span[1]:span[2]]
+		proposed := inAddContext(description[:span[0]])
 		for _, sym := range wordIdentifier.FindAllString(inner, -1) {
-			if !isMixedCaseIdentifier(sym) || isProseWord(sym) || hasVendorPrefix(sym) {
+			if !isCodeIdentifier(sym) || hasVendorPrefix(sym) {
 				continue
 			}
 			if seen[sym] {

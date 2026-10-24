@@ -61,8 +61,11 @@ runnable by hand against a ticket id before the next is added:
    it); the `/tdd` prompt separately steers the in-session agent to verify the
    premise still holds and recommend close rather than fabricate a no-op change.
    To keep the "recommend close" verdict from firing on valid tickets (BEH-629),
-   extraction drops prose git-trailer keywords (`Fixes`/`Closes`/`Resolves`) and
-   known third-party package internals (e.g. `sentryFunctionMiddlewareHandler`),
+   extraction reads only inline-code spans outside fenced blocks, pairing
+   backtick runs by length so a fence can't shift the pairing onto prose (#66);
+   it keeps only identifiers with an inner capital or a digit, so a capitalised
+   English word (`Fixes`, `Notes`) is never a symbol; it drops known third-party
+   package internals (e.g. `sentryFunctionMiddlewareHandler`);
    and grades the verdict: a symbol named in an add/introduce context (`Add a
    `beforeSend``) is one the ticket exists to *create*, so its absence downgrades
    to a soft "verify premise" note — only a missing symbol the ticket implies
