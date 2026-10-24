@@ -86,7 +86,9 @@ func stripFencedCode(s string) string {
 }
 
 // fenceMarker returns the run of three or more backticks or tildes that opens a
-// fence line, or "" when the line is not a fence.
+// fence line, or "" when the line is not a fence. As in CommonMark, a backtick run
+// followed by more backticks on the same line (```x``` is the syntax) is an inline
+// span, not a fence — treating it as one would swallow the rest of the body.
 func fenceMarker(line string) string {
 	trimmed := strings.TrimLeft(line, " ")
 	if len(line)-len(trimmed) > 3 || len(trimmed) < 3 || (trimmed[0] != '`' && trimmed[0] != '~') {
@@ -96,7 +98,7 @@ func fenceMarker(line string) string {
 	for n < len(trimmed) && trimmed[n] == trimmed[0] {
 		n++
 	}
-	if n < 3 {
+	if n < 3 || (trimmed[0] == '`' && strings.ContainsRune(trimmed[n:], '`')) {
 		return ""
 	}
 	return trimmed[:n]
@@ -104,7 +106,7 @@ func fenceMarker(line string) string {
 
 // wordIdentifier matches a whole letter-led word token (anchored at a word
 // boundary by RE2's greedy left-to-right scan, so it never starts mid-word). The
-// mixed-case precision filter is applied in Go afterwards rather than baked into
+// isCodeIdentifier precision filter is applied in Go afterwards rather than baked into
 // the pattern: anchoring it on a leading *lowercase* letter was the BEH-557 bug —
 // a PascalCase identifier like `GiphyGrid` then matched starting at its first
 // inner lowercase char (`iphyGrid`), silently dropping the leading capital.
@@ -134,8 +136,8 @@ func isCodeIdentifier(s string) bool {
 	return hasLower && hasUpper && (innerUpper || hasDigit)
 }
 
-// extractCitedSymbols returns the distinct mixed-case code identifiers a ticket
-// description names inside backtick spans — lower-camelCase and PascalCase alike —
+// extractCitedSymbols returns the distinct code identifiers a ticket description
+// names inside inline-code spans — lower-camelCase and PascalCase alike —
 // the symbols whose continued existence the advisory guard checks (both the
 // expected-present and to-be-created buckets, combined and order-preserving).
 func extractCitedSymbols(description string) []string {

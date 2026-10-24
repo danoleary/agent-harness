@@ -131,8 +131,9 @@ func TestResolvedAdvisoryNamesPascalCaseSymbolUntruncated(t *testing.T) {
 
 // BEH-629 (prose word): a git-trailer keyword like `Fixes` (from a `Fixes HERD-2T`
 // line the ticket quotes) is English, not a code identifier — its only capital
-// starts the word — so it must never be extracted as a symbol to grep. It was one of the three false positives that made BEH-626 look "already
-// resolved — recommend close".
+// starts the word — so it must never be extracted as a symbol to grep. It was one
+// of the three false positives that made BEH-626 look "already resolved —
+// recommend close".
 func TestExtractCitedSymbolsDropsGitTrailerKeyword(t *testing.T) {
 	got := extractCitedSymbols("issues don't auto-close without a `Fixes HERD-2T`")
 	if contains(got, "Fixes") {
@@ -314,6 +315,11 @@ func TestExtractCitedSymbolsSkipsFencedBlockContents(t *testing.T) {
 	}
 	if got := extractCitedSymbols("`realSymbol` then\n```\nsampleHelper()\n"); contains(got, "sampleHelper") {
 		t.Errorf("an unclosed fence runs to the end of the body, got %v", got)
+	}
+	// A line-leading triple-backtick inline span is not a fence opener, so it must
+	// not swallow the spans after it.
+	if got := extractCitedSymbols("```inlineSpan``` is inline\nthen `realSymbol`"); !contains(got, "realSymbol") {
+		t.Errorf("a line-leading inline span is not a fence, got %v", got)
 	}
 }
 
