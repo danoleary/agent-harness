@@ -56,6 +56,42 @@ make build               # build bin/loop first
 ./scripts/test-loop-start.sh
 ```
 
+## release.sh
+
+Cut a harness release in one command.
+
+### What it does
+
+1. Refuses unless you're on a clean `main` that matches `origin/main` and `gh` is
+   authenticated; resolves `patch`/`minor`/`major` against the latest `vX.Y.Z`
+   tag and refuses a version that isn't newer.
+2. Rewrites every `ghcr.io/<owner>/agent-harness-base:X.Y.Z` pin
+   (`.agent-harness/Dockerfile`, `example/.agent-harness/Dockerfile`,
+   `docs/CONSUMER.md`) to the new version, and `ARG CLAUDE_VERSION` in
+   `Dockerfile.base` when `--claude-version` is given.
+3. Runs `make check` on that tree (and reverts it on failure), commits it as
+   `Release vX.Y.Z`, tags it, and pushes main + the tag with `--atomic`.
+4. Waits for `.github/workflows/release.yml` (which the tag triggers) to publish
+   the binaries and the base image, and prints the release URL.
+
+The pins are read at session time, not by the release build, so tagging the
+commit that bumps them is safe. A failed release run leaves main pinned to an
+unpublished base; the script prints the `gh workflow run` command to retry.
+
+### Usage
+
+```bash
+make release VERSION=minor                            # v0.5.0 -> v0.6.0
+make release VERSION=v0.6.0 CLAUDE_VERSION=2.1.300    # also bump the sandbox CLI
+make release VERSION=patch ARGS=--dry-run             # show the diff, change nothing
+```
+
+### Testing
+
+```bash
+./scripts/test-release.sh
+```
+
 ## check-buildvcs.sh
 
 Guard against VCS-stamping Go commands in Makefiles that omit `-buildvcs=false`
