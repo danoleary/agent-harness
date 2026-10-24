@@ -648,6 +648,11 @@ A ticket is eligible iff **all** hold:
   a person decides *what* runs unattended; the harness decides *how*),
 - **not blocked**: no still-open issue has a `blocks` relation pointing at it, and
   it has no `Blocked` label.
+  The GitHub adapter applies the same rule through GitHub's native "blocked by"
+  issue dependencies: it fetches an issue's blockers only when the list response's
+  `issue_dependencies_summary.total_blocked_by` is non-zero, skips the issue while
+  any blocker is open (logging `#69 skipped: blocked by open #66`), and fails the
+  selection closed if that read errors.
 - **not gated on a telemetry re-measure**: a low-confidence perf *watch/confirm*
   ticket whose first acceptance criterion is to re-pull the metric over a wider
   Sentry window before any fix is excluded — the Implementation stage owns no

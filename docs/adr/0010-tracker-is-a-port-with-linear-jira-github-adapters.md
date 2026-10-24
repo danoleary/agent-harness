@@ -44,6 +44,10 @@ credential or MCP ever enters the sandbox.**
 - The interface must stay LCD: capabilities unique to one tracker (Linear
   sub-issues vs Jira sub-tasks vs GitHub task-lists) are normalized to "children"
   or dropped, not surfaced.
+- "Blocked by" is screened inside each adapter's selection, never surfaced
+  through the port: Linear through inverse `blocks` relations, GitHub through its
+  native issue dependencies (a still-open blocker skips the ticket), plus the
+  human-applied Blocked label in both.
 - "Ready for the agent" is expressed per-adapter in config (Linear state name, Jira
   status, GitHub label/column) — there is no universal queue concept.
 - The per-Stage CLI tools can run with a no-tracker/manual mode (Key + ticket text

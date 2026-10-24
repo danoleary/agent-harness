@@ -1,6 +1,10 @@
 package github
 
-import "testing"
+import (
+	"bytes"
+	"fmt"
+	"testing"
+)
 
 // readyLabels is the selection surface the selection + claim tests share.
 var readyLabels = Options{Ready: "ready-for-agent", Blocked: "blocked", InProgress: "in-progress", Findings: "agent-harness", Assignee: "harness-bot"}
@@ -188,5 +192,97 @@ func TestMoveToCanceledClosesNotPlanned(t *testing.T) {
 	}
 	if !patched {
 		t.Error("expected a PATCH closing the issue")
+	}
+}
+
+// readyIssue is a list-response fixture for a ready-labelled issue whose
+// issue_dependencies_summary reports totalBlockedBy open-or-closed blockers.
+func readyIssue(n, totalBlockedBy int) map[string]any {
+	return map[string]any{
+		"number": n, "title": fmt.Sprintf("Issue %d", n), "labels": []any{map[string]any{"name": "ready-for-agent"}},
+		"issue_dependencies_summary": map[string]any{
+			"blocked_by": totalBlockedBy, "total_blocked_by": totalBlockedBy, "blocking": 0, "total_blocking": 0,
+		},
+	}
+}
+
+// blockedByPath is the dependencies endpoint SelectNextTicket reads for issue n.
+func blockedByPath(n int) string {
+	return fmt.Sprintf("GET /repos/acme/widgets/issues/%d/dependencies/blocked_by", n)
+}
+
+// TestSelectNextTicketSkipsOpenBlocker pins GitHub's native "blocked by"
+// relation: a ready issue with a still-open blocker is skipped (and the skip is
+// logged naming the blocker), so the queue moves on to the next eligible issue.
+func TestSelectNextTicketSkipsOpenBlocker(t *testing.T) {
+	tr, _ := fakeTransport(map[string]any{
+		selectPath: []any{readyIssue(69, 2), readyIssue(70, 0)},
+		blockedByPath(69): []any{
+			map[string]any{"number": 12, "state": "closed"},
+			map[string]any{"number": 66, "state": "open"},
+		},
+	})
+	c := NewClient(tr, "acme", "widgets", readyLabels)
+	var log bytes.Buffer
+	c.log = &log
+
+	got, ok, err := c.SelectNextTicket()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !ok || got.Identifier != "#70" {
+		t.Fatalf("selected = %s (ok=%v), want #70", got.Identifier, ok)
+	}
+	if want := "#69 skipped: blocked by open #66\n"; log.String() != want {
+		t.Errorf("log = %q, want %q", log.String(), want)
+	}
+}
+
+// TestSelectNextTicketClosedBlockersDoNotBlock: blockers that are all closed
+// leave the issue eligible, matching the Linear adapter.
+func TestSelectNextTicketClosedBlockersDoNotBlock(t *testing.T) {
+	tr, _ := fakeTransport(map[string]any{
+		selectPath:        []any{readyIssue(69, 1)},
+		blockedByPath(69): []any{map[string]any{"number": 66, "state": "closed"}},
+	})
+	c := NewClient(tr, "acme", "widgets", readyLabels)
+
+	got, ok, err := c.SelectNextTicket()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !ok || got.Identifier != "#69" {
+		t.Fatalf("selected = %s (ok=%v), want #69", got.Identifier, ok)
+	}
+}
+
+// TestSelectNextTicketNoBlockersNoDependencyRequest: the list response's
+// dependency summary is enough when total_blocked_by is 0, so an unblocked issue
+// costs no extra request.
+func TestSelectNextTicketNoBlockersNoDependencyRequest(t *testing.T) {
+	tr, calls := fakeTransport(map[string]any{selectPath: []any{readyIssue(70, 0)}})
+	c := NewClient(tr, "acme", "widgets", readyLabels)
+
+	if _, ok, err := c.SelectNextTicket(); err != nil || !ok {
+		t.Fatalf("SelectNextTicket = ok=%v err=%v, want a ticket", ok, err)
+	}
+	if len(*calls) != 1 {
+		t.Errorf("expected only the list request, got %d calls: %+v", len(*calls), *calls)
+	}
+}
+
+// TestSelectNextTicketDependencyFetchFailsClosed: a failed blocked_by read is an
+// error, never a silently-unblocked ticket.
+func TestSelectNextTicketDependencyFetchFailsClosed(t *testing.T) {
+	// blockedByPath(69) is unmapped, so the fake transport errors on it.
+	tr, _ := fakeTransport(map[string]any{selectPath: []any{readyIssue(69, 1), readyIssue(70, 0)}})
+	c := NewClient(tr, "acme", "widgets", readyLabels)
+
+	got, ok, err := c.SelectNextTicket()
+	if err == nil {
+		t.Fatalf("expected an error, got ticket %s (ok=%v)", got.Identifier, ok)
+	}
+	if ok {
+		t.Error("expected ok=false alongside the error")
 	}
 }

@@ -7,13 +7,14 @@
 // sandbox boundary.
 //
 // The interface stays LCD: GitHub-unique shapes (task-list vs sub-issues,
-// open/closed vs Linear workflow states, no native priority or blocks relation)
-// are normalised to the port's vocabulary or dropped, never leaked out.
+// open/closed vs Linear workflow states, no native priority) are normalised to the port's vocabulary or dropped, never leaked out.
 package github
 
 import (
 	"encoding/json"
 	"fmt"
+	"io"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -85,12 +86,15 @@ type Client struct {
 	owner     string
 	repo      string
 	opts      Options
+	// log receives selection narration (a ready ticket skipped for an open
+	// blocker), so the run log says why the queue moved past it.
+	log io.Writer
 }
 
 // NewClient builds a Client bound to one owner/repo with the given selection
 // surface.
 func NewClient(t Transport, owner, repo string, opts Options) *Client {
-	return &Client{transport: t, owner: owner, repo: repo, opts: opts}
+	return &Client{transport: t, owner: owner, repo: repo, opts: opts, log: os.Stderr}
 }
 
 // slug is the "owner/repo" identity used as the ticket's TeamID (findings are
@@ -134,6 +138,18 @@ type issue struct {
 	PullRequest *struct {
 		URL string `json:"url"`
 	} `json:"pull_request"`
+	// IssueDependenciesSummary counts the issue's native "blocked by" / "blocking"
+	// dependencies. The list response carries it, so selection only fetches the
+	// blockers themselves when TotalBlockedBy > 0.
+	IssueDependenciesSummary struct {
+		BlockedBy      int `json:"blocked_by"`
+		TotalBlockedBy int `json:"total_blocked_by"`
+		Blocking       int `json:"blocking"`
+		TotalBlocking  int `json:"total_blocking"`
+	} `json:"issue_dependencies_summary"`
+	// State is "open" or "closed"; read on a blocked_by dependency to decide
+	// whether it still blocks.
+	State string `json:"state"`
 }
 
 // FetchTicket resolves a #number Key to the harness ticket shape via one issues
