@@ -193,7 +193,7 @@ If you set `dockerfile`, write one that `FROM`s a **pinned** tag of the publishe
 base and adds your toolchain:
 
 ```dockerfile
-FROM ghcr.io/danoleary/agent-harness-base:0.1.0
+FROM ghcr.io/danoleary/agent-harness-base:0.6.0
 
 # Your toolchain. Everything here is yours; the base carries only the
 # harness<->sandbox contract (claude CLI, git, gosu, the uid-re-exec entrypoint).
