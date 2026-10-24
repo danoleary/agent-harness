@@ -411,3 +411,55 @@ func TestImplementationClaimFailureLaunchesNothing(t *testing.T) {
 		t.Errorf("nothing may launch for an unclaimed ticket, got %v", labels(h.Agents))
 	}
 }
+
+// #46: a post_create the shell could not run (127 not found, 126 not executable)
+// is an environment failure the session cannot fix — it runs in a different
+// container whose PATH is fine, so nothing it installs reaches the gate container.
+// The stage stops before any session launches and says why.
+func TestImplementationAbortsWhenPostCreateCannotRun(t *testing.T) {
+	for _, code := range []int{127, 126} {
+		h := hostio.NewFake()
+		h.Exists = false
+		h.ShellOutcome = session.Outcome{ExitCode: code, StderrTail: "bash: line 1: pnpm: command not found"}
+		log := stageLog(t, "PROJ-46")
+
+		res := Implementation(h, stageCfg(), log, Args{Identifier: "PROJ-46"})
+
+		if res.OK || res.Retryable {
+			t.Errorf("exit %d: an unrunnable post_create is a fatal, non-retryable env failure, got %+v", code, res)
+		}
+		if len(h.Agents) != 0 {
+			t.Errorf("exit %d: no session may launch behind an unrunnable post_create, got %v", code, labels(h.Agents))
+		}
+		if got := h.Trk.Released; len(got) != 1 {
+			t.Errorf("exit %d: released = %v, want the claim returned — nothing was worked", code, got)
+		}
+		said := narration(t, log)
+		for _, want := range []string{"`pnpm`", "not on PATH in the worktree-command container", "bash: line 1: pnpm: command not found"} {
+			if !strings.Contains(said, want) {
+				t.Errorf("exit %d: run.jsonl should carry %q; got %s", code, want, said)
+			}
+		}
+	}
+}
+
+// BEH-490 still holds for every other non-zero exit: a failed install degrades to a
+// warning and the session provisions in-session. The OOM-kill keeps its retry.
+func TestImplementationPostCreateFailureIsStillWarnOnly(t *testing.T) {
+	h := hostio.NewFake()
+	h.Exists = false
+	h.ShellOutcome = session.Outcome{ExitCode: 1, StderrTail: "ERR_PNPM_FETCH_404"}
+	log := stageLog(t, "PROJ-47")
+
+	res := Implementation(h, stageCfg(), log, Args{Identifier: "PROJ-47"})
+
+	if !res.OK || len(h.Agents) != 1 {
+		t.Fatalf("an ordinary post_create failure is warn-only, got %+v with agents %v", res, labels(h.Agents))
+	}
+	if !strings.Contains(narration(t, log), "post_create exited 1") {
+		t.Errorf("the warning must still be logged; run.jsonl = %s", narration(t, log))
+	}
+	if got := h.Shells[0].Retry.MaxAttempts; got != oomMaxAttempts {
+		t.Errorf("post_create retry attempts = %d, want the OOM retry (%d) kept", got, oomMaxAttempts)
+	}
+}

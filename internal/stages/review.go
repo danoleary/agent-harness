@@ -165,7 +165,8 @@ func Review(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Res
 	// dependencies; run the Consumer's post_create up front so the session opens
 	// onto a ready worktree instead of paying the install mid-gate. Warn-only: a
 	// review skill that finds missing dependencies installs them in-session, so a
-	// transient prep failure degrades rather than aborting.
+	// transient prep failure degrades rather than aborting — unless the shell could
+	// not run the command at all (exit 127/126), which aborts before the session (#46).
 	//
 	// Retry on an OOM-kill (exit 137) before that fallback (BEH-524): under host
 	// memory pressure this install gets SIGKILLed, and degrading to warn-and-continue
@@ -180,6 +181,14 @@ func Review(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Res
 	} else {
 		log.Event("prepping worktree (post_create) before the review session")
 		res := h.Shell(prep)
+		// A prep the shell could not run at all is the environment, not a flaky
+		// install: the session's own container has a different PATH, so it cannot fix
+		// it, and the host gate would hit the same missing command. Stop before the
+		// session launches (#46). The worktree is untouched and kept.
+		if missing, ok := verify.CommandUnrunnable(res.Outcome); ok {
+			log.Event("review ✗ worktree prep: " + unrunnableReport("post_create", missing, res.Outcome) + "; no review session launched — keeping worktree")
+			return Result{OK: false}
+		}
 		if res.ExitCode != 0 {
 			log.Event(fmt.Sprintf(
 				"review … warning: worktree prep exited %d after %d attempt(s) — session will provision in-session if needed",
@@ -273,7 +282,7 @@ func Review(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Res
 	// table they feed. It also carries the two verdicts that ride along with the
 	// push decision — whether the qualitative review completed, and whether the one
 	// recoverable incompleteness class is worth another turn.
-	result := verify.Review(h, slug, gateExit, reviewOutcome)
+	result := verify.Review(h, slug, gateRes.Outcome, reviewOutcome)
 
 	// BEH-624: the cheapest incompleteness class to recover. A review that exits
 	// cleanly (code 0) one turn short of its verdict — over a clean worktree whose
@@ -295,7 +304,7 @@ func Review(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Res
 		reviewOutcome = runReviewSession(attempt)
 		gateRes = runHostGate(fmt.Sprintf("%s-retry%d", gateStep, attempt))
 		gateExit = gateRes.Outcome.ExitCode
-		result = verify.Review(h, slug, gateExit, reviewOutcome)
+		result = verify.Review(h, slug, gateRes.Outcome, reviewOutcome)
 	}
 
 	// Flag the final review completeness so the run log carries the signal rather than
@@ -366,6 +375,11 @@ func Review(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Res
 			gateClause = fmt.Sprintf(" [gate %q]", gateRes.FailedGate)
 		}
 		log.Event(fmt.Sprintf("review ✗ %s (gate exit %d)%s — keeping worktree, nothing pushed", result.Reason, gateExit, gateClause))
+		// The gate's stderr tail goes in the run log, so a gate that could not run its
+		// tool reads as PATH without opening the step log (#46).
+		if gateExit != 0 && gateRes.Outcome.StderrTail != "" {
+			log.Event("review · gate stderr tail:\n" + gateRes.Outcome.StderrTail)
+		}
 		return capFailure(reviewOutcome)
 	}
 	log.Event("review ✓ " + result.Reason)

@@ -1,6 +1,7 @@
 package stages
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -92,7 +93,9 @@ func retryableEnvCrash(outcome session.Outcome, capAborted bool) bool {
 // the coupling where the sandboxed agent ran new-worktree.sh and the host depended
 // on its output. A worktree-creation failure is fatal (there is nothing to run the
 // session against); a post_create failure is warn-only, mirroring review's install
-// degradation (BEH-490): the session can still install toolchain deps itself.
+// degradation (BEH-490): the session can still install toolchain deps itself. The
+// one exception is a post_create the shell could not run at all, which returns
+// errPostCreateUnrunnable (#46).
 //
 // Only the git creation is conditional on the worktree's absence; post_create runs
 // on EVERY provisioning pass, including for a worktree that already exists. That
@@ -120,10 +123,15 @@ func provisionWorktree(h hostio.Host, cfg config.Config, slug string, log *runlo
 		log.Event(reused)
 	}
 	if cfg.PostCreate != "" {
-		runPostCreate(h, cfg, slug, log)
+		return runPostCreate(h, cfg, slug, log)
 	}
 	return nil
 }
+
+// errPostCreateUnrunnable is provisionWorktree's verdict when the shell could not
+// find or execute post_create's command (exit 127/126). It is an environment
+// failure the session cannot fix, so the stage stops before launching one (#46).
+var errPostCreateUnrunnable = errors.New("post_create could not run in the worktree-command container")
 
 // runPostCreate runs the Consumer's post_create command in the provisioned
 // worktree via a secret-free container. It retries an OOM-kill (exit 137) — the
@@ -131,7 +139,13 @@ func provisionWorktree(h hostio.Host, cfg config.Config, slug string, log *runlo
 // (BEH-524) — and degrades to a warning on a persistent non-zero exit rather than
 // failing the run, so a flaky toolchain install doesn't strand an otherwise-workable
 // ticket.
-func runPostCreate(h hostio.Host, cfg config.Config, slug string, log *runlog.Logger) {
+//
+// Except when the shell could not run the command at all (exit 127/126): that is
+// not a flaky install but a command missing from the worktree-command container's
+// PATH. The session runs in a different container whose PATH is fine, so nothing it
+// installs reaches the gate container, and every session launched over it is spent
+// on a pipeline that can never push (#46). It returns errPostCreateUnrunnable.
+func runPostCreate(h hostio.Host, cfg config.Config, slug string, log *runlog.Logger) error {
 	log.Event("provisioning worktree — running post_create toolchain setup")
 	run := postCreateRun(cfg, h.WorktreePath(slug))
 	run.Retry = hostio.Retry{
@@ -145,12 +159,37 @@ func runPostCreate(h hostio.Host, cfg config.Config, slug string, log *runlog.Lo
 		},
 	}
 	res := h.Shell(run)
+	if missing, ok := verify.CommandUnrunnable(res.Outcome); ok {
+		log.Event("tdd ✗ " + unrunnableReport("post_create", missing, res.Outcome) + "; no session launched")
+		return errPostCreateUnrunnable
+	}
 	if res.ExitCode != 0 {
 		log.Event(fmt.Sprintf(
 			"⚠ post_create exited %d — the worktree may lack toolchain deps; the session must install them before the gates run",
 			res.ExitCode,
 		))
 	}
+	return nil
+}
+
+// unrunnableReport narrates a worktree command the shell could not run (#46): what
+// it could not execute, and the likely cause — the command is not on PATH in the
+// worktree-command container, whose environment differs from the session
+// container's — followed by the command's stderr tail, so the operator does not
+// have to open the step log to see it was PATH.
+func unrunnableReport(step, missing string, out session.Outcome) string {
+	what := "its command"
+	if missing != "" {
+		what = "`" + missing + "`"
+	}
+	msg := fmt.Sprintf(
+		"%s could not execute %s (exit %d) — the command is not on PATH in the worktree-command container, whose environment differs from the session container's (environment, not code); fix the image",
+		step, what, out.ExitCode,
+	)
+	if out.StderrTail != "" {
+		msg += "\n" + out.StderrTail
+	}
+	return msg
 }
 
 // Implementation runs the first stage: fetch + claim one ticket, run only the
@@ -282,7 +321,14 @@ func Implementation(h hostio.Host, cfg config.Config, log *runlog.Logger, args A
 	// there is no worktree to run against, so release the claim (best-effort) and
 	// surface it as a retryable env failure — the same class as a launch crash that
 	// left no worktree (BEH-543).
-	if err := provisionWorktree(h, cfg, slug, log); err != nil {
+	//
+	// A post_create the shell could not run is NOT retryable: re-attempting in the
+	// same environment fails the same way, so the stage stops before any session
+	// launches (#46). The claim goes back — nothing was worked.
+	if err := provisionWorktree(h, cfg, slug, log); errors.Is(err, errPostCreateUnrunnable) {
+		releaseClaim(claim, "post_create could not run in the worktree-command container (#46)", log)
+		return Result{OK: false}
+	} else if err != nil {
 		log.Event("tdd ✗ host-side worktree provisioning failed: " + err.Error())
 		releaseClaim(claim, "host-side worktree provisioning failed", log)
 		return Result{OK: false, Retryable: true}

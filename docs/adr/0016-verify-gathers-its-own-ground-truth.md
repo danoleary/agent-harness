@@ -141,3 +141,20 @@ computed from different state.
   `DisjointWorkTrapped`). Each names the decision that sets it and is the zero value
   everywhere else — the cost of one verdict type instead of five, paid in doc comments
   rather than in call-site plumbing.
+
+## Amendment (#46): `Review` takes the gate's outcome, not its exit code
+
+`func Review(g GroundTruth, slug string, gate session.Outcome, out session.Outcome) Result`
+
+An exit code cannot tell a red gate from a gate the shell never ran. A tool missing
+from the gate container's PATH exits 127, or exits 2 when make wraps it, and was
+reported as `harness gate re-run is red`. That reads as a code regression, so an
+operator had to open the gate log to find out it was PATH. Telling the two apart needs
+the gate's stderr (`session.Outcome.StderrTail`), where the shell or make reports the
+command it could not run. Under this ADR's rule, the decision reads that evidence
+itself rather than the Stage pre-classifying it into a boolean, so the Stage now
+passes the whole gate `Outcome`. An unrunnable gate still withholds the push. It just
+gets its own environment reason.
+
+The same classification, `CommandUnrunnable`, is exported for the Stages' post_create
+and review prep. There, exit 127/126 ends the Stage before a session launches.

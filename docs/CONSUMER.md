@@ -66,6 +66,13 @@ branch_prefix = "feat"
 # including a resumed worktree — a resumed tree routinely has its deps missing
 # while still looking ready from the outside. Prefer lockfile-frozen commands
 # that no-op when already satisfied.
+#
+# A failing post_create is only a warning — the session installs what is
+# missing. But if the shell cannot run it at all (exit 127 command not found,
+# 126 not executable), the run stops before any session: the command is not on
+# PATH in this container, and the agent's own container cannot fix that. Make
+# sure your image's login shell (`bash -lc`) sees every tool post_create and the
+# gates call.
 post_create = '''
 dotnet restore
 '''
