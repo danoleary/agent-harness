@@ -61,16 +61,19 @@ type Fake struct {
 	// CollapseOnRebase empties the branch's diff the moment it is rebased — the
 	// BEH-680 race, where a sibling PR landed the same fix while the branch waited.
 	CollapseOnRebase bool
-	Resolved         string
-	ResumedAdvice    string
-	AlreadyOnMain    bool
-	CreateErr        error
-	RemoveErr        error
-	StripErr         error
-	CheckpointErr    error
-	RegraftErr       error
-	HeadErr          error
-	RerunCommitErr   error
+	// HeadOnRebase, when set, becomes Head the moment the branch is rebased — the
+	// replay rewrites every SHA on the branch.
+	HeadOnRebase   string
+	Resolved       string
+	ResumedAdvice  string
+	AlreadyOnMain  bool
+	CreateErr      error
+	RemoveErr      error
+	StripErr       error
+	CheckpointErr  error
+	RegraftErr     error
+	HeadErr        error
+	RerunCommitErr error
 
 	// --- remote state ---
 
@@ -215,6 +218,9 @@ func (f *Fake) Rebase(slug string) gitpkg.RebaseResult {
 	f.record("rebase %s", slug)
 	if f.CollapseOnRebase {
 		f.DiffEmpty = true
+	}
+	if f.HeadOnRebase != "" {
+		f.Head = f.HeadOnRebase
 	}
 	return f.RebaseVerdict
 }
