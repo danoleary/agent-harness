@@ -231,8 +231,8 @@ func RetrospectivePreconditions(g GroundTruth, slug string, priorTranscripts boo
 // Review decides whether a reviewed branch may ship, and — on the one recoverable
 // incompleteness class — whether the review session is worth re-launching first.
 //
-// gateExit is the exit code of the harness's OWN host-side gate re-run: green iff
-// every config-declared named gate (herd: `pnpm run check`, `pnpm run typecheck`;
+// gate is the outcome of the harness's OWN host-side gate re-run: green iff every
+// config-declared named gate (herd: `pnpm run check`, `pnpm run typecheck`;
 // BEH-634) passed in the throwaway containers on the feature branch (DESIGN.md:
 // ground truth = the harness's own gate run is green). out is the review session's
 // outcome, read only for what the *stream* saw — whether the verdict was emitted,
@@ -264,6 +264,11 @@ func RetrospectivePreconditions(g GroundTruth, slug string, priorTranscripts boo
 // review signal. Blocking keeps the worktree for a resumed review rather than
 // shipping unreviewed.
 //
+// A red gate the shell could not even run — exit 127/126, or the shell's or make's
+// own "command not found" report in its stderr (#46) — gets its own reason. It still
+// withholds the push, but it is the environment, not the diff: reporting it as a red
+// gate sent operators hunting for a code regression that a PATH change caused.
+//
 // The blocked disposition is checked last and also fails closed (BEH-580): a review
 // that DID run but declared blocked found a Blocker/Important finding it could not
 // autonomously resolve. The autonomous pipeline has no human to answer the skill's
@@ -271,9 +276,9 @@ func RetrospectivePreconditions(g GroundTruth, slug string, priorTranscripts boo
 // BEH-439 leak). Blocking keeps the worktree for a human decision — distinct from
 // the BEH-569 case (there the review never ran; here it ran and found a real,
 // unresolved issue).
-func Review(g GroundTruth, slug string, gateExit int, out session.Outcome) Result {
+func Review(g GroundTruth, slug string, gate session.Outcome, out session.Outcome) Result {
 	clean := g.WorktreeClean(slug)
-	gatesGreen := gateExit == 0
+	gatesGreen := gate.ExitCode == 0
 	complete, completeReason := reviewQualitative(out)
 
 	// The retry verdict is independent of the push verdict below — it asks "is this
@@ -293,7 +298,7 @@ func Review(g GroundTruth, slug string, gateExit int, out session.Outcome) Resul
 		r.RecommendClose = true
 		r.Reason = "branch makes zero net change against origin/main (empty diff) — nothing to ship; recommend closing the ticket as a duplicate/superseded rather than opening an empty-commit PR"
 	case !gatesGreen:
-		r.Reason = "harness gate re-run is red — not pushing"
+		r.Reason = redGateReason(gate, complete && !out.ReviewBlocked)
 	case !complete:
 		r.Reason = "qualitative review never produced a verdict — gates green but the seven-lens review did not run; not pushing (fail-closed)"
 	case out.ReviewBlocked:
@@ -303,6 +308,27 @@ func Review(g GroundTruth, slug string, gateExit int, out session.Outcome) Resul
 		r.Reason = "harness gate re-run is green and the qualitative review emitted a clear verdict — clear to push + open PR"
 	}
 	return r
+}
+
+// redGateReason says why a red host gate withholds the push. An ordinary failure is
+// the diff's; a gate the shell could not run is the environment's (#46), and when
+// the review session ran the same gates green in its own container (it reached a
+// clear verdict), the two shells disagree about PATH — said outright, so nobody
+// re-reviews a diff that was never the problem.
+func redGateReason(gate session.Outcome, sessionGatesGreen bool) string {
+	missing, unrunnable := gateUnrunnable(gate)
+	if !unrunnable {
+		return "harness gate re-run is red — not pushing"
+	}
+	what := "its command"
+	if missing != "" {
+		what = "`" + missing + "`"
+	}
+	reason := "gate re-run could not execute " + what + " — toolchain missing in the gate shell (environment, not code); not pushing"
+	if sessionGatesGreen {
+		reason += " — the review session reached a clear verdict running the gates in its own container, so this is a shell/PATH difference between the session and the gate runner"
+	}
+	return reason
 }
 
 // reviewQualitative classifies whether the review session emitted its verdict —

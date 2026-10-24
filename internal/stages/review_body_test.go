@@ -472,3 +472,65 @@ func TestReviewCIFixSurfacesASpendingCapAsItsOwnClass(t *testing.T) {
 		t.Fatalf("a capped fix session is the retry-after-reset class (BEH-571), got %v", fixErr)
 	}
 }
+
+// #46: review prep the shell could not run aborts the stage before the session
+// launches, the same way post_create does in implementation.
+func TestReviewAbortsWhenPrepCannotRun(t *testing.T) {
+	for _, code := range []int{127, 126} {
+		h := hostio.NewFake()
+		h.ShellFn = func(_ int, s hostio.ShellRun) session.Outcome {
+			if s.Label == prepStep {
+				return session.Outcome{ExitCode: code, StderrTail: "bash: line 1: pnpm: command not found"}
+			}
+			return session.Outcome{}
+		}
+		log := stageLog(t, "PROJ-46")
+
+		res := Review(h, stageCfg(), log, Args{Identifier: "PROJ-46"})
+
+		if res.OK || res.Disposition == Shipped {
+			t.Errorf("exit %d: an unrunnable prep ships nothing, got %+v", code, res)
+		}
+		if len(h.Agents) != 0 {
+			t.Errorf("exit %d: no review session may launch behind an unrunnable prep, got %v", code, h.Agents)
+		}
+		if got := shellLabels(h.Shells); len(got) != 1 {
+			t.Errorf("exit %d: shell runs = %v, want only the prep — no gate behind it", code, got)
+		}
+		said := narration(t, log)
+		for _, want := range []string{"`pnpm`", "not on PATH in the worktree-command container"} {
+			if !strings.Contains(said, want) {
+				t.Errorf("exit %d: run.jsonl should carry %q; got %s", code, want, said)
+			}
+		}
+	}
+}
+
+// #46: a host gate that cannot find its tool is reported as the environment, with
+// the gate's stderr tail in the run log, not as a red gate that reads as a code
+// regression.
+func TestReviewUnrunnableGateIsReportedAsTheEnvironment(t *testing.T) {
+	h := hostio.NewFake()
+	h.ShellFn = func(_ int, s hostio.ShellRun) session.Outcome {
+		if strings.HasPrefix(s.Label, gateStep) {
+			return session.Outcome{ExitCode: 2, StderrTail: "make: golangci-lint: No such file or directory\nmake: *** [Makefile:12: lint] Error 127"}
+		}
+		return session.Outcome{}
+	}
+	log := stageLog(t, "PROJ-48")
+
+	res := Review(h, stageCfg(), log, Args{Identifier: "PROJ-48"})
+
+	if res.OK || strings.Contains(strings.Join(h.Calls, "|"), "push") {
+		t.Fatalf("nothing may be pushed behind an unrunnable gate, got %+v; calls = %v", res, h.Calls)
+	}
+	said := narration(t, log)
+	if strings.Contains(said, "gate re-run is red") {
+		t.Errorf("an unrunnable gate must not read as a red gate; run.jsonl = %s", said)
+	}
+	for _, want := range []string{"environment, not code", "make: golangci-lint: No such file or directory"} {
+		if !strings.Contains(said, want) {
+			t.Errorf("run.jsonl should carry %q; got %s", want, said)
+		}
+	}
+}

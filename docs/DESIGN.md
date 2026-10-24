@@ -235,6 +235,9 @@ loop:
   --- host-side worktree provisioning (BEH-636) ---
   git worktree add -b <branch_prefix>/beh-nnn <worktrees_dir>/beh-nnn (based on origin/main)  // harness owns creation; skipped when the worktree already exists
   post_create hook: throwaway container runs the Consumer's toolchain setup in the worktree  // herd: env links + pnpm install + Playwright. warn-only.
+  # EXCEPT exit 127/126 — the shell could not find/execute the command (#46): the command is not on PATH in the
+  # worktree-command container, which the session's container cannot fix. Fail fast: log the command + stderr tail,
+  # release the claim, launch no session. A re-run in a still-broken environment stops here too.
   # retires the sandbox-runs-new-worktree.sh coupling: git creation is host-side, toolchain is a declared config hook
   # post_create runs on EVERY pass, not just a fresh worktree: a resumed tree is routinely stripped of deps
   # (handoff strip BEH-412 / OOM-killed install BEH-523) while still looking ready, so it must be idempotent (BEH-796)
@@ -249,6 +252,7 @@ loop:
   --- review prep: repopulate web/node_modules before the cold session (BEH-490) ---
   throwaway install container: `pnpm install --frozen-lockfile` in the worktree
   # handoff strips node_modules (BEH-412); pre-install so the session doesn't pay it mid-gate. warn-only.
+  # EXCEPT exit 127/126 (#46): abort the review stage before the session launches, keep the worktree.
 
   --- review: /review-worktree (sandbox, 25 min cap) ---
   run: claude -p "/review-worktree <worktree-path>  <injected ticket context + 'do not touch the issue tracker; commit locally ONLY — do NOT push, do NOT run gh; do NOT emit findings (retrospective owns that)'>"
@@ -270,6 +274,11 @@ loop:
                 AND that verdict's disposition is NOT `blocked` (BEH-580)
                 AND the branch makes a NON-empty net diff against origin/main (BEH-603)
                 // never the agent's self-report; a green gate is NOT a review (BEH-569)
+  a red gate the shell could not run (exit 127/126, or the shell's/make's own "command not found" /
+    "No such file or directory" report for the command in its stderr tail — make wraps a recipe's 127 as
+    exit 2) is reported as `gate re-run could not execute … (environment, not code)`, NOT "gate re-run is
+    red"; if the review session reached a clear verdict running the gates in its own container, the reason
+    names the session/gate-runner shell/PATH difference. The gate's stderr tail is logged on any red (#46).
   if review has NO verdict but exited CLEANLY (code 0, not an OOM/cap-abort) over a clean,
      gate-green worktree (BEH-624): the diff is byte-identical and already verified — the review
      just stopped a turn short of printing its verdict. Re-launch the review session in-stage,

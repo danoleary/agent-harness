@@ -132,6 +132,12 @@ type Outcome struct {
 	// genuine one (daemon down, image missing) so only the former is retried. Empty
 	// when the container started.
 	DockerReason string
+	// StderrTail is the container's last few non-empty stderr lines, newline-joined
+	// (stderrTailLines). For a worktree command it is the command's own stderr, which
+	// is where a shell or make reports that it could not find or execute the tool
+	// (#46) — the signature verify reads to tell an environment failure from a red
+	// gate, and the tail the stage logs so nobody has to open the step log to see it.
+	StderrTail string
 }
 
 // Retryable reports whether this outcome is an environmental, transient failure
@@ -457,7 +463,7 @@ func Run(dockerArgs []string, opts Options) Outcome {
 		opts.Log.Event(sessionSummary(time.Since(monoStart), realNow().Sub(start), opts.Timeout))
 	}
 
-	return Outcome{ExitCode: exitCode, CapKilled: capKilled.Load(), UsagePolicyRefusal: flags.usagePolicyRefusal, SpendingCapAbort: flags.spendingCapAbort, SpendingCapResetTime: flags.spendingCapResetTime, ReviewVerdictEmitted: flags.reviewVerdictEmitted, ReviewBlocked: flags.reviewBlocked, TurnZeroNoOp: flags.turnZeroNoOp, NoRealTurns: flags.noRealTurns, DockerReason: dockerReason}
+	return Outcome{ExitCode: exitCode, CapKilled: capKilled.Load(), UsagePolicyRefusal: flags.usagePolicyRefusal, SpendingCapAbort: flags.spendingCapAbort, SpendingCapResetTime: flags.spendingCapResetTime, ReviewVerdictEmitted: flags.reviewVerdictEmitted, ReviewBlocked: flags.reviewBlocked, TurnZeroNoOp: flags.turnZeroNoOp, NoRealTurns: flags.noRealTurns, DockerReason: dockerReason, StderrTail: strings.Join(tail, "\n")}
 }
 
 // pumpStdout scans claude's stream-json stdout: it tees every line raw to the

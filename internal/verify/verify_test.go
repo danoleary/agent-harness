@@ -270,14 +270,14 @@ func TestRetrospectiveReportsSpendingCapAbort(t *testing.T) {
 var reviewed = session.Outcome{ReviewVerdictEmitted: true}
 
 func TestReviewPushesWhenGatesGreenAndWorktreeClean(t *testing.T) {
-	r := Review(&truth{t: t, clean: true}, slug, 0, reviewed)
+	r := Review(&truth{t: t, clean: true}, slug, session.Outcome{}, reviewed)
 	if !r.OK {
 		t.Errorf("green gates over a clean worktree with a completed review must clear the push gate, got %+v", r)
 	}
 }
 
 func TestReviewBlocksPushWhenGatesRed(t *testing.T) {
-	r := Review(&truth{t: t, clean: true}, slug, 1, reviewed)
+	r := Review(&truth{t: t, clean: true}, slug, session.Outcome{ExitCode: 1}, reviewed)
 	if r.OK {
 		t.Error("gates red must NOT clear the push gate — no branch ships on a failing gate")
 	}
@@ -286,11 +286,118 @@ func TestReviewBlocksPushWhenGatesRed(t *testing.T) {
 	}
 }
 
+// #46: a gate the shell could not even run is an environment failure, not a red
+// gate. Nothing the diff does changes the gate container's PATH, so reporting it as
+// "red" sends the operator hunting for a code regression that is not there.
+func TestReviewNamesAnUnrunnableGateAsAnEnvironmentFailure(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		gate    session.Outcome
+		missing string
+	}{
+		{
+			name:    "exit 127 from the shell",
+			gate:    session.Outcome{ExitCode: 127, StderrTail: "bash: line 1: golangci-lint: command not found"},
+			missing: "golangci-lint",
+		},
+		{
+			name:    "exit 126, found but not executable",
+			gate:    session.Outcome{ExitCode: 126, StderrTail: "bash: line 1: ./scripts/check.sh: Permission denied"},
+			missing: "./scripts/check.sh",
+		},
+		{
+			// make reports the recipe's 127 as its own exit 2, so the exit code alone
+			// reads as an ordinary red gate.
+			name: "make-wrapped tool missing",
+			gate: session.Outcome{ExitCode: 2, StderrTail: "go vet ./...\n" +
+				"make: golangci-lint: No such file or directory\n" +
+				"make: *** [Makefile:12: lint] Error 127"},
+			missing: "golangci-lint",
+		},
+		{
+			name: "make-wrapped, recipe shell reports it",
+			gate: session.Outcome{ExitCode: 2, StderrTail: "/bin/sh: 1: gofmt: not found\n" +
+				"make: *** [Makefile:9: check] Error 127"},
+			missing: "gofmt",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := Review(&truth{t: t, clean: true}, slug, tc.gate, session.Outcome{})
+			if r.OK {
+				t.Fatal("a gate that could not run must not clear the push gate")
+			}
+			if regexp.MustCompile(`gate re-run is red`).MatchString(r.Reason) {
+				t.Errorf("reason %q reads as a code regression; an unrunnable gate is environmental", r.Reason)
+			}
+			if !regexp.MustCompile(`could not execute.*environment, not code`).MatchString(r.Reason) {
+				t.Errorf("reason %q should name the environment class", r.Reason)
+			}
+			if !regexp.MustCompile(regexp.QuoteMeta(tc.missing)).MatchString(r.Reason) {
+				t.Errorf("reason %q should name the missing command %q", r.Reason, tc.missing)
+			}
+		})
+	}
+}
+
+// A test that fails on a missing fixture also prints "No such file or directory",
+// but that is the code under test talking, not the shell failing to run the gate.
+// Only the shell's or make's own report about the command it was running counts.
+func TestReviewOrdinaryRedGateIsStillRed(t *testing.T) {
+	for _, gate := range []session.Outcome{
+		{ExitCode: 2, StderrTail: "--- FAIL: TestLoad\nopen testdata/cfg.toml: no such file or directory\nFAIL"},
+		{ExitCode: 2, StderrTail: "make: *** [Makefile:12: test] Error 1"},
+		{ExitCode: 1},
+	} {
+		r := Review(&truth{t: t, clean: true}, slug, gate, reviewed)
+		if r.Reason != "harness gate re-run is red — not pushing" {
+			t.Errorf("gate %+v: reason = %q, want the red-gate reason", gate, r.Reason)
+		}
+	}
+}
+
+// #46 (3): when the review session's own run of the gates passed in its container
+// but the host re-run cannot find the tool, the two shells disagree about PATH —
+// say so, so nobody re-reviews a diff that was never the problem.
+func TestReviewFlagsASessionGateRunnerPathMismatch(t *testing.T) {
+	gate := session.Outcome{ExitCode: 127, StderrTail: "bash: line 1: go: command not found"}
+
+	r := Review(&truth{t: t, clean: true}, slug, gate, reviewed)
+	if !regexp.MustCompile(`shell/PATH difference between the session and the gate runner`).MatchString(r.Reason) {
+		t.Errorf("reason %q should flag the session/gate-runner PATH mismatch", r.Reason)
+	}
+
+	r = Review(&truth{t: t, clean: true}, slug, gate, session.Outcome{ExitCode: 137})
+	if regexp.MustCompile(`PATH difference`).MatchString(r.Reason) {
+		t.Errorf("reason %q claims the session's gate passed, but the session never reached its verdict", r.Reason)
+	}
+}
+
+func TestCommandUnrunnableIsTheShellsOwnExitCode(t *testing.T) {
+	for _, tc := range []struct {
+		out     session.Outcome
+		missing string
+		ok      bool
+	}{
+		{session.Outcome{ExitCode: 127, StderrTail: "bash: line 3: pnpm: command not found"}, "pnpm", true},
+		{session.Outcome{ExitCode: 126}, "", true},
+		// Make-wrapped exits 2: for post_create that stays the warn-only class.
+		{session.Outcome{ExitCode: 2, StderrTail: "make: pnpm: No such file or directory\nmake: *** [Makefile:1: setup] Error 127"}, "", false},
+		{session.Outcome{ExitCode: 1, StderrTail: "ERR_PNPM_FETCH_404"}, "", false},
+		{session.Outcome{ExitCode: 137}, "", false},
+		{session.Outcome{}, "", false},
+	} {
+		missing, ok := CommandUnrunnable(tc.out)
+		if ok != tc.ok || missing != tc.missing {
+			t.Errorf("CommandUnrunnable(%+v) = (%q, %v), want (%q, %v)", tc.out, missing, ok, tc.missing, tc.ok)
+		}
+	}
+}
+
 // A dirty worktree means the gate validated a different tree than would ship, so
 // the push is blocked even when the gate is green — the harness ships only what it
 // actually verified.
 func TestReviewBlocksPushWhenWorktreeDirty(t *testing.T) {
-	r := Review(&truth{t: t, clean: false}, slug, 0, reviewed)
+	r := Review(&truth{t: t, clean: false}, slug, session.Outcome{}, reviewed)
 	if r.OK {
 		t.Error("a dirty worktree must NOT clear the push gate even with green gates")
 	}
@@ -306,7 +413,7 @@ func TestReviewBlocksPushWhenWorktreeDirty(t *testing.T) {
 // is never opened on a gate re-run alone (the gate only proves the diff compiles —
 // it is not a review).
 func TestReviewBlocksPushWhenReviewIncompleteDespiteGreenGate(t *testing.T) {
-	r := Review(&truth{t: t, clean: true}, slug, 0, session.Outcome{ExitCode: 137})
+	r := Review(&truth{t: t, clean: true}, slug, session.Outcome{}, session.Outcome{ExitCode: 137})
 	if r.OK {
 		t.Error("an incomplete qualitative review (no verdict) must NOT clear the push gate even with green gates over a clean worktree")
 	}
@@ -322,7 +429,7 @@ func TestReviewBlocksPushWhenReviewIncompleteDespiteGreenGate(t *testing.T) {
 // would otherwise reach the PR unaddressed (the BEH-439 leak). Fail closed and keep
 // the worktree for a human decision.
 func TestReviewBlocksPushWhenReviewVerdictBlocked(t *testing.T) {
-	r := Review(&truth{t: t, clean: true}, slug, 0, session.Outcome{ReviewVerdictEmitted: true, ReviewBlocked: true})
+	r := Review(&truth{t: t, clean: true}, slug, session.Outcome{}, session.Outcome{ReviewVerdictEmitted: true, ReviewBlocked: true})
 	if r.OK {
 		t.Error("a blocked review disposition must NOT clear the push gate even with green gates, a clean worktree, and a completed review")
 	}
@@ -342,7 +449,7 @@ func TestReviewBlocksPushWhenReviewVerdictBlocked(t *testing.T) {
 // completed review over a zero-net-diff branch is the recommend-close disposition:
 // not a push, not a plain failure, but a handoff for a human to close the ticket.
 func TestReviewRecommendsCloseWhenDiffEmpty(t *testing.T) {
-	r := Review(&truth{t: t, clean: true, diffEmpty: true}, slug, 0, reviewed)
+	r := Review(&truth{t: t, clean: true, diffEmpty: true}, slug, session.Outcome{}, reviewed)
 	if r.OK {
 		t.Error("a zero-net-diff branch must NOT clear the push gate — there is nothing to ship")
 	}
@@ -362,7 +469,7 @@ func TestReviewRecommendsCloseWhenDiffEmpty(t *testing.T) {
 // read is spent at all.
 func TestReviewDoesNotRecommendCloseWhenWorktreeDirty(t *testing.T) {
 	g := &truth{t: t, clean: false, diffEmpty: true}
-	r := Review(g, slug, 0, reviewed)
+	r := Review(g, slug, session.Outcome{}, reviewed)
 	if r.RecommendClose {
 		t.Error("an empty committed diff with a DIRTY worktree must not recommend close — the real change may be uncommitted")
 	}
@@ -374,7 +481,7 @@ func TestReviewDoesNotRecommendCloseWhenWorktreeDirty(t *testing.T) {
 // A non-empty diff is the normal ship path — recommend-close must stay off so the
 // branch pushes as usual.
 func TestReviewDoesNotRecommendCloseWhenDiffPresent(t *testing.T) {
-	r := Review(&truth{t: t, clean: true, diffEmpty: false}, slug, 0, reviewed)
+	r := Review(&truth{t: t, clean: true, diffEmpty: false}, slug, session.Outcome{}, reviewed)
 	if r.RecommendClose {
 		t.Error("a branch with a real diff must not be flagged recommend-close")
 	}
@@ -420,7 +527,7 @@ func TestPostRebasePushClearsWhenDiffPresent(t *testing.T) {
 // verdict (the "## Review:" report), the seven-lens pass ran — complete, regardless
 // of how the container exited.
 func TestReviewReportsCompleteWhenVerdictEmitted(t *testing.T) {
-	r := Review(&truth{t: t, clean: true}, slug, 0, session.Outcome{ExitCode: 137, ReviewVerdictEmitted: true})
+	r := Review(&truth{t: t, clean: true}, slug, session.Outcome{}, session.Outcome{ExitCode: 137, ReviewVerdictEmitted: true})
 	if !r.ReviewComplete {
 		t.Errorf("a verdict-emitting session is a complete review whatever the exit code, got %+v", r)
 	}
@@ -431,7 +538,7 @@ func TestReviewReportsCompleteWhenVerdictEmitted(t *testing.T) {
 // the qualitative review never ran — it must be flagged incomplete, naming the OOM
 // so a log reader isn't misled into thinking the green gate was a full review.
 func TestReviewFlagsOomBeforeVerdict(t *testing.T) {
-	r := Review(&truth{t: t, clean: true}, slug, 0, session.Outcome{ExitCode: 137})
+	r := Review(&truth{t: t, clean: true}, slug, session.Outcome{}, session.Outcome{ExitCode: 137})
 	if r.ReviewComplete {
 		t.Error("an OOM before the verdict is NOT a complete review")
 	}
@@ -448,7 +555,7 @@ func TestReviewFlagsOomBeforeVerdict(t *testing.T) {
 // only proof the lenses ran. The exit code is named so the cause is traceable, but
 // it must NOT be mislabelled as an OOM when it isn't.
 func TestReviewFlagsNonOomEndBeforeVerdict(t *testing.T) {
-	r := Review(&truth{t: t, clean: true}, slug, 0, session.Outcome{ExitCode: 1})
+	r := Review(&truth{t: t, clean: true}, slug, session.Outcome{}, session.Outcome{ExitCode: 1})
 	if r.ReviewComplete {
 		t.Error("ending before the verdict is not a complete review, whatever the exit code")
 	}
@@ -472,7 +579,7 @@ func TestReviewFlagsNonOomEndBeforeVerdict(t *testing.T) {
 // the drift the loop had when it re-evaluated a separate predicate against state its
 // own body had just mutated.
 func TestReviewRetriesOnCleanExitOverAGreenGate(t *testing.T) {
-	r := Review(&truth{t: t, clean: true}, slug, 0, session.Outcome{})
+	r := Review(&truth{t: t, clean: true}, slug, session.Outcome{}, session.Outcome{})
 	if !r.Retry {
 		t.Errorf("a clean-exit, gate-green, clean-tree review without a verdict should be retried, got %+v", r)
 	}
@@ -481,7 +588,7 @@ func TestReviewRetriesOnCleanExitOverAGreenGate(t *testing.T) {
 // A review that already emitted its verdict is complete — there is nothing to
 // re-launch, regardless of the other inputs.
 func TestReviewDoesNotRetryWhenVerdictEmitted(t *testing.T) {
-	r := Review(&truth{t: t, clean: true}, slug, 0, reviewed)
+	r := Review(&truth{t: t, clean: true}, slug, session.Outcome{}, reviewed)
 	if r.Retry {
 		t.Errorf("a review that already produced a verdict must not be re-launched, got %+v", r)
 	}
@@ -491,7 +598,7 @@ func TestReviewDoesNotRetryWhenVerdictEmitted(t *testing.T) {
 // completeness report already names — NOT the cheap clean-exit retry this targets. A
 // re-launch over a memory-pressured host is not the byte-identical recovery here.
 func TestReviewDoesNotRetryOnOomExit(t *testing.T) {
-	r := Review(&truth{t: t, clean: true}, slug, 0, session.Outcome{ExitCode: 137})
+	r := Review(&truth{t: t, clean: true}, slug, session.Outcome{}, session.Outcome{ExitCode: 137})
 	if r.Retry {
 		t.Errorf("an OOM (137) before the verdict is not the clean-exit retry class, got %+v", r)
 	}
@@ -500,7 +607,7 @@ func TestReviewDoesNotRetryOnOomExit(t *testing.T) {
 // A spending-cap abort is its own retry-after-reset class — the session is killed
 // before doing any work, so an in-stage re-launch would just burn the same cap.
 func TestReviewDoesNotRetryOnSpendingCapAbort(t *testing.T) {
-	r := Review(&truth{t: t, clean: true}, slug, 0, session.Outcome{SpendingCapAbort: true})
+	r := Review(&truth{t: t, clean: true}, slug, session.Outcome{}, session.Outcome{SpendingCapAbort: true})
 	if r.Retry {
 		t.Errorf("a spending-cap abort defers until the cap resets, never an in-stage re-launch, got %+v", r)
 	}
@@ -509,7 +616,7 @@ func TestReviewDoesNotRetryOnSpendingCapAbort(t *testing.T) {
 // A dirty worktree means the gate validated a different tree than would ship, so the
 // diff is not the proven-good artifact the cheap retry assumes. Fall through.
 func TestReviewDoesNotRetryWhenWorktreeDirty(t *testing.T) {
-	r := Review(&truth{t: t, clean: false}, slug, 0, session.Outcome{})
+	r := Review(&truth{t: t, clean: false}, slug, session.Outcome{}, session.Outcome{})
 	if r.Retry {
 		t.Errorf("a dirty worktree is not the proven-good diff this retry assumes, got %+v", r)
 	}
@@ -518,7 +625,7 @@ func TestReviewDoesNotRetryWhenWorktreeDirty(t *testing.T) {
 // Red gates mean the diff itself is broken — re-running the review cannot make it
 // shippable, so it must fall through to fail-closed rather than re-launch.
 func TestReviewDoesNotRetryWhenGatesRed(t *testing.T) {
-	r := Review(&truth{t: t, clean: true}, slug, 1, session.Outcome{})
+	r := Review(&truth{t: t, clean: true}, slug, session.Outcome{ExitCode: 1}, session.Outcome{})
 	if r.Retry {
 		t.Errorf("a red gate means the diff is broken — re-running the review can't fix it, got %+v", r)
 	}
