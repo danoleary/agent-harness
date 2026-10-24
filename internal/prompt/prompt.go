@@ -411,20 +411,22 @@ func retrospective(c Context) string {
 	)
 }
 
-// alreadyFiledSection renders the re-run dedup context (BEH-539): the finding
-// classes the harness has already filed, so the session treats them as settled
-// and spends its budget on NEW friction instead of re-deriving them. Empty when
-// there's nothing already filed — a first run reads exactly as it did before.
+// alreadyFiledSection renders the dedup context (BEH-539): the open finding
+// classes the harness has already filed — across all tickets, not just this one
+// (#65) — so the session treats them as settled and spends its budget on NEW
+// friction instead of re-deriving them, and reuses a listed key verbatim for the
+// same class so key dedup fires instead of a drifted slug filing a duplicate.
+// Empty when there's nothing already filed.
 func alreadyFiledSection(filed []FiledFinding) string {
 	if len(filed) == 0 {
 		return ""
 	}
 	var b strings.Builder
-	b.WriteString("This ticket has been through the pipeline before — the harness has ALREADY filed issues for the finding classes below, so treat them as SETTLED. Do NOT re-investigate, re-derive, or re-file them (the harness would skip them on key anyway); spend your budget only on NEW friction introduced since the last retrospective:")
+	b.WriteString("The harness has ALREADY filed the open finding classes below, across all tickets (this one and others), so treat them as SETTLED. Do NOT re-investigate or re-derive them; spend your budget only on NEW friction. If a finding of yours is the same failure class as one listed — even worded differently — reuse its key EXACTLY (copy the slug verbatim, do not coin a variant) so the harness dedups it against the open one instead of filing a duplicate under a new key:")
 	for _, f := range filed {
 		b.WriteString("\n  - ")
 		if f.Key != "" {
-			b.WriteString(f.Key + " — ")
+			b.WriteString(defang(f.Key) + " — ")
 		}
 		b.WriteString(defang(f.Title))
 	}

@@ -269,7 +269,9 @@ See `.env.example` for every optional knob: timeouts, models, and loop ceilings.
 The retrospective stage classifies each finding by **audience**. A *Project*
 finding is about your codebase or CI and goes to your tracker. A *Harness*
 finding is about the harness, sandbox or contract itself, and by default stays
-local in `.agent-harness/harness-findings/`.
+local in `.agent-harness/harness-findings/`. A new finding there whose key or title
+closely matches one already in the dir is still written, but carries
+`probable_duplicate_of: <slug>` — merge or delete it when you review the dir.
 
 You can opt in to sending those upstream as issues on the public harness repo:
 

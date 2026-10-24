@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/danoleary/agent-harness/internal/findings"
@@ -22,6 +23,10 @@ type harnessFindingRecord struct {
 	Key      string            `json:"key,omitempty"`
 	// RelatedKey is the ticket that surfaced the finding.
 	RelatedKey string `json:"related_key,omitempty"`
+	// ProbableDuplicateOf is the slug of an already-written finding this one
+	// closely matches by token overlap (#65) — the same class under a drifted key.
+	// The owner reviewing the dir merges or deletes it; the harness never does.
+	ProbableDuplicateOf string `json:"probable_duplicate_of,omitempty"`
 }
 
 // HarnessFindingsDir is the local artifact dir where harness-audience findings
@@ -39,6 +44,10 @@ func HarnessFindingsDir(checkoutPath string) string {
 // accumulates duplicates (ADR-0011). This is the DEFAULT sink for harness
 // findings: a local artifact in the Consumer repo the owner reviews — nothing
 // leaves the repo without the explicit opt-in that lands in BEH-640.
+// A finding whose key or title closely matches another class already in the dir
+// (probablyDuplicate) is still written, but flagged with probable_duplicate_of
+// and narrated, so key drift across tickets surfaces instead of silently piling
+// up near-duplicate files (#65).
 // Best-effort (ADR-0001): a mkdir/write failure degrades to a narration line,
 // never a crash. An empty slice is a no-op (the dir is not created).
 func WriteHarnessFindings(harnessDir, relatedIdentifier string, fs []findings.Finding, log EventSink) {
@@ -49,11 +58,17 @@ func WriteHarnessFindings(harnessDir, relatedIdentifier string, fs []findings.Fi
 		log.Event("harness findings ✗ could not create " + harnessDir + ": " + err.Error())
 		return
 	}
+	written := readHarnessFindings(harnessDir)
 	for _, f := range fs {
-		name := harnessFindingSlug(f) + ".json"
+		slug := harnessFindingSlug(f)
+		name := slug + ".json"
 		rec := harnessFindingRecord{
 			Title: f.Title, Body: f.Body, Audience: findings.AudienceHarness,
 			Kind: f.Kind, Key: f.Key, RelatedKey: relatedIdentifier,
+		}
+		if dup, ok := probableDuplicateRecord(f, slug, written); ok {
+			rec.ProbableDuplicateOf = dup
+			log.Event(fmt.Sprintf("harness finding ⚠ %s is a probable duplicate of %s (close token overlap) — written anyway, flagged for review", name, dup))
 		}
 		data, err := json.MarshalIndent(rec, "", "  ")
 		if err != nil {
@@ -66,7 +81,57 @@ func WriteHarnessFindings(harnessDir, relatedIdentifier string, fs []findings.Fi
 			continue
 		}
 		log.Event(fmt.Sprintf("harness finding written locally: %s — %s", name, f.Title))
+		written[slug] = rec
 	}
+}
+
+// readHarnessFindings returns every harness finding already in harnessDir, keyed
+// by its file's slug. A local artifact has no closed state — it stays until the
+// owner deletes it — so every record here counts as open. Best-effort: an absent
+// dir, or a file that won't read or parse, is skipped.
+func readHarnessFindings(harnessDir string) map[string]harnessFindingRecord {
+	out := map[string]harnessFindingRecord{}
+	entries, err := os.ReadDir(harnessDir)
+	if err != nil {
+		return out
+	}
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || filepath.Ext(name) != ".json" {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(harnessDir, name))
+		if err != nil {
+			continue
+		}
+		var rec harnessFindingRecord
+		if json.Unmarshal(data, &rec) != nil {
+			continue
+		}
+		out[strings.TrimSuffix(name, ".json")] = rec
+	}
+	return out
+}
+
+// probableDuplicateRecord returns the slug of a written record f probably
+// duplicates, skipping f's own slug (a re-run of the same class overwrites its
+// file — that is the exact-key dedup, not drift). Slugs are checked in sorted
+// order so the flag is deterministic.
+func probableDuplicateRecord(f findings.Finding, slug string, written map[string]harnessFindingRecord) (string, bool) {
+	slugs := make([]string, 0, len(written))
+	for s := range written {
+		slugs = append(slugs, s)
+	}
+	sort.Strings(slugs)
+	for _, s := range slugs {
+		if s == slug {
+			continue
+		}
+		if rec := written[s]; probablyDuplicate(f, rec.Key, rec.Title) {
+			return s, true
+		}
+	}
+	return "", false
 }
 
 // harnessFindingSlug is the stable per-class filename stem: the explicit key when

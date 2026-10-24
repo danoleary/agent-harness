@@ -748,6 +748,20 @@ the retrospective prompt with an instruction to treat them as settled and look
 only for **new** friction. Best-effort: a Linear lookup failure degrades to the
 dropbox classes alone. A first run has nothing to inject and reads as before.
 
+**Global harness-finding keys (#65).** Harness findings don't go to the team's
+tracker, so the list above used to miss every harness class another ticket had
+filed — and each ticket's session coined its own slug for the same failure class
+(one class landed under five keys), so key dedup never fired across tickets. The
+settled list now also carries every **open harness finding across all tickets**:
+the upstream repo's open issues when `feedback.upstream = "github"`, else every
+record in the local artifact dir. The envelope tells the session to reuse a listed
+key verbatim when its finding is the same class. As a backstop, the host flags a
+new finding whose key or title closely matches an open one (Jaccard overlap of
+normalized tokens, filler words dropped, ≥ 0.6) as a **probable duplicate** before
+filing it: a local artifact gets `probable_duplicate_of: <slug>`, a tracker issue a
+note naming the open issue, and both narrate. It flags, never skips — token
+overlap is a heuristic, and a dropped finding costs more than a duplicate.
+
 **Filing dedup (BEH-573).** Before filing each finding, the harness dedups it
 against the team's open harness findings in two passes: first an exact `key`/
 title match (the fast `matchKey` short-circuit), then — for anything that misses

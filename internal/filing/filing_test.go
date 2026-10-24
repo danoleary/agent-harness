@@ -899,3 +899,181 @@ var errBoom = boomError("boom")
 type boomError string
 
 func (e boomError) Error() string { return string(e) }
+
+// writeHarnessRecord drops a harness-finding artifact into dir as an earlier
+// retrospective (of any ticket) would have left it.
+func writeHarnessRecord(t *testing.T, dir, relatedKey string, f findings.Finding) {
+	t.Helper()
+	f.Audience = findings.AudienceHarness
+	WriteHarnessFindings(dir, relatedKey, []findings.Finding{f}, &recorder{})
+}
+
+// #65: the settled list is global for harness findings. A class another ticket's
+// retrospective already wrote to the local artifact dir is passed to this ticket's
+// session too, so it reuses that key instead of coining a new one.
+func TestAlreadyFiledIncludesLocalHarnessFindingsFromOtherTickets(t *testing.T) {
+	harnessDir := filepath.Join(t.TempDir(), "harness-findings")
+	writeHarnessRecord(t, harnessDir, "#46", findings.Finding{
+		Title: "Host gate re-run reports exit 127 as a red gate", Key: "host-gate-missing-toolchain-reported-as-red-gate",
+	})
+
+	got := Router{Project: sink(nil, noExisting(), nil), HarnessDir: harnessDir, Log: &recorder{}}.AlreadyFiled(t.TempDir(), "team-uuid")
+
+	want := []PriorFinding{{Key: "host-gate-missing-toolchain-reported-as-red-gate", Title: "Host gate re-run reports exit 127 as a red gate"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("AlreadyFiled = %+v, want the other ticket's harness finding %+v", got, want)
+	}
+}
+
+// With the upstream sink wired, the open harness findings live in the public repo,
+// so that is where the global settled set comes from — closed ones excluded.
+func TestAlreadyFiledIncludesOpenUpstreamHarnessFindings(t *testing.T) {
+	upstream := &fakeSearcher{existing: []tracker.ExistingFinding{
+		{Identifier: "#7", Title: "Sandbox missing libnss3", Key: "sandbox-deps"},
+		{Identifier: "#3", Title: "fixed long ago", Key: "old-class", Closed: true},
+	}}
+	up := &Upstream{Sink: sink(nil, upstream, nil), Container: "example-org/agent-harness"}
+
+	got := Router{Project: sink(nil, noExisting(), nil), Upstream: up, Log: &recorder{}}.AlreadyFiled(t.TempDir(), "team-uuid")
+
+	want := []PriorFinding{{Key: "sandbox-deps", Title: "Sandbox missing libnss3"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("AlreadyFiled = %+v, want only the open upstream finding %+v", got, want)
+	}
+}
+
+// Best-effort (ADR-0001): an upstream search failure narrates and still returns
+// the Project sink's classes.
+func TestAlreadyFiledDegradesWhenUpstreamSearchFails(t *testing.T) {
+	project := &fakeSearcher{existing: []tracker.ExistingFinding{{Identifier: "BEH-1", Title: "flaky spec", Key: "flaky-spec"}}}
+	up := &Upstream{Sink: sink(nil, &fakeSearcher{err: errBoom}, nil), Container: "example-org/agent-harness"}
+	rec := &recorder{}
+
+	got := Router{Project: sink(nil, project, nil), Upstream: up, Log: rec}.AlreadyFiled(t.TempDir(), "team-uuid")
+
+	if len(got) != 1 || got[0].Key != "flaky-spec" {
+		t.Errorf("AlreadyFiled = %+v, want the project class despite the upstream failure", got)
+	}
+	if !strings.Contains(strings.Join(rec.events, "\n"), "failed") {
+		t.Errorf("expected a degraded-lookup narration, got %v", rec.events)
+	}
+}
+
+// #65 backstop: a new harness finding whose key closely matches an open one (the
+// same failure class under a drifted slug) is still written, but flagged as a
+// probable duplicate — in the narration and on the artifact itself.
+func TestWriteHarnessFindingsFlagsProbableDuplicate(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "harness-findings")
+	writeHarnessRecord(t, dir, "#46", findings.Finding{
+		Title: "Host gate exit 127 misreported", Key: "host-gate-missing-toolchain-reported-as-red-gate",
+	})
+	rec := &recorder{}
+
+	WriteHarnessFindings(dir, "#65", []findings.Finding{{
+		Title: "Gate re-run without the toolchain reads red", Key: "gate-rerun-missing-toolchain-reported-as-red-gate",
+		Audience: findings.AudienceHarness,
+	}}, rec)
+
+	data, err := os.ReadFile(filepath.Join(dir, "gate-rerun-missing-toolchain-reported-as-red-gate.json"))
+	if err != nil {
+		t.Fatalf("the probable duplicate must still be written: %v", err)
+	}
+	var got map[string]any
+	_ = json.Unmarshal(data, &got)
+	if got["probable_duplicate_of"] != "host-gate-missing-toolchain-reported-as-red-gate" {
+		t.Errorf("probable_duplicate_of = %v, want the open class's key", got["probable_duplicate_of"])
+	}
+	if !strings.Contains(strings.Join(rec.events, "\n"), "probable duplicate of host-gate-missing-toolchain-reported-as-red-gate") {
+		t.Errorf("expected a probable-duplicate narration, got %q", rec.events)
+	}
+}
+
+// The flag fires on a close match only: an unrelated class, and a re-run of the
+// SAME class (which overwrites its own file), are not probable duplicates.
+func TestWriteHarnessFindingsDoesNotFlagUnrelatedOrSameClass(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "harness-findings")
+	writeHarnessRecord(t, dir, "#46", findings.Finding{Title: "Playwright deps missing", Key: "sandbox-playwright-deps"})
+	rec := &recorder{}
+
+	WriteHarnessFindings(dir, "#65", []findings.Finding{
+		{Title: "Playwright deps missing", Key: "sandbox-playwright-deps", Audience: findings.AudienceHarness},
+		{Title: "Retrospective keys drift across tickets", Key: "retro-finding-key-drift", Audience: findings.AudienceHarness},
+	}, rec)
+
+	if strings.Contains(strings.Join(rec.events, "\n"), "probable duplicate") {
+		t.Errorf("expected no probable-duplicate flag, got %q", rec.events)
+	}
+	for _, name := range []string{"sandbox-playwright-deps.json", "retro-finding-key-drift.json"} {
+		data, _ := os.ReadFile(filepath.Join(dir, name))
+		if strings.Contains(string(data), "probable_duplicate_of") {
+			t.Errorf("%s carries a probable_duplicate_of flag: %s", name, data)
+		}
+	}
+}
+
+// Upstream, a near-match that the exact key/title pass misses is filed but
+// flagged: the narration says so and the issue body names the open issue, so
+// the maintainer triaging the public repo sees the likely duplicate.
+func TestRouteUpstreamFlagsProbableDuplicateInBody(t *testing.T) {
+	dir := t.TempDir()
+	writeDropbox(t, dir, `[{"title":"Gate re-run without toolchain reads red","body":"exit 127","key":"gate-rerun-missing-toolchain-reported-as-red-gate","audience":"harness"}]`)
+	upstreamFiler := &fakeFiler{results: []fakeResult{{issue: tracker.CreatedIssue{Identifier: "#80"}}}}
+	searcher := &fakeSearcher{existing: []tracker.ExistingFinding{
+		{Identifier: "#64", Title: "Host gate exit 127 misreported", Key: "host-gate-missing-toolchain-reported-as-red-gate"},
+	}}
+	up := &Upstream{Sink: sink(upstreamFiler, searcher, nil), Container: "example-org/agent-harness", Project: "herd"}
+	rec := &recorder{}
+
+	Router{Project: sink(nil, noExisting(), nil), Upstream: up, Log: rec}.Route(dir, "team-uuid", "#65")
+
+	if len(upstreamFiler.calls) != 1 {
+		t.Fatalf("the probable duplicate must still be filed, got %d calls", len(upstreamFiler.calls))
+	}
+	body := upstreamFiler.calls[0].Body
+	if !strings.HasPrefix(body, "exit 127") || !strings.Contains(body, "#64") {
+		t.Errorf("filed body = %q, want the original body plus a probable-duplicate note naming #64", body)
+	}
+	if !strings.Contains(strings.Join(rec.events, "\n"), "probable duplicate of #64") {
+		t.Errorf("expected a probable-duplicate narration, got %q", rec.events)
+	}
+}
+
+// The token-overlap test itself: a drifted slug of the same words matches, a
+// class sharing only filler words or one generic token does not.
+func TestProbablyDuplicate(t *testing.T) {
+	cases := []struct {
+		a, b findings.Finding
+		want bool
+	}{
+		{findings.Finding{Key: "gate-rerun-missing-toolchain-reported-as-red-gate"}, findings.Finding{Key: "host-gate-missing-toolchain-reported-as-red-gate"}, true},
+		{findings.Finding{Title: "Sandbox is missing libnss3 for Playwright"}, findings.Finding{Title: "Playwright: libnss3 missing in the sandbox"}, true},
+		{findings.Finding{Key: "sandbox-playwright-deps"}, findings.Finding{Key: "sandbox-build-oom"}, false},
+		{findings.Finding{Title: "The gate is red"}, findings.Finding{Title: "The retrospective is slow"}, false},
+		{findings.Finding{Key: "same-key"}, findings.Finding{Key: "same-key"}, true},
+	}
+	for _, c := range cases {
+		if got := probablyDuplicate(c.a, c.b.Key, c.b.Title); got != c.want {
+			t.Errorf("probablyDuplicate(%+v, %+v) = %v, want %v", c.a, c.b, got, c.want)
+		}
+	}
+}
+
+// A local record already flagged as a probable duplicate stays out of the settled
+// list: its canonical class is listed, and offering both keys would invite the
+// session to keep the drifted one alive.
+func TestAlreadyFiledOmitsFlaggedProbableDuplicates(t *testing.T) {
+	harnessDir := filepath.Join(t.TempDir(), "harness-findings")
+	writeHarnessRecord(t, harnessDir, "#46", findings.Finding{
+		Title: "Host gate exit 127 misreported", Key: "host-gate-missing-toolchain-reported-as-red-gate",
+	})
+	writeHarnessRecord(t, harnessDir, "#50", findings.Finding{
+		Title: "Gate re-run without the toolchain reads red", Key: "gate-rerun-missing-toolchain-reported-as-red-gate",
+	})
+
+	got := Router{Project: sink(nil, noExisting(), nil), HarnessDir: harnessDir, Log: &recorder{}}.AlreadyFiled(t.TempDir(), "team-uuid")
+
+	want := []PriorFinding{{Key: "host-gate-missing-toolchain-reported-as-red-gate", Title: "Host gate exit 127 misreported"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("AlreadyFiled = %+v, want only the canonical class %+v", got, want)
+	}
+}
