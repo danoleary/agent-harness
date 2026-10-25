@@ -75,6 +75,11 @@ breaker).
   `Conflict` item, rebased by a RebaseFix session and re-gated. It also covers a
   conflict that is not a prerequisite's, which the in-stage resolver left for a
   human.
+- The CI watch's zero-net-diff short-circuit (BEH-602) does not run without
+  `watch_ci` either. A branch that only became a no-op against `main` after the
+  pre-push rebase ships as `Shipped` instead of `RecommendClose`. The PR stays
+  open for a human to close as superseded. The pre-push `Collapsed` check
+  (BEH-680) still catches the common case.
 - A ticket loop that leaves out both `retro` and `watch_ci` never reaps its
   worktree, so its branch stays held and the PR loop skips the PR until the
   merged-worktree prune (ADR-0027) or a human removes it. The same holds when a
