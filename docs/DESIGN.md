@@ -1275,6 +1275,12 @@ reader over a structured stream rather than a `--tui` flag on the daemon.
   in its `StagePlan`; `--dry-run` renders that plan through `hostio.NewPreview`, the
   Runner with placeholder run id and pid. A test pins the plans to what the Stages
   actually launch over `hostio.Fake`.
+- **One Stage frame, one pipeline root** ([ADR-0026](adr/0026-one-stage-frame-and-one-pipeline-composition-root.md)). The three Stages share
+  one set of steps: the stage-start record, the ticket fetch, the findings
+  dropbox, and the launch record and transcript line around each session. The
+  Stage bodies hold only their own decisions. `pipeline.ForTicket` binds the three
+  Stages to one Host for both `cmd/pipeline` and the ticket loop, and
+  `trackers.FromConfig` is the one place the config's credentials become a tracker.
 - **The daemon takes the same shape** ([ADR-0014](adr/0014-the-daemon-takes-a-host-limits-and-a-clock.md)). `loop.Run` takes a
   `loop.Host` (the STOP sentinel, the credential check, the main fetch, the
   between-ticket disk reclaim), a `loop.Limits` of cadences/ceilings/thresholds, a

@@ -165,24 +165,16 @@ func (p *TicketPipeline) Run(item loop.WorkItem, claim *lease.Lease) stages.Resu
 		// breaker counts it like any other failure to ship.
 		return stages.Result{}
 	}
-	args := stages.Args{Identifier: item.Key, Lease: claim}
-	// One Host for the whole slice: the three stages share the run id it stamps into
-	// every container name and transcript, and the tracker client it resolves once.
-	host := hostio.New(cfg, log, runID, args.Verbose, ticket.Slug(item.Key))
-	return pipeline.Run(ticketDeps(p.loop, host, cfg, log, args))
+	return pipeline.Run(ticketDeps(p.loop, cfg, log, runID, stages.Args{Identifier: item.Key, Lease: claim}))
 }
 
-// ticketDeps binds the loop's Stages to one ticket. A loop without the retro step
-// runs no retrospective.
-func ticketDeps(l config.Loop, host hostio.Host, cfg config.Config, log *runlog.Logger, args stages.Args) pipeline.Deps {
-	d := pipeline.Deps{
-		FetchMain:      host.FetchMain,
-		Implementation: func() stages.Result { return stages.Implementation(host, cfg, log, args) },
-		Review:         func() stages.Result { return stages.Review(host, cfg, log, args) },
-		Log:            log,
-	}
-	if l.Has(config.StepRetro) {
-		d.Retrospective = func() stages.Result { return stages.Retrospective(host, cfg, log, args) }
+// ticketDeps binds the loop's Stages to one ticket through the composition root
+// cmd/pipeline uses (pipeline.ForTicket). A loop without the retro step runs no
+// retrospective.
+func ticketDeps(l config.Loop, cfg config.Config, log *runlog.Logger, runID string, args stages.Args) pipeline.Deps {
+	d := pipeline.ForTicket(cfg, log, runID, args)
+	if !l.Has(config.StepRetro) {
+		d.Retrospective = nil
 	}
 	return d
 }

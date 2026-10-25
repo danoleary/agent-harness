@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/danoleary/agent-harness/internal/config"
-	"github.com/danoleary/agent-harness/internal/gittest"
 	"github.com/danoleary/agent-harness/internal/hostio"
 	"github.com/danoleary/agent-harness/internal/loop"
 	"github.com/danoleary/agent-harness/internal/loopstream"
@@ -445,13 +444,12 @@ func TestHeldBranchesMapsEachClaimToItsBranch(t *testing.T) {
 // three Stages, and a loop that leaves out retro runs no retrospective.
 func TestTicketDepsFollowTheLoopsSteps(t *testing.T) {
 	builtIn, _ := config.Project{}.LoopNamed("")
-	host := hostio.NewFake(gittest.New(t).Checkout(), "proj-1")
-	if d := ticketDeps(builtIn, host, config.Config{}, nil, stages.Args{}); d.Implementation == nil || d.Review == nil || d.Retrospective == nil {
+	if d := ticketDeps(builtIn, config.Config{}, nil, "run", stages.Args{}); d.Implementation == nil || d.Review == nil || d.Retrospective == nil {
 		t.Errorf("the built-in ticket loop runs all three Stages, got %+v", d)
 	}
 	noRetro := builtIn
 	noRetro.Steps = noRetro.Steps[:2]
-	if d := ticketDeps(noRetro, host, config.Config{}, nil, stages.Args{}); d.Retrospective != nil {
+	if d := ticketDeps(noRetro, config.Config{}, nil, "run", stages.Args{}); d.Retrospective != nil {
 		t.Error("a loop without retro must run no retrospective")
 	}
 }

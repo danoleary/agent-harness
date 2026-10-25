@@ -488,7 +488,8 @@ func TestImplementationPostCreateFailureIsStillWarnOnly(t *testing.T) {
 // human is dispatched anyway (a ready label is a human's call), but the run log
 // says so, naming the section — the dispatch advisory, like ResolvedAdvisory.
 func TestImplementationAdvisesWhenTheTicketStillListsOpenQuestions(t *testing.T) {
-	h := hostio.NewFake()
+	h, repo := fresh(t, "PROJ-90")
+	h.AgentFn = commitsHandoff(h, repo)
 	h.Trk.Ticket.Description = "Add `init`.\n\n## Open questions (for a human before this is agent-ready)\n\n- Which trackers?"
 	log := stageLog(t, "PROJ-90")
 
@@ -503,7 +504,7 @@ func TestImplementationAdvisesWhenTheTicketStillListsOpenQuestions(t *testing.T)
 }
 
 func TestImplementationIsQuietWhenTheTicketHasNoOpenQuestions(t *testing.T) {
-	h := hostio.NewFake()
+	h, _ := fresh(t, "PROJ-91")
 	log := stageLog(t, "PROJ-91")
 
 	Implementation(h, stageCfg(), log, Args{Identifier: "PROJ-91"})

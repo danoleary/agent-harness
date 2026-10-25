@@ -1,9 +1,9 @@
 // Package trackers wires the concrete tracker adapters to the host-side tracker
 // port and selects one by the Consumer's configured kind (ADR-0010: the port has
 // Linear/Jira/GitHub adapters, selected by `.agent-harness/config`). It is the one
-// place adapter selection happens, so the five construction sites (the three
-// stages plus cmd/loop and cmd/pipeline) share it and a future adapter plugs in
-// here, not at every call site.
+// place adapter selection happens: cmd/loop, cmd/pipeline's --next and the
+// per-run hostio.Real all build theirs through FromConfig, so a future adapter
+// plugs in here, not at every call site.
 //
 // It sits above internal/tracker (the port) and the adapters (internal/linear,
 // internal/github): the port must not import an adapter, so the selection lives
@@ -54,6 +54,19 @@ func New(tc config.TrackerConfig, secrets Secrets) (tracker.Tracker, error) {
 		return nil, config.WithDoctorHint(err)
 	}
 	return t, nil
+}
+
+// FromConfig is New over the loaded config: the Consumer's tracker selection and
+// the host's credentials for it. It is the one place the config's secrets map onto
+// Secrets (#29), so every composition root builds the tracker the same way.
+func FromConfig(cfg config.Config) (tracker.Tracker, error) {
+	return New(cfg.Tracker, Secrets{
+		LinearKey:   cfg.LinearAPIKey,
+		GitHubToken: cfg.GitHubToken,
+		JiraBaseURL: cfg.JiraBaseURL,
+		JiraEmail:   cfg.JiraEmail,
+		JiraToken:   cfg.JiraAPIToken,
+	})
 }
 
 func newTracker(tc config.TrackerConfig, secrets Secrets) (tracker.Tracker, error) {

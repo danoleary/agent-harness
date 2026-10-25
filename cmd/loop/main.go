@@ -43,7 +43,6 @@ import (
 	"github.com/danoleary/agent-harness/internal/prloop"
 	"github.com/danoleary/agent-harness/internal/runlog"
 	"github.com/danoleary/agent-harness/internal/stages"
-	"github.com/danoleary/agent-harness/internal/tracker"
 	"github.com/danoleary/agent-harness/internal/trackers"
 	"github.com/danoleary/agent-harness/internal/version"
 )
@@ -200,11 +199,6 @@ func main() {
 	}
 }
 
-// newTracker builds the Consumer's Tracker client from the host secrets.
-func newTracker(cfg config.Config) (tracker.Tracker, error) {
-	return trackers.New(cfg.Tracker, trackers.Secrets{LinearKey: cfg.LinearAPIKey, GitHubToken: cfg.GitHubToken, JiraBaseURL: cfg.JiraBaseURL, JiraEmail: cfg.JiraEmail, JiraToken: cfg.JiraAPIToken})
-}
-
 // openStream opens the loop's own loop.jsonl — the daemon→viewer contract
 // (ADR-0005) — truncated at clean startup so it is bounded to this one daemon run
 // (like loop.log), and narrates loop-level events through a Console that mirrors
@@ -234,7 +228,7 @@ func runTicketLoop(cfg config.Config, l config.Loop, dryRun bool) int {
 		return 0
 	}
 	log := openStream(cfg, l)
-	client, err := newTracker(cfg)
+	client, err := trackers.FromConfig(cfg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		return 1
@@ -259,7 +253,7 @@ func runTicketLoop(cfg config.Config, l config.Loop, dryRun bool) int {
 // the ticket loop holds is skipped. --dry-run prints the Source's plan and changes
 // nothing.
 func runPRLoop(cfg config.Config, l config.Loop, dryRun bool) int {
-	client, err := newTracker(cfg)
+	client, err := trackers.FromConfig(cfg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		return 1

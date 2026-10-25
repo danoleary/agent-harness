@@ -21,13 +21,11 @@ import (
 	"os"
 
 	"github.com/danoleary/agent-harness/internal/config"
-	"github.com/danoleary/agent-harness/internal/hostio"
 	"github.com/danoleary/agent-harness/internal/hostlock"
 	"github.com/danoleary/agent-harness/internal/loopstream"
 	"github.com/danoleary/agent-harness/internal/pipeline"
 	"github.com/danoleary/agent-harness/internal/runlog"
 	"github.com/danoleary/agent-harness/internal/stages"
-	"github.com/danoleary/agent-harness/internal/ticket"
 	"github.com/danoleary/agent-harness/internal/trackers"
 	"github.com/danoleary/agent-harness/internal/version"
 )
@@ -59,7 +57,7 @@ func main() {
 			fmt.Fprintf(os.Stderr, "%v\n", err)
 			os.Exit(1)
 		}
-		client, err := trackers.New(cfg.Tracker, trackers.Secrets{LinearKey: cfg.LinearAPIKey, GitHubToken: cfg.GitHubToken, JiraBaseURL: cfg.JiraBaseURL, JiraEmail: cfg.JiraEmail, JiraToken: cfg.JiraAPIToken})
+		client, err := trackers.FromConfig(cfg)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "%v\n", err)
 			os.Exit(1)
@@ -100,18 +98,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	// One Host for the whole slice: the three stages share the run id it stamps into
-	// every container name and transcript, and the tracker client it resolves once.
-	host := hostio.New(cfg, log, runID, args.Verbose, ticket.Slug(args.Identifier))
-
-	// Bind each stage to the shared host/cfg/log/args (--verbose and the lease
-	// forward through args). The pipeline decides ordering; the stages do the work.
-	outcome := pipeline.Run(pipeline.Deps{
-		FetchMain:      host.FetchMain,
-		Implementation: func() stages.Result { return stages.Implementation(host, cfg, log, args) },
-		Review:         func() stages.Result { return stages.Review(host, cfg, log, args) },
-		Retrospective:  func() stages.Result { return stages.Retrospective(host, cfg, log, args) },
-		Log:            log,
-	})
+	// One Host for the whole slice, bound to all three stages by the composition
+	// root the ticket loop shares (pipeline.ForTicket).
+	outcome := pipeline.Run(pipeline.ForTicket(cfg, log, runID, args))
 	os.Exit(outcome.ExitCode())
 }
