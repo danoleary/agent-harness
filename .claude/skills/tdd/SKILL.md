@@ -70,7 +70,9 @@ private helper is testing the wrong thing.
    Before numbering a new ADR, check `origin/main`'s `docs/adr/` (`git fetch`
    first), not local main, and expect a sibling branch may take the same number;
    `make check` (`scripts/check-adr-numbers.sh`) fails on a collision as the
-   backstop.
+   backstop. That fetch is read-only: do not rebase or merge `origin/main` into
+   the branch, even if main has moved. The harness rebases it before push and
+   resolves conflicts in its own session.
 3. Make ONE commit on the branch the prompt names. Subject: an imperative
    sentence describing the behaviour, ending with the ticket reference, e.g.
    `Give the ticket claim one owner: a per-run lease (#25)`. The body says why.
