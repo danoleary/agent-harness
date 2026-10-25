@@ -381,6 +381,21 @@ func Run(d Deps) int {
 			continue
 		}
 
+		// An interrupted run is not a ticket verdict either (#99): a stop signal killed
+		// a session from outside — an operator, a `docker stop`, a host going down —
+		// so the run was cut short, not broken. Leave the item exactly where it
+		// stopped: no release (the claim and the worktree are the next run's to pick up,
+		// and the stale-claim reaper returns a claim nobody resumes), no host-side
+		// finish of unverified work, no "no PR" breadcrumb, and the breaker stays blind.
+		// Back off one poll before selecting again: the signal is often the daemon's own
+		// stop arriving, and a host that keeps killing sessions must not strand the
+		// whole queue In Progress at full speed.
+		if outcome.Disposition == stages.Interrupted {
+			d.Log.Event(fmt.Sprintf("loop ⏸ %s interrupted by signal %d (%s) — leaving its claim for the next run; breaker-neutral; backing off before re-poll (#99)", key, int(outcome.Signal), outcome.Signal))
+			d.interruptibleSleep(d.Limits.PollInterval)
+			continue
+		}
+
 		// Fetch main again — "pull main after every session" keeps the next ticket's
 		// merge-base honest across the loop's long run.
 		if err := d.Host.FetchMain(); err != nil {

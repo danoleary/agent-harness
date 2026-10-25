@@ -66,7 +66,9 @@ func ForTicket(cfg config.Config, log *runlog.Logger, runID string, args stages.
 //   - run review only if implementation succeeded;
 //   - run retrospective ALWAYS, even after a prior-stage failure — a failed slice
 //     is exactly the run worth mining for findings (the one deliberate divergence
-//     from the loop's "if not OK -> skip rest").
+//     from the loop's "if not OK -> skip rest");
+//   - except after an interruption: a Stage whose session a stop signal killed
+//     ends the slice there, retrospective included (#99, ADR-0030).
 //
 // It returns the slice's folded [stages.Result] (not a bare exit code) so the
 // autonomous loop can read the run's Disposition — did the ticket ship, was it
@@ -83,6 +85,9 @@ func Run(d Deps) stages.Result {
 
 	impl := d.Implementation()
 	narrateErr(d.Log, "implementation", impl)
+	if impl.Disposition == stages.Interrupted {
+		return interrupted(d.Log, "implementation", impl)
+	}
 
 	// Re-attempt the implementation stage once when the first attempt crashed
 	// environmentally with nothing to salvage (no worktree, no commit — Retryable)
@@ -96,6 +101,9 @@ func Run(d Deps) stages.Result {
 		d.Log.Event("pipeline ↻ implementation crashed environmentally with no commit — re-attempting the stage once (BEH-543)")
 		impl = d.Implementation()
 		narrateErr(d.Log, "implementation", impl)
+		if impl.Disposition == stages.Interrupted {
+			return interrupted(d.Log, "implementation", impl)
+		}
 	}
 
 	reviewRan := false
@@ -104,6 +112,9 @@ func Run(d Deps) stages.Result {
 		review = d.Review()
 		reviewRan = true
 		narrateErr(d.Log, "review", review)
+		if review.Disposition == stages.Interrupted {
+			return interrupted(d.Log, "review", review)
+		}
 	} else {
 		d.Log.Event("pipeline — implementation failed; skipping review (nothing to review). Retrospective still runs.")
 	}
@@ -125,6 +136,17 @@ func Run(d Deps) stages.Result {
 	}
 }
 
+// interrupted ends the slice after a Stage whose session a stop signal killed
+// (#99). It is not a failed Stage: there is no handoff to review, and a
+// retrospective would mine a stub transcript inside a process that is likely
+// going down with the session. The slice's Result carries the Stage's
+// Interrupted disposition, so the loop leaves the claim for a later run and the
+// breaker does not count it.
+func interrupted(log Narrator, stage string, res stages.Result) stages.Result {
+	log.Event(fmt.Sprintf("pipeline ⏸ %s interrupted by signal %d (%s) — not a failure; skipping the rest of the slice, retrospective included, and leaving the claim for the next run (#99)", stage, int(res.Signal), res.Signal))
+	return res
+}
+
 // fold reduces the three stage dispositions to the run's one, in strict
 // precedence order. Only review can ship or recommend-close and only
 // implementation can preflight-abort, so at most one stage carries any given
@@ -133,10 +155,12 @@ func Run(d Deps) stages.Result {
 // concluded the branch is a no-op) does not undo the review's verdict, while a cap
 // abort anywhere else is the run's story. PreflightAborted sits last of the
 // signals because a preflight abort skips review entirely, so it only ever
-// competes with a retrospective abort, which the loop has always let win.
+// competes with a retrospective abort, which the loop has always let win. An
+// interruption ends the slice at the Stage it struck, so it can only meet an
+// earlier Stage's verdict — and a review that already shipped keeps its ship.
 func fold(stagesInOrder ...stages.Result) stages.Disposition {
 	for _, want := range []stages.Disposition{
-		stages.Shipped, stages.RecommendClose, stages.CapAborted, stages.PreflightAborted,
+		stages.Shipped, stages.RecommendClose, stages.CapAborted, stages.PreflightAborted, stages.Interrupted,
 	} {
 		for _, s := range stagesInOrder {
 			if s.Disposition == want {

@@ -149,7 +149,11 @@ Design decisions, and why:
 - **Retrospective always runs** (see the stop/skip rule above) — this is the one
   place the pipeline deliberately diverges from the loop's `if not OK -> skip
   rest`, because a failed slice is exactly the run whose transcripts are worth
-  mining.
+  mining. The exception is an **interrupted** slice: a Stage whose session a stop
+  signal killed (exit 128+N for SIGHUP/INT/QUIT/TERM — chiefly 130 and 143) ends
+  the slice there, with no handoff verification and no retrospective, because
+  the slice was cut short rather than broken and the process is likely going down
+  with it (ADR-0030).
 - **`--verbose`** forwards to all stages. **`--dry-run`** is pipeline-level: it
   prints the *plan* (ordered stages + each stage's resolved prompt/docker command
   as best it can be computed — the Stages' own run specs, previewed through the
@@ -416,7 +420,7 @@ loop:
 
   // The run's one Disposition (stages.Disposition) decides everything below: the three
   // stage results fold into exactly one of Shipped / RecommendClose / CapAborted /
-  // PreflightAborted / NoPR, in that precedence — a stage that reached a verdict (shipped,
+  // PreflightAborted / Interrupted / NoPR, in that precedence — a stage that reached a verdict (shipped,
   // or "this branch is a no-op") outranks a later stage's environmental abort.
 
   // SPENDING-CAP ABORT is a control-flow signal, NOT a ticket failure (see invariant below).
@@ -435,6 +439,16 @@ loop:
     reclaim disk (incl. the Docker prune) // the usual cause — clear the floor for the retry
     short backoff sleep (interruptible by STOP; = pollInterval)   // don't spin re-selecting the same top-of-queue ticket
     do NOT touch the breaker counter  // breaker stays blind; otherwise 3 identical ~2s preflight failures trip it in seconds
+    continue
+
+  // INTERRUPTED (ADR-0030): a stop signal killed a session from outside (exit 128+N) — the
+  // run was cut short, not broken. The pipeline already skipped verification and the
+  // retrospective; the loop leaves the ticket exactly where it stopped.
+  if Disposition == Interrupted:
+    do NOT release, comment, or complete host-side   // the claim + worktree are the next run's;
+                                                     // the stale-claim reaper returns an unresumed claim
+    do NOT touch the breaker counter
+    short backoff sleep (interruptible by STOP; = pollInterval)
     continue
 
   fetch + fast-forward origin/main
@@ -474,7 +488,7 @@ loop:
 
   // breaker signal = the run's Disposition, NOT the pipeline exit code
   if Disposition == Shipped    -> reset consecutive-failure counter to 0
-  else if Disposition in {CapAborted, PreflightAborted, RecommendClose} -> neutral (neither increment nor reset)
+  else if Disposition in {CapAborted, PreflightAborted, RecommendClose, Interrupted} -> neutral (neither increment nor reset)
   else /* NoPR */              -> increment consecutive-failure counter
   // a retrospective-only failure (PR shipped) and a CI-red-after-budget (a reviewable PR
   // exists) do NOT count as failures; only "never produced a PR" does.

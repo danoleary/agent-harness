@@ -124,6 +124,9 @@ func RetrospectiveOver(h hostio.Host, cfg config.Config, log *runlog.Logger, sub
 	}
 
 	outcome := f.launch(retrospectiveRun(cfg, subject, filed), "").Outcome
+	if res, ok := f.interrupted(outcome); ok {
+		return res
+	}
 
 	// A spending-cap abort can fire after the skill wrote its up-front default `[]`
 	// (BEH-536's incremental write), leaving an empty dropbox that the ground-truth
