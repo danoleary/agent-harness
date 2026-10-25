@@ -133,7 +133,7 @@ func NewGhDriver(herdPath, branch string, cfg Config, ghTimeout time.Duration, r
 	d := &GhDriver{
 		herdPath:     herdPath,
 		branch:       branch,
-		pollCfg:      pollConfig{interval: cfg.PollInterval, budget: cfg.PollBudget, maxBudget: cfg.PollMaxBudget, stall: cfg.PollStall},
+		pollCfg:      pollConfig{interval: cfg.PollInterval, budget: cfg.PollBudget, maxBudget: cfg.PollMaxBudget, stall: cfg.PollStall, noChecksGrace: cfg.NoChecksGrace},
 		ghTimeout:    ghTimeout,
 		logTailBytes: defaultLogTailBytes,
 		runFix:       runFix,
@@ -152,13 +152,24 @@ func NewGhDriver(herdPath, branch string, cfg Config, ghTimeout time.Duration, r
 }
 
 // Poll runs `gh pr checks <branch> --json …` until the checks reach a terminal
-// verdict or the poll budget is spent.
+// verdict or the poll budget is spent. If no check has registered by the end of the
+// no-checks grace, it asks `gh run list --branch <branch> --commit <head>` whether
+// Actions started any run for the head; none means no workflow applies (#101).
 func (d *GhDriver) Poll() (Verdict, []Check, error) {
 	fetch := func() ([]Check, error) {
 		stdout, stderr, err := proc.OutputInDir(d.ghTimeout, d.herdPath, "gh", "pr", "checks", d.branch, "--json", checksJSONFields)
 		return interpretChecksOutput(stdout, stderr, err)
 	}
-	return poll(fetch, d.pollCfg, d.sleep, d.now)
+	headRuns := func() (string, bool, error) {
+		head, err := d.branchHead()
+		if err != nil {
+			return "", false, err
+		}
+		stdout, stderr, err := proc.OutputInDir(d.ghTimeout, d.herdPath, "gh", "run", "list", "--branch", d.branch, "--commit", head, "-L", "1", "--json", runHeadJSONField)
+		runHead, err := interpretRunHead(stdout, stderr, err)
+		return head, runHead != "", err
+	}
+	return poll(fetch, headRuns, d.pollCfg, d.sleep, d.now)
 }
 
 // Rerun re-triggers the failed jobs of each backing Actions run (the flake wash),

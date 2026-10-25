@@ -2,6 +2,7 @@ package ci
 
 import (
 	"errors"
+	"fmt"
 	"sort"
 	"strings"
 	"time"
@@ -32,6 +33,14 @@ var ErrPollStalled = errors.New("ci checks stalled while still pending (no progr
 // stall window or budget on a check that will never move on the PR (BEH-614).
 var ErrWedgedReadyForMergeQueue = errors.New("ci ready for merge queue (real gates green; only a structurally-wedged required context remains pending)")
 
+// ErrNoCIApplies is returned once the no-checks grace is spent with `gh pr checks`
+// still reporting no checks AND Actions having registered no workflow run for the
+// head SHA: no workflow's `paths` filter matches the diff (a docs-only PR against a
+// Consumer whose workflows allowlist `web/**` and the like), so no check will ever
+// run. Like ErrWedgedReadyForMergeQueue it is a SUCCESS the caller maps to a green
+// pass; the poll returns it wrapped with the SHA so the reason says why (#101).
+var ErrNoCIApplies = errors.New("no CI workflow applies to this diff")
+
 // pollConfig frames one poll: how often to re-check, the overall wall-clock cap,
 // and the no-progress (stall) window after which an unchanging-but-still-pending
 // check set is treated as wedged. A zero stall disables stall detection (budget
@@ -50,6 +59,12 @@ type pollConfig struct {
 	// that don't set it.
 	maxBudget time.Duration
 	stall     time.Duration
+	// noChecksGrace bounds the "no checks reported yet" state separately from budget:
+	// the time Actions needs to register runs for a fresh push. Once it is spent with no
+	// check ever seen, the poll asks headRuns whether any run exists for the head SHA and,
+	// if none does, passes with ErrNoCIApplies (#101). Zero disables it, so budget is the
+	// only bound on an empty check set — the pre-#101 behaviour.
+	noChecksGrace time.Duration
 }
 
 // poll re-runs fetch until its checks reach a terminal verdict (Passed/Failed),
@@ -59,8 +74,16 @@ type pollConfig struct {
 // fixes). If the budget is spent while still pending it returns (Pending, last
 // checks, ErrPollTimeout). The clock is injected so the timing is deterministic
 // in tests (mirrors git.withRetry).
-func poll(fetch func() ([]Check, error), cfg pollConfig, sleep func(time.Duration), now func() time.Time) (Verdict, []Check, error) {
-	deadline := now().Add(cfg.budget)
+//
+// headRuns reports the PR head SHA and whether Actions has registered any workflow run
+// for it; it is consulted only once cfg.noChecksGrace is spent without a check ever
+// appearing (nil disables the grace, as does a zero window).
+func poll(fetch func() ([]Check, error), headRuns func() (string, bool, error), cfg pollConfig, sleep func(time.Duration), now func() time.Time) (Verdict, []Check, error) {
+	start := now()
+	deadline := start.Add(cfg.budget)
+	// sawChecks latches once gh reports any check set: from then on the run exists and
+	// the normal poll path owns it, so the no-checks grace can never fire (#101).
+	sawChecks := false
 	// hardDeadline caps the adaptive extension (BEH-685). The soft budget is only
 	// overridden while a real gate is still in flight, and never past this ceiling, so a
 	// genuinely-hung required gate can extend the wait but can never make the poll run
@@ -81,6 +104,7 @@ func poll(fetch func() ([]Check, error), cfg pollConfig, sleep func(time.Duratio
 		checks, err := fetch()
 		switch {
 		case err == nil:
+			sawChecks = true
 			if v := Classify(checks); v != Pending {
 				return v, checks, nil
 			}
@@ -98,6 +122,16 @@ func poll(fetch func() ([]Check, error), cfg pollConfig, sleep func(time.Duratio
 			// pending and keep waiting; drop the empty checks so a timeout reports
 			// nothing rather than a stale set.
 			checks = nil
+			// Past the grace with nothing ever registered, ask Actions directly. No run
+			// for the head SHA means no workflow applies to this diff: pass now rather
+			// than burn the budget and report a timeout on a PR with nothing to fail.
+			// A registered run is a cold start, and an unreadable run list is doubt;
+			// both keep waiting (#101).
+			if !sawChecks && headRuns != nil && cfg.noChecksGrace > 0 && !now().Before(start.Add(cfg.noChecksGrace)) {
+				if sha, registered, probeErr := headRuns(); probeErr == nil && !registered {
+					return Passed, nil, fmt.Errorf("%w (no checks registered for %s)", ErrNoCIApplies, sha)
+				}
+			}
 		default:
 			return Pending, nil, err
 		}

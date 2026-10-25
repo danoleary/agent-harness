@@ -372,6 +372,14 @@ loop:
     the watch keeps polling. This is structural and immediate, where the older `PollStall` no-progress window
     (BEH-602) was only a slower, generic timeout-class backstop for the same wedge.
   poll `gh pr checks feat/beh-nnn` until terminal (success/failure/cancelled), bounded by a poll budget
+  no-CI-applies pass (#101): when no workflow's `paths` filter matches the diff, the PR never gets a check
+    and `gh pr checks` keeps saying "no checks reported". The empty state has its own bound,
+    `CI_NO_CHECKS_GRACE_MS` (3m), separate from the poll budget. If no check has ever appeared by the end of
+    the grace, the poll asks `gh run list --branch <b> --commit <head>`. No run for the head SHA means no
+    workflow applies, so the watch PASSES with "no CI workflow applies to this diff (no checks registered
+    for <sha>)", still through the mergeability gate. It no longer waits out the budget and reports "CI
+    never reached a terminal state". A registered run is a cold start, and an unreadable run list is
+    doubt: both keep waiting. Once any check appears, the normal poll path owns the run.
   gh-auth/permission degrade classes (NOT a red build — the diff is pushed + gate-green, the harness just
     can't READ CI): these fail SOFT to a green pass that leaves the open PR for a human, distinct from
     "CI did not go green". Two signatures, keyed off `gh pr checks` stderr:
