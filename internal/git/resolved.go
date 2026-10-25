@@ -445,6 +445,23 @@ func symbolPresentIn(srcRoot, symbol string) bool {
 	return true
 }
 
+// neverInHistory reports whether a symbol is absent from the git history of
+// every source root — added and removed in no commit, so it never existed and
+// can't have been deleted by a fix that already landed (#116). The pickaxe
+// (`git log -S`) matches a substring, not a whole word, so a longer name that
+// once held it (`NewThingy` for `NewThing`) counts as history; that errs toward
+// keeping the strong verdict, the behaviour before this check. A root that isn't
+// in a git repo, or any git error, also counts as history for the same reason.
+func neverInHistory(srcRoots []string, symbol string) bool {
+	for _, root := range srcRoots {
+		out, err := exec.Command("git", "-C", root, "log", "-S"+symbol, "--oneline", "-1", "--", ".").Output()
+		if err != nil || strings.TrimSpace(string(out)) != "" {
+			return false
+		}
+	}
+	return true
+}
+
 // ResolvedAdvisory returns a one-line warning when a ticket cites code symbols
 // that no longer exist in srcRoot — the BEH-544 signal that the work likely
 // already merged (often under a *sibling* ticket, which TicketAlreadyOnMain's
@@ -472,6 +489,13 @@ func symbolPresentIn(srcRoot, symbol string) bool {
 // can never appear under the source roots. And when the ticket names one of the
 // go.mod dependencies by module path, a missing bare symbol may be that
 // dependency's, so the verdict downgrades to the soft "verify premise" note.
+//
+// The add-verb classifier can't catch every wording a ticket uses for a symbol
+// it means to create ("one composition root, `X`, that both callers use"), so
+// a missing expected symbol is also checked against git history (#116): one
+// that never appeared in any commit was never removed, so it joins the
+// proposed symbols under the soft note. Only a symbol that existed once and is
+// now gone keeps "recommend close".
 func ResolvedAdvisory(srcRoots []string, identifier, description string) string {
 	// No declared source root means no signal to read: skip the advisory rather
 	// than scan a guessed path. Omitting `source_roots` disables the check, the
@@ -499,7 +523,17 @@ func ResolvedAdvisory(srcRoots []string, identifier, description string) string 
 		}
 		return out
 	}
-	missingExpected := missing(cited.expected)
+	// A missing "expected" symbol that never appeared in history was never
+	// removed, so it can't be the BEH-544 signal: whatever the wording around it,
+	// it is one the ticket proposes to create (#116).
+	var missingExpected, neverExisted []string
+	for _, sym := range missing(cited.expected) {
+		if neverInHistory(srcRoots, sym) {
+			neverExisted = append(neverExisted, sym)
+		} else {
+			missingExpected = append(missingExpected, sym)
+		}
+	}
 	if len(missingExpected) > 0 {
 		if dep := namedDependency(srcRoots, description); dep != "" {
 			return fmt.Sprintf(
@@ -512,7 +546,7 @@ func ResolvedAdvisory(srcRoots []string, identifier, description string) string 
 			identifier, strings.Join(missingExpected, ", "),
 		)
 	}
-	if missingProposed := missing(cited.proposed); len(missingProposed) > 0 {
+	if missingProposed := append(neverExisted, missing(cited.proposed)...); len(missingProposed) > 0 {
 		return fmt.Sprintf(
 			"ℹ %s names symbol(s) it proposes to add that aren't in source yet: %s — this is expected for new work, not a sign the ticket is resolved. Verify the premise, then implement.",
 			identifier, strings.Join(missingProposed, ", "),
