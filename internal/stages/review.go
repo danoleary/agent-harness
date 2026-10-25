@@ -382,6 +382,17 @@ func Review(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Res
 	// breaker must treat it as a success (reset), never a ship failure (DESIGN.md
 	// §Circuit breaker). Carry the signal on every return below.
 
+	// A ticket loop without watch_ci leaves CI to the PR loop (#110): the stage's job
+	// ends at the open PR, so the retrospective, the worktree reap and the next ticket
+	// do not wait 10-15 min on a check run. The PR loop polls open PRs on
+	// branch_prefix and runs the same CIFix session over a red one, and its conflict
+	// fix rebases a PR a prerequisite's merge left conflicting (the case
+	// mergedPrerequisiteResolver covers in-stage).
+	if args.LeaveCIToPRLoop {
+		log.Event("review ✓ PR open; CI is left to the PR loop (no watch_ci step, #110)")
+		return Result{OK: true, Disposition: Shipped}
+	}
+
 	// --- post-PR: watch CI and auto-fix red checks (host-side, BEH-414) ---
 	// Local gates passing is not CI passing (env/toolchain/flake/lockfile skew).
 	// Poll the PR head's checks; on a real failure, run a sandboxed fix session

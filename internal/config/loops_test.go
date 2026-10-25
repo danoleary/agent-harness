@@ -29,8 +29,11 @@ func TestNoLoopsDeclaredLeavesTheBuiltIns(t *testing.T) {
 	if !ok || tickets.Name != DefaultLoopName || tickets.Source.Kind != SourceTracker {
 		t.Errorf("the unnamed loop is the ticket loop, got %+v", tickets)
 	}
-	if steps := tickets.StepNames(); !reflect.DeepEqual(steps, []string{StepImplement, StepReview, StepRetro}) {
+	if steps := tickets.StepNames(); !reflect.DeepEqual(steps, []string{StepImplement, StepReview, StepWatchCI, StepRetro}) {
 		t.Errorf("ticket loop steps = %v", steps)
+	}
+	if tickets.LeavesCIToPRLoop() {
+		t.Error("the built-in ticket loop watches its own PR's CI, as it always has (#110)")
 	}
 	pr, _ := p.LoopNamed(PRDoctorLoopName)
 	if pr.Source.Kind != SourceGitHubPRs || !reflect.DeepEqual(pr.StepNames(), []string{StepCheckoutPR, StepFix, StepGates, StepPushExisting, StepWatchCI, StepRetro}) {
@@ -41,12 +44,36 @@ func TestNoLoopsDeclaredLeavesTheBuiltIns(t *testing.T) {
 	}
 }
 
+// A ticket loop written without watch_ci leaves its PR's CI to a PR loop (#110):
+// it is a valid loop, and the review stage returns once the PR is open. A PR loop
+// never leaves CI to itself.
+func TestATicketLoopWithoutWatchCILeavesCIToThePRLoop(t *testing.T) {
+	pc, err := LoadProject(loopsCheckout(t, `
+[[loops]]
+name = "tickets"
+source = { kind = "tracker" }
+steps = [{ use = "implement" }, { use = "review" }, { use = "retro" }]
+`))
+	if err != nil {
+		t.Fatalf("LoadProject: %v", err)
+	}
+	p := Project{Loops: pc.ResolvedLoops}
+	tickets, _ := p.LoopNamed("")
+	if !tickets.LeavesCIToPRLoop() {
+		t.Error("a ticket loop without watch_ci leaves CI to the PR loop")
+	}
+	pr, _ := p.LoopNamed(PRDoctorLoopName)
+	if pr.LeavesCIToPRLoop() {
+		t.Error("only a ticket loop hands its CI on")
+	}
+}
+
 // builtInLoopsTOML writes the two built-in loops out as [[loops]] entries.
 const builtInLoopsTOML = `
 [[loops]]
 name = "tickets"
 source = { kind = "tracker" }
-steps = [{ use = "implement" }, { use = "review" }, { use = "retro" }]
+steps = [{ use = "implement" }, { use = "review" }, { use = "watch_ci" }, { use = "retro" }]
 
 [[loops]]
 name = "pr-doctor"
@@ -244,8 +271,14 @@ steps = [{ use = "implement" }, { use = "review" }]
 [[loops]]
 name = "a"
 source = { kind = "tracker" }
-steps = [{ use = "implement" }, { use = "review" }, { use = "watch_ci" }]
-`, "watch_ci does not run on a tracker source"},
+steps = [{ use = "implement" }, { use = "review" }, { use = "gates" }]
+`, "gates does not run on a tracker source"},
+		{"watch_ci before review on a tracker", `
+[[loops]]
+name = "a"
+source = { kind = "tracker" }
+steps = [{ use = "implement" }, { use = "watch_ci" }, { use = "review" }]
+`, "watch_ci needs review before it"},
 		{"missing required step", `
 [[loops]]
 name = "a"

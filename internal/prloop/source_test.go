@@ -131,6 +131,21 @@ func TestNextYieldsARedCIPR(t *testing.T) {
 	}
 }
 
+// #110: a ticket loop without watch_ci moves on once its PR is open. When that PR
+// goes red, its branch is no longer held (the ticket's worktree is reaped), so it
+// is a CIRed item; a ticket still in flight keeps its own branch.
+func TestNextYieldsARedPRTheTicketLoopMovedOnFrom(t *testing.T) {
+	gh := newFakeGitHub(harnessPR(13, "def5678"), harnessPR(12, "abc1234"))
+	gh.checks["def5678"] = github.ChecksRed
+	gh.checks["abc1234"] = github.ChecksRed
+
+	item, _, ok, _ := newTestSource(gh, map[string]string{"feat/gh-13": "#13"}).Next()
+
+	if it, _ := item.Context.(Item); !ok || item.Key != "PR-12" || it.Kind != CIRed {
+		t.Fatalf("Next = %+v ok=%v, want PR-12's red CI, passing over the held PR-13", item, ok)
+	}
+}
+
 // A PR a human opted in with the label is worked even off the branch prefix, and
 // its conflict is resolved by merging — the history is the human's.
 func TestNextWorksAnOptedInHumanBranch(t *testing.T) {

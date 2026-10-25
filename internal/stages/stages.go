@@ -93,6 +93,10 @@ type Args struct {
 	// lease (ADR-0003); nil on the hand-passed path, where the implementation stage
 	// claims after the Docker preflight (BEH-316).
 	Lease *lease.Lease
+	// LeaveCIToPRLoop ends the review stage once the PR is open, without watching
+	// its CI: a red check is left to a PR loop's CIRed candidate (#110). Set from a
+	// ticket loop that leaves out watch_ci (config.Loop.LeavesCIToPRLoop).
+	LeaveCIToPRLoop bool
 }
 
 // ParseArgs parses argv (excluding the program name) into Args. tool names the

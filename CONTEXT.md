@@ -64,7 +64,7 @@ daemon branches only on the **Disposition** it returns.
 
 **Step**:
 One named unit of a loop's **Pipeline**, from a fixed set the harness implements
-in Go (`config.Step`): `implement`, `review`, `retro` for a tracker **Source**;
+in Go (`config.Step`): `implement`, `review`, `watch_ci`, `retro` for a tracker **Source**;
 `checkout_pr`, `fix`, `gates`, `push_existing`, `watch_ci`, `retro` for open PRs.
 Every Step owns its **Ground truth** check. A Consumer's `[[loops]]` config
 chooses, orders and parameterises Steps and supplies their **Project bodies**, but

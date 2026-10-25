@@ -67,7 +67,7 @@ func TestLimitsFromPrefersTheLoopsOwnLimits(t *testing.T) {
 func TestRenderListNamesEveryLoop(t *testing.T) {
 	got := renderList(config.Project{}.AllLoops())
 	for _, want := range []string{
-		"tickets", "(default, built in)", "tracker", "implement → review → retro",
+		"tickets", "(default, built in)", "tracker", "implement → review → watch_ci → retro",
 		"pr-doctor", "github_prs", "checkout_pr → fix → gates → push_existing → watch_ci → retro",
 	} {
 		if !strings.Contains(got, want) {
