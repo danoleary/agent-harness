@@ -199,6 +199,10 @@ func PidFile(instance string) string {
 	return ProjectDirName + "/loop-" + instance + ".pid"
 }
 
+// DefaultInstanceLabel is how `agent-harness watch --all` labels the instance
+// started with no id, so no named instance may take it.
+const DefaultInstanceLabel = "default"
+
 // InstancesLogsDir is where named instances keep their logs, one dir each,
 // relative to the checkout. `agent-harness watch --all` reads it.
 const InstancesLogsDir = ProjectDirName + "/logs/instances"
@@ -317,6 +321,9 @@ func (p Project) LoopInstance(name, id string) (Loop, error) {
 	}
 	if _, clash := p.LoopNamed(id); clash {
 		return Loop{}, fmt.Errorf("instance %q names a loop, so STOP-%s would stop that loop too; pick another id", id, id)
+	}
+	if id == DefaultInstanceLabel {
+		return Loop{}, fmt.Errorf("instance %q is the name `agent-harness watch --all` gives the instance started with no id; pick another id", id)
 	}
 	if l.Source.Kind != SourceTracker {
 		return Loop{}, fmt.Errorf("loop %q cannot run as instance %q: only a ticket loop (source %q) runs as several instances", l.Name, id, SourceTracker)

@@ -422,11 +422,13 @@ touch .agent-harness/STOP            # stop every loop
 |---|---|---|
 | pidfile | `.agent-harness/loop.pid` | `.agent-harness/loop-<id>.pid` |
 | daemon log | `.agent-harness/loop.log` | `.agent-harness/loop-<id>.log` |
-| own sentinel | `.agent-harness/STOP-tickets` | `.agent-harness/STOP-<id>` |
+| own sentinel | none: `STOP-tickets` stops every instance | `.agent-harness/STOP-<id>` |
 | event stream and per-ticket logs | `.agent-harness/logs/` | `.agent-harness/logs/instances/<id>/` |
 
-A second `start` of a running instance refuses, as before. An id is lowercase
-letters, digits and dashes, and may not be a loop's name. In the foreground the
+The default instance has no sentinel of its own, so to stop either of two
+instances alone, name both (`start --instance a`, `start --instance b`). A second
+`start` of a running instance refuses, as before. An id is lowercase letters,
+digits and dashes, and may not be a loop's name or `default`. In the foreground the
 same flag works: `agent-harness loop --instance b`. Only the ticket loop runs as
 several instances.
 

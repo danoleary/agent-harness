@@ -342,6 +342,7 @@ func TestLoopInstanceRefusesWhatWouldCollide(t *testing.T) {
 		{"", "B/../x", "lowercase"},
 		{"", "pr-doctor", "names a loop"},
 		{"", "tickets", "names a loop"},
+		{"", "default", "watch --all"},
 		{"pr-doctor", "b", "ticket loop"},
 		{"nope", "b", "no loop named"},
 	} {

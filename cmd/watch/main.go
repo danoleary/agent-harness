@@ -106,8 +106,9 @@ func parseTarget(argv []string) (target, error) {
 	return t, nil
 }
 
-// defaultInstanceLabel names the default instance's lines under --all.
-const defaultInstanceLabel = "default"
+// defaultInstanceLabel names the default instance's lines under --all; no named
+// instance may take it (config.Project.LoopInstance).
+const defaultInstanceLabel = config.DefaultInstanceLabel
 
 // follow is one instance's files: the stream the viewer tails, the pidfile it
 // probes for liveness, and the sentinel that stops it alone.
