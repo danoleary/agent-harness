@@ -41,9 +41,10 @@ type timelineEvent struct {
 // ListInProgressClaims returns the agent-claimed In Progress tickets (BEH-677):
 // the reaper's read of the set it may release back to Todo. For each, it reads the
 // issue timeline to time the claim (the latest in-progress `labeled` event) and to
-// detect a linked PR (a `cross-referenced` event whose source is a PR). GitHub
-// issues carry no claim timestamp, so the timeline is the only signal. The caller
-// applies the grace TTL and branch check before reaping.
+// detect a linked PR (a `cross-referenced` event whose source is a PR, dated no
+// earlier than the claim). GitHub issues carry no claim timestamp, so the timeline
+// is the only signal. The caller applies the grace TTL and branch check before
+// reaping.
 func (c *Client) ListInProgressClaims() ([]tracker.InProgressClaim, error) {
 	data, err := c.transport("GET", c.claimsQuery(), nil)
 	if err != nil {
@@ -71,8 +72,12 @@ func (c *Client) ListInProgressClaims() ([]tracker.InProgressClaim, error) {
 // timelineSignals reads issue n's timeline for the two reaper signals: the claim
 // time (the latest in-progress `labeled` event; the zero time when none is found,
 // which reads as "claimed at the epoch" — safely past any TTL, so an untimeable
-// claim is still reapable rather than immortal) and whether any PR cross-references
-// the issue.
+// claim is still reapable rather than immortal) and whether a PR cross-referenced
+// the issue during that claim. A cross-reference older than the claim — an earlier
+// PR that merely mentioned the issue, or one from a previous claim — is not evidence
+// of this claim's work, so it does not shield a dead claim from the reaper (#87).
+// A cross-reference whose time cannot be read still counts, failing safe toward
+// not-reaping.
 func (c *Client) timelineSignals(n int) (time.Time, bool, error) {
 	data, err := c.transport("GET", c.issuesPath(strconv.Itoa(n))+"/timeline?per_page=100", nil)
 	if err != nil {
@@ -84,7 +89,7 @@ func (c *Client) timelineSignals(n int) (time.Time, bool, error) {
 	}
 
 	var started time.Time
-	hasPR := false
+	var prRefs []time.Time // zero when the cross-reference's time cannot be read
 	for _, e := range events {
 		switch e.Event {
 		case "labeled":
@@ -95,9 +100,17 @@ func (c *Client) timelineSignals(n int) (time.Time, bool, error) {
 			}
 		case "cross-referenced":
 			if e.Source != nil && e.Source.Issue != nil && e.Source.Issue.PullRequest != nil {
-				hasPR = true
+				t, _ := time.Parse(time.RFC3339, e.CreatedAt)
+				prRefs = append(prRefs, t)
 			}
 		}
 	}
-	return started, hasPR, nil
+	// The timeline is chronological, but the claim time is only known once every
+	// event is read, so PR cross-references are judged against it afterwards.
+	for _, t := range prRefs {
+		if t.IsZero() || !t.Before(started) {
+			return started, true, nil
+		}
+	}
+	return started, false, nil
 }
