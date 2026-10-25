@@ -352,7 +352,7 @@ loop:
 
   --- review CI watch + auto-fix (harness, host-side, BEH-414) ---
   only on a ticket loop with the watch_ci step (the built-in default); without it the stage
-    returns Shipped here and leaves red CI to the PR loop (ADR-0030, #110)
+    returns Shipped here and leaves red CI to the PR loop (ADR-0031, #110)
   zero-net-diff short-circuit (BEH-602): BEFORE the first poll, if `git diff origin/main` for the
     pushed branch is EMPTY -> there is nothing for CI to validate that main hasn't already validated,
     so do NOT watch (a no-op PR can never meaningfully go green — the PR #642 ~20-min poll-budget
@@ -593,7 +593,7 @@ built-in `tickets` loop keeps it, so a Consumer that runs no PR loop still gets 
 red CI auto-fixed. A Consumer that runs `pr-doctor` can leave it out: the review
 stage then returns **Shipped** as soon as the PR is open, the retrospective and the
 worktree reap run at once, and a check that goes red later is `pr-doctor`'s
-(ADR-0030, #110).
+(ADR-0031, #110).
 
 Each loop has its own sentinel (`.agent-harness/STOP-<name>`; the plain `STOP`
 stops them all, and a starting loop clears both) and its own logs dir: `logs/`
