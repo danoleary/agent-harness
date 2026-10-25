@@ -28,6 +28,9 @@ func TestLoadCIDefaults(t *testing.T) {
 	if cfg.CIPollMaxBudget != 25*time.Minute {
 		t.Errorf("CIPollMaxBudget = %v, want 25m", cfg.CIPollMaxBudget)
 	}
+	if cfg.CINoChecksGrace != 3*time.Minute {
+		t.Errorf("CINoChecksGrace = %v, want 3m", cfg.CINoChecksGrace)
+	}
 }
 
 func TestLoadCIHonoursOverrides(t *testing.T) {
@@ -38,6 +41,7 @@ func TestLoadCIHonoursOverrides(t *testing.T) {
 		"CI_POLL_BUDGET_MS":     "120000",
 		"CI_POLL_STALL_MS":      "90000",
 		"CI_POLL_MAX_BUDGET_MS": "600000",
+		"CI_NO_CHECKS_GRACE_MS": "60000",
 	}))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -59,6 +63,9 @@ func TestLoadCIHonoursOverrides(t *testing.T) {
 	}
 	if cfg.CIPollMaxBudget != 10*time.Minute {
 		t.Errorf("CIPollMaxBudget = %v, want 10m", cfg.CIPollMaxBudget)
+	}
+	if cfg.CINoChecksGrace != time.Minute {
+		t.Errorf("CINoChecksGrace = %v, want 1m", cfg.CINoChecksGrace)
 	}
 }
 

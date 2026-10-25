@@ -2,6 +2,7 @@ package ci
 
 import (
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -52,7 +53,7 @@ func TestPollReturnsImmediatelyWhenTerminalNoSleep(t *testing.T) {
 	slept := 0
 	sleep := func(d time.Duration) { slept++; clock.sleep(d) }
 	fetch, calls := scriptedFetch(BucketPass)
-	v, _, err := poll(fetch, testPollCfg(), sleep, clock.now)
+	v, _, err := poll(fetch, nil, testPollCfg(), sleep, clock.now)
 	if err != nil {
 		t.Fatalf("poll: %v", err)
 	}
@@ -71,7 +72,7 @@ func TestPollWaitsThroughPendingThenReportsFailure(t *testing.T) {
 	clock := newFakeClock()
 	sleep := func(d time.Duration) { clock.sleep(d) }
 	fetch, calls := scriptedFetch(BucketPending, BucketPending, BucketFail)
-	v, checks, err := poll(fetch, testPollCfg(), sleep, clock.now)
+	v, checks, err := poll(fetch, nil, testPollCfg(), sleep, clock.now)
 	if err != nil {
 		t.Fatalf("poll: %v", err)
 	}
@@ -90,7 +91,7 @@ func TestPollTimesOutWhileStillPending(t *testing.T) {
 	clock := newFakeClock()
 	sleep := func(d time.Duration) { clock.sleep(d) }
 	fetch, _ := scriptedFetch(BucketPending) // never settles
-	v, _, err := poll(fetch, testPollCfg(), sleep, clock.now)
+	v, _, err := poll(fetch, nil, testPollCfg(), sleep, clock.now)
 	if !errors.Is(err, ErrPollTimeout) {
 		t.Fatalf("err = %v, want ErrPollTimeout", err)
 	}
@@ -121,7 +122,7 @@ func TestPollExtendsPastSoftBudgetWhileRealGateInFlight(t *testing.T) {
 	snaps := [][]Check{running, running, running, running, running, running, running, green}
 	fetch, _ := scriptedChecks(snaps...)
 	cfg := pollConfig{interval: 30 * time.Second, budget: 2 * time.Minute, maxBudget: 6 * time.Minute}
-	v, _, err := poll(fetch, cfg, sleep, clock.now)
+	v, _, err := poll(fetch, nil, cfg, sleep, clock.now)
 	if err != nil {
 		t.Fatalf("poll: %v (a slow-but-running real gate must not be abandoned at the soft budget)", err)
 	}
@@ -140,7 +141,7 @@ func TestPollExtensionRespectsHardCeiling(t *testing.T) {
 		{Name: "linting_and_tests", Bucket: BucketPending, State: "IN_PROGRESS"},
 	})
 	cfg := pollConfig{interval: 30 * time.Second, budget: 2 * time.Minute, maxBudget: 6 * time.Minute}
-	v, _, err := poll(fetch, cfg, sleep, clock.now)
+	v, _, err := poll(fetch, nil, cfg, sleep, clock.now)
 	if !errors.Is(err, ErrPollTimeout) {
 		t.Fatalf("err = %v, want ErrPollTimeout at the hard ceiling", err)
 	}
@@ -166,7 +167,7 @@ func TestPollWaitsThroughNoChecksYet(t *testing.T) {
 		}
 		return []Check{{Name: "ci", Bucket: BucketFail}}, nil
 	}
-	v, _, err := poll(fetch, testPollCfg(), sleep, clock.now)
+	v, _, err := poll(fetch, nil, testPollCfg(), sleep, clock.now)
 	if err != nil {
 		t.Fatalf("poll: %v", err)
 	}
@@ -182,7 +183,7 @@ func TestPollTimesOutIfChecksNeverRegister(t *testing.T) {
 	clock := newFakeClock()
 	sleep := func(d time.Duration) { clock.sleep(d) }
 	fetch := func() ([]Check, error) { return nil, errNoChecksYet }
-	_, _, err := poll(fetch, testPollCfg(), sleep, clock.now)
+	_, _, err := poll(fetch, nil, testPollCfg(), sleep, clock.now)
 	if !errors.Is(err, ErrPollTimeout) {
 		t.Fatalf("err = %v, want ErrPollTimeout", err)
 	}
@@ -200,7 +201,7 @@ func TestPollStallsOnFrozenPendingBeforeBudget(t *testing.T) {
 		{Name: "merge-queue-gate", Bucket: BucketPending, State: StateExpected}, // never moves on a PR
 	})
 	cfg := pollConfig{interval: 30 * time.Second, budget: 20 * time.Minute, stall: 2 * time.Minute}
-	v, checks, err := poll(fetch, cfg, sleep, clock.now)
+	v, checks, err := poll(fetch, nil, cfg, sleep, clock.now)
 	if !errors.Is(err, ErrPollStalled) {
 		t.Fatalf("err = %v, want ErrPollStalled", err)
 	}
@@ -236,7 +237,7 @@ func TestPollDoesNotStallWhileARealGateIsStillRunning(t *testing.T) {
 	// Frozen on the running snapshot well past the 2m stall window, then it goes green.
 	fetch, _ := scriptedChecks(running, running, running, running, running, running, green)
 	cfg := pollConfig{interval: 30 * time.Second, budget: 20 * time.Minute, stall: 2 * time.Minute}
-	v, _, err := poll(fetch, cfg, sleep, clock.now)
+	v, _, err := poll(fetch, nil, cfg, sleep, clock.now)
 	if err != nil {
 		t.Fatalf("poll: %v (a still-running real gate must not be cut short as a wedge stall)", err)
 	}
@@ -259,7 +260,7 @@ func TestPollDoesNotStallOnColdStartAllPending(t *testing.T) {
 		{Name: "e2e", Bucket: BucketPending},
 	})
 	cfg := pollConfig{interval: 30 * time.Second, budget: 10 * time.Minute, stall: 2 * time.Minute}
-	v, _, err := poll(fetch, cfg, sleep, clock.now)
+	v, _, err := poll(fetch, nil, cfg, sleep, clock.now)
 	if errors.Is(err, ErrPollStalled) {
 		t.Fatal("a frozen all-pending cold start must not be treated as a stall (BEH-620)")
 	}
@@ -283,7 +284,7 @@ func TestPollDoesNotStallWhileProgressing(t *testing.T) {
 		[]Check{{Name: "lint", Bucket: BucketPass}, {Name: "test", Bucket: BucketPass}},
 	)
 	cfg := pollConfig{interval: 30 * time.Second, budget: 20 * time.Minute, stall: 10 * time.Second}
-	v, _, err := poll(fetch, cfg, sleep, clock.now)
+	v, _, err := poll(fetch, nil, cfg, sleep, clock.now)
 	if err != nil {
 		t.Fatalf("poll: %v (a progressing run must not be cut short by the stall window)", err)
 	}
@@ -300,7 +301,7 @@ func TestPollZeroStallDisablesStallDetection(t *testing.T) {
 	sleep := func(d time.Duration) { clock.sleep(d) }
 	fetch, _ := scriptedChecks([]Check{{Name: "deploy", Bucket: BucketPending}}) // frozen
 	cfg := pollConfig{interval: 30 * time.Second, budget: 10 * time.Minute, stall: 0}
-	_, _, err := poll(fetch, cfg, sleep, clock.now)
+	_, _, err := poll(fetch, nil, cfg, sleep, clock.now)
 	// With stall disabled a frozen-pending run rides the full budget to ErrPollTimeout.
 	if !errors.Is(err, ErrPollTimeout) {
 		t.Fatalf("err = %v, want ErrPollTimeout (stall disabled)", err)
@@ -319,7 +320,7 @@ func TestPollShortCircuitsImmediatelyOnWedgedReady(t *testing.T) {
 	})
 	// A generous stall window: the point is it bails on the FIRST poll, well before stall.
 	cfg := pollConfig{interval: 30 * time.Second, budget: 20 * time.Minute, stall: 5 * time.Minute}
-	v, checks, err := poll(fetch, cfg, sleep, clock.now)
+	v, checks, err := poll(fetch, nil, cfg, sleep, clock.now)
 	if !errors.Is(err, ErrWedgedReadyForMergeQueue) {
 		t.Fatalf("err = %v, want ErrWedgedReadyForMergeQueue", err)
 	}
@@ -341,8 +342,108 @@ func TestPollPropagatesFetchError(t *testing.T) {
 	clock := newFakeClock()
 	boom := errors.New("gh: auth required")
 	fetch := func() ([]Check, error) { return nil, boom }
-	_, _, err := poll(fetch, testPollCfg(), clock.sleep, clock.now)
+	_, _, err := poll(fetch, nil, testPollCfg(), clock.sleep, clock.now)
 	if !errors.Is(err, boom) {
 		t.Fatalf("err = %v, want the fetch error", err)
+	}
+}
+
+// noChecksFetch returns a fetch seam that reports "no checks reported" (errNoChecksYet)
+// for the first n calls and then yields the given snapshots in order (repeating the
+// last). n < 0 means it never stops reporting no checks.
+func noChecksFetch(n int, snaps ...[]Check) func() ([]Check, error) {
+	calls := 0
+	return func() ([]Check, error) {
+		calls++
+		if n < 0 || calls <= n {
+			return nil, errNoChecksYet
+		}
+		i := calls - n - 1
+		if i >= len(snaps) {
+			i = len(snaps) - 1
+		}
+		return snaps[i], nil
+	}
+}
+
+// headRunsProbe returns a probe that always reports the given head SHA and whether a
+// workflow run is registered for it, counting its calls.
+func headRunsProbe(sha string, registered bool, err error) (func() (string, bool, error), *int) {
+	calls := 0
+	return func() (string, bool, error) {
+		calls++
+		return sha, registered, err
+	}, &calls
+}
+
+func noChecksGraceCfg() pollConfig {
+	return pollConfig{interval: 30 * time.Second, budget: 10 * time.Minute, noChecksGrace: 2 * time.Minute}
+}
+
+// #101: a paths-filtered diff (no workflow's `paths` matches) never gets a check run.
+// Once the no-checks grace is spent and Actions has registered no run for the head
+// SHA either, the poll must pass with ErrNoCIApplies — naming the SHA — rather than
+// waiting out the full budget and reporting a timeout.
+func TestPollPassesWhenNoCIAppliesAfterGrace(t *testing.T) {
+	clock := newFakeClock()
+	probe, probes := headRunsProbe("abc123", false, nil)
+	v, checks, err := poll(noChecksFetch(-1), probe, noChecksGraceCfg(), clock.sleep, clock.now)
+	if !errors.Is(err, ErrNoCIApplies) {
+		t.Fatalf("err = %v, want ErrNoCIApplies", err)
+	}
+	if !strings.Contains(err.Error(), "abc123") {
+		t.Fatalf("err %q should name the head SHA so a human can see why", err)
+	}
+	if v != Passed || len(checks) != 0 {
+		t.Fatalf("verdict = %v checks = %v, want Passed with no checks", v, checks)
+	}
+	if elapsed := clock.now().Sub(time.Unix(0, 0)); elapsed > 3*time.Minute {
+		t.Fatalf("waited %s; want to stop at the 2m grace, not the 10m budget", elapsed)
+	}
+	if *probes == 0 {
+		t.Fatal("expected the run-list probe to be consulted before passing")
+	}
+}
+
+// Checks that register inside the grace take the normal poll path: the grace never
+// fires once a check has appeared, even if the run then outlasts it.
+func TestPollNoChecksThenPendingInsideGraceTakesNormalPath(t *testing.T) {
+	clock := newFakeClock()
+	probe, probes := headRunsProbe("abc123", false, nil)
+	pending := []Check{{Name: "ci", Bucket: BucketPending, State: "IN_PROGRESS"}}
+	green := []Check{{Name: "ci", Bucket: BucketPass}}
+	// No checks at 0s and 30s, pending from 60s through 4m, green at 4.5m.
+	fetch := noChecksFetch(2, pending, pending, pending, pending, pending, pending, pending, green)
+	v, _, err := poll(fetch, probe, noChecksGraceCfg(), clock.sleep, clock.now)
+	if err != nil {
+		t.Fatalf("poll: %v, want the normal green terminal", err)
+	}
+	if v != Passed {
+		t.Fatalf("verdict = %v, want Passed", v)
+	}
+	if *probes != 0 {
+		t.Fatalf("probe called %d times; checks appeared inside the grace so it must not be consulted", *probes)
+	}
+}
+
+// A cold start: Actions has registered a run for the head SHA but `gh pr checks` has
+// not caught up. That is not "no CI applies" — keep waiting.
+func TestPollKeepsWaitingWhenARunIsRegisteredForHead(t *testing.T) {
+	clock := newFakeClock()
+	probe, _ := headRunsProbe("abc123", true, nil)
+	_, _, err := poll(noChecksFetch(-1), probe, noChecksGraceCfg(), clock.sleep, clock.now)
+	if !errors.Is(err, ErrPollTimeout) {
+		t.Fatalf("err = %v, want ErrPollTimeout (a registered run means checks are coming)", err)
+	}
+}
+
+// A probe that cannot read the run list is doubt, and doubt never passes the watch:
+// keep waiting to the budget as before.
+func TestPollKeepsWaitingWhenRunProbeErrors(t *testing.T) {
+	clock := newFakeClock()
+	probe, _ := headRunsProbe("", false, errors.New("gh run list: boom"))
+	_, _, err := poll(noChecksFetch(-1), probe, noChecksGraceCfg(), clock.sleep, clock.now)
+	if !errors.Is(err, ErrPollTimeout) {
+		t.Fatalf("err = %v, want ErrPollTimeout on an unreadable run list", err)
 	}
 }

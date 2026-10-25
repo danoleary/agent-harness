@@ -2,6 +2,8 @@ package stages
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -10,6 +12,7 @@ import (
 	gitpkg "github.com/danoleary/agent-harness/internal/git"
 	"github.com/danoleary/agent-harness/internal/gittest"
 	"github.com/danoleary/agent-harness/internal/hostio"
+	"github.com/danoleary/agent-harness/internal/runlog"
 	"github.com/danoleary/agent-harness/internal/sandbox"
 	"github.com/danoleary/agent-harness/internal/session"
 )
@@ -341,6 +344,31 @@ func TestReviewRedCIStillReportsShipped(t *testing.T) {
 	}
 	if res.Disposition != Shipped {
 		t.Error("the PR exists, so the breaker must see a ship (DESIGN.md §Circuit breaker)")
+	}
+}
+
+// #110: a ticket loop that leaves CI to the PR loop does not wait on CI. The stage
+// ships the moment the PR is open and never watches, so the retrospective, the
+// worktree reap and the next ticket start at once; a check that goes red later is
+// the PR loop's CIRed candidate.
+func TestReviewLeavingCIToThePRLoopShipsOnceThePRIsOpen(t *testing.T) {
+	h, _ := handedOff(t, "PROJ-16")
+	h.CIFn = func(hostio.CIWatch) ci.Outcome {
+		t.Error("the review stage must not watch CI it leaves to the PR loop")
+		return ci.Outcome{OK: false, Reason: "red"}
+	}
+
+	res := Review(h, stageCfg(), stageLog(t, "PROJ-16"), Args{Identifier: "PROJ-16", LeaveCIToPRLoop: true})
+
+	if !res.OK || res.Disposition != Shipped {
+		t.Fatalf("an open PR is the stage's job done, got %+v", res)
+	}
+	opened := false
+	for _, c := range h.Calls {
+		opened = opened || strings.HasPrefix(c, "create-pr ")
+	}
+	if !opened || called(h, "watch-ci") {
+		t.Errorf("calls = %v, want the PR opened and no CI watch", h.Calls)
 	}
 }
 
@@ -687,5 +715,159 @@ func TestReviewReRunAfterABlockedVerdictReviewsCold(t *testing.T) {
 
 	if strings.Contains(h.Agents[1].Prompt, "UNCHANGED SINCE THE LAST REVIEW") {
 		t.Error("a blocked verdict must not be carried forward to a re-run")
+	}
+}
+
+// --- the red-gate re-launch (#111) --------------------------------------------
+
+// commitsAFix is a review session that commits a fix on its first launch and
+// reaches its verdict on every launch.
+func commitsAFix(h *hostio.Fake, repo *gittest.Repo) func(int, hostio.AgentRun) session.Outcome {
+	return func(call int, _ hostio.AgentRun) session.Outcome {
+		if call == 1 {
+			repo.Commit(h.Worktree(), "review.txt", "a review fix\n", "fix: the defect the review found")
+		}
+		return session.Outcome{ReviewVerdictEmitted: true}
+	}
+}
+
+// redFirstGate reds the first gate run with out, writing gateLog as its step log
+// the way the Runner tees one, and greens every gate after it.
+func redFirstGate(log *runlog.Logger, out session.Outcome, gateLog string) func(int, hostio.ShellRun) session.Outcome {
+	red := false
+	return func(_ int, s hostio.ShellRun) session.Outcome {
+		if !strings.HasPrefix(s.Label, gateStep) || red {
+			return session.Outcome{}
+		}
+		red = true
+		_ = os.WriteFile(filepath.Join(log.Dir, s.Label+".log"), []byte(gateLog), 0o644)
+		return out
+	}
+}
+
+const redGateLog = "ok  pkg/a\n--- FAIL: TestTheReviewFix (0.01s)\n    a_test.go:12: got 1, want 2\nFAIL\n"
+
+// A host gate red over the commit the review session made is recoverable: the
+// review is re-launched once with the failing gate's name and its log tail, the
+// gate re-runs over what that session committed, and green ships.
+func TestReviewRelaunchesOnceOnARedGateOverItsOwnCommit(t *testing.T) {
+	h, repo := handedOff(t, "PROJ-60")
+	log := stageLog(t, "PROJ-60")
+	h.AgentFn = commitsAFix(h, repo)
+	h.ShellFn = redFirstGate(log, session.Outcome{ExitCode: 1}, redGateLog)
+
+	res := Review(h, stageCfg(), log, Args{Identifier: "PROJ-60"})
+
+	if !res.OK || res.Disposition != Shipped {
+		t.Fatalf("a re-launch that turns the gate green ships, got %+v", res)
+	}
+	if got := labels(h.Agents); len(got) != 2 || got[1] != reviewSession+"-gatefix" {
+		t.Fatalf("agent runs = %v, want the review re-launched once under its own label", got)
+	}
+	for _, want := range []string{"gate `check`", "--- FAIL: TestTheReviewFix", "got 1, want 2"} {
+		if !strings.Contains(h.Agents[1].Prompt, want) {
+			t.Errorf("the re-launch's prompt is missing %q", want)
+		}
+	}
+	if strings.Contains(h.Agents[0].Prompt, "--- FAIL") {
+		t.Error("the first review has no red gate to be told about")
+	}
+	if got := shellLabels(h.Shells); len(got) != 3 || got[2] != gateStep+"-gatefix-check" {
+		t.Errorf("shell runs = %v, want the gate re-run after the re-launch under its own label", got)
+	}
+}
+
+// The re-launch is bounded to one: a gate still red after it is the failure it
+// always was.
+func TestReviewRedGateRelaunchIsBoundedToOne(t *testing.T) {
+	h, repo := handedOff(t, "PROJ-61")
+	h.AgentFn = commitsAFix(h, repo)
+	h.ShellFn = func(_ int, s hostio.ShellRun) session.Outcome {
+		if strings.HasPrefix(s.Label, gateStep) {
+			return session.Outcome{ExitCode: 1}
+		}
+		return session.Outcome{}
+	}
+	log := stageLog(t, "PROJ-61")
+
+	res := Review(h, stageCfg(), log, Args{Identifier: "PROJ-61"})
+
+	if res.OK || res.Disposition == Shipped {
+		t.Fatalf("a gate still red after the re-launch ships nothing, got %+v", res)
+	}
+	if got := labels(h.Agents); len(got) != 2 {
+		t.Errorf("agent runs = %v, want exactly one re-launch", got)
+	}
+	assertNothingPushed(t, h, repo)
+	if !strings.Contains(narration(t, log), `[gate \"check\"]`) {
+		t.Errorf("the failing gate must still be named; run.jsonl = %s", narration(t, log))
+	}
+}
+
+// A red gate over a commit the review did not make — the implementation's
+// handoff, which the review found nothing to fix in — is not the review's to
+// recover: it fails as before, with no re-launch.
+func TestReviewRedGateOverTheHandoffIsNotRelaunched(t *testing.T) {
+	h, _ := handedOff(t, "PROJ-62")
+	log := stageLog(t, "PROJ-62")
+	h.AgentOutcome = session.Outcome{ReviewVerdictEmitted: true}
+	h.ShellFn = redFirstGate(log, session.Outcome{ExitCode: 1}, redGateLog)
+
+	res := Review(h, stageCfg(), log, Args{Identifier: "PROJ-62"})
+
+	if res.OK {
+		t.Fatalf("a red gate over the handoff ships nothing, got %+v", res)
+	}
+	if got := labels(h.Agents); len(got) != 1 {
+		t.Errorf("agent runs = %v, want no re-launch for a commit the review did not make", got)
+	}
+}
+
+// An OOM, a cap abort or an environment failure is not a defect a review session
+// can fix in the diff, so none of them is re-launched.
+func TestReviewRedGateIsNotRelaunchedForAnEnvironmentFailure(t *testing.T) {
+	cases := []struct {
+		name    string
+		session session.Outcome
+		gate    session.Outcome
+	}{
+		{"session OOM-killed", session.Outcome{ExitCode: sandbox.ExitOOMKill}, session.Outcome{ExitCode: 1}},
+		{"session hit the spending cap", session.Outcome{ExitCode: 1, SpendingCapAbort: true}, session.Outcome{ExitCode: 1}},
+		{"session cap-killed", session.Outcome{ExitCode: sandbox.ExitOOMKill, CapKilled: true}, session.Outcome{ExitCode: 1}},
+		{"gate OOM-killed", session.Outcome{ReviewVerdictEmitted: true}, session.Outcome{ExitCode: sandbox.ExitOOMKill}},
+		{"gate cap-killed", session.Outcome{ReviewVerdictEmitted: true}, session.Outcome{ExitCode: sandbox.ExitOOMKill, CapKilled: true}},
+		{"gate command not found", session.Outcome{ReviewVerdictEmitted: true}, session.Outcome{ExitCode: 127, StderrTail: "bash: line 1: go: command not found"}},
+		{"gate tool missing under make", session.Outcome{ReviewVerdictEmitted: true}, session.Outcome{ExitCode: 2, StderrTail: "make: golangci-lint: No such file or directory\nmake: *** [Makefile:12: lint] Error 127"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			h, repo := handedOff(t, "PROJ-63")
+			log := stageLog(t, "PROJ-63")
+			h.AgentFn = func(int, hostio.AgentRun) session.Outcome {
+				repo.Commit(h.Worktree(), "review.txt", "a review fix\n", "fix: the defect the review found")
+				return c.session
+			}
+			h.ShellFn = redFirstGate(log, c.gate, redGateLog)
+
+			if res := Review(h, stageCfg(), log, Args{Identifier: "PROJ-63"}); res.OK {
+				t.Fatalf("nothing ships, got %+v", res)
+			}
+			if got := labels(h.Agents); len(got) != 1 {
+				t.Errorf("agent runs = %v, want no re-launch", got)
+			}
+		})
+	}
+}
+
+// The envelope tells every review session the gate is recoverable, so a Consumer
+// body can drop the heavy suites the host gate re-runs anyway.
+func TestReviewPromptPromisesARedGateComesBackOnce(t *testing.T) {
+	h, _ := handedOff(t, "PROJ-64")
+	h.AgentOutcome = clearVerdict
+
+	Review(h, stageCfg(), stageLog(t, "PROJ-64"), Args{Identifier: "PROJ-64"})
+
+	if !strings.Contains(h.Agents[0].Prompt, "returns to you once with its output") {
+		t.Errorf("the review envelope must promise the red-gate re-launch; prompt:\n%s", h.Agents[0].Prompt)
 	}
 }

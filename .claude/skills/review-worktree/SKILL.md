@@ -30,16 +30,18 @@ implementation transcript. Write one line: what should now be true.
    behaviour through a public interface rather than internals?
 5. **Design** — does it deepen a module or add a shallow pass-through? Does it
    use `CONTEXT.md` vocabulary? Is a changed decision recorded in an ADR?
-6. **Docs** — README, `docs/CONSUMER.md`, `docs/DESIGN.md`, the example config.
+6. **Docs** — README, the page under `docs/` that covers the change (`docs/README.md` indexes them; `docs/reference/` for a key, variable, command or message), `docs/DESIGN.md`, the example config.
 
 Do the reading before running any gate.
 
 ## 3. Fix
 
 Fix every real finding yourself. Then run `make check` as its own Bash call and
-commit the fixes locally as one commit: `Review fixes for <ticket> over <short
-HEAD you reviewed>`, so stacked review commits from different runs can be told
-apart. Do not change unrelated code, and do not rewrite the implementer's commit.
+commit the fixes locally as one commit: `Review fixes for <ticket>: <what they
+fix>`, so stacked review commits from different runs can be told apart. Name the
+commit the fixes amend by its subject line in the body, never by its SHA: the
+harness rebases the branch onto origin/main before it pushes, which rewrites
+every SHA on it, so a SHA in the message would dangle in the PR. Do not change unrelated code, and do not rewrite the implementer's commit.
 
 No real finding means no commit. A cosmetic tidy-up is not a finding.
 

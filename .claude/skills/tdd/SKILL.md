@@ -18,6 +18,36 @@ prompt around this skill tells you the ticket, the worktree and the branch.
 3. Find the module that owns the behaviour and its `_test.go`. Follow the
    existing test style there — table tests, fakes over mocks, the port
    interfaces in `internal/hostio` and friends — rather than inventing a new one.
+4. Read the repo guards below. `make check` rejects code that breaks them, and
+   finding that out after the code is written costs a rewrite and a full re-run.
+
+## Repo guards `make check` enforces
+
+- **No raw `exec.Command` for docker, `gh` or a git remote op** (`fetch`, `push`,
+  `clone`, `ls-remote`, `pull`) outside `internal/proc` — `check-exec`
+  (`scripts/check-exec-command.sh`). Call `proc.Run`, `proc.Output`,
+  `proc.CombinedOutput` and their `InDir`/`WithInput` variants with a timeout, so a
+  hung daemon or remote fails fast instead of wedging the run (BEH-386). If the
+  variant you need (stdin, dir, env, …) is missing, add it to `internal/proc` with
+  a test rather than bypassing it. A deliberately unbounded call carries an
+  inline `// allow-unbounded-exec: <reason>` on the call line.
+- **Every bash-shebang script (`scripts/*.sh` and any other) must run under
+  macOS bash 3.2** — `check-bash3` (`scripts/check-bash3-compat.sh`): no
+  `declare -A`, namerefs (`declare -n`), `${var,,}`/`${var^^}` or
+  `mapfile`/`readarray`.
+- **Every `go build`/`test`/`run`/`install` in a Makefile keeps
+  `-buildvcs=false`**, on one line — `check-buildvcs` (`scripts/check-buildvcs.sh`).
+  Without it go aborts inside a linked worktree.
+- **Two ADRs can't share a number, and every `ADR-NNNN` reference (Go comment or
+  Markdown) or `adr/NNNN-<slug>.md` link must name an existing file** —
+  `check-adr` (`scripts/check-adr-numbers.sh`); see Finish.
+- **CI runs `make check` itself, never its sub-targets one by one** — `check-ci`
+  (`scripts/check-ci-runs-check.sh`); wire a new guard into `check:` only.
+- A changed `scripts/<name>.sh` that has a sibling `scripts/test-<name>.sh` must
+  change that test too (CI checks this), and `check-scripts` runs every
+  `scripts/test-*.sh`.
+- `example/.agent-harness/` is loaded by the test suite; keep it valid if you
+  change the config schema, and update `docs/reference/config.md` alongside it.
 
 ## The loop
 
@@ -31,16 +61,6 @@ Repeat per behaviour, smallest first:
 
 Test behaviour, not implementation: a test that has to change when you rename a
 private helper is testing the wrong thing.
-
-## Repo rules the gate enforces
-
-- `scripts/*.sh` must run under macOS bash 3.2: no `declare -A`, namerefs,
-  `${var,,}` or `mapfile`.
-- A changed `scripts/<name>.sh` that has a sibling `scripts/test-<name>.sh` must
-  change that test too (CI checks this).
-- Any go command in the Makefile keeps `-buildvcs=false`.
-- `example/.agent-harness/` is loaded by the test suite; keep it valid if you
-  change the config schema, and update `docs/CONSUMER.md` alongside it.
 
 ## Finish
 

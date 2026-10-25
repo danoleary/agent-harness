@@ -2,20 +2,22 @@
 
 Start with `agent-harness doctor`. It checks the whole setup in one pass and
 prints a fix under every line that fails. This page covers what `doctor` cannot
-see.
+see. To look up a specific message or exit code, see
+[error messages](reference/errors.md).
 
 ## The CI watch never sees CI
 
 `GH_TOKEN` must be a **classic PAT with `repo` scope**, SSO-authorized for the
 org if the org uses SSO. A fine-grained PAT can push and open the PR, but it
 cannot read check runs, so the post-PR CI watch can't observe CI. `doctor`
-fails on a fine-grained token for this reason.
+fails on a fine-grained token for this reason. See [token scopes](reference/tokens.md).
 
 ## "Invalid API key" from a subscription token
 
 An `sk-ant-oat01-…` token is an OAuth token. It goes in
 `CLAUDE_CODE_OAUTH_TOKEN`, not `ANTHROPIC_API_KEY`. Set exactly one of the two:
-when both are set, Claude Code uses `ANTHROPIC_API_KEY`.
+when both are set, Claude Code uses `ANTHROPIC_API_KEY`. See
+[choose a Claude credential](how-to/claude-credential.md).
 
 ## The daemon stalls on a Mac
 

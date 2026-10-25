@@ -2,6 +2,7 @@ package ci
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -646,5 +647,40 @@ func TestWatchSurfacesAwaitHeadRunError(t *testing.T) {
 	}
 	if !strings.Contains(out.Reason, "boom") {
 		t.Fatalf("reason %q should surface the await error", out.Reason)
+	}
+}
+
+// #101: a poll that ends in ErrNoCIApplies (no workflow's `paths` filter matches the
+// diff, so nothing ever registered) is a green ship with a reason that says why — not
+// the "CI never reached a terminal state" failure the budget timeout reports. It never
+// re-runs or fixes, and it still confirms mergeability.
+func TestWatchPassesWhenNoCIApplies(t *testing.T) {
+	noCI := fmt.Errorf("%w (no checks registered for abc123)", ErrNoCIApplies)
+	d := &fakeDriver{
+		polls:      []pollResult{{v: Passed, err: noCI}},
+		mergeState: MergeClean,
+	}
+	out := WatchAndFix(d, testWatchCfg(), newFakeClock().now)
+	if !out.OK {
+		t.Fatalf("a PR no CI workflow applies to has nothing to fail; want OK, got %+v", out)
+	}
+	if !strings.Contains(out.Reason, "no CI workflow applies") || !strings.Contains(out.Reason, "abc123") {
+		t.Fatalf("reason %q should say no CI applies and name the SHA", out.Reason)
+	}
+	if d.fixes != 0 || d.reruns != 0 {
+		t.Fatalf("must not fix/rerun a PR with no CI; got fix=%d rerun=%d", d.fixes, d.reruns)
+	}
+}
+
+// The no-CI pass is still gated on mergeability, like every other green.
+func TestWatchNoCIAppliesStillGatesOnMergeConflict(t *testing.T) {
+	d := &fakeDriver{
+		polls:         []pollResult{{v: Passed, err: ErrNoCIApplies}},
+		mergeState:    MergeConflicting,
+		rebaseVerdict: RebaseConflict,
+	}
+	out := WatchAndFix(d, testWatchCfg(), newFakeClock().now)
+	if out.OK {
+		t.Fatalf("a no-CI PR with a genuine merge conflict is not shippable; got %+v", out)
 	}
 }

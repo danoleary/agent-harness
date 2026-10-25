@@ -72,7 +72,8 @@ Cut a harness release in one command.
    tag and refuses a version that isn't newer.
 2. Rewrites every `ghcr.io/<owner>/agent-harness-base:X.Y.Z` pin
    (`.agent-harness/Dockerfile`, `example/.agent-harness/Dockerfile`,
-   `docs/CONSUMER.md`) to the new version, and `ARG CLAUDE_VERSION` in
+   `docs/how-to/sandbox-image.md`, `init`'s Dockerfile template) to the new
+   version, and `ARG CLAUDE_VERSION` in
    `Dockerfile.base` when `--claude-version` is given.
 3. Runs `make check` on that tree (and reverts it on failure), commits it as
    `Release vX.Y.Z`, tags it, and pushes main + the tag with `--atomic`.
@@ -218,6 +219,50 @@ the references that mean it.
 ./scripts/test-check-adr-numbers.sh
 ```
 
+## check-bundle-links.sh
+
+Guard the installed README's links against docs the install doesn't ship (#96).
+
+### Purpose
+
+`install.sh` copies `README.md` into `<prefix>/share/agent-harness/` beside only
+the files on its `DOCS` list, at their repo-relative paths. A relative link in the
+README to anything else works on github.com and is broken in every install. The
+release workflow and `make install` copy the same `DOCS` list, so this guard reads
+it from `install.sh` and checks the README against it. It runs under `make check`
+and is bash-3.2-safe.
+
+### What it checks
+
+Every inline link and reference-style link definition in `README.md`, outside
+fenced code blocks, whose target is a relative path (not a URL, not a bare
+`#anchor`). It fails when the path, with `./` and `../` folded and any `#anchor`
+dropped:
+
+- isn't on `DOCS`;
+- names a directory;
+- climbs out of the bundle root (`../../releases`, say).
+
+It also fails when a doc on `DOCS` is missing from the tree.
+
+### Fix violations
+
+Add the doc to `DOCS` in `install.sh` if operators should have it, or link it by
+its `https://github.com/danoleary/agent-harness/...` URL if not.
+
+### Usage
+
+```bash
+./scripts/check-bundle-links.sh              # the make check-bundle-links default
+./scripts/check-bundle-links.sh /path/to/repo
+```
+
+### Testing
+
+```bash
+./scripts/test-check-bundle-links.sh
+```
+
 ## check-bash3-compat.sh
 
 Guard against bash-4-only syntax in bash scripts (BEH-457).
@@ -315,8 +360,9 @@ The guard is integrated into the Makefile's `check` target, which runs:
 5. `check-buildvcs` - The -buildvcs=false guard (BEH-459)
 6. `check-ci` - The CI-runs-check guard (BEH-462)
 7. `check-adr` - The ADR-numbering guard (#92)
-8. `check-scripts` - The harness shell tests (BEH-591)
-9. `test` - Full test suite
+8. `check-bundle-links` - The installed-README link guard (#96)
+9. `check-scripts` - The harness shell tests (BEH-591)
+10. `test` - Full test suite
 
 CI runs `make check` directly (then `make build`), so adding a guard to the
 `check` target above covers it in CI with no workflow edit. The `check-ci` guard

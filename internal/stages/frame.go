@@ -8,6 +8,7 @@ import (
 	"github.com/danoleary/agent-harness/internal/hostio"
 	"github.com/danoleary/agent-harness/internal/loopstream"
 	"github.com/danoleary/agent-harness/internal/runlog"
+	"github.com/danoleary/agent-harness/internal/session"
 	"github.com/danoleary/agent-harness/internal/ticket"
 	"github.com/danoleary/agent-harness/internal/tracker"
 )
@@ -101,4 +102,18 @@ func (f frame) launch(run hostio.AgentRun, note string) hostio.Result {
 	res := f.h.Agent(run)
 	f.log.Event(fmt.Sprintf("%s session exited (code %d) — transcript at logs/%s/%s", f.stage, res.ExitCode, f.key, res.Transcript))
 	return res
+}
+
+// interrupted reports whether a stop signal killed the session (#99) and, when it
+// did, narrates it and returns the Stage's Interrupted Result. The Stage returns
+// that at once: a session cut short handed nothing off, so its ground-truth check
+// would only record a failure that never happened, and whatever sent the signal
+// is likely taking this process down too. The worktree and the claim are left as
+// they are for the next run.
+func (f frame) interrupted(o session.Outcome) (Result, bool) {
+	res, ok := InterruptedResult(o)
+	if ok {
+		f.log.Event(fmt.Sprintf("%s ⏸ session interrupted by signal %d (%s) — not a failure; skipping verification and leaving the worktree and claim for the next run (#99)", f.stage, int(res.Signal), res.Signal))
+	}
+	return res, ok
 }

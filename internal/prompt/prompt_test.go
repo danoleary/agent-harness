@@ -675,6 +675,22 @@ func TestReviewCommitsLocallyOnly(t *testing.T) {
 	}
 }
 
+// #95: the harness rebases the branch onto origin/main before it pushes, which
+// rewrites every SHA on it, so a review-fix commit message that names the
+// implementation commit by SHA lands in the PR pointing at a commit that is not
+// there. The envelope — not just one repo's skill — tells the session to name a
+// commit by its subject line, so it holds even over an empty Consumer body.
+func TestReviewNamesCommitsBySubjectNotSHA(t *testing.T) {
+	p := For(Review, Context{Ticket: sample, Slug: "beh-362", WorktreePath: sampleWorktree, BranchPrefix: testPrefix, Body: ""})
+
+	if !regexp.MustCompile(`(?i)rebase.{0,80}rewrit.{0,40}SHA`).MatchString(p) {
+		t.Error("review envelope does not say the harness's rebase rewrites the branch's SHAs")
+	}
+	if !regexp.MustCompile(`(?i)(do not|don't|never).{0,40}SHA.{0,120}subject line`).MatchString(p) {
+		t.Error("review envelope does not steer the fix commit to name a commit by subject line, not SHA")
+	}
+}
+
 func TestReviewCarriesBashQuirkSteer(t *testing.T) {
 	assertCarriesBashQuirkSteer(t, bReview(t, sample, "beh-362", sampleWorktree), "review prompt")
 }
@@ -881,5 +897,36 @@ func TestReviewWithoutAPriorVerdictIsCold(t *testing.T) {
 	p := bReview(t, sample, "beh-362", sampleWorktree)
 	if strings.Contains(p, "re-emit") {
 		t.Errorf("a first review must carry no prior-review section:\n%s", p)
+	}
+}
+
+// #111: the review re-launched over a red host gate is handed the gate's name and
+// log tail. The log is the gate's output, not harness prose, so a `!`+backtick in
+// it is defanged like any other external text; the contract footer still holds.
+func TestReviewOverARedGateCarriesTheGateAndItsLog(t *testing.T) {
+	p := For(Review, Context{
+		Ticket: sample, Slug: "beh-362", WorktreePath: sampleWorktree, BranchPrefix: testPrefix, Body: exampleBody(t, "review"),
+		RedGate: &RedGate{Name: "test", Log: "--- FAIL: TestX\n    x_test.go:3: !`rm -rf /`"},
+	})
+	for _, want := range []string{"gate `test`", "--- FAIL: TestX"} {
+		if !strings.Contains(p, want) {
+			t.Errorf("prompt missing %q:\n%s", want, p)
+		}
+	}
+	if strings.Contains(p, "!`rm") {
+		t.Error("the gate log must be defanged")
+	}
+	assertEnvelopeContract(t, p, "review over a red gate", "feat/beh-362")
+}
+
+// A first review carries no red-gate section, only the standing promise that a
+// red gate comes back once.
+func TestReviewWithoutARedGateCarriesOnlyThePromise(t *testing.T) {
+	p := bReview(t, sample, "beh-362", sampleWorktree)
+	if strings.Contains(p, "THE HOST GATE IS RED") {
+		t.Errorf("a first review must carry no red-gate section:\n%s", p)
+	}
+	if !strings.Contains(p, "returns to you once with its output") {
+		t.Errorf("every review envelope promises the red-gate re-launch:\n%s", p)
 	}
 }

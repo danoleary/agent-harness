@@ -149,7 +149,11 @@ Design decisions, and why:
 - **Retrospective always runs** (see the stop/skip rule above) — this is the one
   place the pipeline deliberately diverges from the loop's `if not OK -> skip
   rest`, because a failed slice is exactly the run whose transcripts are worth
-  mining.
+  mining. The exception is an **interrupted** slice: a Stage whose session a stop
+  signal killed (exit 128+N for SIGHUP/INT/QUIT/TERM — chiefly 130 and 143) ends
+  the slice there, with no handoff verification and no retrospective, because
+  the slice was cut short rather than broken and the process is likely going down
+  with it (ADR-0030).
 - **`--verbose`** forwards to all stages. **`--dry-run`** is pipeline-level: it
   prints the *plan* (ordered stages + each stage's resolved prompt/docker command
   as best it can be computed — the Stages' own run specs, previewed through the
@@ -309,6 +313,14 @@ loop:
      falling through to fail-closed. The cheapest incompleteness class to recover — mirrors the
      OOM / conflict-resolution re-launch pattern; a persistent no-verdict still fails closed and
      keeps the worktree. (An OOM 137, a cap abort, a dirty tree, or a red gate are NOT eligible.)
+  if a gate is RED over a commit the review session ITSELF made (HEAD moved during the session) (#111):
+     re-launch the review once (`review-gatefix`), handed the failing gate's name and the tail of its
+     step log (`gate-<name>-<run>.log`), then re-gate (`gate-gatefix-*`) and re-decide. BOUNDED to one;
+     still red -> the ordinary red-gate failure. NOT eligible: a red over the handoff the review did not
+     change, a dirty tree, a blocked verdict, an OOM / watchdog cap-kill / spending-cap abort of the
+     session or the gate, or a gate the shell could not run (#46). The envelope promises every review
+     this re-launch, so a Consumer body can drop the heavy suites the host gate repeats anyway; the
+     host gate stays the only push authority (ADR-0002).
   if recommend-close (BEH-603): worktree clean AND `git diff origin/main` is EMPTY
                 // a zero-net-diff branch (the empty-commit BEH-365 produced) — checked before the
                 // gate/review checks, after the clean-tree gate (a dirty tree may hide uncommitted work)
@@ -339,6 +351,8 @@ loop:
                #   finding it couldn't self-resolve → fail closed, keep worktree for a human decision
 
   --- review CI watch + auto-fix (harness, host-side, BEH-414) ---
+  only on a ticket loop with the watch_ci step (the built-in default); without it the stage
+    returns Shipped here and leaves red CI to the PR loop (ADR-0030, #110)
   zero-net-diff short-circuit (BEH-602): BEFORE the first poll, if `git diff origin/main` for the
     pushed branch is EMPTY -> there is nothing for CI to validate that main hasn't already validated,
     so do NOT watch (a no-op PR can never meaningfully go green — the PR #642 ~20-min poll-budget
@@ -372,6 +386,14 @@ loop:
     the watch keeps polling. This is structural and immediate, where the older `PollStall` no-progress window
     (BEH-602) was only a slower, generic timeout-class backstop for the same wedge.
   poll `gh pr checks feat/beh-nnn` until terminal (success/failure/cancelled), bounded by a poll budget
+  no-CI-applies pass (#101): when no workflow's `paths` filter matches the diff, the PR never gets a check
+    and `gh pr checks` keeps saying "no checks reported". The empty state has its own bound,
+    `CI_NO_CHECKS_GRACE_MS` (3m), separate from the poll budget. If no check has ever appeared by the end of
+    the grace, the poll asks `gh run list --branch <b> --commit <head>`. No run for the head SHA means no
+    workflow applies, so the watch PASSES with "no CI workflow applies to this diff (no checks registered
+    for <sha>)", still through the mergeability gate. It no longer waits out the budget and reports "CI
+    never reached a terminal state". A registered run is a cold start, and an unreadable run list is
+    doubt: both keep waiting. Once any check appears, the normal poll path owns the run.
   gh-auth/permission degrade classes (NOT a red build — the diff is pushed + gate-green, the harness just
     can't READ CI): these fail SOFT to a green pass that leaves the open PR for a human, distinct from
     "CI did not go green". Two signatures, keyed off `gh pr checks` stderr:
@@ -417,7 +439,9 @@ loop:
   // The run's one Disposition (stages.Disposition) decides everything below: the three
   // stage results fold into exactly one of Shipped / RecommendClose / CapAborted /
   // PreflightAborted / NoPR, in that precedence — a stage that reached a verdict (shipped,
-  // or "this branch is a no-op") outranks a later stage's environmental abort.
+  // or "this branch is a no-op") outranks a later stage's environmental abort. An interrupted
+  // implementation or review makes the run Interrupted; an interrupted retrospective is left
+  // out of the fold, so the earlier stages' verdict stands (ADR-0030).
 
   // SPENDING-CAP ABORT is a control-flow signal, NOT a ticket failure (see invariant below).
   // Any stage aborted by an external Anthropic spending cap, with nothing shipped:
@@ -435,6 +459,16 @@ loop:
     reclaim disk (incl. the Docker prune) // the usual cause — clear the floor for the retry
     short backoff sleep (interruptible by STOP; = pollInterval)   // don't spin re-selecting the same top-of-queue ticket
     do NOT touch the breaker counter  // breaker stays blind; otherwise 3 identical ~2s preflight failures trip it in seconds
+    continue
+
+  // INTERRUPTED (ADR-0030): a stop signal killed a session from outside (exit 128+N) — the
+  // run was cut short, not broken. The pipeline already skipped verification and the
+  // retrospective; the loop leaves the ticket exactly where it stopped.
+  if Disposition == Interrupted:
+    do NOT release, comment, or complete host-side   // the claim + worktree are the next run's;
+                                                     // the stale-claim reaper returns an unresumed claim
+    do NOT touch the breaker counter
+    short backoff sleep (interruptible by STOP; = pollInterval)
     continue
 
   fetch + fast-forward origin/main
@@ -474,7 +508,7 @@ loop:
 
   // breaker signal = the run's Disposition, NOT the pipeline exit code
   if Disposition == Shipped    -> reset consecutive-failure counter to 0
-  else if Disposition in {CapAborted, PreflightAborted, RecommendClose} -> neutral (neither increment nor reset)
+  else if Disposition in {CapAborted, PreflightAborted, RecommendClose, Interrupted} -> neutral (neither increment nor reset)
   else /* NoPR */              -> increment consecutive-failure counter
   // a retrospective-only failure (PR shipped) and a CI-red-after-budget (a reviewable PR
   // exists) do NOT count as failures; only "never produced a PR" does.
@@ -496,7 +530,9 @@ poll (Source github_prs, read-only judgement — also what --dry-run prints):
   for each open PR:
     skip fork | base != main | labelled blocked | held (in-progress label)
     skip unless head on <branch_prefix>/  OR  labelled source.label | PR_LOOP_LABEL  // opt-in
-    skip if the ticket loop holds the branch (an In Progress ticket's slug)  // lease keyed on the branch
+    skip if the ticket loop holds the branch (an In Progress ticket's slug  // lease keyed on the branch
+      whose worktree is still checked out: a shipped ticket's is reaped
+      by its retrospective, so its later red CI is this loop's, #110)
     kind = conflict if mergeable=CONFLICTING/DIRTY, else ci if a check is red, else skip
     skip if source.when leaves the kind out
     skip if a marker comment already records (head sha, kind)               // a new push = a new item
@@ -536,7 +572,7 @@ another:
 ```
 loop     = name + source{kind, params} + steps[] + limits
 source   : tracker | github_prs{label, when[conflicting, ci_failing], max_attempts}
-steps    : tracker    -> implement, review, [retro]
+steps    : tracker    -> implement, review, [watch_ci], [retro]
            github_prs -> checkout_pr, fix, gates, push_existing, [watch_ci], [retro]
 limits   : poll_interval cap_backoff claim_ttl max_runtime max_consecutive_failures max_items
            (each overrides its LOOP_* knob for this loop; unset keeps the knob)
@@ -549,8 +585,15 @@ agent. `config.LoadProject` validates the lot with every problem at once, each a
 its `config.toml:line:column` (`config/positions.go` re-walks the file with
 go-toml's own parser to place them): unknown source or step, a step on the wrong
 Source, a step before what it needs (`push_existing` after `gates`, `watch_ci`
-after `push_existing`, `retro` last), a missing required step, `ci_failing`
+after `review` or `push_existing`, `retro` last), a missing required step, `ci_failing`
 without `watch_ci`, and an unreadable or blank prompt file.
+
+On a `tracker` loop `watch_ci` is the review stage's post-PR CI watch below. The
+built-in `tickets` loop keeps it, so a Consumer that runs no PR loop still gets its
+red CI auto-fixed. A Consumer that runs `pr-doctor` can leave it out: the review
+stage then returns **Shipped** as soon as the PR is open, the retrospective and the
+worktree reap run at once, and a check that goes red later is `pr-doctor`'s
+(ADR-0030, #110).
 
 Each loop has its own sentinel (`.agent-harness/STOP-<name>`; the plain `STOP`
 stops them all, and a starting loop clears both) and its own logs dir: `logs/`
@@ -796,7 +839,7 @@ A ticket is eligible iff **all** hold:
   itself when the blocker closes. The `Blocked` label (`tracker.blocked_label`,
   optional) never clears on its own, so it is only for a hold no issue models.
 - **not overlapping the work in flight** (#97,
-  [ADR-0029](adr/0029-a-ticket-that-names-files-in-flight-waits-for-them.md)), on
+  [ADR-0031](adr/0031-a-ticket-that-names-files-in-flight-waits-for-them.md)), on
   every tracker. Selection reads the files changed by each open PR on
   `branch_prefix` (`/pulls/N/files`) and by each claimed ticket's worktree
   (`git diff --merge-base origin/main`, uncommitted edits included), plus the
@@ -1337,7 +1380,9 @@ reader over a structured stream rather than a `--tui` flag on the daemon.
   `checksums.txt`, and lays it out under a sudo-free prefix (`~/.local` by
   default): `bin/agent-harness` alone on the `PATH`, the six stage binaries and
   `loop-start.sh` in `libexec/agent-harness/`, the docs and `.env.example` in
-  `share/agent-harness/`. `cmd/agent-harness` is a dispatcher that resolves a
+  `share/agent-harness/`, with `docs/` kept as a subdirectory so the README's
+  links resolve there (`DOCS` in `install.sh`, checked by
+  `scripts/check-bundle-links.sh`). `cmd/agent-harness` is a dispatcher that resolves a
   subcommand out of that private dir and `syscall.Exec`s it, so the stage
   binaries keep their signal, TTY and exit-code behaviour exactly — and their
   generic names (`watch`, `review`, `loop`, …) never reach a shared `bin` dir.
@@ -1390,7 +1435,7 @@ reader over a structured stream rather than a `--tui` flag on the daemon.
   | `STOP_FILE` | `.agent-harness/STOP` | the sentinel that stops every loop; cleared at clean startup, `touch` to wind down. Each loop also has its own, `.agent-harness/STOP-<name>` |
   | `GATE_CONCURRENCY` | `1` | how many runs may execute their gates at once across every instance sharing the lock dir (§Loop instances); `0` = no limit |
   | `GATE_LOCK_DIR` | `.agent-harness/locks/` | where the gate slots' lock files live; one dir shared by several projects bounds the whole host |
-  | `OVERLAP_THRESHOLD` | `1` | how many files a ready ticket must name that one open harness PR or claimed worktree already changes before selection defers it for the poll (ADR-0029); `0` = off |
+  | `OVERLAP_THRESHOLD` | `1` | how many files a ready ticket must name that one open harness PR or claimed worktree already changes before selection defers it for the poll (ADR-0031); `0` = off |
   | `OVERLAP_ESCAPE_LABEL` | `parallel-ok` | the ticket label that dispatches a ticket whatever it overlaps |
   | `PR_LOOP_LABEL` | `agent-maintained` | PR loops: the label that opts a PR whose head is off `branch_prefix` in, unless the loop's `source.label` sets one (ADR-0019) |
   | `PR_LOOP_MAX_ATTEMPTS` | `3` | PR loops: attempts per PR, unless `source.max_attempts` sets one; past it the loop comments what it tried and labels the PR `blocked` |

@@ -23,7 +23,8 @@ On the machine that runs the harness:
 | Go | 1.26+ | only to build from source |
 
 Linear and Jira need their own API credential as well; see
-[`docs/CONSUMER.md`](docs/CONSUMER.md).
+[Linear](docs/how-to/linear.md) or [Jira](docs/how-to/jira.md). For a guided
+first run, follow the [tutorial](docs/tutorial.md).
 
 ## Quickstart
 
@@ -82,7 +83,7 @@ container now and keeps the worktree.
 A deep backlog of independent tickets goes faster with a second daemon. Each
 instance has its own pidfile, log and `STOP-<id>`; the two never claim the same
 ticket, and by default only one runs its gates at a time (`GATE_CONCURRENCY`).
-See [CONSUMER.md](docs/CONSUMER.md#running-more-than-one-instance):
+See [run several instances](docs/how-to/run-several-instances.md):
 
 ```bash
 agent-harness start --instance b    # beside the default instance
@@ -94,7 +95,8 @@ A second loop, `pr-doctor`, fixes harness PRs (and PRs you label
 `agent-maintained`) that went red on CI or conflict with `main` after review.
 `--dry-run` prints the loop and what it would do; `--list` names every loop. A
 project can change these loops or add its own as `[[loops]]` in `config.toml`. See
-[CONSUMER.md](docs/CONSUMER.md#loops-agent-harness-loop-name-and-loops-optional):
+[fix open PRs](docs/how-to/fix-open-prs.md) and
+[declare a loop](docs/how-to/declare-a-loop.md):
 
 ```bash
 agent-harness loop pr-doctor --dry-run
@@ -104,20 +106,30 @@ agent-harness loop pr-doctor --dry-run
 the agent transcript) and `--dry-run`. A ticket's transcripts and event stream
 are in `.agent-harness/logs/<KEY>/`.
 
-- [`docs/CONSUMER.md`](docs/CONSUMER.md): set up a project — config, prompt
-  bodies, sandbox image, trackers, credentials.
-- [`docs/troubleshooting.md`](docs/troubleshooting.md): when something goes
-  wrong that `doctor` can't see.
-- [`docs/DESIGN.md`](docs/DESIGN.md): how it works, its invariants and its
-  failure handling. Decisions are recorded in [`docs/adr/`](docs/adr/).
-- [`example/`](example/): a complete, working `.agent-harness/`.
+The [documentation](docs/README.md) is split by what you need:
+
+- **Learn:** [the tutorial](docs/tutorial.md) takes one ticket to a PR, end to end.
+- **Do:** how-to guides for [GitHub Issues](docs/how-to/github-issues.md),
+  [Linear](docs/how-to/linear.md) and [Jira](docs/how-to/jira.md), the
+  [Claude credential](docs/how-to/claude-credential.md),
+  [prompt bodies](docs/how-to/prompt-bodies.md), a
+  [custom sandbox image](docs/how-to/sandbox-image.md), and
+  [troubleshooting](docs/troubleshooting.md).
+- **Look up:** [`config.toml` keys](docs/reference/config.md),
+  [environment variables](docs/reference/env.md),
+  [token scopes](docs/reference/tokens.md), [CLI commands](docs/reference/cli.md)
+  and [error messages](docs/reference/errors.md).
+- **Understand:** [`docs/DESIGN.md`](docs/DESIGN.md) explains how it works, its
+  invariants and its failure handling. Decisions are recorded in
+  [`docs/adr/`](https://github.com/danoleary/agent-harness/tree/main/docs/adr).
+- [`example/`](https://github.com/danoleary/agent-harness/tree/main/example) is a complete, working `.agent-harness/`.
 
 ## More about install
 
 ```
 ~/.local/bin/agent-harness         the command you run
 ~/.local/libexec/agent-harness/    the stage binaries, kept off your PATH
-~/.local/share/agent-harness/      .env.example, CONSUMER.md, README, LICENSE
+~/.local/share/agent-harness/      .env.example, README.md, LICENSE, docs/*.md
 ```
 
 The stage binaries have generic names (`loop`, `watch`, `review`, …), so they stay
@@ -144,7 +156,7 @@ go install github.com/danoleary/agent-harness/cmd/agent-harness@latest
 go install github.com/danoleary/agent-harness/cmd/loop@latest   # and pipeline, watch, …
 ```
 
-Or download an archive from [Releases](../../releases) and run `./agent-harness`
+Or download an archive from [Releases](https://github.com/danoleary/agent-harness/releases) and run `./agent-harness`
 straight out of the unpacked directory. The archive layout is the installed
 layout, so it works in place.
 
@@ -174,5 +186,5 @@ cmd/
 internal/          config, tracker adapters, prompt, sandbox, session, verify, filing, git, …
 scripts/           loop-start.sh (the `start` launcher) + the make check guards
 Dockerfile.base    the published sandbox base image: the harness↔sandbox contract
-docs/              CONSUMER.md, DESIGN.md, troubleshooting.md, adr/
+docs/              tutorial, how-to/, reference/, DESIGN.md, adr/ (index: docs/README.md)
 ```

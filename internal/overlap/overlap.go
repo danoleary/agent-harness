@@ -2,7 +2,7 @@
 // flight that already changes them (#97). Two tickets with no dependency between
 // them still conflict when they edit the same file in parallel, and only a human
 // could untangle the second PR after the first merged. Selection defers such a
-// ticket until the overlapping work merges or closes (ADR-0029).
+// ticket until the overlapping work merges or closes (ADR-0031).
 //
 // The prediction is cheap and literal: the paths, file names and backticked module
 // names the ticket's title and body mention. A ticket that names no file in flight

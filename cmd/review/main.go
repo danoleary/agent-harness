@@ -42,6 +42,10 @@ func main() {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		os.Exit(1)
 	}
+	// Leave CI to the PR loop exactly when the Consumer's ticket loop does (#110).
+	if tickets, ok := cfg.LoopNamed(""); ok {
+		args.LeaveCIToPRLoop = tickets.LeavesCIToPRLoop()
+	}
 	res := stages.Review(hostio.New(cfg, log, runID, args.Verbose, ticket.Slug(args.Identifier)), cfg, log, args)
 	if res.Err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", res.Err)

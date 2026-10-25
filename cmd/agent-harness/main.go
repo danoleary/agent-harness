@@ -58,9 +58,9 @@ type command struct {
 var commands = []command{
 	{Name: "init", Args: "[--yes] [--force]", Summary: "scaffold this project's .agent-harness/ directory", Builtin: initMain},
 	{Name: doctorCommand, Args: "[--offline]", Summary: "check the whole setup; print a fix for every problem"},
-	{Name: "start", File: "loop-start.sh", Args: "[--instance <id>]", Summary: "start the loop as a detached daemon (logs to loop.log, or loop-<id>.log)"},
+	{Name: "start", File: "loop-start.sh", Args: "[<name>] [--instance <id>]", Summary: "start a loop as a detached daemon (logs to loop.log, or loop-<name>.log / loop-<id>.log)"},
 	{Name: "loop", File: "loop", Args: "[<name>] [--instance <id>] [--list] [--dry-run]", Summary: "run a loop until stopped: the ready queue by default, or pr-doctor, or a [[loops]] entry"},
-	{Name: "watch", File: "watch", Args: "[LOGFILE | --instance <id> | --all]", Summary: "live, read-only view of the running loop, one instance or all"},
+	{Name: "watch", File: "watch", Args: "[LOGFILE | --loop <name> | --instance <id> | --all]", Summary: "live, read-only view of a running loop, one instance or all"},
 	{Name: "pipeline", File: "pipeline", Args: "<TICKET|--next>", Summary: "one ticket, start to finish, then exit"},
 	{Name: "implementation", File: "implementation", Args: "<TICKET>", Summary: "stage 1 alone: /tdd into a worktree + commit"},
 	{Name: "review", File: "review", Args: "<TICKET>", Summary: "stage 2 alone: cold review, host gates, push + PR"},

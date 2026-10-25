@@ -102,3 +102,43 @@ envelopes name it, scoping the change to `<base>..HEAD` / `<base>...HEAD` and
 warning off local `main`** (#86). It sits in the envelope because only the host
 can resolve it before the session starts. A base the host cannot resolve falls back
 to `origin/main`, whose three-dot diff finds the same fork point.
+
+## Amendment, 2026-10-25: the review envelope keeps SHAs out of commit messages
+
+The review skill titled its fix commit `Review fixes for <ticket> over <short
+sha>`. A Landing then rebases the branch onto origin/main before the push, which
+gives every commit on it a new SHA, so the pushed fix commit named a commit that
+was not on the branch or in the PR.
+
+**The review envelope now says that the harness rebases before it pushes and that a
+commit message must name the commit it amends by its subject line, not its SHA**
+(#95). It sits in the envelope, not just this repo's skill, because the rebase is
+the harness's own step: any Consumer's review skill could name a SHA and hit the
+same dangling reference. This repo's review skill now titles the commit by what it
+fixes instead.
+
+## Amendment, 2026-10-25: a red host gate returns to the review once
+
+A host gate that went red after the review session committed a fix failed the
+ticket with no retry. Consumer bodies therefore had the session run the heavy test
+suites itself before it stopped, and the host gate then ran them again on the same
+commit. On one Consumer that repeat was 72% of a review session's wall time. The
+session's run decided nothing, because only the host gate authorises a push
+(ADR-0002).
+
+**When the host gate goes red over a commit the review session made, the review
+stage re-launches the session once, and the envelope carries the failing gate's
+name and the tail of its step log. The stage then re-runs the gates** (#111).
+Every review envelope also says that a red host gate over the session's own
+commit returns to it once with its output. A Consumer body can then tell the
+session to run only the cheap gates. The promise sits in the envelope because the
+re-launch is the harness's own step: a body cannot rely on a retry it is not told
+about, and a body cannot promise one.
+
+The re-launch is bounded to one attempt. A gate still red after it fails the
+ticket as before. A red over the handoff the review did not change also fails as
+before, and so do a dirty tree, a blocked verdict, an OOM, a cap-kill or
+spending-cap abort, and a gate the shell could not run. None of those is a defect
+the session can fix in its own commit. Skipping the host gate when the session
+reports the same gates green at the same HEAD was rejected, because it trusts a
+self-report.

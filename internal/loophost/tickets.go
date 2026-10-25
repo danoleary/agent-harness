@@ -55,7 +55,7 @@ func RepoPRs(cfg config.Config) *github.Pulls {
 	return github.NewPulls(github.NewGhTransport(cfg.ProjectPath), "{owner}/{repo}")
 }
 
-// WatchPRs turns on the overlap check (#97, ADR-0029): selection defers a ticket
+// WatchPRs turns on the overlap check (#97, ADR-0031): selection defers a ticket
 // whose title or body names files an open harness PR, or a claimed ticket's
 // worktree, already changes. OVERLAP_THRESHOLD=0 leaves it off.
 func (s *TicketSource) WatchPRs(prs OpenPRs) *TicketSource {
@@ -187,9 +187,13 @@ func (s *TicketSource) Claims() ([]loop.StaleClaim, error) {
 }
 
 // HeldBranches maps each branch the ticket loop holds right now — an agent-claimed
-// In Progress ticket's `<branch_prefix>/<slug>` — to the ticket's Key. The PR loop
-// skips those branches: the lease is keyed on the branch, and a ticket mid-run owns
-// its PR's branch (ADR-0019).
+// In Progress ticket's `<branch_prefix>/<slug>`, while its worktree is still
+// checked out — to the ticket's Key. The PR loop skips those branches: the lease is
+// keyed on the branch, and a ticket mid-run owns its PR's branch (ADR-0019),
+// including through an in-stage CI watch. A shipped ticket stays In Progress until
+// its PR merges, but the retrospective reaps its worktree once the PR is open; from
+// then on the branch is free, so the PR loop can fix CI that goes red after the
+// ticket loop moved on (#110).
 func (s *TicketSource) HeldBranches() (map[string]string, error) {
 	claims, err := s.client.ListInProgressClaims()
 	if err != nil {
@@ -197,7 +201,10 @@ func (s *TicketSource) HeldBranches() (map[string]string, error) {
 	}
 	held := make(map[string]string, len(claims))
 	for _, c := range claims {
-		held[s.checkout().Worktree(ticket.Slug(c.Identifier)).Branch()] = c.Identifier
+		wt := s.checkout().Worktree(ticket.Slug(c.Identifier))
+		if wt.Exists() {
+			held[wt.Branch()] = c.Identifier
+		}
 	}
 	return held, nil
 }
@@ -255,7 +262,14 @@ func (p *TicketPipeline) Run(item loop.WorkItem, claim *lease.Lease) stages.Resu
 		// breaker counts it like any other failure to ship.
 		return stages.Result{}
 	}
-	return pipeline.Run(ticketDeps(p.loop, cfg, log, runID, stages.Args{Identifier: item.Key, Lease: claim}))
+	return pipeline.Run(ticketDeps(p.loop, cfg, log, runID, ticketArgs(p.loop, item.Key, claim)))
+}
+
+// ticketArgs are the stage args for one claimed ticket on loop l. A loop without
+// watch_ci leaves the PR's CI to the PR loop, so its review stage returns once the
+// PR is open (#110).
+func ticketArgs(l config.Loop, key string, claim *lease.Lease) stages.Args {
+	return stages.Args{Identifier: key, Lease: claim, LeaveCIToPRLoop: l.LeavesCIToPRLoop()}
 }
 
 // ticketDeps binds the loop's Stages to one ticket through the composition root

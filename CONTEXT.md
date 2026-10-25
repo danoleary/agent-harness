@@ -64,7 +64,7 @@ daemon branches only on the **Disposition** it returns.
 
 **Step**:
 One named unit of a loop's **Pipeline**, from a fixed set the harness implements
-in Go (`config.Step`): `implement`, `review`, `retro` for a tracker **Source**;
+in Go (`config.Step`): `implement`, `review`, `watch_ci`, `retro` for a tracker **Source**;
 `checkout_pr`, `fix`, `gates`, `push_existing`, `watch_ci`, `retro` for open PRs.
 Every Step owns its **Ground truth** check. A Consumer's `[[loops]]` config
 chooses, orders and parameterises Steps and supplies their **Project bodies**, but
@@ -115,17 +115,28 @@ host checks before it pushes and opens the PR. Language-agnostic (`go test ./...
 `dotnet test`, `pnpm check`).
 _Avoid_: check, test (those name specific gates, not the concept).
 
+**Repo guard**:
+A `scripts/check-*.sh` lint this repo's own `make check` runs before its tests:
+daemon/remote exec only through `internal/proc` with a timeout (`check-exec`),
+bash-3.2-safe scripts (`check-bash3`), `-buildvcs=false` on Makefile go commands
+(`check-buildvcs`), unique, resolvable ADR numbers (`check-adr`), CI running
+`make check` whole (`check-ci`). Listed, with what each one
+rejects, in `.claude/skills/tdd/SKILL.md` — read it before writing code, not after
+the gate reds.
+
 **Ground truth**:
 A host-side, tracker-agnostic git assertion (worktree exists, commits ahead of
 base, clean tree) the harness verifies independently of what the sandbox reported.
 
 **Disposition**:
 A run's one terminal verdict — **Shipped**, **RecommendClose**, **CapAborted**,
-**PreflightAborted** or **NoPR** (`stages.Disposition`). Exactly one holds per
-stage and, folded across the three, per ticket; it is the only thing the loop
-branches on and the breaker counts. Distinct from a Stage's **OK**, which asks
-only "did this stage do its job?" — a Shipped run can be not-OK (CI red after the
-auto-fix budget) and an OK implementation is still NoPR (it never pushes).
+**PreflightAborted**, **Interrupted** or **NoPR** (`stages.Disposition`). Exactly
+one holds per stage and, folded across the three, per ticket; it is the only thing
+the loop branches on and the breaker counts. Distinct from a Stage's **OK**, which
+asks only "did this stage do its job?" — a Shipped run can be not-OK (CI red after
+the auto-fix budget) and an OK implementation is still NoPR (it never pushes).
+**Interrupted** means a stop signal killed a session from outside (exit 128+N): the
+run was cut short, not broken, so it is never called a failure (ADR-0030).
 _Avoid_: outcome, signal, status.
 
 **Landing**:

@@ -631,6 +631,29 @@ func TestReviewDoesNotRetryWhenGatesRed(t *testing.T) {
 	}
 }
 
+// #111: a red gate over the review's own commit is re-launched once; a dirty tree
+// or a blocked verdict is not, since neither would ship however the gate turns out.
+func TestReviewGateRetryOnlyForARedGateOverTheSessionsOwnCleanCommit(t *testing.T) {
+	red := session.Outcome{ExitCode: 1}
+	cases := []struct {
+		name             string
+		gate, out        session.Outcome
+		committed, clean bool
+		want             bool
+	}{
+		{"red over its own clean commit", red, reviewed, true, true, true},
+		{"green gate", session.Outcome{}, reviewed, true, true, false},
+		{"red over the handoff", red, reviewed, false, true, false},
+		{"dirty tree", red, reviewed, true, false, false},
+		{"blocked verdict", red, session.Outcome{ReviewVerdictEmitted: true, ReviewBlocked: true}, true, true, false},
+	}
+	for _, c := range cases {
+		if got := ReviewGateRetry(c.gate, c.out, c.committed, c.clean); got != c.want {
+			t.Errorf("%s: ReviewGateRetry = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
 // BEH-581: after a sandboxed pre-push conflict-resolution session, RebaseResolution
 // decides whether the branch is cleanly rebased and ready to re-gate + push —
 // judged entirely on git ground truth (session exit, worktree clean, branch
