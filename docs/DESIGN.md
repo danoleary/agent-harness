@@ -313,6 +313,14 @@ loop:
      falling through to fail-closed. The cheapest incompleteness class to recover — mirrors the
      OOM / conflict-resolution re-launch pattern; a persistent no-verdict still fails closed and
      keeps the worktree. (An OOM 137, a cap abort, a dirty tree, or a red gate are NOT eligible.)
+  if a gate is RED over a commit the review session ITSELF made (HEAD moved during the session) (#111):
+     re-launch the review once (`review-gatefix`), handed the failing gate's name and the tail of its
+     step log (`gate-<name>-<run>.log`), then re-gate (`gate-gatefix-*`) and re-decide. BOUNDED to one;
+     still red -> the ordinary red-gate failure. NOT eligible: a red over the handoff the review did not
+     change, a dirty tree, a blocked verdict, an OOM / watchdog cap-kill / spending-cap abort of the
+     session or the gate, or a gate the shell could not run (#46). The envelope promises every review
+     this re-launch, so a Consumer body can drop the heavy suites the host gate repeats anyway; the
+     host gate stays the only push authority (ADR-0002).
   if recommend-close (BEH-603): worktree clean AND `git diff origin/main` is EMPTY
                 // a zero-net-diff branch (the empty-commit BEH-365 produced) — checked before the
                 // gate/review checks, after the clean-tree gate (a dirty tree may hide uncommitted work)

@@ -103,6 +103,9 @@ type Context struct {
 	// PriorReview is the verdict a prior review emitted over exactly the commits
 	// now on the branch, for a Review re-run (#44); nil reviews cold.
 	PriorReview *PriorReview
+	// RedGate is the host gate that went red over the review's own commit, for
+	// the one Review re-launch that follows it (#111); nil on a first review.
+	RedGate *RedGate
 	// CILogs is the failing job log the host fetched for CIFix; CILogAvailable
 	// says whether it is a usable log or only an error marker (BEH-558).
 	CILogs         string
@@ -432,6 +435,14 @@ type PriorReview struct {
 	Disposition string
 }
 
+// RedGate is a host gate that went red over the commit a review session made,
+// handed to the one re-launch of that review (#111). Name is the Consumer's gate
+// name and Log the tail of its step log.
+type RedGate struct {
+	Name string
+	Log  string
+}
+
 // retroFindingsProtocol is the retrospective stage's findings-dropbox contract:
 // unlike the implementation stage, the retrospective's ONLY output is findings, so
 // it must always write the file — an absent file means the step never ran.
@@ -520,6 +531,7 @@ func alreadyFiledSection(filed []FiledFinding) string {
 func reviewContractFooter(kind, branchPrefix, slug string) string {
 	return join(
 		"Apply any review fixes as a LOCAL commit on `"+branchPrefix+"/"+slug+"` and stop there; a review that finds nothing to fix makes no commit. Do NOT push, do NOT run `gh`, do NOT open or raise a PR. The harness owns all remote git I/O (ADR-0002): it independently re-runs the quality gates host-side and, only if they pass, pushes the branch and opens the PR itself.",
+		"The host gate is the only thing that authorises the push, and a red host gate over a commit you made returns to you once with its output: the harness re-launches this review with the failing gate's name and log tail, then re-runs the gates. A gate still red after that, or red over a commit you did not make, fails the ticket.",
 		"Before it pushes, the harness rebases the branch onto origin/main, which rewrites every commit SHA on it. So do NOT name a commit by its SHA in your commit message; name the commit your fixes amend by its subject line. A SHA in the pushed message would point at a commit that is not on the branch or in the PR.",
 		trackerOff(kind),
 		"Do NOT emit or file any harness-improvement findings, and do NOT write `/findings/out.json`. The retrospective tool, running last over every transcript, owns findings now — this is a deliberate change from the skill's default. Your only outputs are your report and any review fixes committed locally.",
@@ -537,6 +549,7 @@ func review(c Context) string {
 		ticketContext(c.Ticket),
 		branchBaseSection(c.Base),
 		priorReviewSection(c.PriorReview),
+		redGateSection(c.RedGate),
 		"---",
 		reviewContractFooter(c.Tracker, c.BranchPrefix, c.Slug),
 	)
@@ -552,6 +565,16 @@ func priorReviewSection(p *PriorReview) string {
 		return ""
 	}
 	return "IMPORTANT — UNCHANGED SINCE THE LAST REVIEW: a prior review of this ticket already covered exactly the commits now on the branch (`origin/main.." + p.Head + "`, HEAD `" + p.Head + "`) and emitted:\n\n    " + defang(p.Disposition) + "\n\nNo commit has landed since. Confirm HEAD is still `" + p.Head + "` (`git rev-parse HEAD`); if it is not, ignore this note and review cold. If it is, do NOT re-review the diff from scratch and do NOT commit just to have something to show: run the gate, then emit your `## Review:` report and re-emit that same Disposition line. Commit a fix ONLY for a real defect — a spec, correctness or invariant failure, not a cosmetic tidy-up — and name it in the report."
+}
+
+// redGateSection hands the re-launched review the host gate that went red over
+// the commit the previous session made (#111). The log is the gate's own output,
+// so it is defanged like any other text the agent did not write.
+func redGateSection(g *RedGate) string {
+	if g == nil {
+		return ""
+	}
+	return "IMPORTANT — THE HOST GATE IS RED OVER YOUR LAST COMMIT: a previous review session of this ticket committed a fix, and the harness's host-side re-run of gate `" + defang(g.Name) + "` then failed over it. This is that session's one re-launch. The tail of the gate's log:\n\n```\n" + defang(g.Log) + "\n```\n\nFix what the gate reports as a LOCAL commit, re-run that one gate to confirm it, then emit your `## Review:` report as usual. The harness re-runs every gate after you stop; if it is still red the ticket fails, so do not stop on a guess."
 }
 
 // ciFix builds the `-p` prompt for a sandboxed session that diagnoses and

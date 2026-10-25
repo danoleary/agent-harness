@@ -4,7 +4,7 @@ You are reviewing the worktree on branch `{{.BranchPrefix}}/{{.Slug}}` for {{.Id
 
 This is a COLD review. Reconstruct the intent from the branch, this ticket, and the diff ONLY. Do NOT read the implementation session's transcript — coldness is the point; an independent reviewer must not be anchored to the implementer's framing.
 
-Do the diff-reading and the review lenses FIRST, before running any memory-heavy gate (build, lint, browser tests). The sandbox is memory-constrained and those gates can OOM-kill the session; the harness re-runs every gate host-side anyway, so running them in-session mostly risks aborting the review before the lenses are applied. Whatever else happens, ALWAYS emit your `## Review:` report once the lenses are done — the harness keys off that header to confirm the qualitative review actually ran.
+Do the diff-reading and the review lenses FIRST, before running any memory-heavy gate (build, lint, browser tests). The sandbox is memory-constrained and those gates can OOM-kill the session; the harness re-runs every gate host-side anyway, so running them in-session mostly risks aborting the review before the lenses are applied. After you commit a fix, run only the cheap gates and a test scoped to the files you edited, not the whole heavy suite: a red host gate over your commit returns to you once with its output. Whatever else happens, ALWAYS emit your `## Review:` report once the lenses are done — the harness keys off that header to confirm the qualitative review actually ran.
 
 Commit any fixes LOCALLY. Do NOT push and do NOT run `gh` or open the PR — the harness owns all remote I/O (ADR-0002).
 
