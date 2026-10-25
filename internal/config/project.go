@@ -102,6 +102,12 @@ type ProjectConfig struct {
 	// harness-audience findings go. Default (empty/`off`) keeps them in the local
 	// artifact dir; `github` files them to the configured public harness repo.
 	Feedback FeedbackConfig `toml:"feedback"`
+	// Loops are the Consumer's [[loops]] (ADR-0019): each a Source kind, an ordered
+	// list of Steps and its own limits. Without any, the built-in loops stand
+	// (BuiltInLoops).
+	Loops []LoopConfig `toml:"loops"`
+	// ResolvedLoops are Loops validated, with their prompt bodies read.
+	ResolvedLoops []Loop `toml:"-"`
 
 	// Warnings name the keys and tables in the file that this harness does not
 	// read, each with its file:line:column. They are not errors: a config written
@@ -292,7 +298,11 @@ func LoadProject(checkoutPath string) (ProjectConfig, error) {
 	}
 
 	pc.applyDefaults()
-	if problems := pc.validate(); len(problems) > 0 {
+	problems := pc.validate()
+	loops, loopProblems := resolveLoops(pc.Loops, dir, indexPositions(path, raw))
+	pc.ResolvedLoops = loops
+	problems = append(problems, loopProblems...)
+	if len(problems) > 0 {
 		return ProjectConfig{}, invalidConfigError(path, problems, pc.Warnings)
 	}
 	return pc, nil

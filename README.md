@@ -79,6 +79,16 @@ touch .agent-harness/STOP   # finish the current ticket, then stop
 a foreground run, Ctrl-C once stops after the current ticket; twice kills the
 container now and keeps the worktree.
 
+A second loop, `pr-doctor`, fixes harness PRs (and PRs you label
+`agent-maintained`) that went red on CI or conflict with `main` after review.
+`--dry-run` prints the loop and what it would do; `--list` names every loop. A
+project can change these loops or add its own as `[[loops]]` in `config.toml`. See
+[CONSUMER.md](docs/CONSUMER.md#loops-agent-harness-loop-name-and-loops-optional):
+
+```bash
+agent-harness loop pr-doctor --dry-run
+```
+
 `agent-harness --help` lists every command. Each one takes `--verbose` (stream
 the agent transcript) and `--dry-run`. A ticket's transcripts and event stream
 are in `.agent-harness/logs/<KEY>/`.

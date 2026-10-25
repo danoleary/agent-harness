@@ -45,6 +45,15 @@ func (c Checkout) Worktree(slug string) Worktree {
 	}
 }
 
+// WorktreeOn names a worktree for a branch the harness did not name — an open PR's
+// head branch, which the PR loop fixes in place (ADR-0019). The path is keyed by
+// slug like every other worktree; only the branch differs from [Checkout.Worktree].
+func (c Checkout) WorktreeOn(slug, branch string) Worktree {
+	wt := c.Worktree(slug)
+	wt.branch = branch
+	return wt
+}
+
 // Worktree is one ticket's worktree and the canonical branch checked out in it:
 // the harness's central noun. It holds the three strings every git operation in
 // the harness needs — the Consumer checkout it hangs off, the branch
@@ -110,6 +119,29 @@ func (w Worktree) Create() error {
 		base = "refs/remotes/origin/main"
 	}
 	return w.run("git", "-C", w.repo, "worktree", "add", "-b", w.branch, w.path, base)
+}
+
+// CheckoutRemote checks the worktree out on its branch's tip as origin has it — the
+// PR loop's starting point, where the branch already exists on the remote and the
+// local copy (if any) may be stale. It fetches the branch into its remote-tracking
+// ref (retried against transient blips, like every remote op), drops a worktree a
+// previous run left at the path, and adds the worktree with -B so a local branch of
+// the same name is reset to the fetched tip rather than reused. Dropping the old
+// worktree is not forced: one still holding uncommitted work makes git refuse, and
+// the caller fails rather than discard it.
+func (w Worktree) CheckoutRemote() error {
+	tracking := "refs/remotes/origin/" + w.branch
+	if err := w.withRetry(func() error {
+		return w.run("git", "-C", w.repo, "fetch", "-q", "origin", "+refs/heads/"+w.branch+":"+tracking)
+	}); err != nil {
+		return fmt.Errorf("fetch %s: %w", w.branch, err)
+	}
+	if w.Exists() {
+		if err := w.Remove(); err != nil {
+			return fmt.Errorf("remove the previous worktree at %s: %w", w.path, err)
+		}
+	}
+	return w.run("git", "-C", w.repo, "worktree", "add", "-B", w.branch, w.path, tracking)
 }
 
 // Remove tears down the worktree at `.claude/worktrees/<slug>` from the main

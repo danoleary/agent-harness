@@ -377,7 +377,9 @@ loop:
                        clean              -> done
                        stale-base conflict (main moved after the push) -> auto-rebase + force-with-lease
                          re-push, await CI re-run, re-check (capped); only a genuine CONTENT conflict
-                         is left for a human (BEH-570)
+                         is left for a human (BEH-570) — unless it is a prerequisite PR's merge
+                         (the ticket named an open PR that has since merged): then one conflict-
+                         resolution session + host gate, re-push, re-check before parking (#82)
   else (red):
     one re-run of the failed checks first (flake wash); re-poll
     while still red AND attempts < N AND within wall-clock budget:
@@ -472,6 +474,78 @@ loop:
   // an idle/empty-queue tick is neutral — it neither increments nor resets.
   if 3 consecutive ticket failures -> exit + loud report (circuit breaker)
 ```
+
+## The PR loop
+
+`agent-harness loop pr-doctor` (ADR-0019) is the same daemon over a second Source
+and Pipeline (`internal/prloop`). It fixes open PRs that went red or conflicting
+after their review stage finished. The sketch below is the built-in loop's Steps;
+§Declared loops covers what config can change.
+
+```
+poll (Source github_prs, read-only judgement — also what --dry-run prints):
+  for each open PR:
+    skip fork | base != main | labelled blocked | held (in-progress label)
+    skip unless head on <branch_prefix>/  OR  labelled source.label | PR_LOOP_LABEL  // opt-in
+    skip if the ticket loop holds the branch (an In Progress ticket's slug)  // lease keyed on the branch
+    kind = conflict if mergeable=CONFLICTING/DIRTY, else ci if a check is red, else skip
+    skip if source.when leaves the kind out
+    skip if a marker comment already records (head sha, kind)               // a new push = a new item
+    attempts since the last hand-off >= source.max_attempts | PR_LOOP_MAX_ATTEMPTS
+      -> comment what was tried + label blocked (once), skip
+  first workable PR: add in-progress label (the lease), post the attempt marker
+
+pipeline (one PR, worktree .claude/worktrees/pr-<n> on the PR's head branch):
+  preflight; fetch main; fetch the branch, worktree add -B at origin's tip
+  head != the polled sha -> stop (the next poll sees the new head)
+  post_create (warn-only; 127/126 stops)
+  conflict: RebaseFix session            // internal/fix, shared with review
+    harness branch: replay onto origin/main;  human branch: merge origin/main in
+    verify.RebaseResolution -> all gates -> push --force-with-lease | push
+  both kinds: ci.WatchAndFix to a terminal verdict
+    red check: flake re-run, then CIFix session over the failing logs
+    -> committed fix -> all gates -> push (append-only)
+    a human branch is never reactively rebased (CIWatch.KeepHistory)
+  retrospective over the run's transcripts (if a session ran) -> route findings
+  remove the in-progress label; remove the worktree if clean
+```
+
+It writes its own stream (`logs/loops/pr-doctor/loop.jsonl`, per-PR logs under
+`logs/loops/pr-doctor/pr-<n>/`) and has its own sentinel (`STOP-pr-doctor`), so it
+runs beside the ticket loop. A push is **Shipped** for the breaker, as a ticket's PR
+is; nothing pushed is **NoPR**. The reaper releases an `in-progress` label older
+than the claim TTL (timed by its attempt marker): the reaper runs only between
+this daemon's own items, so one PR loop per checkout.
+
+## Declared loops
+
+`agent-harness loop <name>` runs one loop; `--list` names them and `--dry-run`
+prints one as it resolved (ADR-0019 step c). The two above are built in
+(`config.BuiltInLoops`); `[[loops]]` in `config.toml` replaces one by name or adds
+another:
+
+```
+loop     = name + source{kind, params} + steps[] + limits
+source   : tracker | github_prs{label, when[conflicting, ci_failing], max_attempts}
+steps    : tracker    -> implement, review, [retro]
+           github_prs -> checkout_pr, fix, gates, push_existing, [watch_ci], [retro]
+limits   : poll_interval cap_backoff claim_ttl max_runtime max_consecutive_failures max_items
+           (each overrides its LOOP_* knob for this loop; unset keeps the knob)
+```
+
+Every Step is Go code with its own ground-truth check, so config picks, orders and
+parameterises Steps and supplies prompt bodies (a step's `prompt`, relative to
+`.agent-harness/`), but cannot add one that runs a shell command or an unchecked
+agent. `config.LoadProject` validates the lot with every problem at once, each at
+its `config.toml:line:column` (`config/positions.go` re-walks the file with
+go-toml's own parser to place them): unknown source or step, a step on the wrong
+Source, a step before what it needs (`push_existing` after `gates`, `watch_ci`
+after `push_existing`, `retro` last), a missing required step, `ci_failing`
+without `watch_ci`, and an unreadable or blank prompt file.
+
+Each loop has its own sentinel (`.agent-harness/STOP-<name>`; the plain `STOP`
+stops them all, and a starting loop clears both) and its own logs dir: `logs/`
+for `tickets`, as before, and `logs/loops/<name>/` for every other loop.
 
 ## Key invariants & decisions
 
@@ -664,6 +738,13 @@ A ticket is eligible iff **all** hold:
   `issue_dependencies_summary.total_blocked_by` is non-zero, skips the issue while
   any blocker is open (logging `#69 skipped: blocked by open #66`), and fails the
   selection closed if that read errors.
+  The GitHub adapter also holds a ticket whose **body names a still-open pull
+  request** — a bare `#N` or a same-repo PR URL that resolves to an open PR
+  (logging `#82 skipped: builds on open PR #81`). That prerequisite is an
+  unmerged branch, so working the ticket now would build on a base that changes
+  underneath it when the PR merges. A plain open issue named in prose does not
+  hold it, and neither does a reference that 404s; any other read error fails the
+  selection closed ([ADR-0023](adr/0023-a-ticket-waits-on-an-open-pr-its-body-names.md)).
   The native relation is the way to make a ticket wait on another: it unblocks
   itself when the blocker closes. The `Blocked` label (`tracker.blocked_label`,
   optional) never clears on its own, so it is only for a hold no issue models.
@@ -1210,6 +1291,11 @@ reader over a structured stream rather than a `--tui` flag on the daemon.
   `hostio.Runner.Shell` runs `post_create` and every gate in
   `<image>:branch-<fingerprint>`, built from the worktree's Dockerfile through the
   same `sandbox.Preflight`, when that Dockerfile differs from the checkout's.
+- **A ticket waits on an open PR its body names**
+  ([ADR-0023](adr/0023-a-ticket-waits-on-an-open-pr-its-body-names.md)). GitHub
+  selection skips it; a dispatched one carries `ticket.Prerequisites`, which the
+  implementation envelope names by branch; and the CI watch resolves a conflict
+  with base once when it is that prerequisite's merge.
 - Config: `agent-harness/.env` (`LINEAR_API_KEY`, `ANTHROPIC_API_KEY`,
   `GH_TOKEN`, `PROJECT_PATH`, bot identity, timeouts) + CLI flags (`--verbose`,
   `--once` for a single ticket then exit, label/timeout overrides).
@@ -1226,7 +1312,12 @@ reader over a structured stream rather than a `--tui` flag on the daemon.
   | `LOOP_DISK_RECLAIM_THRESHOLD_BYTES` | `8589934592` (8 GiB) | soft free-disk floor below which the loop prunes merged worktrees between tickets (ADR-0005); `0` disables reclaim |
   | `LOOP_CLAIM_TTL_MS` | `1800000` (30 min) | grace period after which an In Progress claim with no branch/PR is reaped back to Todo (§Stale-claim reaper) |
   | `LOOP_KEEP_AWAKE` | `0` (off) | read by `scripts/loop-start.sh`, not the daemon: `1` attaches `caffeinate -is -w <loop pid>` so macOS idle sleep can't freeze a detached loop; released when the loop exits. `-s` needs AC power; a closed lid still sleeps outside clamshell mode; no `caffeinate` → warn and launch anyway |
-  | `STOP_FILE` | `.agent-harness/STOP` | sentinel path; cleared at clean startup, `touch` to wind down |
+  | `STOP_FILE` | `.agent-harness/STOP` | the sentinel that stops every loop; cleared at clean startup, `touch` to wind down. Each loop also has its own, `.agent-harness/STOP-<name>` |
+  | `PR_LOOP_LABEL` | `agent-maintained` | PR loops: the label that opts a PR whose head is off `branch_prefix` in, unless the loop's `source.label` sets one (ADR-0019) |
+  | `PR_LOOP_MAX_ATTEMPTS` | `3` | PR loops: attempts per PR, unless `source.max_attempts` sets one; past it the loop comments what it tried and labels the PR `blocked` |
+
+  A loop's own `[[loops]]` limits override the `LOOP_*` knobs above for that loop
+  (§Declared loops).
 
   `LOOP_MAX_TICKETS`/`LOOP_MAX_RUNTIME_MS` default to **unlimited** because the loop
   is deliberately long-running (§The loop) — they exist as opt-in insurance for an

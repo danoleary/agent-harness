@@ -166,6 +166,15 @@ type Host struct {
 	// before the hard 5 GiB sandbox preflight floor would refuse a launch (ADR-0005).
 	// It defaults above that floor with headroom; 0 disables reclaim entirely.
 	LoopDiskReclaimThreshold uint64
+
+	// PRLoopLabel is the opt-in label that lets a PR loop (`loop pr-doctor`) work a
+	// PR whose head branch is not on the harness's branch_prefix (ADR-0019), unless
+	// the loop's source.label sets its own. Defaults to "agent-maintained".
+	PRLoopLabel string
+	// PRLoopMaxAttempts is a PR loop's per-PR attempt budget, unless the loop's
+	// source.max_attempts sets its own: past it, the loop comments on the PR with
+	// what it tried and labels it blocked. Defaults to 3.
+	PRLoopMaxAttempts int
 }
 
 // Project is the Consumer's declaration, resolved: the committed
@@ -221,6 +230,9 @@ type Project struct {
 	// bind-mounted checkout's `.agent-harness/prompts/` (ADR-0009). The harness
 	// composes each body inside its non-overridable contract envelope.
 	Prompts PromptBodies
+	// Loops are the Consumer's declared [[loops]], resolved. AllLoops adds the
+	// built-in loops they do not replace.
+	Loops []Loop
 	// Warnings are the project config's non-fatal findings — keys this harness
 	// does not read — for the caller to print (ProjectConfig.Warnings).
 	Warnings []string
@@ -262,6 +274,8 @@ const (
 	defaultLoopMaxRuntime             = time.Duration(0)
 	defaultLoopClaimTTL               = 30 * time.Minute
 	defaultStopFile                   = ProjectDirName + "/STOP"
+	defaultPRLoopLabel                = "agent-maintained"
+	defaultPRLoopMaxAttempts          = 3
 	// 8 GiB: the 5 GiB MinFreeDiskBytes sandbox floor plus headroom, so reclaim fires
 	// before a launch would ever be refused (ADR-0005).
 	defaultLoopDiskReclaimThreshold uint64 = 8 << 30
@@ -504,6 +518,9 @@ func (h *Host) knobs(get Getenv) []knob {
 		bind("LOOP_CLAIM_TTL_MS", &h.LoopClaimTTL, positiveMillis, defaultLoopClaimTTL, strict),
 		bind("LOOP_DISK_RECLAIM_THRESHOLD_BYTES", &h.LoopDiskReclaimThreshold, reclaimBytes, defaultLoopDiskReclaimThreshold, strict),
 		bind("STOP_FILE", &h.StopFile, text, defaultStopFile, strict),
+
+		bind("PR_LOOP_LABEL", &h.PRLoopLabel, text, defaultPRLoopLabel, strict),
+		bind("PR_LOOP_MAX_ATTEMPTS", &h.PRLoopMaxAttempts, positiveCount, defaultPRLoopMaxAttempts, strict),
 	}
 }
 
@@ -558,6 +575,7 @@ func loadProject(get Getenv, checkout, harnessVersion string) (Project, error) {
 		Tracker:               pc.Tracker,
 		Feedback:              pc.Feedback,
 		Prompts:               prompts,
+		Loops:                 pc.ResolvedLoops,
 		Warnings:              pc.Warnings,
 	}, nil
 }

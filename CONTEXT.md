@@ -22,8 +22,10 @@ _Avoid_: client, host (host = the machine running the harness, a different thing
 
 **Stage**:
 One of the three single-role Claude sessions run per ticket — **Implementation**,
-**Review**, **Retrospective** — each in its own ephemeral sandbox.
-_Avoid_: step, phase, job (job is overloaded; "stage" is the unit).
+**Review**, **Retrospective** — each in its own ephemeral sandbox. In a loop's
+config each Stage is a **Step** (`implement`, `review`, `retro`).
+_Avoid_: phase, job (job is overloaded; "stage" is the unit). "Step" names the
+config-level unit, which is wider: a PR loop has Steps that are not Stages.
 
 **Key**:
 The tracker-agnostic ticket identifier (`BEH-123`, `PROJ-123`, `#123`) the harness
@@ -50,12 +52,37 @@ _Avoid_: queue, feed (a queue is one kind of Source).
 **Work item**:
 One unit of work a **Source** yields (`loop.WorkItem`): a **Key** and the branch
 the **Pipeline** will push. For a ticket, the Key is the tracker Key and the
-branch is `<branch_prefix>/<slug>`.
+branch is `<branch_prefix>/<slug>`. For an open PR (the **PR loop**), the Key is
+`PR-<number>` and the branch is the PR's head branch.
 _Avoid_: job, task, ticket (a ticket is one kind of Work item).
 
 **Pipeline** (of a loop):
-What a loop does to one **Work item** (`loop.Pipeline`): for a ticket, the three
-**Stages**. The daemon branches only on the **Disposition** it returns.
+What a loop does to one **Work item** (`loop.Pipeline`): its **Steps**, in order.
+For a ticket, the three **Stages**; for a PR, one fix (a conflict resolution or a
+CI fix), then the **Gates**, a push to the existing branch, and the CI watch. The
+daemon branches only on the **Disposition** it returns.
+
+**Step**:
+One named unit of a loop's **Pipeline**, from a fixed set the harness implements
+in Go (`config.Step`): `implement`, `review`, `retro` for a tracker **Source**;
+`checkout_pr`, `fix`, `gates`, `push_existing`, `watch_ci`, `retro` for open PRs.
+Every Step owns its **Ground truth** check. A Consumer's `[[loops]]` config
+chooses, orders and parameterises Steps and supplies their **Project bodies**, but
+cannot add one (ADR-0019).
+_Avoid_: action, task, hook (a hook is `post_create`, which a Step may run).
+
+**Loop** (named):
+A **Source**, its **Steps** and its own limits, run by one daemon under a name
+(`agent-harness loop <name>`): the built-in `tickets` (the default) and
+`pr-doctor`, or a `[[loops]]` entry in `config.toml`. Each has its own STOP
+sentinel (`STOP-<name>`) and its own `loop.jsonl`.
+
+**PR loop**:
+A loop whose **Source** is `github_prs` (ADR-0019); the built-in one is
+`pr-doctor`. The Source is the open PRs that conflict with `main` or have red CI
+and that opted in: on the harness's `branch_prefix`, or carrying the opt-in label.
+Its **Lease** is the `in-progress` label on the PR, keyed on the branch.
+_Avoid_: babysitter. ("pr-doctor" is the built-in loop's name, not the concept.)
 
 ### Prompts
 
@@ -157,5 +184,8 @@ findings** are filed as issues (default off; ADR-0011).
   repo being worked. ADR-0001 used "host" only in the first sense.
 - "job" was used for both a Stage and the whole pipeline. Resolved: **Stage** is
   the single-role unit; the three together are the ticket loop's **pipeline**.
+- "step" was avoided as a synonym for **Stage**. Resolved (ADR-0019): a **Step** is
+  the config-level unit of any loop's Pipeline; the three Stages are the ticket
+  loop's Steps, and a PR loop has Steps that are not Stages.
 - "Linear" was used as a synonym for the issue tracker. Resolved: Linear is one
   **Tracker** adapter; the concept is **Tracker** (ADR-0010).

@@ -1,6 +1,6 @@
 # ADR-0019: A loop is a Source and a Pipeline
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-10-24
 
 ## Context
@@ -142,3 +142,88 @@ Pipeline  : Run(WorkItem, Lease) stages.Result
 - Sequencing, tracked as issues: (a) split `loop.Host` into Source, Pipeline and
   daemon, with no behaviour change; (b) the `github_prs` Source and PR-fixer
   Pipeline, wired by hand; (c) `[[loops]]` config and `agent-harness loop <name>`.
+
+## Step (b), as built
+
+The PR loop shipped as `agent-harness loop --prs` (`internal/prloop`), with the
+review stage's fix machinery moved to `internal/fix`: the gate re-run, the CIFix
+callback and the RebaseFix resolution. Building it settled these points the
+decision above left open:
+
+- **What was tried is recorded in hidden marker comments on the PR.** Each attempt
+  posts one, naming the head SHA and the failure kind. An existing marker for the
+  same SHA and kind means the PR is skipped. The hand-off comment carries a marker
+  too, and only attempts after the latest hand-off count against the budget. So a
+  human who removes `blocked` grants a fresh budget.
+- **Red CI goes through `ci.WatchAndFix` from the start.** The watch already
+  fetches the failing logs, re-runs a flake once, and pushes only after `Fix`
+  succeeds. The PR loop's `Fix` runs the CIFix session and then every gate, and
+  refuses the fix when any gate is red. A flake that the re-run washes out
+  launches no session and pushes nothing.
+- **A human's branch is never rewritten, including by the CI watch.** Decision 4
+  applies to the watch's reactive rebase as well: `CIWatch.KeepHistory` turns a
+  green-but-conflicting human PR into a conflict outcome instead of a
+  force-pushed replay.
+- **Only PRs into `main` qualify.** The harness lands on one base everywhere else,
+  and the ground truth (`origin/main` an ancestor of the tip) assumes it.
+- **The ticket loop's hold on a branch** is read from the tracker's In Progress
+  claims, each mapped to `<branch_prefix>/<slug>`. A PR's own lease is the
+  `in-progress` label. With GitHub Issues as the tracker, the loop uses that
+  tracker's label names, and the issue reaper now skips PRs so it cannot release a
+  PR lease.
+- **The daemon's breadcrumbs are not posted on PRs.** They are worded for tickets
+  ("released back to Todo"), so `Source.Comment` is a no-op for PRs. The marker and
+  hand-off comments are the record.
+- **A PR lease left by a dead daemon is reaped** once it is older than the claim
+  TTL, timed by the PR's latest attempt marker. The reaper runs only between a
+  daemon's own items, so this is safe with one PR loop per checkout.
+- **Findings.** The retrospective runs over the run's transcripts when a session
+  ran. Project findings file only when the tracker is GitHub Issues, because a PR
+  names no tracker team. Harness findings are always routed.
+- **Knobs are environment variables until step (c):** `PR_LOOP_LABEL`,
+  `PR_LOOP_MAX_ATTEMPTS` and `PR_LOOP_STOP_FILE`. They become `[[loops]]` source
+  parameters there.
+
+## Step (c), as built
+
+`[[loops]]` shipped in `config.toml` (`internal/config/loops.go`), and `agent-harness
+loop [<name>] [--list] [--dry-run]` replaced `--prs`, which is now refused with its
+replacement rather than ignored. Building it settled these points:
+
+- **Two loops are built in, and config replaces them by name.** `tickets` (source
+  `tracker`, steps `implement, review, retro`) is what a bare `agent-harness loop`
+  runs, and `pr-doctor` is the step (b) loop. A `[[loops]]` entry with either name
+  replaces it; any other name adds a loop. Each built-in written out as an entry
+  resolves to the same `config.Loop` the hard-coded wiring runs, and that is
+  tested.
+- **What config can change is what the two loops differ in.** A Source's
+  parameters (`github_prs`: `label`, `when`, `max_attempts`; `tracker`: none, as
+  `[tracker]` already describes the queue), which optional Steps run (`retro`,
+  and `watch_ci` on a PR loop), a Step's prompt body, and the daemon limits.
+  Each limit and Source parameter overrides its env knob for that loop only, and
+  an unset one keeps the knob. `PR_LOOP_STOP_FILE` is gone: the sentinel follows
+  the name.
+- **The Step order is a fixed chain, checked at load.** Each Step names the one it
+  must follow (`review` after `implement`; `fix` after `checkout_pr`; `gates` after
+  `fix`; `push_existing` after `gates`; `watch_ci` after `push_existing`), `retro`
+  must be last, and each Source has the Steps it cannot run without (`implement`,
+  `review`; `checkout_pr`, `fix`, `gates`, `push_existing`). Steps run only on
+  their own Source. Every problem is reported at once, at its `line:column`, which
+  the loader gets by walking the file again with go-toml's own parser.
+- **A red check is fixed inside `watch_ci`.** The CIFix session runs inside the CI
+  watch, as in step (b), so `fix` is the conflict resolution and `when =
+  ["ci_failing"]` needs `watch_ci`. The `fix` step's prompt body leads both the
+  RebaseFix and the CIFix prompts, ahead of the envelope (ADR-0009). Without one,
+  those prompts are unchanged.
+- **The plain STOP now stops every loop**, which reverses the Consequences line
+  above that kept it the ticket loop's. Each loop also has its own
+  `.agent-harness/STOP-<name>`, and a starting loop clears both. A plain STOP that
+  stopped one loop, while another ignored it, would surprise an operator more than
+  one that stops them all.
+- **Logs.** `tickets` keeps `.agent-harness/logs/`, so the viewer's default
+  stream is unchanged. Every other loop logs under `logs/loops/<name>/`, so a loop
+  name cannot collide with a ticket's log dir.
+- **`--dry-run` prints the resolved loop** for any loop: its Source with the
+  parameters in force, its Steps with what each checks, its limits, sentinel and
+  stream. A PR loop also prints the PR plan. A ticket loop does not plan a ticket,
+  because selecting one claims it; `pipeline --next --dry-run` already plans one.

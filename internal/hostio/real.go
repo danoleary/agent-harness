@@ -45,11 +45,24 @@ type Real struct {
 	client    tracker.Tracker
 	clientErr error
 	resolved  bool
+
+	// onSlug / onBranch bind one slug to a branch the harness did not name (an open
+	// PR's head branch, ADR-0019); every other slug keeps `<branch_prefix>/<slug>`.
+	onSlug, onBranch string
 }
 
 // New builds the production Host for one run of one ticket.
 func New(cfg config.Config, log *runlog.Logger, runID string, verbose bool) *Real {
 	return &Real{Runner: NewRunner(cfg, log, runID, verbose), cfg: cfg, log: log}
+}
+
+// NewOnBranch builds the production Host for one run over a branch the harness did
+// not name: the PR loop fixes an open PR's head branch in place, so slug's
+// worktree carries that branch rather than `<branch_prefix>/<slug>` (ADR-0019).
+func NewOnBranch(cfg config.Config, log *runlog.Logger, runID string, verbose bool, slug, branch string) *Real {
+	h := New(cfg, log, runID, verbose)
+	h.onSlug, h.onBranch = slug, branch
+	return h
 }
 
 // compile-time proof that the production adapter really does satisfy the port.
@@ -181,7 +194,12 @@ func (h *Real) checkout() gitpkg.Checkout {
 }
 
 // wt is the ticket's worktree: the harness's central noun, minted on demand.
-func (h *Real) wt(slug string) gitpkg.Worktree { return h.checkout().Worktree(slug) }
+func (h *Real) wt(slug string) gitpkg.Worktree {
+	if h.onBranch != "" && slug == h.onSlug {
+		return h.checkout().WorktreeOn(slug, h.onBranch)
+	}
+	return h.checkout().Worktree(slug)
+}
 
 func (h *Real) WorktreePath(slug string) string { return h.wt(slug).Path() }
 func (h *Real) BranchName(slug string) string   { return h.wt(slug).Branch() }
@@ -192,6 +210,8 @@ func (h *Real) BranchName(slug string) string   { return h.wt(slug).Branch() }
 func (h *Real) WorktreeExists(slug string) bool { return h.wt(slug).Exists() }
 
 func (h *Real) CreateWorktree(slug string) error { return h.wt(slug).Create() }
+
+func (h *Real) CheckoutBranch(slug string) error { return h.wt(slug).CheckoutRemote() }
 
 func (h *Real) RemoveWorktree(slug string) error { return h.wt(slug).Remove() }
 
@@ -337,7 +357,12 @@ func (h *Real) WatchCI(w CIWatch) ci.Outcome {
 		h.cfg.ProjectPath, h.BranchName(w.Slug), cfg, ciGhTimeout,
 		w.Fix,
 		func() error { return h.Push(w.Slug) },
-		func() (ci.RebaseVerdict, error) { return h.rebaseOntoBase(w.Slug) },
+		func() (ci.RebaseVerdict, error) {
+			if w.KeepHistory {
+				return ci.RebaseConflict, nil
+			}
+			return h.rebaseOntoBase(w.Slug, w.Resolve)
+		},
 		func() bool { return h.BranchDiffEmpty(w.Slug) },
 		func() bool { return h.BranchDocsOnly(w.Slug) },
 	)
@@ -350,16 +375,24 @@ func (h *Real) WatchCI(w CIWatch) ci.Outcome {
 // rebase, so we must replay onto the truly-latest base — replays the worktree
 // through the same [ship.Replay] the pre-push landing uses (so the disjoint-history
 // guard is shared), and on a clean replay force-with-lease re-pushes the rewritten
-// branch. A content conflict or a disjoint history returns RebaseConflict with the
-// branch left on its original tip, for a human; any fetch/push failure is surfaced
-// as an error the watch reports. Unlike a landing, a failed fetch stops here: a
+// branch. A content conflict is offered to resolve (CIWatch.Resolve, #82; nil
+// declines): a resolution it reports committed and gate-green is re-pushed like a
+// clean replay. A declined resolution, or a disjoint history (never offered, as in
+// a landing), returns RebaseConflict for a human; any fetch/push failure is
+// surfaced as an error the watch reports. Unlike a landing, a failed fetch stops here: a
 // branch replayed onto a base we could not refresh would still read CONFLICTING.
 // Keeping it here is what lets internal/ci stay free of internal/git (BEH-570).
-func (h *Real) rebaseOntoBase(slug string) (ci.RebaseVerdict, error) {
+func (h *Real) rebaseOntoBase(slug string, resolve func() bool) (ci.RebaseVerdict, error) {
 	if err := h.FetchMain(); err != nil {
 		return ci.RebaseConflict, fmt.Errorf("fetch %s before rebase: %w", baseRef, err)
 	}
-	if ship.Replay(h, slug) != ship.ReplayClean {
+	switch ship.Replay(h, slug) {
+	case ship.ReplayClean:
+	case ship.ReplayConflict:
+		if resolve == nil || !resolve() {
+			return ci.RebaseConflict, nil
+		}
+	default:
 		return ci.RebaseConflict, nil
 	}
 	if err := h.PushForceWithLease(slug); err != nil {

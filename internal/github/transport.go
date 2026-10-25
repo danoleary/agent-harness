@@ -3,10 +3,14 @@ package github
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
+	"time"
+
+	"github.com/danoleary/agent-harness/internal/proc"
 )
 
 const githubAPIBase = "https://api.github.com"
@@ -54,6 +58,10 @@ func NewTransport(token string) Transport {
 	}
 }
 
+// errNotFound marks a 404, so a caller can tell a reference that no longer
+// resolves from a read that failed.
+var errNotFound = errors.New("not found")
+
 // httpError renders a non-2xx response as ONE line: GitHub's own `message` when
 // the body is its JSON error shape, else the body with its newlines folded. The
 // raw pretty-printed body used to spill over five log lines, and a 401 in the loop
@@ -69,6 +77,9 @@ func httpError(status int, payload []byte) error {
 	if status == http.StatusUnauthorized {
 		return fmt.Errorf("GitHub HTTP %d: %s — GH_TOKEN was rejected (expired or revoked?)", status, msg)
 	}
+	if status == http.StatusNotFound {
+		return fmt.Errorf("GitHub HTTP %d: %s: %w", status, msg, errNotFound)
+	}
 	return fmt.Errorf("GitHub HTTP %d: %s", status, msg)
 }
 
@@ -80,4 +91,37 @@ func CheckToken(tr Transport) error {
 		return fmt.Errorf("startup GitHub check: %w; a replacement must be a classic PAT with `repo` and `workflow` scopes", err)
 	}
 	return nil
+}
+
+// ghAPITimeout bounds one `gh api` call, so a stalled network or a blocking gh auth
+// prompt can never hang the PR loop's poll (the BEH-386 hang class).
+const ghAPITimeout = 2 * time.Minute
+
+// NewGhTransport is the GitHub REST transport over `gh api`, run in the Consumer's
+// checkout (dir). gh fills the `{owner}`/`{repo}` placeholders in a path from that
+// checkout's origin, so the PR loop ([Pulls]) needs no repo setting: it works the
+// repository the harness already pushes to, with the GH_TOKEN gh reads from the
+// host environment (ADR-0002). Each call is bounded (internal/proc). Kept thin and
+// out of the unit suite, like [NewTransport].
+func NewGhTransport(dir string) Transport {
+	return func(method, path string, body any) (json.RawMessage, error) {
+		args := []string{"api", "--method", method, strings.TrimPrefix(path, "/")}
+		var stdin []byte
+		if body != nil {
+			b, err := json.Marshal(body)
+			if err != nil {
+				return nil, err
+			}
+			args = append(args, "--input", "-")
+			stdin = b
+		}
+		out, _, err := proc.OutputInDirWithInput(ghAPITimeout, dir, stdin, "gh", args...)
+		if err != nil {
+			return nil, fmt.Errorf("gh api %s %s: %w", method, path, err)
+		}
+		if len(bytes.TrimSpace(out)) == 0 {
+			return json.RawMessage("null"), nil
+		}
+		return out, nil
+	}
 }

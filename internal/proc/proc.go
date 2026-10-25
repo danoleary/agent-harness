@@ -57,10 +57,19 @@ func Output(timeout time.Duration, name string, args ...string) (stdout, stderr 
 // target repo from the checkout they run in — `gh pr checks`, `gh run view
 // --log-failed`, `gh run rerun` all read the herd checkout, same as createPR.
 func OutputInDir(timeout time.Duration, dir, name string, args ...string) (stdout, stderr []byte, err error) {
+	return OutputInDirWithInput(timeout, dir, nil, name, args...)
+}
+
+// OutputInDirWithInput is OutputInDir with stdin fed to the command (nil feeds
+// nothing). Used for `gh api --input -`, which reads its request body from stdin.
+func OutputInDirWithInput(timeout time.Duration, dir string, stdin []byte, name string, args ...string) (stdout, stderr []byte, err error) {
 	ctx, cancel := withTimeout(timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = dir
+	if stdin != nil {
+		cmd.Stdin = bytes.NewReader(stdin)
+	}
 	var out, errBuf bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &errBuf

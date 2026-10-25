@@ -59,9 +59,12 @@ type Daemon struct {
 	// no credential of its own.
 	checkSource func() error
 
-	// stopFile is the absolute path of the STOP sentinel: one of the daemon's two
-	// stop signals, and the only one an operator can raise from another shell.
-	stopFile string
+	// stopFile is the absolute path of the plain STOP sentinel, which stops every
+	// loop, and loopStopFile the loop's own (STOP-<name>). A sentinel is one of
+	// the daemon's two stop signals, and the only one an operator can raise from
+	// another shell.
+	stopFile     string
+	loopStopFile string
 	// sigStop is the other: flipped by the first SIGINT. An atomic.Bool is the seam
 	// between the async signal goroutine and the synchronous StopRequested check.
 	sigStop atomic.Bool
@@ -69,34 +72,39 @@ type Daemon struct {
 
 var _ loop.Host = (*Daemon)(nil)
 
-// NewDaemon builds the daemon's host. checkSource is the Source's startup access
-// probe, which CheckAccess runs after the GH_TOKEN check. cfg.StopFile is resolved
-// here, once: a relative override hangs off the Consumer checkout (so the default
-// ".agent-harness/STOP" lands where CONSUMER.md documents it), an absolute one is
-// taken as given.
-func NewDaemon(cfg config.Config, checkSource func() error) *Daemon {
-	stopFile := cfg.StopFile
-	if !filepath.IsAbs(stopFile) {
-		stopFile = filepath.Join(cfg.ProjectPath, stopFile)
+// NewDaemon builds the host for loop l. checkSource is the Source's startup
+// access probe, which CheckAccess runs after the GH_TOKEN check. The sentinels are
+// resolved here, once: a relative path hangs off the Consumer checkout (so the
+// default ".agent-harness/STOP" lands where CONSUMER.md documents it), an absolute
+// STOP_FILE is taken as given.
+func NewDaemon(cfg config.Config, l config.Loop, checkSource func() error) *Daemon {
+	resolve := func(path string) string {
+		if filepath.IsAbs(path) {
+			return path
+		}
+		return filepath.Join(cfg.ProjectPath, path)
 	}
 	return &Daemon{
-		cfg:         cfg,
-		checkToken:  func() error { return github.CheckToken(github.NewTransport(cfg.GitHubToken)) },
-		checkSource: checkSource,
-		stopFile:    stopFile,
+		cfg:          cfg,
+		checkToken:   func() error { return github.CheckToken(github.NewTransport(cfg.GitHubToken)) },
+		checkSource:  checkSource,
+		stopFile:     resolve(cfg.StopFile),
+		loopStopFile: resolve(l.StopFile()),
 	}
 }
 
 // --- stop control -----------------------------------------------------------
 
-// ClearStopFile deletes the sentinel, treating an already-absent file as success —
-// the startup clear must not fail merely because there was nothing to clear.
+// ClearStopFile deletes both sentinels, treating an already-absent file as
+// success — the startup clear must not fail merely because there was nothing to
+// clear.
 func (h *Daemon) ClearStopFile() error {
-	err := os.Remove(h.stopFile)
-	if err != nil && os.IsNotExist(err) {
-		return nil
+	for _, path := range []string{h.stopFile, h.loopStopFile} {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return err
+		}
 	}
-	return err
+	return nil
 }
 
 // StopRequested folds the two stop signals into one predicate (DESIGN.md "Two
@@ -107,16 +115,23 @@ func (h *Daemon) StopRequested() bool {
 	if h.sigStop.Load() {
 		return true
 	}
-	_, err := os.Stat(h.stopFile)
-	return err == nil || !os.IsNotExist(err)
+	for _, path := range []string{h.stopFile, h.loopStopFile} {
+		if _, err := os.Stat(path); err == nil || !os.IsNotExist(err) {
+			return true
+		}
+	}
+	return false
 }
 
 // RequestStop raises the in-process stop signal. The SIGINT handler calls it; the
 // loop observes it at its next between-item (or between-tick) checkpoint.
 func (h *Daemon) RequestStop() { h.sigStop.Store(true) }
 
-// StopFile is where the sentinel lives, for the entrypoint's own narration.
+// StopFile is where the plain sentinel lives, which stops every loop.
 func (h *Daemon) StopFile() string { return h.stopFile }
+
+// LoopStopFile is where this loop's own sentinel lives.
+func (h *Daemon) LoopStopFile() string { return h.loopStopFile }
 
 // --- startup -----------------------------------------------------------------
 

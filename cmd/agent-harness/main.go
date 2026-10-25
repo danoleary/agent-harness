@@ -59,7 +59,7 @@ var commands = []command{
 	{Name: "init", Args: "[--yes] [--force]", Summary: "scaffold this project's .agent-harness/ directory", Builtin: initMain},
 	{Name: doctorCommand, Args: "[--offline]", Summary: "check the whole setup; print a fix for every problem"},
 	{Name: "start", File: "loop-start.sh", Summary: "start the loop as a detached daemon (logs to loop.log)"},
-	{Name: "loop", File: "loop", Summary: "work the whole ready queue in the foreground until stopped"},
+	{Name: "loop", File: "loop", Args: "[<name>] [--list] [--dry-run]", Summary: "run a loop until stopped: the ready queue by default, or pr-doctor, or a [[loops]] entry"},
 	{Name: "watch", File: "watch", Args: "[LOGFILE]", Summary: "live, read-only view of the running loop"},
 	{Name: "pipeline", File: "pipeline", Args: "<TICKET|--next>", Summary: "one ticket, start to finish, then exit"},
 	{Name: "implementation", File: "implementation", Args: "<TICKET>", Summary: "stage 1 alone: /tdd into a worktree + commit"},

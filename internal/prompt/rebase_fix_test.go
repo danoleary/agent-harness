@@ -143,3 +143,57 @@ func TestRebaseFixSteersEmptyCommitSkip(t *testing.T) {
 		t.Error("prompt should tell the agent to `git cherry-pick --skip` when a commit is already present in origin/main (not treat it as a conflict)")
 	}
 }
+
+// ADR-0019: the PR loop fixes a branch it did not name — a human's opt-in branch
+// carries no harness prefix — so an explicit Branch replaces `<prefix>/<slug>` in
+// both fix prompts.
+func TestFixPromptsNameAnExplicitBranch(t *testing.T) {
+	ctx := Context{Ticket: sample, Slug: "pr-12", BranchPrefix: "feat", Branch: "alice/widget", WorktreePath: sampleWorktree}
+	for name, p := range map[string]string{"RebaseFix": For(RebaseFix, ctx), "CIFix": For(CIFix, ctx)} {
+		if !strings.Contains(p, "`alice/widget`") {
+			t.Errorf("%s does not name the explicit branch alice/widget", name)
+		}
+		if strings.Contains(p, "feat/pr-12") {
+			t.Errorf("%s still derives feat/pr-12 when a branch was named", name)
+		}
+	}
+}
+
+// ADR-0019: on a branch a human opted in, the conflict is resolved by merging
+// origin/main into the branch, never by rewriting its history — the harness pushes
+// the result without force.
+func TestRebaseFixMergeVariantKeepsHistory(t *testing.T) {
+	p := For(RebaseFix, Context{Ticket: sample, Slug: "pr-12", Branch: "alice/widget", WorktreePath: sampleWorktree, Merge: true})
+
+	if !strings.Contains(p, "git merge --no-ff origin/main") {
+		t.Error("merge variant must tell the agent to merge origin/main into the branch")
+	}
+	if strings.Contains(p, "git reset --hard origin/main") || strings.Contains(p, "cherry-pick origin/main..") {
+		t.Error("merge variant must not carry the replay recipe that rewrites history")
+	}
+	if !regexp.MustCompile(`(?i)must NOT be rewritten`).MatchString(p) {
+		t.Error("merge variant must forbid rewriting the human's history")
+	}
+}
+
+// A loop's fix step may supply a Project body (ADR-0019, ADR-0009). It leads
+// every fix prompt and the envelope follows it whole; with no body each prompt is
+// the envelope alone, as before.
+func TestFixPromptsLeadWithALoopsFixBody(t *testing.T) {
+	for _, stage := range []Stage{RebaseFix, CIFix} {
+		for _, merge := range []bool{false, true} {
+			base := Context{Ticket: sample, Slug: "beh-362", BranchPrefix: "feat", WorktreePath: sampleWorktree, Merge: merge}
+			withBody := base
+			withBody.Body = "Run `make lint` on {{.Slug}} before you commit."
+
+			bare, led := For(stage, base), For(stage, withBody)
+
+			if !strings.HasPrefix(led, "Run `make lint` on beh-362 before you commit.\n\n---\n\n") {
+				t.Errorf("%v merge=%v: the body must lead, rendered:\n%.200s", stage, merge, led)
+			}
+			if !strings.HasSuffix(led, bare) {
+				t.Errorf("%v merge=%v: the whole envelope must follow the body", stage, merge)
+			}
+		}
+	}
+}

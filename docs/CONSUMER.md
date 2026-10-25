@@ -157,6 +157,8 @@ in_progress_label = "in-progress"
 # so to make a ticket wait on another, link it natively ("blocked by" on GitHub,
 # a `blocks` relation on Linear) and leave it ready-labelled: it is picked up on
 # the first poll after its last blocker closes, with nobody having to touch it.
+# On GitHub, naming a still-open PR in the body (`builds on #81`) holds it too,
+# until that PR merges or closes.
 # To hold a ticket for a human reason, leave the ready label off. `blocked_label`
 # is optional, and redundant beside those two: it names a label that screens a
 # ticket out until a human removes it, and nothing ever removes it for you.
@@ -311,6 +313,156 @@ The harness reads the first of these files that exists:
 Exported variables win over the file, so `LINEAR_API_KEY=… agent-harness loop`
 also works. `agent-harness doctor` names the file it read and every candidate it
 skipped.
+
+## Loops: `agent-harness loop <name>` and `[[loops]]` (optional)
+
+A **loop** is one daemon: a **Source** it polls for work, and the **Steps** it
+runs over each **Work item** the Source yields (ADR-0019). Two loops are built in:
+
+| Name | Source | Steps | Runs with |
+|---|---|---|---|
+| `tickets` | `tracker`: the ready queue | `implement`, `review`, `retro` | `agent-harness loop` (the default) |
+| `pr-doctor` | `github_prs`: open PRs that conflict with `main` or have red CI | `checkout_pr`, `fix`, `gates`, `push_existing`, `watch_ci`, `retro` | `agent-harness loop pr-doctor` |
+
+```bash
+agent-harness loop --list                # every loop this project can run
+agent-harness loop pr-doctor --dry-run   # its Source, Steps and limits as resolved, and the PRs it would work; changes nothing
+agent-harness loop pr-doctor             # run it in the foreground
+```
+
+You change a built-in loop, or add your own, with `[[loops]]` in `config.toml`.
+An entry with a built-in's name replaces it; any other name adds a loop:
+
+```toml
+[[loops]]
+name = "pr-doctor"
+poll_interval = "10m"            # each limit overrides its LOOP_* env knob, for this loop only
+max_consecutive_failures = 3
+source = { kind = "github_prs", label = "agent-maintained", when = ["conflicting", "ci_failing"] }
+steps = [
+  { use = "checkout_pr" },
+  { use = "fix", prompt = "prompts/fix-pr.md" },   # a Project body, relative to .agent-harness/
+  { use = "gates" },
+  { use = "push_existing" },
+  { use = "watch_ci" },
+  { use = "retro" },
+]
+```
+
+The Sources and Steps are a fixed set, and each is Go code that checks its own
+result on the host before the next Step runs. Config chooses them, orders them,
+sets their parameters and gives a Step a prompt body. It cannot add a Step that
+runs a shell command, or an agent with nothing checking what it did (ADR-0016).
+
+**Loop keys.** `name` (lowercase letters, digits and dashes) and `source.kind` are
+required, plus at least one step. The limits are optional; a limit you leave out
+keeps its env knob.
+
+| Key | Overrides |
+|---|---|
+| `poll_interval`, `cap_backoff`, `claim_ttl`, `max_runtime` (Go durations: `"10m"`, `"1h30m"`) | `LOOP_POLL_INTERVAL_MS`, `LOOP_CAP_BACKOFF_MS`, `LOOP_CLAIM_TTL_MS`, `LOOP_MAX_RUNTIME_MS` |
+| `max_consecutive_failures`, `max_items` | `LOOP_MAX_CONSECUTIVE_FAILURES`, `LOOP_MAX_TICKETS` |
+
+**Sources.**
+
+| `kind` | Parameters |
+|---|---|
+| `tracker` | none: the queue is the one `[tracker]` describes |
+| `github_prs` | `label` (overrides `PR_LOOP_LABEL`), `when` (`"conflicting"`, `"ci_failing"`; default both), `max_attempts` (overrides `PR_LOOP_MAX_ATTEMPTS`) |
+
+**Steps**, and the order they must come in:
+
+| Step | Source | Must follow | Prompt body | Checks |
+|---|---|---|---|---|
+| `implement` | `tracker` | (first) | replaces `prompts/implement.md` | a committed handoff on the branch |
+| `review` | `tracker` | `implement` | replaces `prompts/review.md` | every Gate green before the Landing |
+| `checkout_pr` | `github_prs` | (first) | none | the branch is at the polled head |
+| `fix` | `github_prs` | `checkout_pr` | leads the RebaseFix and CIFix prompts | a clean tree with `origin/main` in its history |
+| `gates` | `github_prs` | `fix` | none | every Gate green over the fixed tree |
+| `push_existing` | `github_prs` | `gates` | none | pushes only a committed, gate-green tree |
+| `watch_ci` | `github_prs` | `push_existing` | none | a CI fix must pass every Gate before it is pushed |
+| `retro` | either | any step; must be last | replaces `prompts/retro.md` | files the run's Findings |
+
+A `tracker` loop needs `implement` and `review`. A `github_prs` loop needs
+`checkout_pr`, `fix`, `gates` and `push_existing`, and `when = ["ci_failing"]`
+needs `watch_ci`, because a red check is fixed inside the CI watch. Without
+`watch_ci`, a PR loop stops at the push. Without `retro`, nothing files Findings.
+
+The config load checks all of this and reports every problem at once, each at
+its `config.toml:line:column`: an unknown source or step, a step out of order, a
+prompt file that is missing or blank.
+
+**Stopping and watching a loop.** Each loop has its own sentinel,
+`.agent-harness/STOP-<name>`; `touch` it to wind that loop down. The plain
+`.agent-harness/STOP` (`STOP_FILE`) winds down every loop. A loop clears both when
+it starts. The `tickets` loop logs to `.agent-harness/logs/` as it always has;
+every other loop logs to `.agent-harness/logs/loops/<name>/`, one dir per item
+plus its own `loop.jsonl`. Follow one with
+`agent-harness watch .agent-harness/logs/loops/<name>/loop.jsonl`. Run each loop
+in its own daemon, and one daemon per loop per checkout.
+
+## Fixing open PRs: `agent-harness loop pr-doctor` (optional)
+
+A PR can go red on CI, or start conflicting with `main`, after its review stage
+has finished. The built-in `pr-doctor` loop is a second daemon that fixes those
+PRs. It runs beside the ticket loop (ADR-0019). It replaces the `loop --prs` flag
+of earlier releases.
+
+**Which PRs it touches.** A PR qualifies if its head branch is on your
+`branch_prefix` (the harness opened it), or if a human added the opt-in label
+(`agent-maintained` by default; set the loop's `source.label`, or `PR_LOOP_LABEL`,
+to change it). It never works:
+
+- a PR from a fork, because it cannot push there;
+- a PR into any base other than `main`;
+- a PR labelled `blocked`;
+- a PR whose branch is already being worked, either because the PR has the
+  `in-progress` label or because the ticket loop holds that branch's ticket In
+  Progress;
+- a PR failing in a way its `source.when` leaves out.
+
+When your tracker is GitHub Issues, the loop uses your `in_progress_label` and
+`blocked_label` names instead of `in-progress` and `blocked`.
+
+**How it resolves a conflict** depends on whose branch it is:
+
+| Branch | Strategy | Push |
+|---|---|---|
+| On your `branch_prefix` (the harness's) | rebase onto `origin/main` | `--force-with-lease` |
+| Opted in with the label (a human's) | merge `origin/main` into the branch | plain push, never forced |
+
+A human's branch is never rewritten, because someone else may have it checked
+out. For the same reason, the CI watch does not reactively rebase a human's
+branch.
+
+**Red CI.** The loop re-runs the failed checks once, to rule out a flake. If they
+are still red, it runs a CIFix session over the failing logs. The fix must be
+committed and every Gate must pass before anything is pushed. Pushes to a PR only
+append commits; the loop never opens a new PR.
+
+Every fix is checked host-side before it is pushed: the conflict session must
+leave a clean tree with `origin/main` in its history, a CI fix must be committed,
+and every Gate must be green. If any check fails, nothing is pushed. After a push,
+the loop watches CI until it passes or fails, then runs the retrospective over the
+session transcripts. Project findings from a PR run are filed only when your
+tracker is GitHub Issues. Harness findings are always routed.
+
+**Attempts.** The loop works each PR once per head commit and failure kind, and
+records each attempt in a hidden marker comment on the PR, so a restarted daemon
+neither retries a commit nor loses count. Any new push starts a new attempt. After
+`source.max_attempts` attempts (else `PR_LOOP_MAX_ATTEMPTS`, default 3), the loop
+comments on the PR with what it tried and labels it `blocked`. Remove the label to
+give it a fresh budget.
+
+```bash
+agent-harness loop pr-doctor --dry-run   # list the PRs it would work, and how; changes nothing
+agent-harness loop pr-doctor             # run it in the foreground
+touch "$PROJECT_PATH/.agent-harness/STOP-pr-doctor"   # wind it down
+```
+
+It logs to `.agent-harness/logs/loops/pr-doctor/` (one dir per PR, plus its own
+`loop.jsonl`) and needs nothing beyond what the ticket loop needs: `gh` and
+`GH_TOKEN` on the host. Run one PR loop per checkout.
 
 ## Upstreaming harness findings (optional)
 

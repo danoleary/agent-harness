@@ -100,9 +100,20 @@ type Result struct {
 // reactive rebase — so a Stage supplies only Fix, the sandboxed diagnose-and-fix
 // session it wants run against a red check. That collapses ci.NewGhDriver's nine
 // positional parameters at the call site to one field.
+//
+// Resolve is optional: when the reactive rebase hits a content conflict, the host
+// calls it before parking the PR, and on true force-with-lease re-pushes the
+// branch it left resolved, committed and gate-green (#82). Nil, or false, parks
+// the PR for a human as before. The Stage owns when a resolution is worth a
+// session; the host owns the push.
 type CIWatch struct {
-	Slug string
-	Fix  func(ciLogs string, logAvailable bool) error
+	Slug    string
+	Fix     func(ciLogs string, logAvailable bool) error
+	Resolve func() bool
+	// KeepHistory forbids the watch's reactive rebase: a branch a human opted in to
+	// the PR loop must never be force-pushed (ADR-0019), so a green PR that
+	// conflicts with base is handed back as a conflict instead of replayed.
+	KeepHistory bool
 }
 
 // RebaseResult, RebaseClean and RebaseConflict re-export git's rebase verdict so
@@ -146,6 +157,9 @@ type Repo interface {
 	BranchName(slug string) string
 	WorktreeExists(slug string) bool
 	CreateWorktree(slug string) error
+	// CheckoutBranch puts the worktree on its branch's tip as origin has it — for a
+	// branch that already exists on the remote, which the PR loop fixes in place.
+	CheckoutBranch(slug string) error
 	RemoveWorktree(slug string) error
 	WorktreeClean(slug string) bool
 	StripHandoffPaths(slug string) error
