@@ -40,7 +40,7 @@ private helper is testing the wrong thing.
   change that test too (CI checks this).
 - Any go command in the Makefile keeps `-buildvcs=false`.
 - `example/.agent-harness/` is loaded by the test suite; keep it valid if you
-  change the config schema, and update `docs/CONSUMER.md` alongside it.
+  change the config schema, and update `docs/reference/config.md` alongside it.
 
 ## Finish
 
