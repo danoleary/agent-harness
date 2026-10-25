@@ -1,6 +1,6 @@
 # This project's agent-harness config (ADR-0008), scaffolded by
 # `agent-harness init` for a << .Label >> toolchain. Every key is explained in
-# docs/CONSUMER.md: https://github.com/danoleary/agent-harness/blob/main/docs/CONSUMER.md
+# https://github.com/danoleary/agent-harness/blob/main/docs/reference/config.md
 #
 # TODO(agent-harness init): the post_create hook and the gates below are starting
 # defaults, not decisions. Make them the commands this project's CI runs, then
@@ -26,7 +26,7 @@ post_create = '''
 handoff_strip_paths = << tomlList .HandoffStripPaths >>
 << end >>
 # Two optional keys that need this project's layout, and are disabled rather than
-# guessed while they are absent — see docs/CONSUMER.md:
+# guessed while they are absent — see docs/reference/config.md:
 #   docs_only_excluded_roots = ["src/", ".github/"]   # dirs whose changes can turn CI red
 #   source_roots = ["src"]                            # dirs the resolved-symbol advisory greps
 << with .Cache >>
@@ -40,7 +40,8 @@ prune_command = << toml .Prune >>
 <<- end >>
 << end >>
 # Tickets come from this repo's GitHub issues that a human has labelled
-# `ready_label`. To use Linear or Jira instead, see docs/CONSUMER.md.
+# `ready_label`. To use Linear or Jira instead, see docs/how-to/linear.md or
+# docs/how-to/jira.md.
 [tracker]
 kind = "github"
 repo = << toml .Repo >>
