@@ -1,6 +1,6 @@
 # A complete, working example Consumer config (ADR-0008).
 #
-# This is the file docs/CONSUMER.md walks through, and it is LOADED BY THE TEST
+# docs/reference/config.md documents every key in it, and it is LOADED BY THE TEST
 # SUITE — an example that stopped parsing, or that drifted from the loader's
 # validation, fails CI rather than misleading the next person who copies it.
 #

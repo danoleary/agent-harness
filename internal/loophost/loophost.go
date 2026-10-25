@@ -83,7 +83,7 @@ var _ loop.Host = (*Daemon)(nil)
 // NewDaemon builds the host for loop l. checkSource is the Source's startup
 // access probe, which CheckAccess runs after the GH_TOKEN check. The sentinels are
 // resolved here, once: a relative path hangs off the Consumer checkout (so the
-// default ".agent-harness/STOP" lands where CONSUMER.md documents it), an absolute
+// default ".agent-harness/STOP" lands where docs/reference/env.md documents it), an absolute
 // STOP_FILE is taken as given.
 func NewDaemon(cfg config.Config, l config.Loop, checkSource func() error) *Daemon {
 	resolve := func(path string) string {

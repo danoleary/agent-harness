@@ -72,7 +72,8 @@ Cut a harness release in one command.
    tag and refuses a version that isn't newer.
 2. Rewrites every `ghcr.io/<owner>/agent-harness-base:X.Y.Z` pin
    (`.agent-harness/Dockerfile`, `example/.agent-harness/Dockerfile`,
-   `docs/CONSUMER.md`) to the new version, and `ARG CLAUDE_VERSION` in
+   `docs/how-to/sandbox-image.md`, `init`'s Dockerfile template) to the new
+   version, and `ARG CLAUDE_VERSION` in
    `Dockerfile.base` when `--claude-version` is given.
 3. Runs `make check` on that tree (and reverts it on failure), commits it as
    `Release vX.Y.Z`, tags it, and pushes main + the tag with `--atomic`.

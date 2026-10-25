@@ -30,7 +30,7 @@ implementation transcript. Write one line: what should now be true.
    behaviour through a public interface rather than internals?
 5. **Design** — does it deepen a module or add a shallow pass-through? Does it
    use `CONTEXT.md` vocabulary? Is a changed decision recorded in an ADR?
-6. **Docs** — README, `docs/CONSUMER.md`, `docs/DESIGN.md`, the example config.
+6. **Docs** — README, the page under `docs/` that covers the change (`docs/README.md` indexes them; `docs/reference/` for a key, variable, command or message), `docs/DESIGN.md`, the example config.
 
 Do the reading before running any gate.
 

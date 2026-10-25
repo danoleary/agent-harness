@@ -3,7 +3,7 @@
 #
 # A Consumer adopts the harness by writing its own Dockerfile that `FROM`s a
 # PINNED tag of this image and adds its toolchain — never by forking the harness.
-# See docs/CONSUMER.md for the composition contract.
+# See docs/how-to/sandbox-image.md for the composition contract.
 #
 # Published to GHCR on a tagged release, for linux/amd64 + linux/arm64.
 #
