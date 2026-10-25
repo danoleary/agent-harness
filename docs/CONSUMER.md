@@ -299,6 +299,19 @@ them — so the post-PR CI watch silently degrades.
 
 See `.env.example` for every optional knob: timeouts, models, and loop ceilings.
 
+The harness reads the first of these files that exists:
+
+| Order | Path | Who it is for |
+|---|---|---|
+| 1 | `$HARNESS_ENV_FILE` | driving several projects, one credential set each |
+| 2 | `./.env` | running from a harness checkout (local beats global) |
+| 3 | `<project>/.agent-harness/.env` | keeping credentials with the project (what `init` writes) |
+| 4 | `${XDG_CONFIG_HOME:-~/.config}/agent-harness/.env` | one install, several projects |
+
+Exported variables win over the file, so `LINEAR_API_KEY=… agent-harness loop`
+also works. `agent-harness doctor` names the file it read and every candidate it
+skipped.
+
 ## Upstreaming harness findings (optional)
 
 The retrospective stage classifies each finding by **audience**. A *Project*
