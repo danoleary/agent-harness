@@ -513,12 +513,14 @@ func alreadyFiledSection(filed []FiledFinding) string {
 
 // reviewContractFooter is the review stage's contract footer. It structurally
 // guarantees the review analog of the four envelope items: the branch/handoff
-// contract (commit locally, the harness owns push/PR — ADR-0002), the tracker-off
+// contract (commit locally, the harness owns push/PR — ADR-0002 — and rebases
+// first, so a commit message names commits by subject, not SHA — #95), the tracker-off
 // steer (ADR-0010), the findings protocol (review emits NONE; retrospective owns
 // findings), and the bash-quirk steer.
 func reviewContractFooter(kind, branchPrefix, slug string) string {
 	return join(
 		"Apply any review fixes as a LOCAL commit on `"+branchPrefix+"/"+slug+"` and stop there; a review that finds nothing to fix makes no commit. Do NOT push, do NOT run `gh`, do NOT open or raise a PR. The harness owns all remote git I/O (ADR-0002): it independently re-runs the quality gates host-side and, only if they pass, pushes the branch and opens the PR itself.",
+		"Before it pushes, the harness rebases the branch onto origin/main, which rewrites every commit SHA on it. So do NOT name a commit by its SHA in your commit message; name the commit your fixes amend by its subject line. A SHA in the pushed message would point at a commit that is not on the branch or in the PR.",
 		trackerOff(kind),
 		"Do NOT emit or file any harness-improvement findings, and do NOT write `/findings/out.json`. The retrospective tool, running last over every transcript, owns findings now — this is a deliberate change from the skill's default. Your only outputs are your report and any review fixes committed locally.",
 		bashQuirkSteer,

@@ -102,3 +102,17 @@ envelopes name it, scoping the change to `<base>..HEAD` / `<base>...HEAD` and
 warning off local `main`** (#86). It sits in the envelope because only the host
 can resolve it before the session starts. A base the host cannot resolve falls back
 to `origin/main`, whose three-dot diff finds the same fork point.
+
+## Amendment, 2026-10-25: the review envelope keeps SHAs out of commit messages
+
+The review skill titled its fix commit `Review fixes for <ticket> over <short
+sha>`. A Landing then rebases the branch onto origin/main before the push, which
+gives every commit on it a new SHA, so the pushed fix commit named a commit that
+was not on the branch or in the PR.
+
+**The review envelope now says that the harness rebases before it pushes and that a
+commit message must name the commit it amends by its subject line, not its SHA**
+(#95). It sits in the envelope, not just this repo's skill, because the rebase is
+the harness's own step: any Consumer's review skill could name a SHA and hit the
+same dangling reference. This repo's review skill now titles the commit by what it
+fixes instead.
