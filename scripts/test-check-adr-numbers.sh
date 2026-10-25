@@ -79,6 +79,13 @@ fixture "$TEST_DIR/t3"
 printf 'package foo\n\n// Bar follows ADR-0009.\nfunc Bar() {}\n' > "$TEST_DIR/t3/internal/foo/bar.go"
 expect_fail "dangling Go reference" "$TEST_DIR/t3" 'internal/foo/bar\.go:3:.*ADR-0009'
 
+# A URL later in the comment carries its own `//`; the reference before it must
+# still be scanned.
+echo -n "Test 3b: ADR-NNNN before a URL in a Go comment is flagged... "
+fixture "$TEST_DIR/t3b"
+printf 'package foo\n\n// Bar follows ADR-0009, see https://example.com/x.\nfunc Bar() {}\n' > "$TEST_DIR/t3b/internal/foo/bar.go"
+expect_fail "dangling Go reference before a URL" "$TEST_DIR/t3b" 'internal/foo/bar\.go:3:.*ADR-0009'
+
 echo -n "Test 4: ADR-NNNN in Markdown with no file is flagged... "
 fixture "$TEST_DIR/t4"
 printf 'Intro.\n\nPer ADR-0007, we do it.\n' > "$TEST_DIR/t4/README.md"

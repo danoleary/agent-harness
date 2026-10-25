@@ -55,7 +55,9 @@ fi
 while IFS= read -r file; do
     rel="${file#"$ROOT"/}"
     case "$file" in
-        *.go) text=$(grep -n '//' "$file" | sed -E 's#^([0-9]+:).*//#\1#' || true) ;;
+        # Keep everything after the FIRST `//`: a greedy match would cut at a URL's
+        # `://` and drop the reference before it.
+        *.go) text=$(grep -n '//' "$file" | sed -E 's#^([0-9]+:)([^/]|/[^/])*//#\1#' || true) ;;
         *) text=$(grep -n '' "$file" || true) ;;
     esac
     [ -n "$text" ] || continue
