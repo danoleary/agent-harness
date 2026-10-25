@@ -65,7 +65,7 @@ func TestPlanIsWhatTheStagesLaunch(t *testing.T) {
 	var shells []hostio.ShellRun
 	for _, p := range []StagePlan{
 		ImplementationPlan(cfg, s, prompt.Fresh),
-		ReviewPlan(cfg, s),
+		ReviewPlan(cfg, s, nil),
 		RetrospectivePlan(cfg, s, nil),
 	} {
 		agents = append(agents, p.Agents()...)
@@ -95,7 +95,7 @@ func TestPlanIsWhatTheStagesLaunch(t *testing.T) {
 func TestStageDryRunRendersItsPlanThroughTheRunner(t *testing.T) {
 	cfg := stageCfg()
 	s := NewSubject(hostio.NewFake(), "PROJ-1", "/logs/PROJ-1", hostio.NewFakeTracker().Ticket)
-	out := ReviewPlan(cfg, s).Render(hostio.NewFake())
+	out := ReviewPlan(cfg, s, nil).Render(hostio.NewFake())
 	for _, want := range []string{
 		"--- prep docker command ---\ndocker run --name fake-prep",
 		"--- review docker command ---\ndocker run --name fake-review",
@@ -112,7 +112,7 @@ func TestStageDryRunRendersItsPlanThroughTheRunner(t *testing.T) {
 func TestReviewPlanNotesASkippedPrep(t *testing.T) {
 	cfg := stageCfg()
 	cfg.PostCreate = ""
-	p := ReviewPlan(cfg, NewSubject(hostio.NewFake(), "PROJ-1", "/logs/PROJ-1", hostio.NewFakeTracker().Ticket))
+	p := ReviewPlan(cfg, NewSubject(hostio.NewFake(), "PROJ-1", "/logs/PROJ-1", hostio.NewFakeTracker().Ticket), nil)
 	for _, sh := range p.Shells() {
 		if sh.Label == prepStep {
 			t.Errorf("plan launches a prep container with no post_create: %+v", sh)

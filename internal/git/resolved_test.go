@@ -130,10 +130,10 @@ func TestResolvedAdvisoryNamesPascalCaseSymbolUntruncated(t *testing.T) {
 }
 
 // BEH-629 (prose word): a git-trailer keyword like `Fixes` (from a `Fixes HERD-2T`
-// line the ticket quotes) is English, not a code identifier — it is mixed-case so
-// it slips past isMixedCaseIdentifier, but it must never be extracted as a symbol
-// to grep. It was one of the three false positives that made BEH-626 look "already
-// resolved — recommend close".
+// line the ticket quotes) is English, not a code identifier — its only capital
+// starts the word — so it must never be extracted as a symbol to grep. It was one
+// of the three false positives that made BEH-626 look "already resolved —
+// recommend close".
 func TestExtractCitedSymbolsDropsGitTrailerKeyword(t *testing.T) {
 	got := extractCitedSymbols("issues don't auto-close without a `Fixes HERD-2T`")
 	if contains(got, "Fixes") {
@@ -277,6 +277,79 @@ func TestClassifyCitedSymbolsSortsRefactorTargetsAsProposed(t *testing.T) {
 	}
 }
 
+// #66: a fenced code block threw the single-backtick pairing off by one — the
+// opening fence's third backtick paired with the closing fence's first — so every
+// later "span" was the prose BETWEEN inline code spans, and each capitalised
+// heading or sentence word came back as an absent symbol under the strong
+// "recommend close" verdict on a new, unstarted ticket. The fence's contents are
+// skipped, and only real inline spans after it are read.
+func TestResolvedAdvisoryNoFalseRecommendCloseAfterFencedBlock(t *testing.T) {
+	root := writeSrc(t, "func classifyCitedSymbols() {}\n")
+
+	desc := "What happened: the extractor misfired.\n\n" +
+		"```go\nvar backtickSpan = regexp.MustCompile(\"`([^`]+)`\")\n```\n\n" +
+		"## Cause\n\nThe `classifyCitedSymbols` walk pairs backticks. Then Prose Words follow.\n\n" +
+		"## Fix\n\nStrip fences before `classifyCitedSymbols` reads spans. Notes: Headings matter.\n"
+
+	if got := extractCitedSymbols(desc); len(got) != 1 || got[0] != "classifyCitedSymbols" {
+		t.Errorf("only the inline span after the fence is code, got %v", got)
+	}
+	if msg := ResolvedAdvisory([]string{root}, "#66", desc); msg != "" {
+		t.Fatalf("prose after a fenced block must not raise an advisory, got: %s", msg)
+	}
+}
+
+// The fence's own contents are a code sample or a log, not a list of symbols the
+// ticket expects in source, so they are never scanned — including a fence left
+// unclosed, which runs to the end of the body. Tilde fences count too.
+func TestExtractCitedSymbolsSkipsFencedBlockContents(t *testing.T) {
+	for name, desc := range map[string]string{
+		"backtick": "see\n```\nsampleHelper()\n```\nthen `realSymbol`",
+		"tilde":    "see\n~~~ts\nsampleHelper()\n~~~\nthen `realSymbol`",
+		"longer":   "see\n````md\n```\nsampleHelper()\n```\n````\nthen `realSymbol`",
+	} {
+		got := extractCitedSymbols(desc)
+		if contains(got, "sampleHelper") || !contains(got, "realSymbol") {
+			t.Errorf("%s fence: want only realSymbol, got %v", name, got)
+		}
+	}
+	if got := extractCitedSymbols("`realSymbol` then\n```\nsampleHelper()\n"); contains(got, "sampleHelper") {
+		t.Errorf("an unclosed fence runs to the end of the body, got %v", got)
+	}
+	// A line-leading triple-backtick inline span is not a fence opener, so it must
+	// not swallow the spans after it.
+	if got := extractCitedSymbols("```inlineSpan``` is inline\nthen `realSymbol`"); !contains(got, "realSymbol") {
+		t.Errorf("a line-leading inline span is not a fence, got %v", got)
+	}
+}
+
+// A double-backtick span — how markdown quotes a backtick inside
+// code, as #66's own body does — closes only on a run of the same length, so it
+// must not desync the pairing for the spans after it either.
+func TestExtractCitedSymbolsPairsBacktickRunsOfEqualLength(t *testing.T) {
+	got := extractCitedSymbols("the regex `` `([^`]+)` `` misfired. Then Prose follows `realSymbol`.")
+	if contains(got, "Then") || contains(got, "Prose") || !contains(got, "realSymbol") {
+		t.Errorf("want only realSymbol, got %v", got)
+	}
+}
+
+// #66 (precision): a single capitalised word — one uppercase letter, at the start
+// — is English, not a code identifier, even inside a backtick span. A symbol
+// needs an inner capital (camelCase, or PascalCase with two humps) or a digit.
+func TestExtractCitedSymbolsDropsSingleCapitalisedWord(t *testing.T) {
+	got := extractCitedSymbols("`Notes` `Cause` `Headings` `syncLog` `GiphyGrid` `Base64` `sha256`")
+	for _, prose := range []string{"Notes", "Cause", "Headings", "sha256"} {
+		if contains(got, prose) {
+			t.Errorf("%q is not a code identifier, got %v", prose, got)
+		}
+	}
+	for _, code := range []string{"syncLog", "GiphyGrid", "Base64"} {
+		if !contains(got, code) {
+			t.Errorf("%q is a code identifier, got %v", code, got)
+		}
+	}
+}
+
 func contains(xs []string, want string) bool {
 	for _, x := range xs {
 		if x == want {
@@ -368,19 +441,19 @@ func TestResolvedAdvisoryKeepsLocalPackageQualifiedSymbols(t *testing.T) {
 }
 
 // A ticket that names a go.mod dependency's module path alongside bare symbols
-// (`Model`, not `tea.Model`) may be citing that dependency's types, so a missing
+// (`KeyMsg`, not `tea.KeyMsg`) may be citing that dependency's types, so a missing
 // symbol downgrades to the soft "verify premise" note — never "recommend close".
 func TestResolvedAdvisoryDowngradesWhenTicketNamesDependency(t *testing.T) {
 	root := writeGoModule(t)
 
-	msg := ResolvedAdvisory([]string{root}, "GH-69", "use `github.com/charmbracelet/bubbletea`: implement its `Model` interface")
+	msg := ResolvedAdvisory([]string{root}, "GH-69", "use `github.com/charmbracelet/bubbletea`: handle its `KeyMsg` on quit")
 	if msg == "" {
 		t.Fatal("expected a soft advisory naming the missing symbol, got none")
 	}
 	if strings.Contains(msg, "recommend close") || strings.Contains(msg, "already resolved") {
 		t.Fatalf("a ticket naming a dependency must not read as already resolved / recommend close, got: %s", msg)
 	}
-	if !strings.Contains(msg, "Model") || !strings.Contains(msg, "github.com/charmbracelet/bubbletea") {
+	if !strings.Contains(msg, "KeyMsg") || !strings.Contains(msg, "github.com/charmbracelet/bubbletea") {
 		t.Fatalf("advisory should name the symbol and the dependency, got: %s", msg)
 	}
 }

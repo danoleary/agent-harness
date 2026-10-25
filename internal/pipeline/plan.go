@@ -43,7 +43,9 @@ func Plan(cfg config.Config, identifier string) string {
 		when string
 	}{
 		{stages.ImplementationPlan(cfg, s, prompt.Fresh), "always"},
-		{stages.ReviewPlan(cfg, s), "only if implementation succeeded"},
+		// Implementation has not run, so whether it adds commits — and so whether the
+		// review re-emits a prior verdict (#44) — is unknown: show the cold review.
+		{stages.ReviewPlan(cfg, s, nil), "only if implementation succeeded"},
 		// Dry-run never fetches the tracker, so there's no already-filed context to inject.
 		{stages.RetrospectivePlan(cfg, s, nil), "always"},
 	} {

@@ -68,3 +68,21 @@ default skill — the correction is to refuse to run without the Consumer's
 declaration, not to supply one. A default would be worse: the harness cannot know
 which skills a project carries, so a baked-in `/tdd` would name a skill that may
 not exist there, and the same silent no-op would return wearing a harness name.
+
+## Amendment, 2026-10-24: the review envelope carries a prior verdict on a re-run
+
+A re-run whose implementation stage added no commits handed the review stage the
+same cold envelope as a first pass. The reviewer re-derived a verdict that already
+existed and, read literally, "fix what is wrong in a local commit" pushed it to
+produce a cosmetic commit, so every re-run stacked another "Review fixes" commit.
+
+**The review stage now records each verdict's Disposition line and the HEAD it
+covered, in the ticket's log dir, and when the branch HEAD still matches, the
+envelope carries both** (#44). The section tells the session to run the gate and
+re-emit that Disposition, committing only for a real defect. It sits in the
+envelope, not the body, because only the harness knows the branch has not moved.
+Only a clear verdict is carried forward: a blocked one waits on a human answer that
+lands on the ticket, not the branch, so re-emitting it would never unblock.
+It is additive: a first review, or one over a moved branch, reads exactly as
+before. The Consumer body still owns how the review is done; the envelope only
+states a fact about the diff.

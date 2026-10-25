@@ -103,7 +103,7 @@ func TestPlanRendersEachStagesOwnRuns(t *testing.T) {
 	var sessions, containers []string
 	for _, p := range []stages.StagePlan{
 		stages.ImplementationPlan(cfg, s, prompt.Fresh),
-		stages.ReviewPlan(cfg, s),
+		stages.ReviewPlan(cfg, s, nil),
 		stages.RetrospectivePlan(cfg, s, nil),
 	} {
 		for _, a := range p.Agents() {
