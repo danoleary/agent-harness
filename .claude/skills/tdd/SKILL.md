@@ -31,14 +31,18 @@ prompt around this skill tells you the ticket, the worktree and the branch.
   variant you need (stdin, dir, env, …) is missing, add it to `internal/proc` with
   a test rather than bypassing it. A deliberately unbounded call carries an
   inline `// allow-unbounded-exec: <reason>` on the call line.
-- **`scripts/*.sh` must run under macOS bash 3.2** — `check-bash3`
-  (`scripts/check-bash3-compat.sh`): no `declare -A`, namerefs (`declare -n`),
-  `${var,,}`/`${var^^}` or `mapfile`/`readarray`.
+- **Every bash-shebang script (`scripts/*.sh` and any other) must run under
+  macOS bash 3.2** — `check-bash3` (`scripts/check-bash3-compat.sh`): no
+  `declare -A`, namerefs (`declare -n`), `${var,,}`/`${var^^}` or
+  `mapfile`/`readarray`.
 - **Every `go build`/`test`/`run`/`install` in a Makefile keeps
   `-buildvcs=false`**, on one line — `check-buildvcs` (`scripts/check-buildvcs.sh`).
   Without it go aborts inside a linked worktree.
-- **Two ADRs can't share a number** — `check-adr` (`scripts/check-adr-numbers.sh`);
-  see Finish.
+- **Two ADRs can't share a number, and every `ADR-NNNN` reference (Go comment or
+  Markdown) or `adr/NNNN-<slug>.md` link must name an existing file** —
+  `check-adr` (`scripts/check-adr-numbers.sh`); see Finish.
+- **CI runs `make check` itself, never its sub-targets one by one** — `check-ci`
+  (`scripts/check-ci-runs-check.sh`); wire a new guard into `check:` only.
 - A changed `scripts/<name>.sh` that has a sibling `scripts/test-<name>.sh` must
   change that test too (CI checks this), and `check-scripts` runs every
   `scripts/test-*.sh`.

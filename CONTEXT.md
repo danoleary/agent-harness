@@ -119,7 +119,8 @@ _Avoid_: check, test (those name specific gates, not the concept).
 A `scripts/check-*.sh` lint this repo's own `make check` runs before its tests:
 daemon/remote exec only through `internal/proc` with a timeout (`check-exec`),
 bash-3.2-safe scripts (`check-bash3`), `-buildvcs=false` on Makefile go commands
-(`check-buildvcs`), unique ADR numbers (`check-adr`). Listed, with what each one
+(`check-buildvcs`), unique, resolvable ADR numbers (`check-adr`), CI running
+`make check` whole (`check-ci`). Listed, with what each one
 rejects, in `.claude/skills/tdd/SKILL.md` — read it before writing code, not after
 the gate reds.
 
