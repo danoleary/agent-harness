@@ -1,5 +1,12 @@
 # Agent Harness Scripts
 
+## Portability
+
+The scripts must run under macOS's stock bash 3.2 (`check-bash3`), and their awk
+must run under mawk (the sandbox's awk), BWK awk (macOS) and gawk (CI): no awk
+interval expressions (`{n}`, `{n,m}`) and no gawk-only functions (`gensub`,
+`asort`, `strftime`) (`check-awk`).
+
 ## loop-start.sh
 
 Launch the autonomous loop daemon (`cmd/loop`) as a detached background process —
@@ -306,6 +313,51 @@ would false-positive.
 ./scripts/test-check-bash3-compat.sh
 ```
 
+## check-awk-portability.sh
+
+Guard against awk that only some awks run (#129).
+
+### Purpose
+
+The scripts' awk runs under three implementations: mawk 1.3.4 in the sandbox,
+where the Gate runs; BWK awk on macOS; gawk in CI. mawk does not support regex
+interval expressions and raises **no error** on one: `^ {0,3}\[` just never
+matches. A guard only reports failures, so a regex that never matches makes it
+pass vacuously in the sandbox while it works on the host and in CI (#96).
+gawk-only functions break the other way: they work in CI and fail elsewhere. It
+is bash-3.2-safe, and its own awk runs under all three.
+
+### What it checks
+
+Reads every awk program written inline as a single-quoted argument in
+`scripts/*.sh` and `install.sh` (after `-F`/`-v` options) and flags:
+
+- an interval (`{n}`, `{n,}`, `{n,m}`) in a regex literal, or in a string matched
+  with `~`;
+- a call to `gensub`, `asort`, `asorti` or `strftime`.
+
+A brace that is escaped (`\{`) or inside a bracket expression is a literal, and
+is not flagged; nor are shell comments, awk comments, `grep -E` patterns or
+programs passed with `-f` or in double quotes.
+
+### Fix violations
+
+Spell the interval out: repeat the atom (`a{2}` → `aa`), or use `?` for each
+optional one (`x{0,3}` → `x?x?x?`).
+
+### Usage
+
+```bash
+./scripts/check-awk-portability.sh              # the make check-awk default
+./scripts/check-awk-portability.sh /path/to/repo
+```
+
+### Testing
+
+```bash
+./scripts/test-check-awk-portability.sh
+```
+
 ## check-exec-command.sh
 
 Guard against unbounded `exec.Command` calls to daemon/remote tools (BEH-388).
@@ -357,12 +409,13 @@ The guard is integrated into the Makefile's `check` target, which runs:
 2. `vet` - Go vet static analysis
 3. `check-exec` - This exec.Command guard
 4. `check-bash3` - The bash 3.2 compatibility guard
-5. `check-buildvcs` - The -buildvcs=false guard (BEH-459)
-6. `check-ci` - The CI-runs-check guard (BEH-462)
-7. `check-adr` - The ADR-numbering guard (#92)
-8. `check-bundle-links` - The installed-README link guard (#96)
-9. `check-scripts` - The harness shell tests (BEH-591)
-10. `test` - Full test suite
+5. `check-awk` - The awk portability guard (#129)
+6. `check-buildvcs` - The -buildvcs=false guard (BEH-459)
+7. `check-ci` - The CI-runs-check guard (BEH-462)
+8. `check-adr` - The ADR-numbering guard (#92)
+9. `check-bundle-links` - The installed-README link guard (#96)
+10. `check-scripts` - The harness shell tests (BEH-591)
+11. `test` - Full test suite
 
 CI runs `make check` directly (then `make build`), so adding a guard to the
 `check` target above covers it in CI with no workflow edit. The `check-ci` guard
