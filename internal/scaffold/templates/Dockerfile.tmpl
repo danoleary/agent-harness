@@ -7,7 +7,7 @@
 # Pin the IMMUTABLE semver tag, never `:latest`, so a base bump is a deliberate,
 # reviewable edit rather than a silent floating pull. The base already carries the
 # claude CLI, git, bash and the uid-re-exec entrypoint — do not reinstall those.
-FROM ghcr.io/danoleary/agent-harness-base:0.6.2
+FROM ghcr.io/danoleary/agent-harness-base:0.7.0
 
 << .Layer >>
 # ENV PATH is the whole story: post_create and every Gate run as a non-login
