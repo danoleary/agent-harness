@@ -346,7 +346,7 @@ func Review(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Res
 	// before ship pushes. The hook returns false when it could not land a clean, re-gated rebase,
 	// having already left a tracker breadcrumb so the work surfaces autonomously.
 	landing := ship.Land(h, log, slug, t, func() bool {
-		return resolvePrePushConflict(fixes, target, comment)
+		return resolveRebaseConflict(fixes, target, comment, "pre-push rebase", gateStep+"-postrebase")
 	})
 	switch landing.Verdict {
 	case ship.Disjoint:
@@ -364,7 +364,7 @@ func Review(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Res
 		))
 		return Result{OK: false}
 	case ship.Conflict:
-		// resolvePrePushConflict already narrated why and left the breadcrumb.
+		// resolveRebaseConflict already narrated why and left the breadcrumb.
 		return Result{OK: false}
 	case ship.Collapsed:
 		// The replay collapsed the branch to zero net change — a sibling PR landed the
@@ -398,7 +398,15 @@ func Review(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Res
 	// diagnose+fix happens in the sandbox, which is why Fix is the only thing the
 	// stage supplies.
 	log.Event("watching CI for " + h.BranchName(slug) + " …")
-	ciResult := h.WatchCI(hostio.CIWatch{Slug: slug, Fix: fixes.CI(target)})
+	ciResult := h.WatchCI(hostio.CIWatch{
+		Slug: slug,
+		Fix:  fixes.CI(target),
+		Resolve: mergedPrerequisiteResolver(log, t,
+			func() (ticket.Ticket, error) { return client.FetchTicket(args.Identifier) },
+			func(trigger string) bool {
+				return resolveRebaseConflict(fixes, target, comment, trigger, gateStep+"-cirebase")
+			}),
+	})
 	// Zero-net-diff short-circuit (BEH-602): the branch became a no-op against the
 	// latest origin/main only AFTER the pre-push rebase (a sibling PR landed the same
 	// fix during the multi-minute gate, which the pre-rebase BEH-603 push-gate check
@@ -436,34 +444,76 @@ func Review(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Res
 	return Result{OK: true, Disposition: Shipped}
 }
 
-// resolvePrePushConflict launches the bounded sandboxed conflict resolution
-// (internal/fix) when the proactive pre-push rebase hits a genuine content
-// conflict (BEH-581) — the dead-end that previously stranded a fully-reviewed,
-// gate-green branch in a worktree with no autonomous recovery. The branch is the
-// harness's own, so it is replayed (fix.Rebase) and ship force-pushes it. It
-// returns true only when the resolution is verified and the re-gate over the
-// rewritten tree is green, authorising the push. Any other failure keeps the
-// worktree and leaves a tracker breadcrumb so the work surfaces (a spending-cap
-// abort defers quietly — it retries after reset, not a conflict).
-func resolvePrePushConflict(fixes fix.Env, target fix.Target, comment func(string)) bool {
-	fixes.Log.Event("review ↻ pre-push rebase hit a content conflict — launching a sandboxed conflict-resolution session (BEH-581)")
+// mergedPrerequisiteResolver is the CI watch's Resolve (#82): when the reactive
+// rebase hits a content conflict, it runs the conflict-resolution session and the
+// host gate once — but only when the conflict is a prerequisite's merge. The
+// ticket was fetched while each of t.Prerequisites was still an open PR; if a
+// re-fetch no longer lists one, that PR merged into the base underneath this one
+// (the incident: a sibling editing the same paragraph of a shared design doc
+// merged ~15s after this PR opened). Any other conflict, or a second one, is left
+// for a human as before. Nil when the ticket named no open prerequisite, so the
+// watch behaves exactly as it always did.
+func mergedPrerequisiteResolver(
+	log *runlog.Logger, t ticket.Ticket,
+	refetch func() (ticket.Ticket, error), resolve func(trigger string) bool,
+) func() bool {
+	if len(t.Prerequisites) == 0 {
+		return nil
+	}
+	used := false
+	return func() bool {
+		if used {
+			return false
+		}
+		used = true
+		now, err := refetch()
+		if err != nil {
+			log.Event("review ⚠ PR conflicts with base; could not re-read the ticket's prerequisites (" + err.Error() + ") — leaving the conflict for a human")
+			return false
+		}
+		still := map[string]bool{}
+		for _, p := range now.Prerequisites {
+			still[p.Identifier] = true
+		}
+		for _, p := range t.Prerequisites {
+			if !still[p.Identifier] {
+				return resolve("post-PR rebase after prerequisite " + p.Identifier + " (`" + p.Branch + "`) merged")
+			}
+		}
+		log.Event("review · PR conflicts with base but every prerequisite is still open — not a prerequisite's merge; leaving the conflict for a human (#82)")
+		return false
+	}
+}
+
+// resolveRebaseConflict launches the bounded sandboxed conflict resolution
+// (internal/fix) when a rebase onto base hits a genuine content conflict: the
+// proactive pre-push rebase (BEH-581), or the CI watch's reactive one once a
+// prerequisite merged (#82) — the dead-end that previously stranded a
+// fully-reviewed, gate-green branch in a worktree with no autonomous recovery. The
+// branch is the harness's own, so it is replayed (fix.Rebase) and force-pushed. It
+// returns true only when the resolution is verified and the re-gate (gateLabel)
+// over the rewritten tree is green, authorising the push. Any other failure keeps
+// the worktree and leaves a tracker breadcrumb so the work surfaces (a
+// spending-cap abort defers quietly — it retries after reset, not a conflict).
+func resolveRebaseConflict(fixes fix.Env, target fix.Target, comment func(string), trigger, gateLabel string) bool {
+	fixes.Log.Event("review ↻ " + trigger + " hit a content conflict — launching a sandboxed conflict-resolution session (BEH-581)")
 	res := fixes.ResolveConflict(fix.Conflict{
 		Target:   target,
 		Strategy: fix.Rebase,
-		Regate:   func() fix.GateResult { return fixes.Gates(target.Slug, gateStep+"-postrebase") },
+		Regate:   func() fix.GateResult { return fixes.Gates(target.Slug, gateLabel) },
 	})
 	branch := fixes.Host.BranchName(target.Slug)
 	switch {
 	case res.OK, res.SpendingCapAbort:
 	case res.Resolved:
 		comment(fmt.Sprintf(
-			"Pre-push conflict was auto-resolved on `%s`, but the post-rebase gate re-run failed (exit %d). The rebased branch is waiting in a worktree for a look. (BEH-581)",
-			branch, res.Gate.Outcome.ExitCode,
+			"The %s conflict was auto-resolved on `%s`, but the post-rebase gate re-run failed (exit %d). The rebased branch is waiting in a worktree for a look. (BEH-581)",
+			trigger, branch, res.Gate.Outcome.ExitCode,
 		))
 	default:
 		comment(fmt.Sprintf(
-			"Pre-push auto-rebase onto `main` could not be completed for `%s`: %s This branch passed cold review and the harness gate, but it now needs a manual rebase onto `main`. It is waiting in a worktree. (BEH-581)",
-			branch, res.Reason,
+			"Auto-rebase onto `main` (%s) could not be completed for `%s`: %s This branch passed cold review and the harness gate, but it now needs a manual rebase onto `main`. It is waiting in a worktree. (BEH-581)",
+			trigger, branch, res.Reason,
 		))
 	}
 	return res.OK

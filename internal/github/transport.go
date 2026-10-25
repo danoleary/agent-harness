@@ -3,6 +3,7 @@ package github
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -57,6 +58,10 @@ func NewTransport(token string) Transport {
 	}
 }
 
+// errNotFound marks a 404, so a caller can tell a reference that no longer
+// resolves from a read that failed.
+var errNotFound = errors.New("not found")
+
 // httpError renders a non-2xx response as ONE line: GitHub's own `message` when
 // the body is its JSON error shape, else the body with its newlines folded. The
 // raw pretty-printed body used to spill over five log lines, and a 401 in the loop
@@ -71,6 +76,9 @@ func httpError(status int, payload []byte) error {
 	}
 	if status == http.StatusUnauthorized {
 		return fmt.Errorf("GitHub HTTP %d: %s — GH_TOKEN was rejected (expired or revoked?)", status, msg)
+	}
+	if status == http.StatusNotFound {
+		return fmt.Errorf("GitHub HTTP %d: %s: %w", status, msg, errNotFound)
 	}
 	return fmt.Errorf("GitHub HTTP %d: %s", status, msg)
 }

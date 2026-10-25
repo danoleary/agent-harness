@@ -157,6 +157,8 @@ in_progress_label = "in-progress"
 # so to make a ticket wait on another, link it natively ("blocked by" on GitHub,
 # a `blocks` relation on Linear) and leave it ready-labelled: it is picked up on
 # the first poll after its last blocker closes, with nobody having to touch it.
+# On GitHub, naming a still-open PR in the body (`builds on #81`) holds it too,
+# until that PR merges or closes.
 # To hold a ticket for a human reason, leave the ready label off. `blocked_label`
 # is optional, and redundant beside those two: it names a label that screens a
 # ticket out until a human removes it, and nothing ever removes it for you.

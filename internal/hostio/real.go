@@ -361,7 +361,7 @@ func (h *Real) WatchCI(w CIWatch) ci.Outcome {
 			if w.KeepHistory {
 				return ci.RebaseConflict, nil
 			}
-			return h.rebaseOntoBase(w.Slug)
+			return h.rebaseOntoBase(w.Slug, w.Resolve)
 		},
 		func() bool { return h.BranchDiffEmpty(w.Slug) },
 		func() bool { return h.BranchDocsOnly(w.Slug) },
@@ -375,16 +375,24 @@ func (h *Real) WatchCI(w CIWatch) ci.Outcome {
 // rebase, so we must replay onto the truly-latest base — replays the worktree
 // through the same [ship.Replay] the pre-push landing uses (so the disjoint-history
 // guard is shared), and on a clean replay force-with-lease re-pushes the rewritten
-// branch. A content conflict or a disjoint history returns RebaseConflict with the
-// branch left on its original tip, for a human; any fetch/push failure is surfaced
-// as an error the watch reports. Unlike a landing, a failed fetch stops here: a
+// branch. A content conflict is offered to resolve (CIWatch.Resolve, #82; nil
+// declines): a resolution it reports committed and gate-green is re-pushed like a
+// clean replay. A declined resolution, or a disjoint history (never offered, as in
+// a landing), returns RebaseConflict for a human; any fetch/push failure is
+// surfaced as an error the watch reports. Unlike a landing, a failed fetch stops here: a
 // branch replayed onto a base we could not refresh would still read CONFLICTING.
 // Keeping it here is what lets internal/ci stay free of internal/git (BEH-570).
-func (h *Real) rebaseOntoBase(slug string) (ci.RebaseVerdict, error) {
+func (h *Real) rebaseOntoBase(slug string, resolve func() bool) (ci.RebaseVerdict, error) {
 	if err := h.FetchMain(); err != nil {
 		return ci.RebaseConflict, fmt.Errorf("fetch %s before rebase: %w", baseRef, err)
 	}
-	if ship.Replay(h, slug) != ship.ReplayClean {
+	switch ship.Replay(h, slug) {
+	case ship.ReplayClean:
+	case ship.ReplayConflict:
+		if resolve == nil || !resolve() {
+			return ci.RebaseConflict, nil
+		}
+	default:
 		return ci.RebaseConflict, nil
 	}
 	if err := h.PushForceWithLease(slug); err != nil {

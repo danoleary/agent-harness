@@ -320,9 +320,31 @@ func implement(c Context) string {
 		renderBody(c),
 		worktreeState,
 		ticketContext(c.Ticket),
+		prerequisitesSection(c.Ticket.Prerequisites),
 		"---",
 		tddFooter(c.Ticket.Identifier, c.Tracker, c.BranchPrefix, c.Slug),
 	)
+}
+
+// prerequisitesSection names each still-open PR the ticket builds on (#82).
+// Selection holds such a ticket, so this is the dispatched-anyway case: a
+// hand-passed run, or a PR opened after selection. Without it the session had to
+// search every ref for the sibling branch, then judged the two PRs disjoint when
+// both edited one paragraph of a shared doc, and the sibling's merge left the
+// shipped PR conflicting with base. Empty when there is no open prerequisite.
+func prerequisitesSection(prs []ticket.Prerequisite) string {
+	if len(prs) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("This ticket builds on work that is not yet merged — `main` does not have it, and will change underneath you when it merges:")
+	for _, p := range prs {
+		// Defang the whole line, not just the title: a head branch is PR-author text
+		// too, and one ending in `!` would form `!`` against the backtick after it.
+		b.WriteString(defang("\n\n- " + p.Identifier + " " + p.Title + " (" + p.URL + ") on branch `" + p.Branch + "` (`origin/" + p.Branch + "`); read its version of a file with `git show origin/" + p.Branch + ":<path>`."))
+	}
+	b.WriteString("\n\nDo not assume your PR and that one are disjoint. For any shared file — a design doc, an ADR, `CONTEXT.md`, a README — either base your edit on that branch's version of the file, or leave the shared file alone and say so in your handoff. If the branch ref is not in your checkout, leave shared docs alone.")
+	return b.String()
 }
 
 // subIssuesSection renders the inlined child sub-issue specs for an umbrella/batch

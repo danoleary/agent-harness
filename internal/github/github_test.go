@@ -80,7 +80,8 @@ func TestFetchTicketMapsIssue(t *testing.T) {
 // umbrella issue's task-list checkbox lines (`- [ ] #45`) are followed to their
 // child issues and inlined as SubIssues, mirroring how the Linear adapter inlines
 // sub-issues (BEH-619) so a sandboxed session never reaches GitHub. A bare `#99`
-// in prose is NOT a task-list item and must be ignored.
+// in prose is NOT a task-list item and must not become a child (it is read only to
+// see whether it is an open prerequisite PR, #82 — here it is a plain issue).
 func TestFetchTicketPullsTaskListChildren(t *testing.T) {
 	tr, _ := fakeTransport(map[string]any{
 		"GET /repos/acme/widgets/issues/10": map[string]any{
@@ -90,6 +91,7 @@ func TestFetchTicketPullsTaskListChildren(t *testing.T) {
 		},
 		"GET /repos/acme/widgets/issues/45": map[string]any{"number": 45, "title": "Child A", "body": "body a"},
 		"GET /repos/acme/widgets/issues/46": map[string]any{"number": 46, "title": "Child B", "body": "body b"},
+		"GET /repos/acme/widgets/issues/99": map[string]any{"number": 99, "title": "Mention", "state": "open"},
 	})
 	c := NewClient(tr, "acme", "widgets", Options{})
 

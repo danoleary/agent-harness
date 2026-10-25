@@ -28,7 +28,8 @@ func (c *Client) selectQuery() string {
 
 // SelectNextTicket resolves the top-of-queue eligible ticket: the first open,
 // unassigned, ready-labelled issue that is not Blocked-labelled, not a pull
-// request (the issues API returns PRs too), and not blocked by a still-open issue.
+// request (the issues API returns PRs too), not blocked by a still-open issue, and
+// not building on a still-open PR its body names (#82).
 // A failed blocker read is an error, not an unblocked ticket (fail closed). It is
 // a PURE READ — claim-on-select (ADR-0003) is the caller composing it with
 // MoveToInProgress — so dry-run can resolve a ticket without mutating GitHub.
@@ -65,7 +66,8 @@ func (c *Client) SelectNextTicket() (ticket.Ticket, bool, error) {
 // (not a PR), is not flagged Blocked, and no still-open issue blocks it through
 // GitHub's native "blocked by" dependency. Closed blockers do not block, matching
 // the Linear adapter. The ready label is already guaranteed by the query. The
-// blockers are fetched only when the list's dependency summary reports any.
+// blockers are fetched only when the list's dependency summary reports any. Nor
+// may the body name a still-open PR (#82): that is a prerequisite not yet on main.
 func (c *Client) eligible(iss issue) (bool, error) {
 	if iss.PullRequest != nil {
 		return false, nil
@@ -73,15 +75,25 @@ func (c *Client) eligible(iss issue) (bool, error) {
 	if c.hasLabel(iss, c.opts.Blocked) {
 		return false, nil
 	}
-	if iss.IssueDependenciesSummary.TotalBlockedBy == 0 {
-		return true, nil
+	if iss.IssueDependenciesSummary.TotalBlockedBy > 0 {
+		blocker, err := c.openBlocker(iss.Number)
+		if err != nil {
+			return false, err
+		}
+		if blocker != 0 {
+			fmt.Fprintf(c.log, "%s skipped: blocked by open %s\n", numberToKey(iss.Number), numberToKey(blocker))
+			return false, nil
+		}
 	}
-	blocker, err := c.openBlocker(iss.Number)
+	// A prerequisite named only in prose, or one that is an open PR rather than an
+	// issue, is invisible to the native relation. Working the ticket now would build
+	// on a base that changes underneath it when that PR merges (#82), so hold it.
+	prs, err := c.openPRs(iss.Body, iss.Number)
 	if err != nil {
 		return false, err
 	}
-	if blocker != 0 {
-		fmt.Fprintf(c.log, "%s skipped: blocked by open %s\n", numberToKey(iss.Number), numberToKey(blocker))
+	if len(prs) > 0 {
+		fmt.Fprintf(c.log, "%s skipped: builds on open PR %s\n", numberToKey(iss.Number), numberToKey(prs[0].Number))
 		return false, nil
 	}
 	return true, nil
