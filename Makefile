@@ -1,5 +1,5 @@
 # Agent harness — Go toolchain shortcuts. Requires Go 1.26+.
-.PHONY: build install uninstall base-image release test implementation review retrospective pipeline loop watch vet fmt fmt-check check-exec check-bash3 check-buildvcs check-ci check-scripts check tidy
+.PHONY: build install uninstall base-image release test implementation review retrospective pipeline loop watch vet fmt fmt-check check-exec check-bash3 check-buildvcs check-ci check-adr check-scripts check tidy
 
 # Build the tool binaries into ./bin.
 #
@@ -153,6 +153,12 @@ check-buildvcs:
 check-ci:
 	@./scripts/check-ci-runs-check.sh
 
+# Fail if two ADRs share a number, or an ADR-NNNN reference / adr/NNNN-<slug>.md
+# link names a file that doesn't exist. Parallel tickets each take the next free
+# number on their base, and a clean rebase lands both (#92).
+check-adr:
+	@./scripts/check-adr-numbers.sh
+
 # Run the agent-harness shell tests (scripts/test-*.sh) so a behavioral
 # regression in a load-bearing harness script (loop-start.sh, the check-* guards)
 # fails the gate instead of shipping green — the tests passed by hand but nothing
@@ -164,7 +170,7 @@ check-scripts:
 	@./scripts/run-script-tests.sh
 
 # The pre-push gate: format check, vet, the script guards, and the full test suite.
-check: fmt-check vet check-exec check-bash3 check-buildvcs check-ci check-scripts test
+check: fmt-check vet check-exec check-bash3 check-buildvcs check-ci check-adr check-scripts test
 
 tidy:
 	go mod tidy

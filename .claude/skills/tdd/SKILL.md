@@ -47,6 +47,10 @@ private helper is testing the wrong thing.
 1. Run `gofmt -l .` and then `make check`, each as its own Bash call with
    nothing appended. Both must be clean.
 2. Update docs the change makes stale (README, `docs/DESIGN.md`, an ADR).
+   Before numbering a new ADR, check `origin/main`'s `docs/adr/` (`git fetch`
+   first), not local main, and expect a sibling branch may take the same number;
+   `make check` (`scripts/check-adr-numbers.sh`) fails on a collision as the
+   backstop.
 3. Make ONE commit on the branch the prompt names. Subject: an imperative
    sentence describing the behaviour, ending with the ticket reference, e.g.
    `Give the ticket claim one owner: a per-run lease (#25)`. The body says why.

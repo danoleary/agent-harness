@@ -34,7 +34,7 @@ import (
 
 // The disk-reclaim and hard-abort shell-outs are all bounded, so a stalled `gh`,
 // a wedged package manager or an unresponsive Docker daemon can never hang the
-// between-ticket chores or the exit path (BEH-388, ADR-0005).
+// between-ticket chores or the exit path (BEH-388, ADR-0027).
 const (
 	// pruneTimeout bounds the merged-worktree prune, which makes one `gh pr view`
 	// per worktree — hence the more generous cap.
@@ -214,7 +214,7 @@ func (h *Daemon) CheckAccess() error {
 	return h.checkSource()
 }
 
-// --- disk reclaim (ADR-0005) ------------------------------------------------
+// --- disk reclaim (ADR-0027) ------------------------------------------------
 
 // FreeDisk statfs's PROJECT_PATH: always present, and on the same volume as the
 // worktrees under it, so it is the cheap gate for the whole reclaim ladder.

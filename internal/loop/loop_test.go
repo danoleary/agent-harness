@@ -1409,7 +1409,7 @@ func freeDiskSeq(vals ...uint64) func() (uint64, error) {
 }
 
 // TestDiskReclaimPrunesBelowThresholdBeforeSelecting is the tracer bullet for
-// ADR-0005: at the top of an iteration, when free disk is below the soft
+// ADR-0027: at the top of an iteration, when free disk is below the soft
 // DiskReclaimThreshold, the loop prunes merged worktrees BEFORE selecting the next
 // ticket. Here the first statfs reads below the threshold (→ prune) and the
 // re-check after the prune reads above it (→ no secondary cache prune). Prune must
@@ -1684,7 +1684,7 @@ type stubErr string
 func (e stubErr) Error() string { return string(e) }
 
 // TestDiskReclaimPruneFailureIsSwallowedAndBreakerUntouched proves reclaim is never a
-// ticket outcome (ADR-0005): a failing prune is narrated as a warning, the loop keeps
+// ticket outcome (ADR-0027): a failing prune is narrated as a warning, the loop keeps
 // running the queue, and the circuit breaker is never touched. With the most
 // aggressive threshold of 1, a reclaim failure that wrongly counted as a ticket
 // failure would trip the breaker after a single iteration — it must not. Two

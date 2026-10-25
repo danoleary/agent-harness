@@ -153,7 +153,7 @@ type CacheConfig struct {
 	Path   string `toml:"path"`
 	// PruneCommand is the Consumer's cache-reclaim command, run between tickets by
 	// the loop daemon as the cheap non-destructive rung of the disk-reclaim ladder
-	// (ADR-0005) — `pnpm store prune`, `dotnet nuget locals all --clear`, `go clean
+	// (ADR-0027) — `pnpm store prune`, `dotnet nuget locals all --clear`, `go clean
 	// -modcache`. It was a hardcoded `pnpm store prune` until BEH-641. Empty skips
 	// that rung entirely, leaving the worktree prune and the Docker prune.
 	//

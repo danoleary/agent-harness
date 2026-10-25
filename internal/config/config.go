@@ -163,7 +163,7 @@ type Host struct {
 	LoopClaimTTL time.Duration
 	// LoopDiskReclaimThreshold is the soft free-disk floor (bytes) below which the
 	// daemon proactively reclaims host disk between tickets — pruning merged worktrees
-	// before the hard 5 GiB sandbox preflight floor would refuse a launch (ADR-0005).
+	// before the hard 5 GiB sandbox preflight floor would refuse a launch (ADR-0027).
 	// It defaults above that floor with headroom; 0 disables reclaim entirely.
 	LoopDiskReclaimThreshold uint64
 
@@ -206,7 +206,7 @@ type Project struct {
 	// declared; BEH-635). Only meaningful when CacheVolume is set.
 	CacheMountPath string
 	// CachePruneCommand is the Consumer's host-side cache-reclaim command, run by
-	// the loop between tickets (ADR-0005). Empty skips that reclaim rung.
+	// the loop between tickets (ADR-0027). Empty skips that reclaim rung.
 	CachePruneCommand string
 	// BranchPrefix is the canonical worktree branch prefix (from the project
 	// config's branch_prefix, default "feat"). The harness keys verify/push/PR/
@@ -289,7 +289,7 @@ const (
 	defaultPRLoopLabel                = "agent-maintained"
 	defaultPRLoopMaxAttempts          = 3
 	// 8 GiB: the 5 GiB MinFreeDiskBytes sandbox floor plus headroom, so reclaim fires
-	// before a launch would ever be refused (ADR-0005).
+	// before a launch would ever be refused (ADR-0027).
 	defaultLoopDiskReclaimThreshold uint64 = 8 << 30
 )
 
