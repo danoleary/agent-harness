@@ -68,6 +68,7 @@ type Fake struct {
 	ResumedAdvice  string
 	AlreadyOnMain  bool
 	CreateErr      error
+	CheckoutErr    error
 	RemoveErr      error
 	StripErr       error
 	CheckpointErr  error
@@ -101,6 +102,7 @@ type Fake struct {
 
 	Agents  []AgentRun
 	Shells  []ShellRun
+	Watches []CIWatch
 	Filed   []string
 	Routed  []string
 	Calls   []string
@@ -182,6 +184,14 @@ func (f *Fake) CreateWorktree(slug string) error {
 	return f.CreateErr
 }
 
+func (f *Fake) CheckoutBranch(slug string) error {
+	f.record("checkout-branch %s", slug)
+	if f.CheckoutErr == nil {
+		f.Exists = true
+	}
+	return f.CheckoutErr
+}
+
 func (f *Fake) RemoveWorktree(slug string) error {
 	f.record("remove-worktree %s", slug)
 	if f.RemoveErr == nil {
@@ -257,6 +267,7 @@ func (f *Fake) OpenPRExists(string) bool       { return f.OpenPRThere }
 func (f *Fake) ChecksReadable() (bool, string) { return f.ChecksOK, f.ChecksDetail }
 
 func (f *Fake) WatchCI(w CIWatch) ci.Outcome {
+	f.Watches = append(f.Watches, w)
 	f.record("watch-ci %s", w.Slug)
 	if f.CIFn != nil {
 		return f.CIFn(w)

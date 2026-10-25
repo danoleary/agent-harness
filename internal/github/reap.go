@@ -56,6 +56,11 @@ func (c *Client) ListInProgressClaims() ([]tracker.InProgressClaim, error) {
 
 	out := make([]tracker.InProgressClaim, 0, len(issues))
 	for _, iss := range issues {
+		// The issues endpoint returns PRs too, and the PR loop holds a PR with the
+		// same label (ADR-0019): that is a PR lease, not a ticket claim.
+		if iss.PullRequest != nil {
+			continue
+		}
 		claim := tracker.InProgressClaim{Identifier: numberToKey(iss.Number)}
 		started, hasPR, err := c.timelineSignals(iss.Number)
 		if err != nil {

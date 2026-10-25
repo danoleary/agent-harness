@@ -48,3 +48,30 @@ func TestListInProgressClaimsDerivesFromTimeline(t *testing.T) {
 		t.Errorf("claim[1] = %+v, want #10 HasLinkedPR=false", claims[1])
 	}
 }
+
+// GitHub's issues endpoint also returns pull requests, and the PR loop holds a PR
+// with the same in-progress label (ADR-0019). A held PR is not a ticket claim, so
+// the ticket reaper must never see it — releasing it would strip a live PR lease.
+func TestListInProgressClaimsSkipsPullRequests(t *testing.T) {
+	tr, calls := fakeTransport(map[string]any{
+		claimsPath: []any{
+			map[string]any{"number": 9},
+			map[string]any{"number": 12, "pull_request": map[string]any{"url": "u"}},
+		},
+		"GET /repos/acme/widgets/issues/9/timeline?per_page=100": []any{},
+	})
+	c := NewClient(tr, "acme", "widgets", readyLabels)
+
+	claims, err := c.ListInProgressClaims()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(claims) != 1 || claims[0].Identifier != "#9" {
+		t.Errorf("claims = %+v, want only the issue #9", claims)
+	}
+	for _, call := range *calls {
+		if call.path == "/repos/acme/widgets/issues/12/timeline?per_page=100" {
+			t.Error("a held PR must not cost a timeline read")
+		}
+	}
+}

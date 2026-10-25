@@ -59,3 +59,15 @@ func TestOutputInDirRunsInGivenDirectory(t *testing.T) {
 		t.Fatalf("expected command to run in %q, ran in %q", want, got)
 	}
 }
+
+// `gh api --input -` reads its request body from stdin, so the bounded runner can
+// feed one; nil stdin behaves exactly like OutputInDir.
+func TestOutputInDirWithInputFeedsStdin(t *testing.T) {
+	stdout, _, err := OutputInDirWithInput(5*time.Second, "", []byte(`{"body":"hi"}`), "cat")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if string(stdout) != `{"body":"hi"}` {
+		t.Fatalf("stdout = %q, want the stdin echoed back", stdout)
+	}
+}

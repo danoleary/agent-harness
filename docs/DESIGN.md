@@ -473,6 +473,46 @@ loop:
   if 3 consecutive ticket failures -> exit + loud report (circuit breaker)
 ```
 
+## The PR loop
+
+`agent-harness loop --prs` (ADR-0019, step b; temporary until `loop <name>`) is the
+same daemon over a second Source and Pipeline (`internal/prloop`). It fixes open
+PRs that went red or conflicting after their review stage finished.
+
+```
+poll (Source github_prs, read-only judgement — also what --dry-run prints):
+  for each open PR:
+    skip fork | base != main | labelled blocked | held (in-progress label)
+    skip unless head on <branch_prefix>/  OR  labelled PR_LOOP_LABEL       // opt-in
+    skip if the ticket loop holds the branch (an In Progress ticket's slug)  // lease keyed on the branch
+    kind = conflict if mergeable=CONFLICTING/DIRTY, else ci if a check is red, else skip
+    skip if a marker comment already records (head sha, kind)               // a new push = a new item
+    attempts since the last hand-off >= PR_LOOP_MAX_ATTEMPTS
+      -> comment what was tried + label blocked (once), skip
+  first workable PR: add in-progress label (the lease), post the attempt marker
+
+pipeline (one PR, worktree .claude/worktrees/pr-<n> on the PR's head branch):
+  preflight; fetch main; fetch the branch, worktree add -B at origin's tip
+  head != the polled sha -> stop (the next poll sees the new head)
+  post_create (warn-only; 127/126 stops)
+  conflict: RebaseFix session            // internal/fix, shared with review
+    harness branch: replay onto origin/main;  human branch: merge origin/main in
+    verify.RebaseResolution -> all gates -> push --force-with-lease | push
+  both kinds: ci.WatchAndFix to a terminal verdict
+    red check: flake re-run, then CIFix session over the failing logs
+    -> committed fix -> all gates -> push (append-only)
+    a human branch is never reactively rebased (CIWatch.KeepHistory)
+  retrospective over the run's transcripts (if a session ran) -> route findings
+  remove the in-progress label; remove the worktree if clean
+```
+
+It writes its own stream (`logs/prs/loop.jsonl`, per-PR logs under
+`logs/prs/pr-<n>/`) and has its own sentinel (`PR_LOOP_STOP_FILE`), so it runs
+beside the ticket loop. A push is **Shipped** for the breaker, as a ticket's PR
+is; nothing pushed is **NoPR**. The reaper releases an `in-progress` label older
+than the claim TTL (timed by its attempt marker): the reaper runs only between
+this daemon's own items, so one PR loop per checkout.
+
 ## Key invariants & decisions
 
 - **Sequential only (v1).** One ticket in flight at a time. Worktrees give
@@ -1224,6 +1264,9 @@ reader over a structured stream rather than a `--tui` flag on the daemon.
   | `LOOP_CLAIM_TTL_MS` | `1800000` (30 min) | grace period after which an In Progress claim with no branch/PR is reaped back to Todo (§Stale-claim reaper) |
   | `LOOP_KEEP_AWAKE` | `0` (off) | read by `scripts/loop-start.sh`, not the daemon: `1` attaches `caffeinate -is -w <loop pid>` so macOS idle sleep can't freeze a detached loop; released when the loop exits. `-s` needs AC power; a closed lid still sleeps outside clamshell mode; no `caffeinate` → warn and launch anyway |
   | `STOP_FILE` | `.agent-harness/STOP` | sentinel path; cleared at clean startup, `touch` to wind down |
+  | `PR_LOOP_LABEL` | `agent-maintained` | `loop --prs`: the label that opts a PR whose head is off `branch_prefix` in to the PR loop (ADR-0019) |
+  | `PR_LOOP_MAX_ATTEMPTS` | `3` | `loop --prs`: attempts per PR; past it the loop comments what it tried and labels the PR `blocked` |
+  | `PR_LOOP_STOP_FILE` | `.agent-harness/STOP-prs` | `loop --prs`: its own sentinel, so it winds down independently of the ticket loop |
 
   `LOOP_MAX_TICKETS`/`LOOP_MAX_RUNTIME_MS` default to **unlimited** because the loop
   is deliberately long-running (§The loop) — they exist as opt-in insurance for an

@@ -377,3 +377,24 @@ func TestPruneMergedWorktreesSurfacesAMissingScript(t *testing.T) {
 		t.Errorf("removed = %d, want 0 when the prune never ran", removed)
 	}
 }
+
+// The PR loop keys its lease on the branch (ADR-0019), so it asks the ticket loop
+// which branches it holds: every agent-claimed In Progress ticket's slugged branch.
+func TestHeldBranchesMapsEachClaimToItsBranch(t *testing.T) {
+	trk := newQueueTracker()
+	trk.claims = []tracker.InProgressClaim{{Identifier: "#7"}, {Identifier: "PROJ-2"}}
+	h := sourceFor(t, config.Config{Project: config.Project{BranchPrefix: "feat"}}, trk)
+
+	got, err := h.HeldBranches()
+	if err != nil {
+		t.Fatalf("HeldBranches() error = %v", err)
+	}
+	if len(got) != 2 || got["feat/gh-7"] != "#7" || got["feat/proj-2"] != "PROJ-2" {
+		t.Errorf("held = %v, want feat/gh-7 → #7 and feat/proj-2 → PROJ-2", got)
+	}
+
+	trk.claimsErr = errors.New("tracker down")
+	if _, err := h.HeldBranches(); err == nil {
+		t.Error("a failed claim read must be returned, not read as nothing held")
+	}
+}

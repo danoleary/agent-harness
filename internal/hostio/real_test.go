@@ -145,3 +145,25 @@ func TestNewFakeIsAHealthyHost(t *testing.T) {
 		t.Errorf("Tracker = %v, want the scripted tracker", err)
 	}
 }
+
+// ADR-0019: the PR loop's Host binds one slug to the PR's head branch, which the
+// harness did not name; the worktree path stays slug-keyed and every other slug
+// keeps the prefix-derived branch.
+func TestNewOnBranchBindsOneSlugToTheNamedBranch(t *testing.T) {
+	log, err := runlog.New(t.TempDir(), "PR-12")
+	if err != nil {
+		t.Fatalf("runlog.New: %v", err)
+	}
+	cfg := config.Config{Host: config.Host{ProjectPath: "/p"}, Project: config.Project{BranchPrefix: "feat"}}
+	h := NewOnBranch(cfg, log, "20260920-101500", false, "pr-12", "alice/widget")
+
+	if got := h.BranchName("pr-12"); got != "alice/widget" {
+		t.Errorf("BranchName(pr-12) = %q, want the PR's head branch", got)
+	}
+	if got := filepath.Base(h.WorktreePath("pr-12")); got != "pr-12" {
+		t.Errorf("WorktreePath(pr-12) ends in %q, want the slug", got)
+	}
+	if got := h.BranchName("proj-7"); got != "feat/proj-7" {
+		t.Errorf("BranchName(proj-7) = %q, want an unbound slug to keep its prefix", got)
+	}
+}

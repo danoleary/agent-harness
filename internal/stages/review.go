@@ -7,9 +7,9 @@ import (
 
 	"github.com/danoleary/agent-harness/internal/ci"
 	"github.com/danoleary/agent-harness/internal/config"
+	"github.com/danoleary/agent-harness/internal/fix"
 	"github.com/danoleary/agent-harness/internal/hostio"
 	"github.com/danoleary/agent-harness/internal/loopstream"
-	"github.com/danoleary/agent-harness/internal/prompt"
 	"github.com/danoleary/agent-harness/internal/runlog"
 	"github.com/danoleary/agent-harness/internal/session"
 	"github.com/danoleary/agent-harness/internal/ship"
@@ -39,35 +39,6 @@ const (
 	oomRetryBackoff = 10 * time.Second
 )
 
-// gateResult is the outcome of re-running the config-declared named gate list
-// host-side (BEH-634). Outcome is the failing gate's session outcome, or — when
-// every gate is green — the last gate's. FailedGate names the first gate that
-// exited non-zero (empty when all passed); it is what the log surfaces and what
-// flows into the CI-fix diagnosis, matching how internal/ci names a failing check.
-type gateResult struct {
-	Outcome    session.Outcome
-	FailedGate string
-}
-
-// runGates runs each configured named gate in order via runOne, stopping at the
-// first non-zero exit. runOne launches one gate's throwaway container (with its
-// own OOM retry) and returns its outcome; runGates is the pure orchestration over
-// it, so it is unit-testable with an injected runner. An empty gate list — a
-// Consumer misconfiguration guarded upstream by config.validate — yields a green
-// zero result. The first red gate's name is surfaced so it can flow into the log
-// + CI-fix diagnosis; the gates after it are skipped (the push gate only needs the
-// first red to withhold the push).
-func runGates(gates []config.Gate, runOne func(config.Gate) session.Outcome) gateResult {
-	var last session.Outcome
-	for _, g := range gates {
-		last = runOne(g)
-		if last.ExitCode != 0 {
-			return gateResult{Outcome: last, FailedGate: g.Name}
-		}
-	}
-	return gateResult{Outcome: last}
-}
-
 // reviewVerdictMaxAttempts bounds the total review-session launches when a session
 // exits cleanly (code 0) one turn short of its verdict over an already-verified,
 // clean, gate-green worktree (BEH-624). The initial session plus one in-stage
@@ -75,18 +46,6 @@ func runGates(gates []config.Gate, runOne func(config.Gate) session.Outcome) gat
 // re-launch just re-reads the same diff and reaches its verdict; a persistent
 // no-verdict still falls through to fail-closed (the worktree is kept either way).
 const reviewVerdictMaxAttempts = 2
-
-// gateOOM* bound the OOM-kill retry of the heavier host-side gate (install + check
-// + build) separately (BEH-530). A full build's footprint is far larger than an
-// install's, so the install's short fixed beat doesn't transfer: on BEH-501 three
-// back-to-back retries 10s apart died progressively EARLIER (memory pressure
-// compounding, not recovering). An exponential backoff (30s → 60s → 120s) over one
-// more attempt gives the starved Docker VM real time to reclaim before each retry.
-const (
-	gateOOMMaxAttempts = 4
-	gateOOMBackoffBase = 30 * time.Second
-	gateOOMBackoffCap  = 120 * time.Second
-)
 
 // Review runs the second stage: over the worktree implementation left behind, run
 // a *cold* /review-worktree session (fixes committed locally only), then —
@@ -229,47 +188,13 @@ func Review(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Res
 		return res.Outcome
 	}
 
-	// runHostGate re-runs the config-declared named gate list host-side in throwaway
-	// containers — one per gate, in order, stopping at the first red (BEH-634) — and
-	// reports the first failing gate by name (gateResult.FailedGate). Each gate runs
-	// under its own OOM-retry (BEH-530). It is keyed by a label prefix so the whole
-	// gate run can happen more than once per stage (the pre-push conflict path
-	// re-gates the resolved tree — BEH-581; the BEH-624 review re-launch re-gates the
-	// possibly-rewritten tree).
-	//
-	// The gate's exit code is the ONLY thing that authorises a push — never the
-	// agent's report. A 137 OOM-kill is environmental, never the diff: the gate's own
-	// install (and even a typecheck) can be SIGKILLed under memory pressure, which
-	// would flip a genuinely green branch red and push nothing. A real gate failure
-	// returns a non-137 code and is final on the first attempt.
-	runHostGate := func(labelPrefix string) gateResult {
-		// A docs-only diff (root markdown / docs/**) feeds none of the gates, so the heavy
-		// host re-run validates nothing a prose edit could break — skip it and treat the
-		// gate as green (BEH-687). Read fresh here, not once up front: an earlier
-		// review/conflict session may have committed a code edit, and BranchDocsOnly over
-		// the current tree (which `git diff origin/main` reads including uncommitted work)
-		// reflects that — fail-safe to running the full gate on any doubt.
-		if h.BranchDocsOnly(slug) {
-			log.Event("review · host gate skipped — diff touches only docs/prose paths no gate depends on (BEH-687)")
-			return gateResult{}
-		}
-		return runGates(cfg.Gates, func(g config.Gate) session.Outcome {
-			log.Event(fmt.Sprintf("review · gate %q: %s", g.Name, g.Command))
-			gateBackoff := session.ExponentialBackoff(gateOOMBackoffBase, gateOOMBackoffCap)
-			run := gateRun(cfg, worktreePath, labelPrefix, g)
-			run.Retry = hostio.Retry{
-				MaxAttempts: gateOOMMaxAttempts,
-				Backoff:     gateBackoff,
-				Notify: func(attempt int, waited time.Duration) {
-					log.Event(fmt.Sprintf(
-						"review ↻ host-side gate %q OOM-killed (exit 137) — retry %d/%d after %s (BEH-530)",
-						g.Name, attempt-1, gateOOMMaxAttempts-1, waited,
-					))
-				},
-			}
-			return h.Shell(run).Outcome
-		})
-	}
+	// The host gate re-runs the config-declared Gates in throwaway containers and is
+	// the ONLY thing that authorises a push (internal/fix). It is keyed by a label
+	// prefix so it can run more than once per stage: the pre-push conflict path
+	// re-gates the resolved tree (BEH-581) and the BEH-624 review re-launch re-gates
+	// the possibly-rewritten tree.
+	fixes := fix.Env{Host: h, Cfg: cfg, Log: log, Who: reviewSession}
+	target := fix.Target{Slug: slug, Ticket: t}
 
 	reviewOutcome := runReviewSession(1)
 
@@ -280,7 +205,7 @@ func Review(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Res
 	}
 
 	log.Event(fmt.Sprintf("re-running gates host-side (cap %d min)", int(cfg.ReviewTimeout.Minutes())))
-	gateRes := runHostGate(gateStep)
+	gateRes := fixes.Gates(slug, gateStep)
 	gateExit := gateRes.Outcome.ExitCode
 
 	// verify.Review is the whole push gate: it re-reads the worktree's git state for
@@ -310,7 +235,7 @@ func Review(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Res
 			attempt-1, reviewVerdictMaxAttempts-1,
 		))
 		reviewOutcome = runReviewSession(attempt)
-		gateRes = runHostGate(fmt.Sprintf("%s-retry%d", gateStep, attempt))
+		gateRes = fixes.Gates(slug, fmt.Sprintf("%s-retry%d", gateStep, attempt))
 		gateExit = gateRes.Outcome.ExitCode
 		result = verify.Review(h, slug, gateRes.Outcome, reviewOutcome)
 	}
@@ -416,13 +341,12 @@ func Review(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Res
 	//
 	// The review contributes one thing: a genuine content conflict no longer dead-ends
 	// (BEH-581). Rather than strand ~30 min of reviewed, gate-green work, it launches a
-	// bounded sandboxed conflict-resolution session over the worktree (mirroring the
-	// post-PR ciFixRunner) and re-runs the host gate on the resolved tree before ship
-	// pushes. The hook returns false when it could not land a clean, re-gated rebase,
+	// bounded sandboxed conflict-resolution session over the worktree (internal/fix,
+	// beside the post-PR CI fix) and re-runs the host gate on the resolved tree
+	// before ship pushes. The hook returns false when it could not land a clean, re-gated rebase,
 	// having already left a tracker breadcrumb so the work surfaces autonomously.
 	landing := ship.Land(h, log, slug, t, func() bool {
-		return resolvePrePushConflict(h, cfg, log, slug, t, comment,
-			func() session.Outcome { return runHostGate(gateStep + "-postrebase").Outcome })
+		return resolvePrePushConflict(fixes, target, comment)
 	})
 	switch landing.Verdict {
 	case ship.Disjoint:
@@ -474,7 +398,7 @@ func Review(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Res
 	// diagnose+fix happens in the sandbox, which is why Fix is the only thing the
 	// stage supplies.
 	log.Event("watching CI for " + h.BranchName(slug) + " …")
-	ciResult := h.WatchCI(hostio.CIWatch{Slug: slug, Fix: ciFixRunner(h, cfg, log, slug, t)})
+	ciResult := h.WatchCI(hostio.CIWatch{Slug: slug, Fix: fixes.CI(target)})
 	// Zero-net-diff short-circuit (BEH-602): the branch became a no-op against the
 	// latest origin/main only AFTER the pre-push rebase (a sibling PR landed the same
 	// fix during the multi-minute gate, which the pre-rebase BEH-603 push-gate check
@@ -512,129 +436,35 @@ func Review(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Res
 	return Result{OK: true, Disposition: Shipped}
 }
 
-// ciFixRunner returns the CI watch's fix callback: it launches a sandboxed Claude
-// session over the existing worktree, steered by the CIFix prompt with the fetched
-// failing logs, then enforces ground truth — a non-zero session exit or a worktree
-// left dirty (the agent didn't commit) is a failure, so the harness never pushes
-// an unverified or self-reported-only fix. Each attempt gets a unique label, from
-// which the Runner mints the container name and transcript.
-func ciFixRunner(h hostio.Host, cfg config.Config, log *runlog.Logger, slug string, t ticket.Ticket) func(string, bool) error {
-	attempt := 0
-	return func(ciLogs string, logAvailable bool) error {
-		attempt++
-		// Capture the tip before the session so we can tell afterwards whether the
-		// agent actually committed a fix or correctly concluded there was nothing to
-		// fix (BEH-561). A read failure leaves headBefore empty, which degrades to
-		// "treat any HEAD as a real commit" — never a spurious empty commit.
-		headBefore, _ := h.HeadSHA(slug)
-		log.Event(fmt.Sprintf("CI red — launching auto-fix session %d (cap %d min active)", attempt, int(cfg.ReviewTimeout.Minutes())))
-		res := h.Agent(hostio.AgentRun{
-			Label: fmt.Sprintf("cifix-%d", attempt),
-			Model: cfg.ReviewModel,
-			Prompt: prompt.For(prompt.CIFix, prompt.Context{
-				Ticket: t, Slug: slug, BranchPrefix: cfg.BranchPrefix, Tracker: cfg.Tracker.Kind, WorktreePath: h.WorktreePath(slug),
-				CILogs: ciLogs, CILogAvailable: logAvailable,
-			}),
-			Cap: cfg.ReviewTimeout,
-		})
-		if err := fixSessionError(res.Outcome, attempt); err != nil {
-			return err
-		}
-		// Ground truth, never the agent's say-so: the fix must be committed (clean
-		// worktree) or the harness has nothing trustworthy to push.
-		if !h.WorktreeClean(slug) {
-			return fmt.Errorf("auto-fix session %d left uncommitted changes — not pushing", attempt)
-		}
-		// The agent may have correctly concluded the red is not a code defect (a
-		// cancelled/superseded/flaky run) and committed nothing. Don't force a
-		// speculative diff: add an empty commit so the re-push gives CI a fresh HEAD
-		// to re-run against; a no-op if a real fix moved HEAD (BEH-561).
-		if err := h.EnsureCIRerunCommit(slug, headBefore); err != nil {
-			return fmt.Errorf("auto-fix session %d: re-trigger commit failed: %w", attempt, err)
-		}
-		return nil
-	}
-}
-
-// resolvePrePushConflict launches a bounded sandboxed conflict-resolution session
-// when the proactive pre-push rebase hits a genuine content conflict (BEH-581) —
-// the dead-end that previously stranded a fully-reviewed, gate-green branch in a
-// worktree with no autonomous recovery. It mirrors ciFixRunner's pattern: a Claude
-// session over the existing worktree (steered by the RebaseFix prompt to rebase onto
-// origin/main, resolve, and commit), then ground-truth enforcement — the verdict
-// is never the agent's say-so but verify.RebaseResolution over the worktree's git
-// state (session exit, clean tree, branch actually rebased). On a clean resolution
-// it re-runs the host gate over the rewritten tree (regate) and only returns true
-// when that gate is green and the worktree clean, authorising the push. Any failure
-// keeps the worktree and leaves a tracker breadcrumb so the work surfaces (a
-// spending-cap abort defers quietly — it retries after reset, not a conflict).
-func resolvePrePushConflict(
-	h hostio.Host, cfg config.Config, log *runlog.Logger,
-	slug string, t ticket.Ticket, comment func(string),
-	regate func() session.Outcome,
-) bool {
-	log.Event("review ↻ pre-push rebase hit a content conflict — launching a sandboxed conflict-resolution session (BEH-581)")
-	log.Event(fmt.Sprintf("launching conflict-resolution session (cap %d min active)", int(cfg.ReviewTimeout.Minutes())))
-	res := h.Agent(hostio.AgentRun{
-		Label: "rebasefix",
-		Model: cfg.ReviewModel,
-		Prompt: prompt.For(prompt.RebaseFix, prompt.Context{
-			Ticket: t, Slug: slug, BranchPrefix: cfg.BranchPrefix, Tracker: cfg.Tracker.Kind, WorktreePath: h.WorktreePath(slug),
-		}),
-		Cap: cfg.ReviewTimeout,
+// resolvePrePushConflict launches the bounded sandboxed conflict resolution
+// (internal/fix) when the proactive pre-push rebase hits a genuine content
+// conflict (BEH-581) — the dead-end that previously stranded a fully-reviewed,
+// gate-green branch in a worktree with no autonomous recovery. The branch is the
+// harness's own, so it is replayed (fix.Rebase) and ship force-pushes it. It
+// returns true only when the resolution is verified and the re-gate over the
+// rewritten tree is green, authorising the push. Any other failure keeps the
+// worktree and leaves a tracker breadcrumb so the work surfaces (a spending-cap
+// abort defers quietly — it retries after reset, not a conflict).
+func resolvePrePushConflict(fixes fix.Env, target fix.Target, comment func(string)) bool {
+	fixes.Log.Event("review ↻ pre-push rebase hit a content conflict — launching a sandboxed conflict-resolution session (BEH-581)")
+	res := fixes.ResolveConflict(fix.Conflict{
+		Target:   target,
+		Strategy: fix.Rebase,
+		Regate:   func() fix.GateResult { return fixes.Gates(target.Slug, gateStep+"-postrebase") },
 	})
-	log.Event(fmt.Sprintf("conflict-resolution session exited (code %d)", res.ExitCode))
-
-	// Ground truth over the worktree, never the agent's report: did the session
-	// actually rebase onto origin/main and leave a clean tree?
-	verdict := verify.RebaseResolution(h, slug, res.Outcome)
-	if !verdict.OK {
-		// Restore a clean, on-branch worktree for the next resume (a failed session may
-		// have left it mid-rebase). Best-effort: a no-op when none is in progress.
-		h.AbortRebase(slug)
-		if verdict.SpendingCapAbort {
-			// Retry-after-reset, not a content conflict: defer quietly, no breadcrumb.
-			log.Event("review ↻ conflict resolution deferred — spending cap reached, retry after reset (BEH-494) — keeping worktree")
-			return false
-		}
-		log.Event("review ✗ " + verdict.Reason + " — keeping worktree, nothing pushed")
-		comment(fmt.Sprintf(
-			"Pre-push auto-rebase onto `main` could not be completed for `%s`: %s This branch passed cold review and the harness gate, but it now needs a manual rebase onto `main`. It is waiting in a worktree. (BEH-581)",
-			h.BranchName(slug), verdict.Reason,
-		))
-		return false
-	}
-	log.Event("review ✓ " + verdict.Reason)
-
-	// The resolution rewrote the tree, so the earlier host-gate result is stale —
-	// re-run it before trusting the push (the ticket's "re-run the gate before
-	// pushing"). Push only on a green gate over a still-clean worktree.
-	gateOutcome := regate()
-	if gateOutcome.ExitCode != 0 || !h.WorktreeClean(slug) {
-		log.Event(fmt.Sprintf("review ✗ post-rebase gate re-run failed (exit %d) — keeping worktree, nothing pushed", gateOutcome.ExitCode))
+	branch := fixes.Host.BranchName(target.Slug)
+	switch {
+	case res.OK, res.SpendingCapAbort:
+	case res.Resolved:
 		comment(fmt.Sprintf(
 			"Pre-push conflict was auto-resolved on `%s`, but the post-rebase gate re-run failed (exit %d). The rebased branch is waiting in a worktree for a look. (BEH-581)",
-			h.BranchName(slug), gateOutcome.ExitCode,
+			branch, res.Gate.Outcome.ExitCode,
 		))
-		return false
+	default:
+		comment(fmt.Sprintf(
+			"Pre-push auto-rebase onto `main` could not be completed for `%s`: %s This branch passed cold review and the harness gate, but it now needs a manual rebase onto `main`. It is waiting in a worktree. (BEH-581)",
+			branch, res.Reason,
+		))
 	}
-	log.Event("review ✓ post-rebase gate re-run is green — clear to push")
-	return true
-}
-
-// fixSessionError maps a finished auto-fix session's outcome to the error the
-// ci.Driver.Fix callback should return — nil if the session ran cleanly and the
-// caller should proceed to the ground-truth (committed-fix) checks. A spending-cap
-// abort (BEH-571) is its own retry-after-reset class, so it is surfaced as
-// ci.ErrSpendingCapActive and takes precedence over the exit code (a cap abort
-// also exits non-zero) — letting WatchAndFix defer rather than count the 1-second
-// no-op as a fix-attempt failure.
-func fixSessionError(outcome session.Outcome, attempt int) error {
-	if outcome.SpendingCapAbort {
-		return ci.ErrSpendingCapActive
-	}
-	if outcome.ExitCode != 0 {
-		return fmt.Errorf("auto-fix session %d exited %d", attempt, outcome.ExitCode)
-	}
-	return nil
+	return res.OK
 }
