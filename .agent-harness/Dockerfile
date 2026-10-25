@@ -4,7 +4,7 @@
 #
 # Pin the IMMUTABLE semver tag, never `:latest`, so a base bump is a deliberate,
 # reviewable edit rather than a silent floating pull.
-FROM ghcr.io/danoleary/agent-harness-base:0.6.1
+FROM ghcr.io/danoleary/agent-harness-base:0.6.2
 
 # Match go.mod's `go` line. TARGETARCH is set by BuildKit (amd64 | arm64).
 ARG GO_VERSION=1.26.2
