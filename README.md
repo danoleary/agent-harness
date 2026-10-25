@@ -75,6 +75,10 @@ agent-harness watch      # read-only live view of the current ticket and stage
 touch .agent-harness/STOP   # finish the current ticket, then stop
 ```
 
+`agent-harness pipeline <KEY>` runs one named ticket instead of the next one. In
+a foreground run, Ctrl-C once stops after the current ticket; twice kills the
+container now and keeps the worktree.
+
 `agent-harness --help` lists every command. Each one takes `--verbose` (stream
 the agent transcript) and `--dry-run`. A ticket's transcripts and event stream
 are in `.agent-harness/logs/<KEY>/`.
