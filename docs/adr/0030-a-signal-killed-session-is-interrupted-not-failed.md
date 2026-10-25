@@ -37,9 +37,10 @@ in one has its own Disposition, Interrupted.**
   checkpoint commit, no release and no findings filing. The worktree and the claim
   are left as the session left them.
 - The pipeline stops at an Interrupted Stage. It runs no later Stage, not even the
-  retrospective. This is the one exception to "the retrospective always runs". The
-  fold places Interrupted after the other signals, so a review that already
-  shipped keeps its ship if the retrospective is interrupted.
+  retrospective. This is the one exception to "the retrospective always runs". An
+  interrupted retrospective ran after the other Stages reached their verdicts, so
+  it is left out of the fold: a shipped review keeps its ship, and a failed
+  implementation stays NoPR rather than becoming an interruption.
 - The loop leaves an Interrupted item alone. It does not release the claim, does
   not try the host-side finish of BEH-713, and posts no "no PR" breadcrumb. It
   backs off one poll interval and selects again. The breaker does not count it.

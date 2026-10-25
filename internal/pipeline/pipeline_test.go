@@ -475,3 +475,23 @@ func TestRunInterruptedRetrospectiveKeepsTheShip(t *testing.T) {
 		t.Errorf("disposition = %v, want %v", out.Disposition, stages.Shipped)
 	}
 }
+
+// A retrospective interrupted after a failed implementation does not turn the
+// failure into an interruption: the slice is still NoPR, so the loop releases the
+// claim and the breaker counts it.
+func TestRunInterruptedRetrospectiveKeepsTheFailure(t *testing.T) {
+	r := &recorder{}
+	out := Run(Deps{
+		FetchMain:      func() error { return nil },
+		Implementation: r.stage("impl", stages.Result{}),
+		Review:         r.stage("review", stages.Result{OK: true}),
+		Retrospective:  r.stage("retro", interruptedBy143(t)),
+		Log:            r,
+	})
+	if out.Disposition != stages.NoPR {
+		t.Errorf("disposition = %v, want %v", out.Disposition, stages.NoPR)
+	}
+	if !r.saw("retrospective interrupted by signal 15") {
+		t.Errorf("no retrospective interruption narration; events = %v", r.events)
+	}
+}

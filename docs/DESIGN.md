@@ -420,8 +420,10 @@ loop:
 
   // The run's one Disposition (stages.Disposition) decides everything below: the three
   // stage results fold into exactly one of Shipped / RecommendClose / CapAborted /
-  // PreflightAborted / Interrupted / NoPR, in that precedence — a stage that reached a verdict (shipped,
-  // or "this branch is a no-op") outranks a later stage's environmental abort.
+  // PreflightAborted / NoPR, in that precedence — a stage that reached a verdict (shipped,
+  // or "this branch is a no-op") outranks a later stage's environmental abort. An interrupted
+  // implementation or review makes the run Interrupted; an interrupted retrospective is left
+  // out of the fold, so the earlier stages' verdict stands (ADR-0030).
 
   // SPENDING-CAP ABORT is a control-flow signal, NOT a ticket failure (see invariant below).
   // Any stage aborted by an external Anthropic spending cap, with nothing shipped:

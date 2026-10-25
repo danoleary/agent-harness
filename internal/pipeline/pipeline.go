@@ -127,11 +127,21 @@ func Run(d Deps) stages.Result {
 		narrateErr(d.Log, "retrospective", retro)
 	}
 
+	// An interrupted retrospective ran last, after implementation and review had
+	// already reached their verdicts, so it does not overrule them: a slice whose
+	// implementation failed is still a NoPR the loop releases and the breaker counts,
+	// not an interruption that strands the claim (#99).
+	folded := fold(impl, review, retro)
+	if retro.Disposition == stages.Interrupted {
+		d.Log.Event(fmt.Sprintf("pipeline ⏸ retrospective interrupted by signal %d (%s) — the earlier stages' verdict stands (#99)", int(retro.Signal), retro.Signal))
+		folded = fold(impl, review)
+	}
+
 	// One folded Result for the whole slice: OK iff every stage that *ran* did its
 	// job, and one Disposition for the loop to act on.
 	return stages.Result{
 		OK:          impl.OK && (!reviewRan || review.OK) && retro.OK,
-		Disposition: fold(impl, review, retro),
+		Disposition: folded,
 		CapResetAt:  firstResetTime(impl, review, retro),
 	}
 }
@@ -156,11 +166,11 @@ func interrupted(log Narrator, stage string, res stages.Result) stages.Result {
 // abort anywhere else is the run's story. PreflightAborted sits last of the
 // signals because a preflight abort skips review entirely, so it only ever
 // competes with a retrospective abort, which the loop has always let win. An
-// interruption ends the slice at the Stage it struck, so it can only meet an
-// earlier Stage's verdict — and a review that already shipped keeps its ship.
+// Interrupted stage never reaches the fold: Run returns at an interrupted
+// implementation or review, and drops an interrupted retrospective from it.
 func fold(stagesInOrder ...stages.Result) stages.Disposition {
 	for _, want := range []stages.Disposition{
-		stages.Shipped, stages.RecommendClose, stages.CapAborted, stages.PreflightAborted, stages.Interrupted,
+		stages.Shipped, stages.RecommendClose, stages.CapAborted, stages.PreflightAborted,
 	} {
 		for _, s := range stagesInOrder {
 			if s.Disposition == want {
