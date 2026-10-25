@@ -53,14 +53,23 @@ func TestListInProgressClaimsDerivesFromTimeline(t *testing.T) {
 // that cross-referenced the issue before the current claim (say, an earlier merged
 // ADR PR that mentioned it) is not evidence of this claim's work, so it must not
 // set HasLinkedPR — otherwise a dead claim past the TTL with no branch is never
-// reaped. A cross-reference at or after the claim still counts, and one whose time
+// reaped. Nor is a merged PR, even one that mentioned the issue mid-claim. An
+// unmerged cross-reference at or after the claim still counts, and one whose time
 // cannot be read counts too, failing safe toward not-reaping.
 func TestListInProgressClaimsIgnoresPRsThatPredateTheClaim(t *testing.T) {
 	prRef := func(number int, at string) map[string]any {
 		return map[string]any{"event": "cross-referenced", "created_at": at, "source": map[string]any{
 			"type": "issue", "issue": map[string]any{
+				"number": number, "state": "open",
+				"pull_request": map[string]any{"url": "u", "merged_at": nil},
+			},
+		}}
+	}
+	mergedPRRef := func(number int, at string) map[string]any {
+		return map[string]any{"event": "cross-referenced", "created_at": at, "source": map[string]any{
+			"type": "issue", "issue": map[string]any{
 				"number": number, "state": "closed",
-				"pull_request": map[string]any{"url": "u", "merged_at": "2026-10-24T12:00:00Z"},
+				"pull_request": map[string]any{"url": "u", "merged_at": "2026-10-25T01:00:00Z"},
 			},
 		}}
 	}
@@ -73,10 +82,11 @@ func TestListInProgressClaimsIgnoresPRsThatPredateTheClaim(t *testing.T) {
 			map[string]any{"number": 75},
 			map[string]any{"number": 76},
 			map[string]any{"number": 77},
+			map[string]any{"number": 78},
 		},
 		// An older merged PR mentioned the issue before it was claimed.
 		"GET /repos/acme/widgets/issues/74/timeline?per_page=100": []any{
-			prRef(72, "2026-10-24T09:00:00Z"),
+			mergedPRRef(72, "2026-10-24T09:00:00Z"),
 			inProgress("2026-10-25T00:32:00Z"),
 		},
 		// A PR opened by an earlier claim, then the issue was re-claimed.
@@ -95,6 +105,13 @@ func TestListInProgressClaimsIgnoresPRsThatPredateTheClaim(t *testing.T) {
 			inProgress("2026-10-25T00:32:00Z"),
 			prRef(91, ""),
 		},
+		// The #74 case: an unrelated PR mentioned the issue mid-claim and has since
+		// merged. Had it been this claim's PR ("Resolves #78"), the merge would have
+		// closed the issue and taken it out of the claimed set.
+		"GET /repos/acme/widgets/issues/78/timeline?per_page=100": []any{
+			inProgress("2026-10-25T00:32:00Z"),
+			mergedPRRef(84, "2026-10-25T00:38:00Z"),
+		},
 	})
 	c := NewClient(tr, "acme", "widgets", readyLabels)
 
@@ -102,7 +119,7 @@ func TestListInProgressClaimsIgnoresPRsThatPredateTheClaim(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	want := map[string]bool{"#74": false, "#75": false, "#76": true, "#77": true}
+	want := map[string]bool{"#74": false, "#75": false, "#76": true, "#77": true, "#78": false}
 	if len(claims) != len(want) {
 		t.Fatalf("expected %d claims, got %d: %+v", len(want), len(claims), claims)
 	}
