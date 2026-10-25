@@ -954,3 +954,68 @@ func TestDockerfileFingerprintTracksContent(t *testing.T) {
 		t.Errorf("fingerprints %q and %q should be non-empty and differ", fa, fb)
 	}
 }
+
+func TestBranchImageTagReplacesTheTagWithTheFingerprint(t *testing.T) {
+	fp := "0123456789abcdef0123456789abcdef"
+	for _, tc := range []struct{ image, want string }{
+		{"agent-harness-self:latest", "agent-harness-self:branch-0123456789ab"},
+		{"agent-harness-self", "agent-harness-self:branch-0123456789ab"},
+		{"localhost:5000/team/img:1.2", "localhost:5000/team/img:branch-0123456789ab"},
+		{"localhost:5000/team/img", "localhost:5000/team/img:branch-0123456789ab"},
+		{"img@sha256:feed", "img:branch-0123456789ab"},
+	} {
+		if got := BranchImageTag(tc.image, fp); got != tc.want {
+			t.Errorf("BranchImageTag(%q) = %q, want %q", tc.image, got, tc.want)
+		}
+	}
+}
+
+// writeDockerfile puts a Dockerfile at root/rel and returns its path.
+func writeDockerfile(t *testing.T, root, rel, body string) string {
+	t.Helper()
+	p := filepath.Join(root, rel)
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// #61: a branch whose diff IS the sandbox Dockerfile must have its prep and gates
+// run in an image built from that Dockerfile, not the checkout's pre-change one.
+func TestWorktreeImageIsBranchScopedOnlyWhenTheBranchChangedTheDockerfile(t *testing.T) {
+	const rel = ".agent-harness/Dockerfile"
+	checkout, worktree := t.TempDir(), t.TempDir()
+	writeDockerfile(t, checkout, rel, "FROM base:0.5.0\n")
+
+	t.Run("same Dockerfile runs the checkout image", func(t *testing.T) {
+		wt := t.TempDir()
+		writeDockerfile(t, wt, rel, "FROM base:0.5.0\n")
+		if got, branch := WorktreeImage("img:latest", checkout, wt, rel); got != "img:latest" || branch {
+			t.Errorf("WorktreeImage = %q, %v; want the checkout image", got, branch)
+		}
+	})
+
+	t.Run("changed Dockerfile runs a branch image", func(t *testing.T) {
+		p := writeDockerfile(t, worktree, rel, "FROM base:0.6.0\nRUN apt-get install -y golang\n")
+		fp, _ := DockerfileFingerprint(p)
+		got, branch := WorktreeImage("img:latest", checkout, worktree, rel)
+		if want := BranchImageTag("img:latest", fp); got != want || !branch {
+			t.Errorf("WorktreeImage = %q, %v; want %q, true", got, branch, want)
+		}
+	})
+
+	t.Run("a prebuilt image has no Dockerfile to compare", func(t *testing.T) {
+		if got, branch := WorktreeImage("ghcr.io/x/img:1", checkout, worktree, ""); got != "ghcr.io/x/img:1" || branch {
+			t.Errorf("WorktreeImage = %q, %v; want the prebuilt image", got, branch)
+		}
+	})
+
+	t.Run("a worktree with no Dockerfile runs the checkout image", func(t *testing.T) {
+		if got, branch := WorktreeImage("img:latest", checkout, t.TempDir(), rel); got != "img:latest" || branch {
+			t.Errorf("WorktreeImage = %q, %v; want the checkout image", got, branch)
+		}
+	})
+}

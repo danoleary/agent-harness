@@ -151,6 +151,9 @@ rebuilt automatically when its Dockerfile changes — say, after an upgrade bump
 base pin — so you never need to `docker rmi` it. To control when that
 ~minutes-long build happens, pre-build it:
 `docker build -t <image> -f .agent-harness/Dockerfile .agent-harness`.
+A ticket whose branch edits that Dockerfile has its `post_create` and gates run
+in an image built from the branch's copy, tagged `<image>:branch-<fingerprint>`
+(ADR-0021).
 
 When the daemon starts it checks `GH_TOKEN` and the tracker credential, and exits
 straight away with the reason if either is rejected.
