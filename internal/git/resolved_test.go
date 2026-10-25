@@ -393,3 +393,67 @@ func TestResolvedAdvisoryScansEveryDeclaredRoot(t *testing.T) {
 		t.Error("a symbol in none of the declared roots must still raise the advisory")
 	}
 }
+
+// --- Dependency symbols (#69) ---
+
+// writeGoModule seeds a temp Go module: a go.mod requiring one dependency and a
+// local package directory `store` under the `internal` source root.
+func writeGoModule(t *testing.T) (root string) {
+	t.Helper()
+	mod := t.TempDir()
+	gomod := "module example.com/app\n\ngo 1.22\n\nrequire (\n\tgithub.com/charmbracelet/bubbletea v1.1.0\n)\n"
+	if err := os.WriteFile(filepath.Join(mod, "go.mod"), []byte(gomod), 0o644); err != nil {
+		t.Fatalf("seed go.mod: %v", err)
+	}
+	root = filepath.Join(mod, "internal")
+	if err := os.MkdirAll(filepath.Join(root, "store"), 0o755); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "store", "store.go"), []byte("package store\n"), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	return root
+}
+
+// The #69 false close: a ticket that means to USE a dependency cites its
+// exported types package-qualified (`tea.Model`, `tea.Program`). Those types can
+// never appear under the repo's source roots, so their absence says nothing
+// about whether the ticket is resolved — no "recommend close", and no naming
+// them as missing repo symbols.
+func TestResolvedAdvisoryIgnoresDependencyQualifiedSymbols(t *testing.T) {
+	root := writeGoModule(t)
+
+	msg := ResolvedAdvisory([]string{root}, "GH-69", "render the run log as a `tea.Model` driven by a `*tea.Program`, sending a `tea.KeyMsg` on quit")
+	if msg != "" {
+		t.Fatalf("a dependency's exported types must not raise the advisory, got: %s", msg)
+	}
+}
+
+// The qualifier test is "not a local package", so a symbol qualified by a
+// package the repo owns is still repo code: its absence keeps the strong verdict.
+func TestResolvedAdvisoryKeepsLocalPackageQualifiedSymbols(t *testing.T) {
+	root := writeGoModule(t)
+
+	msg := ResolvedAdvisory([]string{root}, "GH-69", "delete the dead `store.LegacyCache`")
+	if !strings.Contains(msg, "recommend close") || !strings.Contains(msg, "LegacyCache") {
+		t.Fatalf("a missing symbol of a local package must keep the strong verdict, got: %s", msg)
+	}
+}
+
+// A ticket that names a go.mod dependency's module path alongside bare symbols
+// (`KeyMsg`, not `tea.KeyMsg`) may be citing that dependency's types, so a missing
+// symbol downgrades to the soft "verify premise" note — never "recommend close".
+func TestResolvedAdvisoryDowngradesWhenTicketNamesDependency(t *testing.T) {
+	root := writeGoModule(t)
+
+	msg := ResolvedAdvisory([]string{root}, "GH-69", "use `github.com/charmbracelet/bubbletea`: handle its `KeyMsg` on quit")
+	if msg == "" {
+		t.Fatal("expected a soft advisory naming the missing symbol, got none")
+	}
+	if strings.Contains(msg, "recommend close") || strings.Contains(msg, "already resolved") {
+		t.Fatalf("a ticket naming a dependency must not read as already resolved / recommend close, got: %s", msg)
+	}
+	if !strings.Contains(msg, "KeyMsg") || !strings.Contains(msg, "github.com/charmbracelet/bubbletea") {
+		t.Fatalf("advisory should name the symbol and the dependency, got: %s", msg)
+	}
+}

@@ -69,7 +69,11 @@ runnable by hand against a ticket id before the next is added:
    and grades the verdict: a symbol named in an add/introduce context (`Add a
    `beforeSend``) is one the ticket exists to *create*, so its absence downgrades
    to a soft "verify premise" note — only a missing symbol the ticket implies
-   *already exists* keeps the strong "recommend close" wording.
+   *already exists* keeps the strong "recommend close" wording. Dependency
+   symbols are not repo code either (#69): a symbol cited behind a package
+   qualifier the repo doesn't own (`tea.Model`, where no source-root directory
+   is named `tea`) is dropped, and when the ticket names a `go.mod` dependency
+   by module path, a missing bare symbol downgrades to the soft note.
    A third, complementary advisory (`git.ResumedBranchAdvisory`, BEH-554) fires
    when the ticket's *own* `feat/<slug>` branch already carries un-merged commits
    referencing it — a *resumed* worktree whose prior session already landed a
