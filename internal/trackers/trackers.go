@@ -45,8 +45,18 @@ type Secrets struct {
 // (a github selection with no repo, a linear one with no API key, a jira one with
 // no auth triple) — is a loud error: the harness refuses to run against a tracker
 // it can't address. The credential check lives here rather than in config.Load
-// because WHICH credential is required depends on the kind (BEH-641).
+// because WHICH credential is required depends on the kind (BEH-641). Each of
+// those errors ends by pointing at `agent-harness doctor`, which reports the rest
+// of the setup in the same pass.
 func New(tc config.TrackerConfig, secrets Secrets) (tracker.Tracker, error) {
+	t, err := newTracker(tc, secrets)
+	if err != nil {
+		return nil, config.WithDoctorHint(err)
+	}
+	return t, nil
+}
+
+func newTracker(tc config.TrackerConfig, secrets Secrets) (tracker.Tracker, error) {
 	switch tc.Kind {
 	case "linear":
 		if secrets.LinearKey == "" {

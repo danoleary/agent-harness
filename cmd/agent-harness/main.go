@@ -36,7 +36,8 @@ type command struct {
 	Name string
 	// File is the executable's filename, looked up across searchDirs. It differs
 	// from Name only for `start`, which is the shipped loop-start.sh launcher
-	// rather than a Go binary.
+	// rather than a Go binary, and is empty for `doctor`, which the dispatcher
+	// runs itself.
 	File string
 	// Args is the argument grammar shown in the help column ("" for none).
 	Args string
@@ -44,10 +45,11 @@ type command struct {
 	Summary string
 }
 
-// commands is the dispatch table, in the order --help lists them: the two
-// everyday entrypoints first, then the single-ticket pipeline, then the three
-// individual stages it chains.
+// commands is the dispatch table, in the order --help lists them: the setup
+// check, the two everyday entrypoints, then the single-ticket pipeline, then the
+// three individual stages it chains.
 var commands = []command{
+	{Name: doctorCommand, Args: "[--offline]", Summary: "check the whole setup; print a fix for every problem"},
 	{Name: "start", File: "loop-start.sh", Summary: "start the loop as a detached daemon (logs to loop.log)"},
 	{Name: "loop", File: "loop", Summary: "work the whole ready queue in the foreground until stopped"},
 	{Name: "watch", File: "watch", Args: "[LOGFILE]", Summary: "live, read-only view of the running loop"},
@@ -63,6 +65,11 @@ const startCommand = "start"
 
 // loopCommand is the daemon binary `start` launches.
 const loopCommand = "loop"
+
+// doctorCommand runs in this process rather than exec'ing a stage binary
+// (ADR-0020): it is the command an operator reaches for when the install itself
+// is broken, so it must not depend on the libexec dir it is about to check.
+const doctorCommand = "doctor"
 
 func main() {
 	argv := os.Args[1:]
@@ -87,6 +94,9 @@ func main() {
 	}
 
 	dirs, err := searchDirs(selfDir, os.Getenv("HARNESS_LIBEXEC"))
+	if cmd.Name == doctorCommand {
+		os.Exit(runDoctor(argv[1:], dirs, os.Stdout, os.Stderr))
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "agent-harness: %v\n", err)
 		os.Exit(1)

@@ -313,12 +313,26 @@ func Load(get Getenv, opts ...Option) (Config, error) {
 
 // Where an operator makes each credential the harness asks for.
 const (
-	gitHubTokenURL  = "https://github.com/settings/tokens/new?scopes=repo&description=agent-harness"
-	anthropicKeyURL = "https://platform.claude.com/settings/keys"
+	GitHubTokenURL  = "https://github.com/settings/tokens/new?scopes=repo&description=agent-harness"
+	AnthropicKeyURL = "https://platform.claude.com/settings/keys"
 )
 
-// oauthTokenPrefix marks a Claude subscription token from `claude setup-token`.
-const oauthTokenPrefix = "sk-ant-oat01-"
+// DoctorHint ends every setup error. A setup error names one problem, and a
+// newcomer's machine usually has several; `agent-harness doctor` reports them all
+// in one pass, so the first error points there instead of at the next run.
+const DoctorHint = "Run `agent-harness doctor` for a full check."
+
+// WithDoctorHint appends DoctorHint to a setup error, keeping it unwrappable. A
+// nil error stays nil, so a call site can wrap unconditionally.
+func WithDoctorHint(err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("%w\n%s", err, DoctorHint)
+}
+
+// OAuthTokenPrefix marks a Claude subscription token from `claude setup-token`.
+const OAuthTokenPrefix = "sk-ant-oat01-"
 
 // loadHost reads the harness side's half from the environment. The Claude
 // credential is the only secret that crosses the sandbox boundary (ADR-0002); it
@@ -357,11 +371,11 @@ func loadHost(get Getenv, workingDir string) (Host, error) {
 		missingVar = true
 		problems = append(problems,
 			"no Claude credential is set. Every Stage runs a Claude session, which needs one.\n"+
-				"  Fix: set ANTHROPIC_API_KEY to an API key from "+anthropicKeyURL+", or, for a Claude "+
+				"  Fix: set ANTHROPIC_API_KEY to an API key from "+AnthropicKeyURL+", or, for a Claude "+
 				"subscription, run `claude setup-token` and set CLAUDE_CODE_OAUTH_TOKEN to the token it prints.")
-	case strings.HasPrefix(h.AnthropicAPIKey, oauthTokenPrefix):
+	case strings.HasPrefix(h.AnthropicAPIKey, OAuthTokenPrefix):
 		problems = append(problems,
-			"ANTHROPIC_API_KEY holds a Claude subscription token ("+oauthTokenPrefix+"…), not an API key. "+
+			"ANTHROPIC_API_KEY holds a Claude subscription token ("+OAuthTokenPrefix+"…), not an API key. "+
 				"It is sent as an API key, which Anthropic rejects as invalid.\n"+
 				"  Fix: move it to CLAUDE_CODE_OAUTH_TOKEN and unset ANTHROPIC_API_KEY.")
 	}
@@ -370,12 +384,12 @@ func loadHost(get Getenv, workingDir string) (Host, error) {
 		problems = append(problems,
 			"GH_TOKEN is not set. The harness pushes branches and opens pull requests with it, "+
 				"and reads GitHub Issues with it when tracker.kind = \"github\".\n"+
-				"  Fix: create a classic token with the repo scope at "+gitHubTokenURL+" and set GH_TOKEN to it.")
+				"  Fix: create a classic token with the repo scope at "+GitHubTokenURL+" and set GH_TOKEN to it.")
 	}
 	if h.ProjectPath == "" {
 		missingVar = true
 	}
-	if p := projectPathProblem(h.ProjectPath); p != "" {
+	if p := ProjectPathProblem(h.ProjectPath); p != "" {
 		problems = append(problems, p)
 	}
 	if len(problems) > 0 {
@@ -393,11 +407,11 @@ func loadHost(get Getenv, workingDir string) (Host, error) {
 	return h, nil
 }
 
-// projectPathProblem checks PROJECT_PATH names an existing directory by an
+// ProjectPathProblem checks PROJECT_PATH names an existing directory by an
 // absolute path. A relative one would resolve against whatever directory the
 // harness happened to start in, and a missing one surfaced as a "no such file" on
 // a config file inside it, pointing the operator at the wrong thing.
-func projectPathProblem(path string) string {
+func ProjectPathProblem(path string) string {
 	const what = "PROJECT_PATH names the Consumer checkout the harness works: the repository that holds .agent-harness/."
 	if path == "" {
 		return "PROJECT_PATH is not set. " + what + "\n" +

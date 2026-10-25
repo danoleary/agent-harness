@@ -41,6 +41,7 @@ the install adds exactly one name to your shell and shadows nothing (ADR-0012).
 ```bash
 agent-harness --help       # every command, and what it does
 agent-harness --version
+agent-harness doctor       # check the whole setup; prints a fix for every problem
 ```
 
 <details>
@@ -153,6 +154,21 @@ base pin — so you never need to `docker rmi` it. To control when that
 
 When the daemon starts it checks `GH_TOKEN` and the tracker credential, and exits
 straight away with the reason if either is rejected.
+
+### 3. Check it
+
+```bash
+agent-harness doctor
+```
+
+`doctor` checks everything above in one pass and prints a fix under each line
+that fails: `docker`, `git` 2.45+ and `gh`; which `.env` it read and which it
+skipped; each credential, with a live, read-only API call (`GH_TOKEN` must be a
+classic token with `repo` scope); the config, the prompt bodies, and the tracker
+repo/team/project and labels they name; and whether the sandbox image is
+present, buildable or pullable. It warns when both Claude credentials are set,
+because Claude Code then uses `ANTHROPIC_API_KEY`. It exits non-zero on any
+failure, so a script can gate on it. `--offline` skips the network calls.
 
 ## Run it
 
