@@ -351,6 +351,8 @@ func greenOutcome(d Driver, reason string) Outcome {
 		case errors.Is(err, ErrWedgedReadyForMergeQueue):
 			// The rebased commit's real gates are green; only the merge-queue/main-only
 			// wedge remains. Treat it as passed and re-check mergeability (BEH-614).
+		case errors.Is(err, ErrNoCIApplies):
+			// No workflow applies to the rebased diff either: nothing to fail (#101).
 		case err != nil:
 			return pollErrOutcome(err, checks)
 		case v != Passed:
