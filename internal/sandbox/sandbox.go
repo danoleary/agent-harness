@@ -263,6 +263,8 @@ func BuildDockerRunArgs(c Config) []string {
 		"-e", "GIT_COMMITTER_EMAIL="+git.HarnessAuthorEmail,
 	)
 
+	args = append(args, gitStatArgs()...)
+
 	args = append(args, "-v", c.ProjectPath+":"+c.ProjectPath)
 
 	// Hide the Consumer's credential file, if it keeps one in the repo. The whole
@@ -371,6 +373,7 @@ func BuildWorktreeCommandArgs(c GateConfig, command string) []string {
 	// PROJECT_PATH lets the shared entrypoint stat the mount to match the runtime uid
 	// to the checkout owner. It is the mount path, not a secret — passed by value.
 	args = append(args, "-e", "PROJECT_PATH="+c.ProjectPath)
+	args = append(args, gitStatArgs()...)
 
 	args = append(args, "-v", c.ProjectPath+":"+c.ProjectPath)
 	// These containers carry no secrets of their own, but the credential file is in
@@ -387,6 +390,26 @@ func BuildWorktreeCommandArgs(c GateConfig, command string) []string {
 	)
 
 	return args
+}
+
+// gitStatArgs makes git inside the container ignore the stat fields a bind mount
+// does not preserve. The checkout's index is written by host git, and the inode
+// and ctime the container sees for the same file differ, so git's racy-index
+// check reads a clean tree as dirty and a rebase refuses with phantom "local
+// changes would be overwritten" (#151). core.checkStat=minimal with
+// core.trustctime=false leaves only whole-second mtime and size, which survive
+// the mount. It travels as GIT_CONFIG_COUNT env rather than entrypoint config so
+// it outranks every config level and reaches an already-built image on the next
+// run — entrypoint.sh changes only land when the base image is republished. Not
+// secrets — passed by value.
+func gitStatArgs() []string {
+	return []string{
+		"-e", "GIT_CONFIG_COUNT=2",
+		"-e", "GIT_CONFIG_KEY_0=core.checkStat",
+		"-e", "GIT_CONFIG_VALUE_0=minimal",
+		"-e", "GIT_CONFIG_KEY_1=core.trustctime",
+		"-e", "GIT_CONFIG_VALUE_1=false",
+	}
 }
 
 // BuildImage builds the sandbox image from a Consumer Dockerfile, streaming
