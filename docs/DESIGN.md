@@ -1028,7 +1028,11 @@ specific:
   committer identity and trusts the repo. It does **not** run `gh auth setup-git`
   or wire HTTPS push — the container has no `GH_TOKEN` and never pushes (ADR-0002).
 - The **bind-mount layout**: the workspace checkout at its real host path, the
-  optional `/findings` dropbox, and an optional toolchain cache volume.
+  optional `/findings` dropbox, and an optional toolchain cache volume. The
+  launcher sets `core.checkStat=minimal` and `core.trustctime=false` in every
+  container through `GIT_CONFIG_COUNT` env. Without them, the inode and ctime a
+  bind mount does not preserve make git read a clean host-written index as
+  dirty, and a rebase refuses with phantom local changes (#151).
 
 `gh` is **not** in the image — push/PR are host-side (ADR-0002).
 
