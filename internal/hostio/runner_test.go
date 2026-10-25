@@ -1,6 +1,9 @@
 package hostio
 
 import (
+	"errors"
+	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
@@ -280,5 +283,118 @@ func TestPreviewNamesContainersWithPlaceholders(t *testing.T) {
 	}
 	if got, want := p.BranchName("proj-1"), "feat/proj-1"; got != want {
 		t.Errorf("preview branch = %q, want %q", got, want)
+	}
+}
+
+// branchDockerfileRunner is a testRunner over a real checkout + worktree on disk
+// whose sandbox Dockerfiles are checkoutBody and worktreeBody, with image builds
+// recorded (and failed with buildErr) rather than run.
+func branchDockerfileRunner(t *testing.T, checkoutBody, worktreeBody string, buildErr error) (r *Runner, wt string, seen *[]launch, ensured *[]sandbox.PreflightConfig) {
+	t.Helper()
+	const rel = ".agent-harness/Dockerfile"
+	checkout := t.TempDir()
+	wt = filepath.Join(checkout, ".claude", "worktrees", "proj-1")
+	for root, body := range map[string]string{checkout: checkoutBody, wt: worktreeBody} {
+		p := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r, seen = testRunner(t)
+	r.cfg.ProjectPath = checkout
+	r.cfg.Dockerfile = rel
+	var calls []sandbox.PreflightConfig
+	r.ensureImage = func(pc sandbox.PreflightConfig) error {
+		calls = append(calls, pc)
+		return buildErr
+	}
+	return r, wt, seen, &calls
+}
+
+// imageOf is the image a recorded worktree-command argv runs: the word before `bash -c`.
+func imageOf(args []string) string {
+	i := slices.Index(args, "bash")
+	if i < 1 {
+		return ""
+	}
+	return args[i-1]
+}
+
+// #61: a branch that fixes its own sandbox Dockerfile has its prep and gate run in
+// an image built from the worktree's Dockerfile — never the checkout's pre-change
+// one, where the gate would go red for exactly the reason the branch fixes.
+func TestShellRunsABranchThatChangesTheDockerfileInItsOwnImage(t *testing.T) {
+	r, wt, seen, ensured := branchDockerfileRunner(t, "FROM base:0.5.0\n", "FROM base:0.5.0\nRUN install-go\n", nil)
+	want, _ := sandbox.WorktreeImage(r.cfg.Image, r.cfg.ProjectPath, wt, r.cfg.Dockerfile)
+
+	r.Shell(ShellRun{Label: "prep", Command: "go mod download", WorktreePath: wt, Cap: time.Minute})
+	r.Shell(ShellRun{Label: "gate-check", Command: "make check", WorktreePath: wt, Cap: time.Minute})
+
+	for _, l := range *seen {
+		if got := imageOf(l.args); got != want {
+			t.Errorf("worktree command ran in %q, want the branch image %q", got, want)
+		}
+	}
+	if len(*ensured) != 1 {
+		t.Fatalf("branch image ensured %d times, want once per run", len(*ensured))
+	}
+	pc := (*ensured)[0]
+	if pc.Image != want || pc.Dockerfile != filepath.Join(wt, r.cfg.Dockerfile) || pc.BuildContext != filepath.Join(wt, ".agent-harness") {
+		t.Errorf("branch image built as %q from %q in %q; want %q from the worktree's Dockerfile", pc.Image, pc.Dockerfile, pc.BuildContext, want)
+	}
+}
+
+func TestShellKeepsTheCheckoutImageWhenTheBranchLeavesTheDockerfileAlone(t *testing.T) {
+	r, wt, seen, ensured := branchDockerfileRunner(t, "FROM base:0.5.0\n", "FROM base:0.5.0\n", nil)
+
+	r.Shell(ShellRun{Label: "gate-check", Command: "make check", WorktreePath: wt, Cap: time.Minute})
+
+	if got := imageOf((*seen)[0].args); got != r.cfg.Image {
+		t.Errorf("worktree command ran in %q, want the checkout image %q", got, r.cfg.Image)
+	}
+	if len(*ensured) != 0 {
+		t.Errorf("built %d branch images for an unchanged Dockerfile, want none", len(*ensured))
+	}
+}
+
+// A branch image that will not build is reported as that, not as a red gate to go
+// debug in the code — and the failed multi-minute build is not repeated per gate.
+func TestShellReportsABranchImageThatFailsToBuild(t *testing.T) {
+	r, wt, seen, ensured := branchDockerfileRunner(t, "FROM base:0.5.0\n", "FROM base:nope\n", errors.New("pull access denied for base"))
+
+	first := r.Shell(ShellRun{Label: "prep", Command: "go mod download", WorktreePath: wt, Cap: time.Minute})
+	second := r.Shell(ShellRun{Label: "gate-check", Command: "make check", WorktreePath: wt, Cap: time.Minute})
+
+	if len(*seen) != 0 {
+		t.Errorf("launched %d containers without a branch image, want none", len(*seen))
+	}
+	if len(*ensured) != 1 {
+		t.Errorf("branch image build attempted %d times, want once", len(*ensured))
+	}
+	for _, res := range []Result{first, second} {
+		if res.ExitCode != sandbox.ExitCannotStart || res.Retryable() {
+			t.Errorf("exit %d (retryable %v), want a terminal %d", res.ExitCode, res.Retryable(), sandbox.ExitCannotStart)
+		}
+		for _, want := range []string{"branch modifies the sandbox Dockerfile", "pull access denied"} {
+			if !strings.Contains(res.StderrTail, want) {
+				t.Errorf("StderrTail %q does not say %q", res.StderrTail, want)
+			}
+		}
+	}
+}
+
+// The dry-run plan names the branch image the gates would run in, without building it.
+func TestShellPreviewNamesTheBranchImageWithoutBuildingIt(t *testing.T) {
+	r, wt, _, ensured := branchDockerfileRunner(t, "FROM base:0.5.0\n", "FROM base:0.6.0\n", nil)
+	want, _ := sandbox.WorktreeImage(r.cfg.Image, r.cfg.ProjectPath, wt, r.cfg.Dockerfile)
+
+	if got := imageOf(r.ShellPreview(ShellRun{Label: "gate-check", Command: "make check", WorktreePath: wt})); got != want {
+		t.Errorf("preview runs %q, want the branch image %q", got, want)
+	}
+	if len(*ensured) != 0 {
+		t.Errorf("preview built %d images, want none", len(*ensured))
 	}
 }

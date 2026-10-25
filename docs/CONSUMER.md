@@ -258,6 +258,12 @@ RUN apt-get update \
 ENV HARNESS_CHOWN_PATHS=/opt/my-baked-tool
 ```
 
+A ticket that edits this Dockerfile has its `post_create` and gates run in an
+image built from the branch's copy (`<image>:branch-<fingerprint>`), so a fix to
+the toolchain is gated in the image it fixes. Only the Dockerfile's own bytes are
+compared: a branch that changes only a file the Dockerfile `COPY`s still runs in
+the current image.
+
 Put your toolchain on `PATH` with `ENV PATH=...` in the Dockerfile. The agent
 session, the `post_create` hook and every gate all see that same image `PATH`:
 the harness runs `post_create` and gates as a non-login `bash -c <command>`,

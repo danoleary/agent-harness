@@ -34,6 +34,11 @@ type Runner struct {
 	// is unit-testable without a Docker daemon or a real wait.
 	run   func(dockerArgs []string, opts session.Options) session.Outcome
 	sleep func(time.Duration)
+	// ensureImage makes a branch-scoped image launchable (sandbox.Preflight in
+	// production); branchImages remembers each one's verdict for this run, so the
+	// prep and every gate share one build — or one failed build (#61).
+	ensureImage  func(sandbox.PreflightConfig) error
+	branchImages map[string]error
 }
 
 // NewRunner binds a Runner to one run of one ticket.
@@ -47,6 +52,9 @@ func NewRunner(cfg config.Config, log *runlog.Logger, runID string, verbose bool
 		verbose: verbose,
 		run:     session.Run,
 		sleep:   time.Sleep,
+
+		ensureImage:  sandbox.Preflight,
+		branchImages: map[string]error{},
 	}
 }
 
@@ -99,7 +107,15 @@ func (r *Runner) Agent(a AgentRun) Result {
 // worktree. Its log is piped tool stdout, not a stream-json transcript, so it is
 // stamped with a StepFooter — without it an OOM-kill's mid-line truncation is
 // indistinguishable from a clean finish (BEH-537).
+//
+// A branch that changes the Consumer's sandbox Dockerfile runs in an image built
+// from the worktree's Dockerfile (#61); if that image cannot be built, nothing
+// launches and the Result says why.
 func (r *Runner) Shell(s ShellRun) Result {
+	if err := r.ensureWorktreeImage(s.WorktreePath); err != nil {
+		reason := err.Error()
+		return Result{Outcome: session.Outcome{ExitCode: sandbox.ExitCannotStart, DockerReason: reason, StderrTail: reason}, Attempts: 1}
+	}
 	return r.attempts(s.Label, s.Retry, func(label string) Result {
 		name := r.name(label)
 		transcript := runlog.StepLogName(label, r.runID)
@@ -134,6 +150,30 @@ func (r *Runner) Preflight() error {
 	return config.WithDoctorHint(sandbox.Preflight(sandbox.PreflightFor(r.cfg.Image, r.cfg.ProjectPath, r.cfg.Dockerfile)))
 }
 
+// ensureWorktreeImage builds (or reuses) the branch-scoped image a worktree's
+// commands run in when its branch changes the sandbox Dockerfile. It goes through
+// the same Preflight as the checkout image — disk, daemon, build on a miss,
+// rebuild on a stale fingerprint — pointed at the worktree's Dockerfile and build
+// context. A worktree on the checkout's Dockerfile needs nothing.
+func (r *Runner) ensureWorktreeImage(worktreePath string) error {
+	image, branch := sandbox.WorktreeImage(r.cfg.Image, r.cfg.ProjectPath, worktreePath, r.cfg.Dockerfile)
+	if !branch {
+		return nil
+	}
+	if err, done := r.branchImages[image]; done {
+		return err
+	}
+	if r.log != nil {
+		r.log.Event(fmt.Sprintf("branch modifies the sandbox Dockerfile (%s) — running its worktree commands in %s, built from the branch (#61)", r.cfg.Dockerfile, image))
+	}
+	err := r.ensureImage(sandbox.PreflightFor(image, worktreePath, r.cfg.Dockerfile))
+	if err != nil {
+		err = fmt.Errorf("branch modifies the sandbox Dockerfile (%s) and its image %s could not be prepared, so its prep and gates cannot run in the image they would ship: %w", r.cfg.Dockerfile, image, err)
+	}
+	r.branchImages[image] = err
+	return err
+}
+
 func (r *Runner) agentArgs(name string, a AgentRun) []string {
 	return sandbox.BuildDockerRunArgs(sandbox.Config{
 		Image:          r.cfg.Image,
@@ -148,8 +188,9 @@ func (r *Runner) agentArgs(name string, a AgentRun) []string {
 }
 
 func (r *Runner) shellArgs(name string, s ShellRun) []string {
+	image, _ := sandbox.WorktreeImage(r.cfg.Image, r.cfg.ProjectPath, s.WorktreePath, r.cfg.Dockerfile)
 	return sandbox.BuildWorktreeCommandArgs(sandbox.GateConfig{
-		Image:          r.cfg.Image,
+		Image:          image,
 		ProjectPath:    r.cfg.ProjectPath,
 		WorktreePath:   s.WorktreePath,
 		CacheVolume:    r.cfg.CacheVolume,

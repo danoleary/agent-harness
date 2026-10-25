@@ -860,6 +860,13 @@ Dockerfile / mistyped ref / missing registry auth fails loud *before* the ticket
 is claimed, not as an opaque exit-125 after. herd stays on the build path (it
 commits `agent-harness/Dockerfile` and names the local tag `herd-agent-harness:latest`).
 
+A branch that edits the Consumer Dockerfile is changing its own sandbox, so its
+worktree commands — `post_create` and the host-side gate re-run — run in an image
+built from the **worktree's** Dockerfile, tagged `<image>:branch-<fingerprint>`
+(`sandbox.WorktreeImage`; ADR-0022). Otherwise a branch that fixes a missing
+toolchain could never turn its own gate green. The agent sessions still run in the
+checkout's image.
+
 ### Generalized toolchain cache
 
 The persistent cache is a **Consumer-declared volume name + mount path** (`[cache]`
@@ -1195,6 +1202,11 @@ reader over a structured stream rather than a `--tui` flag on the daemon.
   never overwrites the `.env` at all, and ends by naming `agent-harness doctor`.
   Like `doctor`, it runs in the dispatcher's own process, with no stage binary
   behind it.
+- **A branch that edits the sandbox Dockerfile is gated in its own image**
+  ([ADR-0022](adr/0022-a-branch-that-edits-the-sandbox-dockerfile-is-gated-in-its-own-image.md)).
+  `hostio.Runner.Shell` runs `post_create` and every gate in
+  `<image>:branch-<fingerprint>`, built from the worktree's Dockerfile through the
+  same `sandbox.Preflight`, when that Dockerfile differs from the checkout's.
 - Config: `agent-harness/.env` (`LINEAR_API_KEY`, `ANTHROPIC_API_KEY`,
   `GH_TOKEN`, `PROJECT_PATH`, bot identity, timeouts) + CLI flags (`--verbose`,
   `--once` for a single ticket then exit, label/timeout overrides).

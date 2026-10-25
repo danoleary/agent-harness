@@ -432,6 +432,50 @@ func DockerfileFingerprint(path string) (string, error) {
 	return hex.EncodeToString(sum[:]), nil
 }
 
+// BranchImageTag is the local tag of the image built from a feature branch's own
+// Dockerfile: image's repository with its tag (or digest) replaced by
+// `branch-<first 12 hex of fp>`. Keying it by fingerprint rather than by branch
+// means two branches with the same Dockerfile share one image, and a branch that
+// edits its Dockerfile again gets a fresh one. Like the main image it is left
+// unreferenced between runs, so the daemon's image prune reclaims it.
+func BranchImageTag(image, fp string) string {
+	repo := image
+	if i := strings.Index(repo, "@"); i >= 0 {
+		repo = repo[:i]
+	}
+	if i := strings.LastIndex(repo, ":"); i > strings.LastIndex(repo, "/") {
+		repo = repo[:i]
+	}
+	if len(fp) > 12 {
+		fp = fp[:12]
+	}
+	return repo + ":branch-" + fp
+}
+
+// WorktreeImage is the image a worktree command (post_create, a gate) runs in
+// (#61). When the worktree's copy of the Consumer Dockerfile differs from the
+// checkout's, the branch is changing its own sandbox, and running its prep and
+// gates in the checkout's pre-change image would test the branch against the
+// very environment it fixes: it returns the branch-scoped BranchImageTag and
+// branch=true. Otherwise — no Dockerfile declared (a prebuilt image), the same
+// Dockerfile, or no Dockerfile in the worktree — it returns image unchanged.
+//
+// Only the Dockerfile's bytes are compared (DockerfileFingerprint): a branch that
+// changes only a file the Dockerfile COPYs still runs in the checkout image.
+func WorktreeImage(image, projectPath, worktreePath, dockerfileRel string) (tag string, branch bool) {
+	if dockerfileRel == "" || worktreePath == "" {
+		return image, false
+	}
+	theirs, err := DockerfileFingerprint(filepath.Join(worktreePath, dockerfileRel))
+	if err != nil {
+		return image, false
+	}
+	if ours, err := DockerfileFingerprint(filepath.Join(projectPath, dockerfileRel)); err == nil && ours == theirs {
+		return image, false
+	}
+	return BranchImageTag(image, theirs), true
+}
+
 // PullImage pulls a prebuilt sandbox image, streaming docker's progress. It is
 // the production puller for the Consumer path that names a prebuilt `image`
 // (rather than committing a Dockerfile); Preflight tests inject a fake.
