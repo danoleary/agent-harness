@@ -1127,11 +1127,14 @@ reader over a structured stream rather than a `--tui` flag on the daemon.
   Runner with placeholder run id and pid. A test pins the plans to what the Stages
   actually launch over `hostio.Fake`.
 - **The daemon takes the same shape** ([ADR-0014](adr/0014-the-daemon-takes-a-host-limits-and-a-clock.md)). `loop.Run` takes a
-  `loop.Host` (the STOP sentinel, the tracker queue, one ticket's pipeline run, the
+  `loop.Host` (the STOP sentinel, the credential check, the main fetch, the
   between-ticket disk reclaim), a `loop.Limits` of cadences/ceilings/thresholds, a
-  `loop.Clock` and a narrator — four fields where there were 27, and no feature
-  switched on by a nil func. `loophost.Real` is the production adapter, so `cmd/loop`
-  is a composition root and nothing else.
+  `loop.Clock` and a narrator — where there were 27 fields — and no feature
+  switched on by a nil func. Since #73 (step (a) of ADR-0019) the tracker queue and
+  the ticket pipeline run sit beside it as a `loop.Source` and a `loop.Pipeline`,
+  so the daemon works `loop.WorkItem`s and never learns they are tickets.
+  `loophost.Daemon`, `loophost.TicketSource` and `loophost.TicketPipeline` are the
+  production adapters, so `cmd/loop` is a composition root and nothing else.
 - **A loop is a Source and a Pipeline** ([ADR-0019](adr/0019-a-loop-is-a-source-and-a-pipeline.md), proposed). The daemon chores
   (stop, idle, cap backoff, breaker, disk reclaim) stay shared. Where the work
   comes from (a tracker queue, or PRs that are conflicting or red) and what runs

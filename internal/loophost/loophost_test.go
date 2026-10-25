@@ -45,9 +45,21 @@ func (t *queueTracker) SelectNextTicket() (ticket.Ticket, bool, error) {
 	return t.next, t.nextOK, t.nextErr
 }
 
-// hostFor builds a Real over a throwaway project dir, the shape every test here
-// wants: no tracker credential, no Docker, no network.
-func hostFor(t *testing.T, cfg config.Config, client tracker.Tracker) (*Real, *narrator) {
+// hostFor builds a Daemon over a throwaway project dir, the shape every test here
+// wants: no credential, no Docker, no network.
+func hostFor(t *testing.T, cfg config.Config) *Daemon {
+	t.Helper()
+	return NewDaemon(withProject(t, cfg), nil)
+}
+
+// sourceFor builds a TicketSource over the scripted tracker and a throwaway
+// project dir.
+func sourceFor(t *testing.T, cfg config.Config, client tracker.Tracker) *TicketSource {
+	t.Helper()
+	return NewTicketSource(withProject(t, cfg), &narrator{}, client)
+}
+
+func withProject(t *testing.T, cfg config.Config) config.Config {
 	t.Helper()
 	if cfg.ProjectPath == "" {
 		cfg.ProjectPath = t.TempDir()
@@ -55,11 +67,14 @@ func hostFor(t *testing.T, cfg config.Config, client tracker.Tracker) (*Real, *n
 	if cfg.StopFile == "" {
 		cfg.StopFile = ".agent-harness/STOP"
 	}
-	n := &narrator{}
-	return New(cfg, n, client), n
+	return cfg
 }
 
-var _ loop.Host = (*Real)(nil)
+var (
+	_ loop.Host     = (*Daemon)(nil)
+	_ loop.Source   = (*TicketSource)(nil)
+	_ loop.Pipeline = (*TicketPipeline)(nil)
+)
 
 // --- stop control -----------------------------------------------------------
 
@@ -68,12 +83,12 @@ var _ loop.Host = (*Real)(nil)
 // absolute one is taken as given.
 func TestStopFileResolvesRelativeToTheCheckout(t *testing.T) {
 	project := t.TempDir()
-	rel, _ := hostFor(t, config.Config{Host: config.Host{ProjectPath: project, StopFile: ".agent-harness/STOP"}}, nil)
+	rel := hostFor(t, config.Config{Host: config.Host{ProjectPath: project, StopFile: ".agent-harness/STOP"}})
 	if want := filepath.Join(project, ".agent-harness", "STOP"); rel.StopFile() != want {
 		t.Errorf("stop file = %q, want %q (a relative override hangs off PROJECT_PATH)", rel.StopFile(), want)
 	}
 
-	abs, _ := hostFor(t, config.Config{Host: config.Host{ProjectPath: project, StopFile: filepath.Join(t.TempDir(), "STOP")}}, nil)
+	abs := hostFor(t, config.Config{Host: config.Host{ProjectPath: project, StopFile: filepath.Join(t.TempDir(), "STOP")}})
 	if !filepath.IsAbs(abs.StopFile()) || filepath.Dir(abs.StopFile()) == project {
 		t.Errorf("stop file = %q, want the absolute override used as-is", abs.StopFile())
 	}
@@ -84,7 +99,7 @@ func TestStopFileResolvesRelativeToTheCheckout(t *testing.T) {
 func TestClearStopFileRemovesTheSentinelAndToleratesItsAbsence(t *testing.T) {
 	project := t.TempDir()
 	stop := filepath.Join(project, "STOP")
-	h, _ := hostFor(t, config.Config{Host: config.Host{ProjectPath: project, StopFile: stop}}, nil)
+	h := hostFor(t, config.Config{Host: config.Host{ProjectPath: project, StopFile: stop}})
 
 	if err := h.ClearStopFile(); err != nil {
 		t.Errorf("ClearStopFile() with no sentinel = %v, want nil (nothing to clear is success)", err)
@@ -104,7 +119,7 @@ func TestClearStopFileRemovesTheSentinelAndToleratesItsAbsence(t *testing.T) {
 func TestStopRequestedFoldsTheSentinelAndTheSignal(t *testing.T) {
 	project := t.TempDir()
 	stop := filepath.Join(project, "STOP")
-	h, _ := hostFor(t, config.Config{Host: config.Host{ProjectPath: project, StopFile: stop}}, nil)
+	h := hostFor(t, config.Config{Host: config.Host{ProjectPath: project, StopFile: stop}})
 
 	if h.StopRequested() {
 		t.Fatal("StopRequested() = true on a fresh daemon, want false")
@@ -132,22 +147,22 @@ func TestStopRequestedFoldsTheSentinelAndTheSignal(t *testing.T) {
 // A selection failure comes back as an error, not an empty queue: the daemon
 // still idles and re-polls on it, but must be able to say the read failed — the
 // two used to look identical, so a dead token idled as "queue empty".
-func TestResolveNextReturnsASelectionFailureAsAnError(t *testing.T) {
+func TestNextReturnsASelectionFailureAsAnError(t *testing.T) {
 	trk := newQueueTracker()
 	trk.nextErr = errors.New("linear 503")
-	h, _ := hostFor(t, config.Config{}, trk)
+	h := sourceFor(t, config.Config{}, trk)
 
-	claim, ok, err := h.ResolveNext()
+	_, claim, ok, err := h.Next()
 	if ok || claim != nil || !errors.Is(err, trk.nextErr) {
-		t.Errorf("ResolveNext() = (%v, %v, %v), want (nil, false, linear 503)", claim, ok, err)
+		t.Errorf("Next() = (%v, %v, %v), want (nil, false, linear 503)", claim, ok, err)
 	}
 }
 
 // The empty queue is not an error.
-func TestResolveNextEmptyQueueIsNotAnError(t *testing.T) {
-	h, _ := hostFor(t, config.Config{}, newQueueTracker())
-	if claim, ok, err := h.ResolveNext(); ok || claim != nil || err != nil {
-		t.Errorf("ResolveNext() = (%v, %v, %v), want (nil, false, nil)", claim, ok, err)
+func TestNextEmptyQueueIsNotAnError(t *testing.T) {
+	h := sourceFor(t, config.Config{}, newQueueTracker())
+	if _, claim, ok, err := h.Next(); ok || claim != nil || err != nil {
+		t.Errorf("Next() = (%v, %v, %v), want (nil, false, nil)", claim, ok, err)
 	}
 }
 
@@ -156,16 +171,17 @@ func TestResolveNextEmptyQueueIsNotAnError(t *testing.T) {
 // credential to fix.
 func TestCheckAccessRejectsADeadTokenOrTracker(t *testing.T) {
 	trk := newQueueTracker()
-	h, _ := hostFor(t, config.Config{}, trk)
+	var cfg config.Config
+	cfg.Tracker.Kind = "linear"
+	h := NewDaemon(withProject(t, cfg), sourceFor(t, cfg, trk).CheckAccess)
 	dead := errors.New("GH_TOKEN check failed")
 	h.checkToken = func() error { return dead }
+	trk.nextErr = errors.New("HTTP 401")
 	if err := h.CheckAccess(); !errors.Is(err, dead) {
-		t.Errorf("CheckAccess() = %v, want the token failure", err)
+		t.Errorf("CheckAccess() = %v, want the token failure, before the tracker is read", err)
 	}
 
 	h.checkToken = func() error { return nil }
-	trk.nextErr = errors.New("HTTP 401")
-	h.cfg.Tracker.Kind = "linear"
 	err := h.CheckAccess()
 	if !errors.Is(err, trk.nextErr) || !strings.Contains(err.Error(), "linear tracker") {
 		t.Errorf("CheckAccess() = %v, want the tracker failure naming the linear tracker", err)
@@ -179,14 +195,18 @@ func TestCheckAccessRejectsADeadTokenOrTracker(t *testing.T) {
 
 // Claim-on-select (ADR-0003): a resolved ticket is claimed before the daemon runs
 // it, so a concurrent selection can't grab the same one.
-func TestResolveNextClaimsTheSelectedTicket(t *testing.T) {
+func TestNextClaimsTheSelectedTicket(t *testing.T) {
 	trk := newQueueTracker()
 	trk.next, trk.nextOK = ticket.Ticket{Identifier: "PROJ-7"}, true
-	h, _ := hostFor(t, config.Config{}, trk)
+	h := sourceFor(t, config.Config{Project: config.Project{BranchPrefix: "fix"}}, trk)
 
-	claim, ok, _ := h.ResolveNext()
+	item, claim, ok, _ := h.Next()
 	if !ok || claim.Key() != "PROJ-7" || !claim.Held() {
-		t.Fatalf("ResolveNext() = (%v, %v), want a held lease on PROJ-7", claim, ok)
+		t.Fatalf("Next() = (%v, %v), want a held lease on PROJ-7", claim, ok)
+	}
+	// The item names the ticket and the slugged feature branch the Stages push.
+	if want := (loop.WorkItem{Key: "PROJ-7", Branch: "fix/proj-7"}); item != want {
+		t.Errorf("item = %+v, want %+v", item, want)
 	}
 	if len(trk.Claimed) != 1 || trk.Claimed[0] != "PROJ-7" {
 		t.Errorf("claimed %v, want [PROJ-7] — selection must claim (ADR-0003)", trk.Claimed)
@@ -195,22 +215,22 @@ func TestResolveNextClaimsTheSelectedTicket(t *testing.T) {
 
 // The reaper's list is a straight projection of the Tracker port's claims, so the
 // daemon never learns which tracker it is talking to.
-func TestListInProgressClaimsProjectsTheTrackersClaims(t *testing.T) {
+func TestClaimsProjectsTheTrackersClaims(t *testing.T) {
 	started := time.Date(2026, 7, 3, 22, 0, 0, 0, time.UTC)
 	trk := newQueueTracker()
 	trk.claims = []tracker.InProgressClaim{
 		{Identifier: "PROJ-1", StartedAt: started, HasLinkedPR: true},
 		{Identifier: "PROJ-2", StartedAt: started},
 	}
-	h, _ := hostFor(t, config.Config{}, trk)
+	h := sourceFor(t, config.Config{}, trk)
 
-	got, err := h.ListInProgressClaims()
+	got, err := h.Claims()
 	if err != nil {
-		t.Fatalf("ListInProgressClaims() error = %v", err)
+		t.Fatalf("Claims() error = %v", err)
 	}
 	want := []loop.StaleClaim{
-		{Identifier: "PROJ-1", StartedAt: started, HasLinkedPR: true},
-		{Identifier: "PROJ-2", StartedAt: started},
+		{Key: "PROJ-1", StartedAt: started, HasLinkedPR: true},
+		{Key: "PROJ-2", StartedAt: started},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("claims = %v, want %v", got, want)
@@ -224,13 +244,13 @@ func TestListInProgressClaimsProjectsTheTrackersClaims(t *testing.T) {
 
 // A list failure surfaces as an error the loop warns about and swallows — never a
 // nil-claims lie that would read as "nothing stranded".
-func TestListInProgressClaimsSurfacesTheError(t *testing.T) {
+func TestClaimsSurfacesTheError(t *testing.T) {
 	trk := newQueueTracker()
 	trk.claimsErr = errors.New("linear boom")
-	h, _ := hostFor(t, config.Config{}, trk)
+	h := sourceFor(t, config.Config{}, trk)
 
-	if _, err := h.ListInProgressClaims(); err == nil {
-		t.Error("ListInProgressClaims() error = nil, want the tracker's failure surfaced")
+	if _, err := h.Claims(); err == nil {
+		t.Error("Claims() error = nil, want the tracker's failure surfaced")
 	}
 }
 
@@ -239,17 +259,17 @@ func TestListInProgressClaimsSurfacesTheError(t *testing.T) {
 func TestTicketMutationsReachTheTracker(t *testing.T) {
 	trk := newQueueTracker()
 	trk.next, trk.nextOK = ticket.Ticket{Identifier: "PROJ-2"}, true
-	h, _ := hostFor(t, config.Config{}, trk)
+	h := sourceFor(t, config.Config{}, trk)
 
-	if err := h.ReleaseTicket("PROJ-1"); err != nil {
-		t.Fatalf("ReleaseTicket() = %v", err)
+	if err := h.Release("PROJ-1"); err != nil {
+		t.Fatalf("Release() = %v", err)
 	}
-	claim, _, _ := h.ResolveNext()
+	_, claim, _, _ := h.Next()
 	if err := claim.Close(); err != nil {
 		t.Fatalf("Close() = %v", err)
 	}
-	if err := h.CommentTicket("PROJ-3", "breadcrumb"); err != nil {
-		t.Fatalf("CommentTicket() = %v", err)
+	if err := h.Comment("PROJ-3", "breadcrumb"); err != nil {
+		t.Fatalf("Comment() = %v", err)
 	}
 	if len(trk.Released) != 1 || trk.Released[0] != "PROJ-1" {
 		t.Errorf("released %v, want [PROJ-1]", trk.Released)
@@ -269,7 +289,7 @@ func TestTicketMutationsReachTheTracker(t *testing.T) {
 // A Consumer that declares no cache.prune_command must skip the rung entirely
 // rather than shell out to someone else's package manager (BEH-641).
 func TestCachePruneIsANoOpWhenNoCommandIsDeclared(t *testing.T) {
-	h, _ := hostFor(t, config.Config{}, nil)
+	h := hostFor(t, config.Config{})
 	if err := h.CachePrune(); err != nil {
 		t.Errorf("CachePrune() with nothing declared = %v, want nil (the rung is skipped)", err)
 	}
@@ -280,7 +300,7 @@ func TestCachePruneIsANoOpWhenNoCommandIsDeclared(t *testing.T) {
 func TestCachePruneRunsTheDeclaredCommand(t *testing.T) {
 	project := t.TempDir()
 	marker := filepath.Join(project, "pruned")
-	h, _ := hostFor(t, config.Config{Host: config.Host{ProjectPath: project}, Project: config.Project{CachePruneCommand: "echo ran > pruned"}}, nil)
+	h := hostFor(t, config.Config{Host: config.Host{ProjectPath: project}, Project: config.Project{CachePruneCommand: "echo ran > pruned"}})
 
 	if err := h.CachePrune(); err != nil {
 		t.Fatalf("CachePrune() = %v, want nil", err)
@@ -293,7 +313,7 @@ func TestCachePruneRunsTheDeclaredCommand(t *testing.T) {
 // A failing prune is an error the loop narrates and swallows — reclaim is never a
 // ticket outcome — so the error must carry the command's own output to be useful.
 func TestCachePruneSurfacesTheFailureOutput(t *testing.T) {
-	h, _ := hostFor(t, config.Config{Project: config.Project{CachePruneCommand: "echo nope >&2; exit 3"}}, nil)
+	h := hostFor(t, config.Config{Project: config.Project{CachePruneCommand: "echo nope >&2; exit 3"}})
 
 	err := h.CachePrune()
 	if err == nil {
@@ -347,7 +367,7 @@ func TestParsePrunedCount(t *testing.T) {
 // A missing prune script is an ordinary reclaim failure: an error the loop warns
 // about and swallows, never a crash or a phantom count.
 func TestPruneMergedWorktreesSurfacesAMissingScript(t *testing.T) {
-	h, _ := hostFor(t, config.Config{}, nil)
+	h := hostFor(t, config.Config{})
 
 	removed, err := h.PruneMergedWorktrees()
 	if err == nil {

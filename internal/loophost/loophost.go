@@ -1,8 +1,10 @@
-// Package loophost is the daemon's half of the host port: the production
-// [loop.Host]. Where hostio.Real serves one Stage for one run of one ticket, a
-// Real here outlives every ticket the daemon works — it owns the stop sentinel on
-// disk, the tracker queue, the per-ticket pipeline run, and the between-ticket
-// disk reclaim (ADR-0002: every operation that leaves the process is host-side).
+// Package loophost holds the daemon's production adapters: the [loop.Host] that
+// does its chores ([Daemon]), and the ticket loop's [loop.Source] and
+// [loop.Pipeline] ([TicketSource], [TicketPipeline]) — ADR-0014, ADR-0019. Where
+// hostio.Real serves one Stage for one run of one ticket, these outlive every item
+// the daemon works: the stop sentinel on disk, the tracker queue, the per-ticket
+// pipeline run, and the between-item disk reclaim (ADR-0002: every operation that
+// leaves the process is host-side).
 //
 // It exists so `cmd/loop` can be what it claims to be — a thin composition root.
 // The helpers here were 400 lines of `package main`: 11% covered, importable by
@@ -23,15 +25,9 @@ import (
 	"github.com/danoleary/agent-harness/internal/config"
 	gitpkg "github.com/danoleary/agent-harness/internal/git"
 	"github.com/danoleary/agent-harness/internal/github"
-	"github.com/danoleary/agent-harness/internal/hostio"
-	"github.com/danoleary/agent-harness/internal/lease"
 	"github.com/danoleary/agent-harness/internal/loop"
-	"github.com/danoleary/agent-harness/internal/pipeline"
 	"github.com/danoleary/agent-harness/internal/proc"
 	"github.com/danoleary/agent-harness/internal/sandbox"
-	"github.com/danoleary/agent-harness/internal/ship"
-	"github.com/danoleary/agent-harness/internal/stages"
-	"github.com/danoleary/agent-harness/internal/tracker"
 )
 
 // The disk-reclaim and hard-abort shell-outs are all bounded, so a stalled `gh`,
@@ -51,14 +47,17 @@ const (
 	killDockerTimeout = 10 * time.Second
 )
 
-// Real is the production [loop.Host].
-type Real struct {
-	cfg    config.Config
-	log    loop.Narrator
-	client tracker.Tracker
+// Daemon is the production [loop.Host]: the chores every loop shares, whatever its
+// Source. Nothing here knows about tickets.
+type Daemon struct {
+	cfg config.Config
 	// checkToken proves GH_TOKEN is accepted. A field so a test can stand in for
-	// the network; New wires the real GitHub probe.
+	// the network; NewDaemon wires the real GitHub probe.
 	checkToken func() error
+	// checkSource proves the Source's own credential works (for tickets,
+	// TicketSource.CheckAccess). Run after checkToken; nil means the Source has
+	// no credential of its own.
+	checkSource func() error
 
 	// stopFile is the absolute path of the STOP sentinel: one of the daemon's two
 	// stop signals, and the only one an operator can raise from another shell.
@@ -68,22 +67,23 @@ type Real struct {
 	sigStop atomic.Bool
 }
 
-var _ loop.Host = (*Real)(nil)
+var _ loop.Host = (*Daemon)(nil)
 
-// New builds the daemon's host. cfg.StopFile is resolved here, once: a relative
-// override hangs off the Consumer checkout (so the default ".agent-harness/STOP"
-// lands where CONSUMER.md documents it), an absolute one is taken as given.
-func New(cfg config.Config, log loop.Narrator, client tracker.Tracker) *Real {
+// NewDaemon builds the daemon's host. checkSource is the Source's startup access
+// probe, which CheckAccess runs after the GH_TOKEN check. cfg.StopFile is resolved
+// here, once: a relative override hangs off the Consumer checkout (so the default
+// ".agent-harness/STOP" lands where CONSUMER.md documents it), an absolute one is
+// taken as given.
+func NewDaemon(cfg config.Config, checkSource func() error) *Daemon {
 	stopFile := cfg.StopFile
 	if !filepath.IsAbs(stopFile) {
 		stopFile = filepath.Join(cfg.ProjectPath, stopFile)
 	}
-	return &Real{
-		cfg:        cfg,
-		log:        log,
-		client:     client,
-		checkToken: func() error { return github.CheckToken(github.NewTransport(cfg.GitHubToken)) },
-		stopFile:   stopFile,
+	return &Daemon{
+		cfg:         cfg,
+		checkToken:  func() error { return github.CheckToken(github.NewTransport(cfg.GitHubToken)) },
+		checkSource: checkSource,
+		stopFile:    stopFile,
 	}
 }
 
@@ -91,7 +91,7 @@ func New(cfg config.Config, log loop.Narrator, client tracker.Tracker) *Real {
 
 // ClearStopFile deletes the sentinel, treating an already-absent file as success —
 // the startup clear must not fail merely because there was nothing to clear.
-func (h *Real) ClearStopFile() error {
+func (h *Daemon) ClearStopFile() error {
 	err := os.Remove(h.stopFile)
 	if err != nil && os.IsNotExist(err) {
 		return nil
@@ -103,7 +103,7 @@ func (h *Real) ClearStopFile() error {
 // signals, one check"). A stat error other than not-exist reads as "present", so
 // an unreadable sentinel errs toward stopping rather than ignoring an operator's
 // `touch`.
-func (h *Real) StopRequested() bool {
+func (h *Daemon) StopRequested() bool {
 	if h.sigStop.Load() {
 		return true
 	}
@@ -112,133 +112,39 @@ func (h *Real) StopRequested() bool {
 }
 
 // RequestStop raises the in-process stop signal. The SIGINT handler calls it; the
-// loop observes it at its next between-ticket (or between-tick) checkpoint.
-func (h *Real) RequestStop() { h.sigStop.Store(true) }
+// loop observes it at its next between-item (or between-tick) checkpoint.
+func (h *Daemon) RequestStop() { h.sigStop.Store(true) }
 
 // StopFile is where the sentinel lives, for the entrypoint's own narration.
-func (h *Real) StopFile() string { return h.stopFile }
+func (h *Daemon) StopFile() string { return h.stopFile }
 
-// --- queue ------------------------------------------------------------------
+// --- startup -----------------------------------------------------------------
 
-// checkout binds the Consumer's checkout and branch prefix to the git seam once,
-// so the daemon's two git reads name the ticket and nothing else.
-func (h *Real) checkout() gitpkg.Checkout {
+// checkout binds the Consumer's checkout and branch prefix to the git seam once.
+func (h *Daemon) checkout() gitpkg.Checkout {
 	return gitpkg.Open(h.cfg.ProjectPath, h.cfg.BranchPrefix)
 }
 
-func (h *Real) FetchMain() error { return h.checkout().FetchMain() }
+func (h *Daemon) FetchMain() error { return h.checkout().FetchMain() }
 
 // CheckAccess proves both host credentials work before the daemon polls: GH_TOKEN
-// (every Consumer pushes and opens PRs with it, whatever its tracker) and the
-// tracker's own, via one side-effect-free selection read — the same call every
-// poll makes, so passing here means polls can succeed.
-func (h *Real) CheckAccess() error {
+// (every Consumer pushes and opens PRs with it, whatever its Source) and the
+// Source's own, via the probe the composition root handed [NewDaemon].
+func (h *Daemon) CheckAccess() error {
 	if err := h.checkToken(); err != nil {
 		return err
 	}
-	if _, _, err := h.client.SelectNextTicket(); err != nil {
-		return fmt.Errorf("the %s tracker rejected a queue read — check its credentials and the tracker config: %w", h.cfg.Tracker.Kind, err)
+	if h.checkSource == nil {
+		return nil
 	}
-	return nil
-}
-
-// ResolveNext selects and claims the top-of-queue ticket. It is always a real run,
-// never a dry-run: the loop claims-on-select (ADR-0003) so a concurrent selection
-// can't grab the same ticket. A selection/claim failure comes back as err, which
-// the daemon narrates as a failed read — not an empty queue — before re-polling.
-func (h *Real) ResolveNext() (*lease.Lease, bool, error) {
-	sel := pipeline.ResolveNext(h.client, false, h.cfg.Tracker.QueueHint(), h.log)
-	if sel.Err != nil {
-		return nil, false, sel.Err
-	}
-	if !sel.Proceed {
-		return nil, false, nil
-	}
-	return sel.Lease, true, nil
-}
-
-func (h *Real) ReleaseTicket(id string) error { return h.client.ReleaseToTodo(id) }
-
-func (h *Real) CommentTicket(id, body string) error { return h.client.AddComment(id, body) }
-
-// ListInProgressClaims projects the tracker's agent-claimed In Progress set onto
-// the loop's StaleClaim shape (BEH-677), so the daemon stays decoupled from the
-// Tracker port.
-func (h *Real) ListInProgressClaims() ([]loop.StaleClaim, error) {
-	claims, err := h.client.ListInProgressClaims()
-	if err != nil {
-		return nil, err
-	}
-	out := make([]loop.StaleClaim, 0, len(claims))
-	for _, c := range claims {
-		out = append(out, loop.StaleClaim{
-			Identifier:  c.Identifier,
-			StartedAt:   c.StartedAt,
-			HasLinkedPR: c.HasLinkedPR,
-		})
-	}
-	return out, nil
-}
-
-// TicketHasRemoteBranch reads origin's heads for a branch naming the ticket. It
-// fails SAFE toward true (see gitpkg): a flaky read must never cost a live claim.
-func (h *Real) TicketHasRemoteBranch(id string) bool {
-	return h.checkout().TicketHasRemoteBranch(id)
-}
-
-// --- the work ---------------------------------------------------------------
-
-// RunPipeline runs the full implementation → review → retrospective chain over one
-// already-claimed ticket, mirroring cmd/pipeline's wiring: its own ticket-keyed
-// runlog and run id (the daemon runs many tickets, so each gets its own log dir).
-// The stage args carry the lease ResolveNext claimed on selection, so the
-// implementation stage skips its own claim, releases on a preflight failure
-// (ADR-0003), and re-claims on a retry after a release (#25).
-func (h *Real) RunPipeline(claim *lease.Lease) stages.Result {
-	identifier := claim.Key()
-	cfg, log, runID, err := stages.Setup(identifier)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "%v\n", err)
-		// A setup failure produced no PR; surface it as a plain no-PR outcome so the
-		// breaker counts it like any other failure to ship.
-		return stages.Result{}
-	}
-	args := stages.Args{Identifier: identifier, Lease: claim}
-	// One Host for the whole slice: the three stages share the run id it stamps into
-	// every container name and transcript, and the tracker client it resolves once.
-	host := hostio.New(cfg, log, runID, args.Verbose)
-	return pipeline.Run(pipeline.Deps{
-		FetchMain:      host.FetchMain,
-		Implementation: func() stages.Result { return stages.Implementation(host, cfg, log, args) },
-		Review:         func() stages.Result { return stages.Review(host, cfg, log, args) },
-		Retrospective:  func() stages.Result { return stages.Retrospective(host, cfg, log, args) },
-		Log:            log,
-	})
-}
-
-// RecoverCommittedFix finishes a branch a previous run left committed, gate-green
-// and unpushed (BEH-713). The policy is ship.Recover — the same host-side "finish a
-// branch" the review stage ends on — run over a Host bound to this ticket. A setup
-// failure means there is nothing to recover: fall through to the normal release.
-func (h *Real) RecoverCommittedFix(identifier string) (stages.Result, bool) {
-	cfg, log, runID, err := stages.Setup(identifier)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "%v\n", err)
-		return stages.Result{}, false
-	}
-	rec := ship.Recover(hostio.New(cfg, log, runID, false), h.log, identifier)
-	out := stages.Result{}
-	if rec.Shipped {
-		out = stages.Result{OK: true, Disposition: stages.Shipped}
-	}
-	return out, rec.Attempted
+	return h.checkSource()
 }
 
 // --- disk reclaim (ADR-0005) ------------------------------------------------
 
 // FreeDisk statfs's PROJECT_PATH: always present, and on the same volume as the
 // worktrees under it, so it is the cheap gate for the whole reclaim ladder.
-func (h *Real) FreeDisk() (uint64, error) { return sandbox.FreeDiskBytes(h.cfg.ProjectPath) }
+func (h *Daemon) FreeDisk() (uint64, error) { return sandbox.FreeDiskBytes(h.cfg.ProjectPath) }
 
 // PruneMergedWorktrees shells out to the checkout's prune-merged-worktrees.sh
 // --yes, the existing, tested, squash-merge-aware reclaimer. It runs with the
@@ -247,7 +153,7 @@ func (h *Real) FreeDisk() (uint64, error) { return sandbox.FreeDiskBytes(h.cfg.P
 // (single source of truth); here we only parse how many it removed for the
 // daemon's narration. A non-zero exit (e.g. gh unreachable) surfaces as an error
 // the loop logs and swallows — reclaim is never a ticket outcome.
-func (h *Real) PruneMergedWorktrees() (int, error) {
+func (h *Daemon) PruneMergedWorktrees() (int, error) {
 	script := filepath.Join(h.cfg.ProjectPath, "scripts", "prune-merged-worktrees.sh")
 	out, err := proc.CombinedOutputInDir(pruneTimeout, h.cfg.ProjectPath, script, "--yes")
 	if err != nil {
@@ -265,7 +171,7 @@ func (h *Real) PruneMergedWorktrees() (int, error) {
 // argv, and run on the HOST rather than in a sandbox: the caches it reclaims are
 // the host's, the same reason the worktree and Docker prunes run host-side. The
 // checkout anchors the call; a toolchain whose cache is global ignores cwd.
-func (h *Real) CachePrune() error {
+func (h *Daemon) CachePrune() error {
 	if h.cfg.CachePruneCommand == "" {
 		return nil
 	}
@@ -283,7 +189,7 @@ func (h *Real) CachePrune() error {
 // Preflight rebuilds or pulls it on the next launch (resolve-on-miss). Both are
 // `-f` so they never block on a confirmation prompt. The `builder` failure is
 // returned first; the image prune still runs.
-func (h *Real) DockerPrune() error {
+func (h *Daemon) DockerPrune() error {
 	builderOut, builderErr := proc.CombinedOutputInDir(dockerPruneTimeout, h.cfg.ProjectPath, "docker", "builder", "prune", "-f")
 	imageOut, imageErr := proc.CombinedOutputInDir(dockerPruneTimeout, h.cfg.ProjectPath, "docker", "image", "prune", "-af")
 	if builderErr != nil {
@@ -327,7 +233,7 @@ func parsePrunedCount(output string) int {
 // host can run the harness against several projects at once, and a shared prefix
 // would make Ctrl-C here kill another project's in-flight session. Failures are
 // ignored — the process is exiting.
-func (h *Real) KillContainers() {
+func (h *Daemon) KillContainers() {
 	out, _, err := proc.Output(killDockerTimeout, "docker", "ps", "-q", "--filter", "name="+sandbox.ContainerPrefix(h.cfg.ProjectPath))
 	if err != nil || len(out) == 0 {
 		return

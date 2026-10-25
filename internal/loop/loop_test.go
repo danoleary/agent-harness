@@ -72,8 +72,12 @@ func TestStartupClearsStaleStopThenFetchesMain(t *testing.T) {
 			clearStop:     func() error { r.order = append(r.order, "clear-stop"); return nil },
 			fetchMain:     func() error { r.order = append(r.order, "fetch-main"); return nil },
 			stopRequested: func() bool { return true }, // stop already requested at the first checkpoint
-			resolveNext:   func() (string, bool) { r.order = append(r.order, "resolve"); return "", false },
-			runPipeline: func(string) stages.Result {
+		},
+		Source: &fakeSource{
+			next: func() (string, bool) { r.order = append(r.order, "resolve"); return "", false },
+		},
+		Pipeline: &fakePipeline{
+			run: func(string) stages.Result {
 				r.order = append(r.order, "pipeline")
 				return stages.Result{Disposition: stages.Shipped}
 			},
@@ -110,8 +114,12 @@ func TestEmptyQueueIdlesThenRePollsNotExit(t *testing.T) {
 			clearStop:     func() error { return nil },
 			fetchMain:     func() error { return nil },
 			stopRequested: stopAfter(6), // 1 checkpoint + 5 idle-tick checks pass, then stop at the next checkpoint
-			resolveNext:   func() (string, bool) { r.order = append(r.order, "resolve"); return "", false },
-			runPipeline: func(string) stages.Result {
+		},
+		Source: &fakeSource{
+			next: func() (string, bool) { r.order = append(r.order, "resolve"); return "", false },
+		},
+		Pipeline: &fakePipeline{
+			run: func(string) stages.Result {
 				r.order = append(r.order, "pipeline")
 				return stages.Result{Disposition: stages.Shipped}
 			},
@@ -166,8 +174,12 @@ func TestTicketRunsPipelineThenFetchesMainAndContinues(t *testing.T) {
 			clearStop:     func() error { return nil },
 			fetchMain:     func() error { fetches++; r.order = append(r.order, "fetch"); return nil },
 			stopRequested: stopAfter(1), // run one ticket, then stop at the 2nd checkpoint
-			resolveNext:   func() (string, bool) { r.order = append(r.order, "resolve"); return "BEH-100", true },
-			runPipeline: func(id string) stages.Result {
+		},
+		Source: &fakeSource{
+			next: func() (string, bool) { r.order = append(r.order, "resolve"); return "BEH-100", true },
+		},
+		Pipeline: &fakePipeline{
+			run: func(id string) stages.Result {
 				r.order = append(r.order, "pipeline")
 				ranWith = id
 				return stages.Result{Disposition: stages.Shipped}
@@ -210,8 +222,12 @@ func TestGracefulStopBetweenTicketsRunsTwoThenStops(t *testing.T) {
 			clearStop:     func() error { return nil },
 			fetchMain:     func() error { return nil },
 			stopRequested: stopAfter(2), // two tickets, stop at the 3rd checkpoint
-			resolveNext:   func() (string, bool) { return "BEH-1", true },
-			runPipeline:   func(string) stages.Result { ran++; return stages.Result{Disposition: stages.Shipped} },
+		},
+		Source: &fakeSource{
+			next: func() (string, bool) { return "BEH-1", true },
+		},
+		Pipeline: &fakePipeline{
+			run: func(string) stages.Result { ran++; return stages.Result{Disposition: stages.Shipped} },
 		},
 		Limits: Limits{
 			PollInterval: time.Minute,
@@ -246,9 +262,13 @@ func TestBreakerTripsAndExitsAfterThreeNoPRTickets(t *testing.T) {
 			clearStop:     func() error { return nil },
 			fetchMain:     func() error { return nil },
 			stopRequested: func() bool { return false }, // never stopped — only the breaker can end this
-			resolveNext:   func() (string, bool) { return "BEH-99", true },
-			runPipeline:   func(string) stages.Result { ran++; return stages.Result{Disposition: stages.NoPR} },
-			release:       func(id string) error { released = append(released, id); return nil },
+		},
+		Source: &fakeSource{
+			next:    func() (string, bool) { return "BEH-99", true },
+			release: func(id string) error { released = append(released, id); return nil },
+		},
+		Pipeline: &fakePipeline{
+			run: func(string) stages.Result { ran++; return stages.Result{Disposition: stages.NoPR} },
 		},
 		Limits: Limits{
 			PollInterval:           time.Minute,
@@ -299,11 +319,15 @@ func TestNoPRRunReleasesTicketBackToTodo(t *testing.T) {
 			clearStop:     func() error { return nil },
 			fetchMain:     func() error { return nil },
 			stopRequested: stopAfter(1), // one ticket, then stop at the 2nd checkpoint
-			resolveNext:   func() (string, bool) { return "BEH-42", true },
-			runPipeline: func(string) stages.Result {
+		},
+		Source: &fakeSource{
+			next:    func() (string, bool) { return "BEH-42", true },
+			release: func(id string) error { released = append(released, id); return nil },
+		},
+		Pipeline: &fakePipeline{
+			run: func(string) stages.Result {
 				return stages.Result{Disposition: stages.NoPR} // ran, but no PR (not a cap abort)
 			},
-			release: func(id string) error { released = append(released, id); return nil },
 		},
 		Limits: Limits{
 			PollInterval:           time.Minute,
@@ -328,20 +352,21 @@ func TestNoPRRunReleasesTicketBackToTodo(t *testing.T) {
 func TestNoPRRunDoesNotReleaseATicketTheRunAlreadyReleased(t *testing.T) {
 	r := &recorder{}
 	var released []string
-	h := &fakeHost{
-		stopRequested: stopAfter(1),
-		resolveNext:   func() (string, bool) { return "BEH-43", true },
-		release:       func(id string) error { released = append(released, id); return nil },
+	src := &fakeSource{
+		next:    func() (string, bool) { return "BEH-43", true },
+		release: func(id string) error { released = append(released, id); return nil },
 	}
-	h.runPipeline = func(string) stages.Result {
-		_ = h.leased.Release() // what the implementation stage does on an env crash
+	pipe := &fakePipeline{run: func(string) stages.Result {
+		_ = src.leased.Release() // what the implementation stage does on an env crash
 		return stages.Result{Disposition: stages.NoPR}
-	}
+	}}
 	Run(Deps{
-		Host:   h,
-		Limits: Limits{PollInterval: time.Minute, TickInterval: 2 * time.Second, MaxConsecutiveFailures: 3},
-		Clock:  testClock{sleep: func(time.Duration) {}},
-		Log:    r,
+		Host:     &fakeHost{stopRequested: stopAfter(1)},
+		Source:   src,
+		Pipeline: pipe,
+		Limits:   Limits{PollInterval: time.Minute, TickInterval: 2 * time.Second, MaxConsecutiveFailures: 3},
+		Clock:    testClock{sleep: func(time.Duration) {}},
+		Log:      r,
 	})
 	if want := []string{"BEH-43"}; !reflect.DeepEqual(released, want) {
 		t.Errorf("released = %v, want %v (one release per run, whoever issues it)", released, want)
@@ -374,10 +399,14 @@ func TestNoPRRunCommentsOnRelease(t *testing.T) {
 			clearStop:     func() error { return nil },
 			fetchMain:     func() error { return nil },
 			stopRequested: stopAfter(1),
-			resolveNext:   func() (string, bool) { return "BEH-42", true },
-			runPipeline:   func(string) stages.Result { return stages.Result{Disposition: stages.NoPR} },
-			release:       func(string) error { return nil },
-			comment:       c.post,
+		},
+		Source: &fakeSource{
+			next:    func() (string, bool) { return "BEH-42", true },
+			release: func(string) error { return nil },
+			comment: c.post,
+		},
+		Pipeline: &fakePipeline{
+			run: func(string) stages.Result { return stages.Result{Disposition: stages.NoPR} },
 		},
 		Limits: Limits{
 			PollInterval:           time.Minute,
@@ -412,11 +441,15 @@ func TestRecommendCloseThatCannotCloseFallsBackToKeepingInProgress(t *testing.T)
 			clearStop:     func() error { return nil },
 			fetchMain:     func() error { return nil },
 			stopRequested: stopAfter(1),
-			resolveNext:   func() (string, bool) { return "BEH-365", true },
-			runPipeline: func(string) stages.Result {
-				return stages.Result{Disposition: stages.RecommendClose}
-			}, // No closeTicket wired — the tracker accepts the close by default.
+		},
+		Source: &fakeSource{
+			next:    func() (string, bool) { return "BEH-365", true },
 			release: func(id string) error { released = append(released, id); return nil },
+		},
+		Pipeline: &fakePipeline{
+			run: func(string) stages.Result {
+				return stages.Result{Disposition: stages.RecommendClose}
+			}, // No close wired — the tracker accepts the close by default.
 		},
 		Limits: Limits{
 			PollInterval:           time.Minute,
@@ -448,12 +481,16 @@ func TestRecommendCloseRunClosesTicket(t *testing.T) {
 			clearStop:     func() error { return nil },
 			fetchMain:     func() error { return nil },
 			stopRequested: stopAfter(1),
-			resolveNext:   func() (string, bool) { return "BEH-365", true },
-			runPipeline: func(string) stages.Result {
+		},
+		Source: &fakeSource{
+			next:    func() (string, bool) { return "BEH-365", true },
+			close:   func(id string) error { closed = append(closed, id); return nil },
+			release: func(id string) error { released = append(released, id); return nil },
+		},
+		Pipeline: &fakePipeline{
+			run: func(string) stages.Result {
 				return stages.Result{Disposition: stages.RecommendClose}
 			},
-			closeTicket: func(id string) error { closed = append(closed, id); return nil },
-			release:     func(id string) error { released = append(released, id); return nil },
 		},
 		Limits: Limits{
 			PollInterval:           time.Minute,
@@ -486,11 +523,15 @@ func TestRecommendCloseRunCommentsRecommendingClose(t *testing.T) {
 			clearStop:     func() error { return nil },
 			fetchMain:     func() error { return nil },
 			stopRequested: stopAfter(1),
-			resolveNext:   func() (string, bool) { return "BEH-365", true },
-			runPipeline:   func(string) stages.Result { return stages.Result{Disposition: stages.RecommendClose} },
-			closeTicket:   func(string) error { return nil },
-			release:       func(string) error { return nil },
-			comment:       c.post,
+		},
+		Source: &fakeSource{
+			next:    func() (string, bool) { return "BEH-365", true },
+			close:   func(string) error { return nil },
+			release: func(string) error { return nil },
+			comment: c.post,
+		},
+		Pipeline: &fakePipeline{
+			run: func(string) stages.Result { return stages.Result{Disposition: stages.RecommendClose} },
 		},
 		Limits: Limits{
 			PollInterval:           time.Minute,
@@ -527,11 +568,15 @@ func TestRecommendCloseFailedCloseCommentsInProgressNotCanceled(t *testing.T) {
 			clearStop:     func() error { return nil },
 			fetchMain:     func() error { return nil },
 			stopRequested: stopAfter(1),
-			resolveNext:   func() (string, bool) { return "BEH-365", true },
-			runPipeline:   func(string) stages.Result { return stages.Result{Disposition: stages.RecommendClose} },
-			closeTicket:   func(string) error { return errors.New("tracker hiccup") },
-			release:       func(string) error { return nil },
-			comment:       c.post,
+		},
+		Source: &fakeSource{
+			next:    func() (string, bool) { return "BEH-365", true },
+			close:   func(string) error { return errors.New("tracker hiccup") },
+			release: func(string) error { return nil },
+			comment: c.post,
+		},
+		Pipeline: &fakePipeline{
+			run: func(string) stages.Result { return stages.Result{Disposition: stages.RecommendClose} },
 		},
 		Limits: Limits{
 			PollInterval:           time.Minute,
@@ -568,10 +613,14 @@ func TestCapAbortReleaseCommentsWithReason(t *testing.T) {
 			clearStop:     func() error { return nil },
 			fetchMain:     func() error { return nil },
 			stopRequested: stopAfter(6), // 1 top checkpoint + 5 backoff ticks, then stop
-			resolveNext:   func() (string, bool) { return "BEH-7", true },
-			runPipeline:   func(string) stages.Result { return stages.Result{Disposition: stages.CapAborted} },
-			release:       func(string) error { return nil },
-			comment:       c.post,
+		},
+		Source: &fakeSource{
+			next:    func() (string, bool) { return "BEH-7", true },
+			release: func(string) error { return nil },
+			comment: c.post,
+		},
+		Pipeline: &fakePipeline{
+			run: func(string) stages.Result { return stages.Result{Disposition: stages.CapAborted} },
 		},
 		Limits: Limits{
 			PollInterval: time.Minute,
@@ -613,12 +662,16 @@ func TestSpendingCapAbortReleasesTicketBacksOffAndLeavesBreakerNeutral(t *testin
 			clearStop:     func() error { return nil },
 			fetchMain:     func() error { return nil },
 			stopRequested: stopAfter(6),
-			resolveNext:   func() (string, bool) { return "BEH-7", true },
-			runPipeline: func(string) stages.Result {
+		},
+		Source: &fakeSource{
+			next:    func() (string, bool) { return "BEH-7", true },
+			release: func(id string) error { released = append(released, id); return nil },
+		},
+		Pipeline: &fakePipeline{
+			run: func(string) stages.Result {
 				ran++
 				return stages.Result{Disposition: stages.CapAborted}
 			},
-			release: func(id string) error { released = append(released, id); return nil },
 		},
 		Limits: Limits{
 			PollInterval:           time.Minute,
@@ -673,23 +726,27 @@ func TestPreflightAbortReclaimsBacksOffAndLeavesBreakerNeutral(t *testing.T) {
 	// one top checkpoint + 5 backoff-tick checks pass, then stop at the next top.
 	code := Run(Deps{
 		Host: &fakeHost{
-			clearStop:     func() error { return nil },
-			fetchMain:     func() error { return nil },
-			stopRequested: stopAfter(6),
-			resolveNext:   func() (string, bool) { return "BEH-7", true },
-			runPipeline: func(string) stages.Result {
-				ran++
-				return stages.Result{Disposition: stages.PreflightAborted}
-			}, // The impl stage owns the release on a preflight abort; a loop-level release here
+			clearStop:      func() error { return nil },
+			fetchMain:      func() error { return nil },
+			stopRequested:  stopAfter(6),
+			freeDisk:       func() (uint64, error) { return 1 * gib, nil }, // always under pressure
+			pruneWorktrees: func() (int, error) { return 0, nil },
+			cachePrune:     func() error { return nil },
+			dockerPrune:    func() error { dockerPrunes++; return nil },
+		},
+		Source: &fakeSource{
+			next: func() (string, bool) { return "BEH-7", true },
 			// would be a wrong double-move, so fail loudly if the loop ever calls it.
 			release: func(id string) error {
 				t.Fatalf("loop must not release %s — the impl stage already did (ADR-0003)", id)
 				return nil
 			},
-			freeDisk:       func() (uint64, error) { return 1 * gib, nil }, // always under pressure
-			pruneWorktrees: func() (int, error) { return 0, nil },
-			cachePrune:     func() error { return nil },
-			dockerPrune:    func() error { dockerPrunes++; return nil },
+		},
+		Pipeline: &fakePipeline{
+			run: func(string) stages.Result {
+				ran++
+				return stages.Result{Disposition: stages.PreflightAborted}
+			}, // The impl stage owns the release on a preflight abort; a loop-level release here
 		},
 		Limits: Limits{
 			DiskReclaimThreshold:   8 * gib,
@@ -741,12 +798,16 @@ func TestCapBackoffWaitsUntilParsedResetTime(t *testing.T) {
 			clearStop:     func() error { return nil },
 			fetchMain:     func() error { return nil }, // 1 top checkpoint + 75 backoff ticks elapse, then stop at the next top checkpoint.
 			stopRequested: stopAfter(76),
-			resolveNext:   func() (string, bool) { return "BEH-7", true },
-			runPipeline: func(string) stages.Result {
+		},
+		Source: &fakeSource{
+			next:    func() (string, bool) { return "BEH-7", true },
+			release: func(string) error { return nil },
+		},
+		Pipeline: &fakePipeline{
+			run: func(string) stages.Result {
 				ran++
 				return stages.Result{Disposition: stages.CapAborted, CapResetAt: reset}
 			},
-			release: func(string) error { return nil },
 		},
 		Limits: Limits{
 			PollInterval: time.Minute,
@@ -785,9 +846,13 @@ func TestCapBackoffFallsBackToFixedWhenResetImplausible(t *testing.T) {
 			clearStop:     func() error { return nil },
 			fetchMain:     func() error { return nil },
 			stopRequested: stopAfter(6), // 1 top + 5 fixed-backoff ticks (10s/2s), then stop
-			resolveNext:   func() (string, bool) { return "BEH-7", true },
-			runPipeline:   func(string) stages.Result { return stages.Result{Disposition: stages.CapAborted, CapResetAt: reset} },
-			release:       func(string) error { return nil },
+		},
+		Source: &fakeSource{
+			next:    func() (string, bool) { return "BEH-7", true },
+			release: func(string) error { return nil },
+		},
+		Pipeline: &fakePipeline{
+			run: func(string) stages.Result { return stages.Result{Disposition: stages.CapAborted, CapResetAt: reset} },
 		},
 		Limits: Limits{
 			PollInterval: time.Minute,
@@ -823,9 +888,13 @@ func TestCapBackoffNarratesEntryAndWake(t *testing.T) {
 			clearStop:     func() error { return nil },
 			fetchMain:     func() error { return nil },
 			stopRequested: stopAfter(6), // 1 top checkpoint + 5 backoff ticks elapse, then stop
-			resolveNext:   func() (string, bool) { return "BEH-7", true },
-			runPipeline:   func(string) stages.Result { return stages.Result{Disposition: stages.CapAborted} },
-			release:       func(string) error { return nil },
+		},
+		Source: &fakeSource{
+			next:    func() (string, bool) { return "BEH-7", true },
+			release: func(string) error { return nil },
+		},
+		Pipeline: &fakePipeline{
+			run: func(string) stages.Result { return stages.Result{Disposition: stages.CapAborted} },
 		},
 		Limits: Limits{
 			PollInterval: time.Minute,
@@ -870,9 +939,13 @@ func TestCapBackoffEmitsPeriodicHeartbeat(t *testing.T) {
 			clearStop:     func() error { return nil },
 			fetchMain:     func() error { return nil },
 			stopRequested: stopAfter(6), // 1 top checkpoint + 5 backoff ticks elapse, then stop
-			resolveNext:   func() (string, bool) { return "BEH-7", true },
-			runPipeline:   func(string) stages.Result { return stages.Result{Disposition: stages.CapAborted} },
-			release:       func(string) error { return nil },
+		},
+		Source: &fakeSource{
+			next:    func() (string, bool) { return "BEH-7", true },
+			release: func(string) error { return nil },
+		},
+		Pipeline: &fakePipeline{
+			run: func(string) stages.Result { return stages.Result{Disposition: stages.CapAborted} },
 		},
 		Limits: Limits{
 			PollInterval:        time.Minute,
@@ -907,9 +980,13 @@ func TestCapBackoffEmitsNoHeartbeatWhenCadenceUnset(t *testing.T) {
 			clearStop:     func() error { return nil },
 			fetchMain:     func() error { return nil },
 			stopRequested: stopAfter(6),
-			resolveNext:   func() (string, bool) { return "BEH-7", true },
-			runPipeline:   func(string) stages.Result { return stages.Result{Disposition: stages.CapAborted} },
-			release:       func(string) error { return nil },
+		},
+		Source: &fakeSource{
+			next:    func() (string, bool) { return "BEH-7", true },
+			release: func(string) error { return nil },
+		},
+		Pipeline: &fakePipeline{
+			run: func(string) stages.Result { return stages.Result{Disposition: stages.CapAborted} },
 		},
 		Limits: Limits{
 			PollInterval: time.Minute,
@@ -952,9 +1029,13 @@ func TestCapBackoffIsInterruptibleByStop(t *testing.T) {
 			clearStop:     func() error { return nil },
 			fetchMain:     func() error { return nil },
 			stopRequested: stop,
-			resolveNext:   func() (string, bool) { return "BEH-7", true },
-			runPipeline:   func(string) stages.Result { return stages.Result{Disposition: stages.CapAborted} },
-			release:       func(string) error { return nil },
+		},
+		Source: &fakeSource{
+			next:    func() (string, bool) { return "BEH-7", true },
+			release: func(string) error { return nil },
+		},
+		Pipeline: &fakePipeline{
+			run: func(string) stages.Result { return stages.Result{Disposition: stages.CapAborted} },
 		},
 		Limits: Limits{
 			PollInterval: time.Minute,
@@ -997,13 +1078,18 @@ func TestCapAbortThenNormalRunAutoResumes(t *testing.T) {
 			clearStop:     func() error { return nil },
 			fetchMain:     func() error { fetches++; return nil },
 			stopRequested: stopAfter(4), // top, 2 backoff ticks, top → run the 2nd ticket, then stop at the 3rd top checkpoint
-			resolveNext: func() (string, bool) {
+		},
+		Source: &fakeSource{
+			next: func() (string, bool) {
 				if run == 0 {
 					return "BEH-A", true
 				}
 				return "BEH-B", true
 			},
-			runPipeline: func(id string) stages.Result {
+			release: func(id string) error { released = append(released, id); return nil },
+		},
+		Pipeline: &fakePipeline{
+			run: func(id string) stages.Result {
 				run++
 				ranWith = append(ranWith, id)
 				if id == "BEH-A" {
@@ -1011,7 +1097,6 @@ func TestCapAbortThenNormalRunAutoResumes(t *testing.T) {
 				}
 				return stages.Result{Disposition: stages.Shipped} // auto-resumed run: ships normally
 			},
-			release: func(id string) error { released = append(released, id); return nil },
 		},
 		Limits: Limits{
 			PollInterval:           time.Minute,
@@ -1050,8 +1135,12 @@ func TestBreakerDoesNotTripWhenTicketsKeepShipping(t *testing.T) {
 			clearStop:     func() error { return nil },
 			fetchMain:     func() error { return nil },
 			stopRequested: stopAfter(5), // five shipped tickets, then stop
-			resolveNext:   func() (string, bool) { return "BEH-1", true },
-			runPipeline:   func(string) stages.Result { ran++; return stages.Result{Disposition: stages.Shipped} },
+		},
+		Source: &fakeSource{
+			next: func() (string, bool) { return "BEH-1", true },
+		},
+		Pipeline: &fakePipeline{
+			run: func(string) stages.Result { ran++; return stages.Result{Disposition: stages.Shipped} },
 		},
 		Limits: Limits{
 			PollInterval:           time.Minute,
@@ -1084,8 +1173,12 @@ func TestMaxTicketsStopsCleanlyAfterCeiling(t *testing.T) {
 			clearStop:     func() error { return nil },
 			fetchMain:     func() error { return nil },
 			stopRequested: func() bool { return false }, // never stopped — only the ceiling ends this
-			resolveNext:   func() (string, bool) { return "BEH-1", true },
-			runPipeline:   func(string) stages.Result { ran++; return stages.Result{Disposition: stages.Shipped} },
+		},
+		Source: &fakeSource{
+			next: func() (string, bool) { return "BEH-1", true },
+		},
+		Pipeline: &fakePipeline{
+			run: func(string) stages.Result { ran++; return stages.Result{Disposition: stages.Shipped} },
 		},
 		Limits: Limits{
 			PollInterval:           time.Minute,
@@ -1118,8 +1211,12 @@ func TestMaxTicketsZeroIsUnlimited(t *testing.T) {
 			clearStop:     func() error { return nil },
 			fetchMain:     func() error { return nil },
 			stopRequested: stopAfter(5), // five tickets, then stop — not the ceiling
-			resolveNext:   func() (string, bool) { return "BEH-1", true },
-			runPipeline:   func(string) stages.Result { ran++; return stages.Result{Disposition: stages.Shipped} },
+		},
+		Source: &fakeSource{
+			next: func() (string, bool) { return "BEH-1", true },
+		},
+		Pipeline: &fakePipeline{
+			run: func(string) stages.Result { ran++; return stages.Result{Disposition: stages.Shipped} },
 		},
 		Limits: Limits{
 			PollInterval:           time.Minute,
@@ -1171,8 +1268,12 @@ func TestMaxRuntimeStopsCleanlyAfterCeiling(t *testing.T) {
 			clearStop:     func() error { return nil },
 			fetchMain:     func() error { return nil },
 			stopRequested: func() bool { return false },
-			resolveNext:   func() (string, bool) { return "BEH-1", true },
-			runPipeline:   func(string) stages.Result { ran++; return stages.Result{Disposition: stages.Shipped} },
+		},
+		Source: &fakeSource{
+			next: func() (string, bool) { return "BEH-1", true },
+		},
+		Pipeline: &fakePipeline{
+			run: func(string) stages.Result { ran++; return stages.Result{Disposition: stages.Shipped} },
 		},
 		Limits: Limits{
 			PollInterval:           time.Minute,
@@ -1206,8 +1307,12 @@ func TestMaxRuntimeZeroIsUnlimited(t *testing.T) {
 			clearStop:     func() error { return nil },
 			fetchMain:     func() error { return nil },
 			stopRequested: stopAfter(3),
-			resolveNext:   func() (string, bool) { return "BEH-1", true },
-			runPipeline:   func(string) stages.Result { ran++; return stages.Result{Disposition: stages.Shipped} },
+		},
+		Source: &fakeSource{
+			next: func() (string, bool) { return "BEH-1", true },
+		},
+		Pipeline: &fakePipeline{
+			run: func(string) stages.Result { ran++; return stages.Result{Disposition: stages.Shipped} },
 		},
 		Limits: Limits{
 			PollInterval:           time.Minute,
@@ -1255,8 +1360,12 @@ func TestIdleSleepIsBrokenIntoTicksAndStopsEarly(t *testing.T) {
 			clearStop:     func() error { return nil },
 			fetchMain:     func() error { return nil },
 			stopRequested: stop,
-			resolveNext:   func() (string, bool) { return "", false }, // always empty → idle
-			runPipeline: func(string) stages.Result {
+		},
+		Source: &fakeSource{
+			next: func() (string, bool) { return "", false }, // always empty → idle
+		},
+		Pipeline: &fakePipeline{
+			run: func(string) stages.Result {
 				t.Fatal("RunPipeline must not run on an empty queue")
 				return stages.Result{}
 			},
@@ -1316,8 +1425,12 @@ func TestDiskReclaimPrunesBelowThresholdBeforeSelecting(t *testing.T) {
 			freeDisk:       freeDiskSeq(1*gib, 9*gib), // below at the gate, healthy after the prune
 			pruneWorktrees: func() (int, error) { r.order = append(r.order, "prune"); return 2, nil },
 			cachePrune:     func() error { cachePruned = true; return nil },
-			resolveNext:    func() (string, bool) { r.order = append(r.order, "resolve"); return "", false },
-			runPipeline:    func(string) stages.Result { return stages.Result{Disposition: stages.Shipped} },
+		},
+		Source: &fakeSource{
+			next: func() (string, bool) { r.order = append(r.order, "resolve"); return "", false },
+		},
+		Pipeline: &fakePipeline{
+			run: func(string) stages.Result { return stages.Result{Disposition: stages.Shipped} },
 		},
 		Limits: Limits{
 			DiskReclaimThreshold: 8 * gib,
@@ -1370,8 +1483,12 @@ func TestDiskReclaimSilentAtOrAboveThreshold(t *testing.T) {
 			freeDisk:       func() (uint64, error) { statfsCalls++; return 8 * gib, nil }, // exactly at the floor — healthy
 			pruneWorktrees: func() (int, error) { pruned = true; return 0, nil },
 			cachePrune:     func() error { cachePruned = true; return nil },
-			resolveNext:    func() (string, bool) { return "", false },
-			runPipeline:    func(string) stages.Result { return stages.Result{Disposition: stages.Shipped} },
+		},
+		Source: &fakeSource{
+			next: func() (string, bool) { return "", false },
+		},
+		Pipeline: &fakePipeline{
+			run: func(string) stages.Result { return stages.Result{Disposition: stages.Shipped} },
 		},
 		Limits: Limits{
 			DiskReclaimThreshold: 8 * gib,
@@ -1410,8 +1527,12 @@ func TestDiskReclaimZeroThresholdDisables(t *testing.T) {
 			stopRequested:  stopAfter(1),
 			freeDisk:       func() (uint64, error) { statfsCalls++; return 0, nil },
 			pruneWorktrees: func() (int, error) { t.Fatal("prune must not run when reclaim is disabled"); return 0, nil },
-			resolveNext:    func() (string, bool) { return "", false },
-			runPipeline:    func(string) stages.Result { return stages.Result{Disposition: stages.Shipped} },
+		},
+		Source: &fakeSource{
+			next: func() (string, bool) { return "", false },
+		},
+		Pipeline: &fakePipeline{
+			run: func(string) stages.Result { return stages.Result{Disposition: stages.Shipped} },
 		},
 		Limits: Limits{
 			DiskReclaimThreshold: 0, // disabled
@@ -1442,8 +1563,12 @@ func TestDiskReclaimRunsCachePruneWhenStillBelowAfterWorktreePrune(t *testing.T)
 			freeDisk:       freeDiskSeq(1*gib, 2*gib, 3*gib),
 			pruneWorktrees: func() (int, error) { r.order = append(r.order, "prune"); return 1, nil },
 			cachePrune:     func() error { r.order = append(r.order, "cache-prune"); return nil },
-			resolveNext:    func() (string, bool) { return "", false },
-			runPipeline:    func(string) stages.Result { return stages.Result{Disposition: stages.Shipped} },
+		},
+		Source: &fakeSource{
+			next: func() (string, bool) { return "", false },
+		},
+		Pipeline: &fakePipeline{
+			run: func(string) stages.Result { return stages.Result{Disposition: stages.Shipped} },
 		},
 		Limits: Limits{
 			DiskReclaimThreshold: 8 * gib, // Below at the gate, and STILL below after the worktree prune → store prune runs.
@@ -1482,8 +1607,12 @@ func TestDiskReclaimRunsDockerPruneWhenStillBelowAfterCachePrune(t *testing.T) {
 			pruneWorktrees: func() (int, error) { r.order = append(r.order, "prune"); return 1, nil },
 			cachePrune:     func() error { r.order = append(r.order, "cache-prune"); return nil },
 			dockerPrune:    func() error { r.order = append(r.order, "docker-prune"); return nil },
-			resolveNext:    func() (string, bool) { return "", false },
-			runPipeline:    func(string) stages.Result { return stages.Result{Disposition: stages.Shipped} },
+		},
+		Source: &fakeSource{
+			next: func() (string, bool) { return "", false },
+		},
+		Pipeline: &fakePipeline{
+			run: func(string) stages.Result { return stages.Result{Disposition: stages.Shipped} },
 		},
 		Limits: Limits{
 			DiskReclaimThreshold: 8 * gib,
@@ -1523,8 +1652,12 @@ func TestDiskReclaimSkipsDockerPruneOnceCheaperPrunesClearTheFloor(t *testing.T)
 			pruneWorktrees: func() (int, error) { return 2, nil },
 			cachePrune:     func() error { cachePruned = true; return nil },
 			dockerPrune:    func() error { dockerPruned = true; return nil },
-			resolveNext:    func() (string, bool) { return "", false },
-			runPipeline:    func(string) stages.Result { return stages.Result{Disposition: stages.Shipped} },
+		},
+		Source: &fakeSource{
+			next: func() (string, bool) { return "", false },
+		},
+		Pipeline: &fakePipeline{
+			run: func(string) stages.Result { return stages.Result{Disposition: stages.Shipped} },
 		},
 		Limits: Limits{
 			DiskReclaimThreshold: 8 * gib,
@@ -1568,8 +1701,12 @@ func TestDiskReclaimPruneFailureIsSwallowedAndBreakerUntouched(t *testing.T) {
 			freeDisk:       func() (uint64, error) { return 1 * gib, nil }, // always under pressure
 			pruneWorktrees: func() (int, error) { return 0, stubErr("gh unreachable") },
 			cachePrune:     func() error { return nil },
-			resolveNext:    func() (string, bool) { return "BEH-1", true },
-			runPipeline:    func(string) stages.Result { ran++; return stages.Result{Disposition: stages.Shipped} },
+		},
+		Source: &fakeSource{
+			next: func() (string, bool) { return "BEH-1", true },
+		},
+		Pipeline: &fakePipeline{
+			run: func(string) stages.Result { ran++; return stages.Result{Disposition: stages.Shipped} },
 		},
 		Limits: Limits{
 			DiskReclaimThreshold:   8 * gib,
@@ -1624,8 +1761,12 @@ func TestStopRequestedEmitsTerminalLoopStoppedRecord(t *testing.T) {
 			clearStop:     func() error { return nil },
 			fetchMain:     func() error { return nil },
 			stopRequested: func() bool { return true },
-			resolveNext:   func() (string, bool) { return "", false },
-			runPipeline:   func(string) stages.Result { return stages.Result{} },
+		},
+		Source: &fakeSource{
+			next: func() (string, bool) { return "", false },
+		},
+		Pipeline: &fakePipeline{
+			run: func(string) stages.Result { return stages.Result{} },
 		},
 		Limits: Limits{
 			PollInterval: time.Minute,
@@ -1648,8 +1789,12 @@ func TestMaxTicketsEmitsTerminalLoopStoppedRecord(t *testing.T) {
 			clearStop:     func() error { return nil },
 			fetchMain:     func() error { return nil },
 			stopRequested: func() bool { return false },
-			resolveNext:   func() (string, bool) { return "BEH-1", true },
-			runPipeline:   func(string) stages.Result { return stages.Result{Disposition: stages.Shipped} },
+		},
+		Source: &fakeSource{
+			next: func() (string, bool) { return "BEH-1", true },
+		},
+		Pipeline: &fakePipeline{
+			run: func(string) stages.Result { return stages.Result{Disposition: stages.Shipped} },
 		},
 		Limits: Limits{
 			PollInterval:           time.Minute,
@@ -1675,8 +1820,12 @@ func TestMaxRuntimeEmitsTerminalLoopStoppedRecord(t *testing.T) {
 			clearStop:     func() error { return nil },
 			fetchMain:     func() error { return nil },
 			stopRequested: func() bool { return false },
-			resolveNext:   func() (string, bool) { return "BEH-1", true },
-			runPipeline:   func(string) stages.Result { return stages.Result{Disposition: stages.Shipped} },
+		},
+		Source: &fakeSource{
+			next: func() (string, bool) { return "BEH-1", true },
+		},
+		Pipeline: &fakePipeline{
+			run: func(string) stages.Result { return stages.Result{Disposition: stages.Shipped} },
 		},
 		Limits: Limits{
 			PollInterval:           time.Minute,
@@ -1703,9 +1852,13 @@ func TestBreakerTripEmitsTerminalLoopStoppedRecord(t *testing.T) {
 			clearStop:     func() error { return nil },
 			fetchMain:     func() error { return nil },
 			stopRequested: func() bool { return false },
-			resolveNext:   func() (string, bool) { return "BEH-99", true },
-			runPipeline:   func(string) stages.Result { return stages.Result{Disposition: stages.NoPR} },
-			release:       func(string) error { return nil },
+		},
+		Source: &fakeSource{
+			next:    func() (string, bool) { return "BEH-99", true },
+			release: func(string) error { return nil },
+		},
+		Pipeline: &fakePipeline{
+			run: func(string) stages.Result { return stages.Result{Disposition: stages.NoPR} },
 		},
 		Limits: Limits{
 			PollInterval:           time.Minute,
@@ -1740,15 +1893,19 @@ func TestCommittedFixIsCompletedNotReleased(t *testing.T) {
 			clearStop:     func() error { return nil },
 			fetchMain:     func() error { return nil },
 			stopRequested: stopAfter(1), // one ticket, then stop at the 2nd checkpoint
-			resolveNext:   func() (string, bool) { return "BEH-649", true },
-			runPipeline: func(string) stages.Result {
+		},
+		Source: &fakeSource{
+			next:    func() (string, bool) { return "BEH-649", true },
+			release: func(id string) error { released = append(released, id); return nil },
+		},
+		Pipeline: &fakePipeline{
+			run: func(string) stages.Result {
 				return stages.Result{Disposition: stages.NoPR} // ran, committed, but never pushed
 			},
-			recoverFix: func(id string) (stages.Result, bool) {
+			recover: func(id string) (stages.Result, bool) {
 				recovered = append(recovered, id)
 				return stages.Result{Disposition: stages.Shipped}, true // there WAS a committed fix; completing it opened a PR
 			},
-			release: func(id string) error { released = append(released, id); return nil },
 		},
 		Limits: Limits{
 			PollInterval:           time.Minute,
@@ -1788,10 +1945,14 @@ func TestNothingToRecoverFallsThroughToRelease(t *testing.T) {
 			clearStop:     func() error { return nil },
 			fetchMain:     func() error { return nil },
 			stopRequested: stopAfter(1),
-			resolveNext:   func() (string, bool) { return "BEH-42", true },
-			runPipeline:   func(string) stages.Result { return stages.Result{Disposition: stages.NoPR} }, // Nothing to recover: no committed-but-unpushed fix on the branch.
-			recoverFix:    func(string) (stages.Result, bool) { return stages.Result{}, false },
-			release:       func(id string) error { released = append(released, id); return nil },
+		},
+		Source: &fakeSource{
+			next:    func() (string, bool) { return "BEH-42", true },
+			release: func(id string) error { released = append(released, id); return nil },
+		},
+		Pipeline: &fakePipeline{
+			run:     func(string) stages.Result { return stages.Result{Disposition: stages.NoPR} }, // Nothing to recover: no committed-but-unpushed fix on the branch.
+			recover: func(string) (stages.Result, bool) { return stages.Result{}, false },
 		},
 		Limits: Limits{
 			PollInterval:           time.Minute,
@@ -1822,10 +1983,14 @@ func TestFailedCompletionFallsThroughToRelease(t *testing.T) {
 			clearStop:     func() error { return nil },
 			fetchMain:     func() error { return nil },
 			stopRequested: stopAfter(1),
-			resolveNext:   func() (string, bool) { return "BEH-42", true },
-			runPipeline:   func(string) stages.Result { return stages.Result{Disposition: stages.NoPR} }, // Found a committed fix, but completing it (push/PR) failed.
-			recoverFix:    func(string) (stages.Result, bool) { return stages.Result{Disposition: stages.NoPR}, true },
-			release:       func(id string) error { released = append(released, id); return nil },
+		},
+		Source: &fakeSource{
+			next:    func() (string, bool) { return "BEH-42", true },
+			release: func(id string) error { released = append(released, id); return nil },
+		},
+		Pipeline: &fakePipeline{
+			run:     func(string) stages.Result { return stages.Result{Disposition: stages.NoPR} }, // Found a committed fix, but completing it (push/PR) failed.
+			recover: func(string) (stages.Result, bool) { return stages.Result{Disposition: stages.NoPR}, true },
 		},
 		Limits: Limits{
 			PollInterval:           time.Minute,
@@ -1859,13 +2024,17 @@ func TestRepeatedCommittedFixCompletionsNeverTripBreaker(t *testing.T) {
 			clearStop:     func() error { return nil },
 			fetchMain:     func() error { return nil },
 			stopRequested: stopAfter(5), // five committed-but-unpushed runs, then stop — NOT the breaker
-			resolveNext:   func() (string, bool) { return "BEH-649", true },
-			runPipeline:   func(string) stages.Result { return stages.Result{Disposition: stages.NoPR} },
-			recoverFix: func(id string) (stages.Result, bool) {
+		},
+		Source: &fakeSource{
+			next:    func() (string, bool) { return "BEH-649", true },
+			release: func(id string) error { released = append(released, id); return nil },
+		},
+		Pipeline: &fakePipeline{
+			run: func(string) stages.Result { return stages.Result{Disposition: stages.NoPR} },
+			recover: func(id string) (stages.Result, bool) {
 				completed = append(completed, id)
 				return stages.Result{Disposition: stages.Shipped}, true
 			},
-			release: func(id string) error { released = append(released, id); return nil },
 		},
 		Limits: Limits{
 			PollInterval:           time.Minute,
@@ -1897,9 +2066,13 @@ func TestFailedCommentIsWarnedNotFatal(t *testing.T) {
 	code := Run(Deps{
 		Host: &fakeHost{
 			stopRequested: stopAfter(1),
-			resolveNext:   func() (string, bool) { return "BEH-42", true },
-			runPipeline:   func(string) stages.Result { return stages.Result{} },
-			comment:       func(string, string) error { return errors.New("tracker 503") },
+		},
+		Source: &fakeSource{
+			next:    func() (string, bool) { return "BEH-42", true },
+			comment: func(string, string) error { return errors.New("tracker 503") },
+		},
+		Pipeline: &fakePipeline{
+			run: func(string) stages.Result { return stages.Result{} },
 		},
 		Limits: Limits{PollInterval: time.Minute, TickInterval: 2 * time.Second},
 		Clock:  testClock{sleep: func(time.Duration) {}},
@@ -1918,9 +2091,11 @@ func TestFailedCommentIsWarnedNotFatal(t *testing.T) {
 func TestUnsetClockDefaultsToSystemTime(t *testing.T) {
 	r := &recorder{}
 	code := Run(Deps{
-		Host:   &fakeHost{stopRequested: func() bool { return true }},
-		Limits: Limits{PollInterval: time.Minute, TickInterval: 2 * time.Second},
-		Log:    r,
+		Host:     &fakeHost{stopRequested: func() bool { return true }},
+		Source:   &fakeSource{},
+		Pipeline: &fakePipeline{},
+		Limits:   Limits{PollInterval: time.Minute, TickInterval: 2 * time.Second},
+		Log:      r,
 	})
 	if code != 0 {
 		t.Errorf("exit code = %d, want 0", code)
@@ -1946,10 +2121,13 @@ func TestStartupAccessFailureExitsBeforePolling(t *testing.T) {
 	code := Run(Deps{
 		Host: &fakeHost{
 			checkAccess: func() error { return errors.New("GH_TOKEN check failed: GitHub HTTP 401") },
-			resolveNext: func() (string, bool) { resolved = true; return "", false },
 		},
-		Clock: testClock{},
-		Log:   r,
+		Source: &fakeSource{
+			next: func() (string, bool) { resolved = true; return "", false },
+		},
+		Pipeline: &fakePipeline{},
+		Clock:    testClock{},
+		Log:      r,
 	})
 	if code != 1 {
 		t.Errorf("exit code = %d, want 1", code)
@@ -1968,12 +2146,15 @@ func TestQueueReadFailureIsNotNarratedAsAnEmptyQueue(t *testing.T) {
 	r := &recorder{}
 	code := Run(Deps{
 		Host: &fakeHost{
-			selectErr:     errors.New("GitHub HTTP 401: Bad credentials"),
 			stopRequested: stopAfter(2),
 		},
-		Limits: Limits{PollInterval: time.Second, TickInterval: time.Second},
-		Clock:  testClock{},
-		Log:    r,
+		Source: &fakeSource{
+			nextErr: errors.New("GitHub HTTP 401: Bad credentials"),
+		},
+		Pipeline: &fakePipeline{},
+		Limits:   Limits{PollInterval: time.Second, TickInterval: time.Second},
+		Clock:    testClock{},
+		Log:      r,
 	})
 	if code != 0 {
 		t.Errorf("exit code = %d, want 0 (it idled, then stopped on request)", code)

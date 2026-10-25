@@ -13,22 +13,24 @@ import (
 // fixedNow is a stable clock for reaper tests so a claim's age is deterministic.
 var fixedNow = time.Date(2026, 7, 3, 22, 0, 0, 0, time.UTC)
 
-// reaperDeps builds the minimal Deps for exercising the between-ticket reaper: an
+// reaperDeps builds the minimal Deps for exercising the between-item reaper: an
 // empty queue (so the loop idles after the single reaper pass) and a stop arranged
-// to land right after that first pass. released captures the ids the reaper released.
-// The host is returned alongside so a test can script one more of its signals.
-func reaperDeps(r *recorder, claims []StaleClaim, released *[]string) (Deps, *fakeHost) {
-	h := &fakeHost{
-		clearStop:     func() error { return nil },
-		fetchMain:     func() error { return nil },
-		stopRequested: stopAfter(1),
-		resolveNext:   func() (string, bool) { return "", false },
-		runPipeline:   func(string) stages.Result { return stages.Result{} },
-		release:       func(id string) error { *released = append(*released, id); return nil },
-		claims:        func() ([]StaleClaim, error) { return claims, nil },
+// to land right after that first pass. released captures the keys the reaper released.
+// The source is returned alongside so a test can script one more of its signals.
+func reaperDeps(r *recorder, claims []StaleClaim, released *[]string) (Deps, *fakeSource) {
+	src := &fakeSource{
+		next:    func() (string, bool) { return "", false },
+		release: func(id string) error { *released = append(*released, id); return nil },
+		claims:  func() ([]StaleClaim, error) { return claims, nil },
 	}
 	return Deps{
-		Host: h,
+		Host: &fakeHost{
+			clearStop:     func() error { return nil },
+			fetchMain:     func() error { return nil },
+			stopRequested: stopAfter(1),
+		},
+		Source:   src,
+		Pipeline: &fakePipeline{run: func(string) stages.Result { return stages.Result{} }},
 		Limits: Limits{
 			ClaimTTL:     30 * time.Minute,
 			PollInterval: time.Minute,
@@ -36,7 +38,7 @@ func reaperDeps(r *recorder, claims []StaleClaim, released *[]string) (Deps, *fa
 		},
 		Clock: testClock{now: func() time.Time { return fixedNow }, sleep: func(time.Duration) {}},
 		Log:   r,
-	}, h
+	}, src
 }
 
 // The tracer: an In Progress claim older than the TTL with no linked PR and no
@@ -45,7 +47,7 @@ func reaperDeps(r *recorder, claims []StaleClaim, released *[]string) (Deps, *fa
 func TestReapsStaleClaimPastTTL(t *testing.T) {
 	r := &recorder{}
 	var released []string
-	claims := []StaleClaim{{Identifier: "BEH-451", StartedAt: fixedNow.Add(-40 * time.Minute)}}
+	claims := []StaleClaim{{Key: "BEH-451", StartedAt: fixedNow.Add(-40 * time.Minute)}}
 	d, _ := reaperDeps(r, claims, &released)
 	Run(d)
 
@@ -64,7 +66,7 @@ func TestReapsStaleClaimPastTTL(t *testing.T) {
 func TestDoesNotReapClaimInsideGraceWindow(t *testing.T) {
 	r := &recorder{}
 	var released []string
-	claims := []StaleClaim{{Identifier: "BEH-447", StartedAt: fixedNow.Add(-18 * time.Minute)}}
+	claims := []StaleClaim{{Key: "BEH-447", StartedAt: fixedNow.Add(-18 * time.Minute)}}
 	d, _ := reaperDeps(r, claims, &released)
 	Run(d)
 
@@ -77,7 +79,7 @@ func TestDoesNotReapClaimInsideGraceWindow(t *testing.T) {
 func TestDoesNotReapClaimWithLinkedPR(t *testing.T) {
 	r := &recorder{}
 	var released []string
-	claims := []StaleClaim{{Identifier: "BEH-633", StartedAt: fixedNow.Add(-2 * time.Hour), HasLinkedPR: true}}
+	claims := []StaleClaim{{Key: "BEH-633", StartedAt: fixedNow.Add(-2 * time.Hour), HasLinkedPR: true}}
 	d, _ := reaperDeps(r, claims, &released)
 	Run(d)
 
@@ -91,7 +93,7 @@ func TestDoesNotReapClaimWithLinkedPR(t *testing.T) {
 func TestDoesNotReapClaimWithRemoteBranch(t *testing.T) {
 	r := &recorder{}
 	var released []string
-	claims := []StaleClaim{{Identifier: "BEH-500", StartedAt: fixedNow.Add(-1 * time.Hour)}}
+	claims := []StaleClaim{{Key: "BEH-500", StartedAt: fixedNow.Add(-1 * time.Hour)}}
 	d, h := reaperDeps(r, claims, &released)
 	h.remoteBranch = func(id string) bool { return id == "BEH-500" }
 	Run(d)
@@ -129,7 +131,7 @@ func TestReaperDisabledByNonPositiveTTL(t *testing.T) {
 	r := &recorder{}
 	var released []string
 	var listed int
-	claims := []StaleClaim{{Identifier: "BEH-451", StartedAt: fixedNow.Add(-40 * time.Minute)}}
+	claims := []StaleClaim{{Key: "BEH-451", StartedAt: fixedNow.Add(-40 * time.Minute)}}
 
 	d, h := reaperDeps(r, claims, &released)
 	d.Limits.ClaimTTL = 0
