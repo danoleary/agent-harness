@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -216,4 +217,105 @@ func contains(haystack []string, needle string) bool {
 		}
 	}
 	return false
+}
+
+// docs/reference/cli.md opens with a summary table that repeats every command's
+// argument grammar from the dispatch table, and the two are kept in sync by hand.
+// A signature change once updated the table here and missed the doc row, because
+// the markdown backticks the grammar and escapes its `|` as `\|`, so a grep for
+// the Go literal found nothing. Pin the two copies to each other: every command
+// has a row whose Arguments cell is its Args, and every row is a command (or one
+// of the two flags usage() prints after them).
+func TestCLIReferenceTableMatchesTheDispatchTable(t *testing.T) {
+	doc, err := os.ReadFile(filepath.Join("..", "..", "docs", "reference", "cli.md"))
+	if err != nil {
+		t.Fatalf("read the CLI reference: %v", err)
+	}
+	rows := cliReferenceRows(t, string(doc))
+
+	want := map[string]string{"--version": "", "--help": ""}
+	for _, c := range commands {
+		want[c.Name] = c.Args
+	}
+	for name, args := range want {
+		got, ok := rows[name]
+		if !ok {
+			t.Errorf("docs/reference/cli.md has no command-table row for %q", name)
+			continue
+		}
+		if got != args {
+			t.Errorf("docs/reference/cli.md lists %q with arguments %q, but the dispatch table says %q", name, got, args)
+		}
+	}
+	for name := range rows {
+		if _, ok := want[name]; !ok {
+			t.Errorf("docs/reference/cli.md lists %q, which is not a command the dispatcher knows", name)
+		}
+	}
+}
+
+// cliReferenceRows parses the `| Command | Arguments | … |` table into command
+// name → unescaped argument grammar. A Command cell is either a link to the
+// command's section (`[`name`](#…)`) or a bare backticked flag (`--version`).
+func cliReferenceRows(t *testing.T, doc string) map[string]string {
+	t.Helper()
+	cell := regexp.MustCompile(`^(?:\[` + "`" + `([^` + "`" + `]+)` + "`" + `\]\(#[^)]*\)|` + "`" + `([^` + "`" + `]+)` + "`" + `)$`)
+	rows := map[string]string{}
+	inTable := false
+	for _, line := range strings.Split(doc, "\n") {
+		line = strings.TrimSpace(line)
+		if !inTable {
+			inTable = strings.HasPrefix(line, "| Command | Arguments |")
+			continue
+		}
+		if !strings.HasPrefix(line, "|") {
+			break
+		}
+		if strings.HasPrefix(line, "|---") {
+			continue
+		}
+		cells := markdownCells(line)
+		if len(cells) < 3 {
+			t.Fatalf("command-table row %q has %d cells, want at least 3", line, len(cells))
+		}
+		m := cell.FindStringSubmatch(cells[0])
+		if m == nil {
+			t.Fatalf("command-table row %q: Command cell %q is neither [`name`](#…) nor `name`", line, cells[0])
+		}
+		name := m[1] + m[2]
+		if _, dup := rows[name]; dup {
+			t.Errorf("docs/reference/cli.md lists %q twice", name)
+		}
+		rows[name] = strings.TrimSuffix(strings.TrimPrefix(cells[1], "`"), "`")
+	}
+	if len(rows) == 0 {
+		t.Fatal("docs/reference/cli.md has no `| Command | Arguments |` table")
+	}
+	return rows
+}
+
+// markdownCells splits one `| a | b |` table row into its trimmed cells. Only an
+// unescaped `|` ends a cell: an alternation inside a grammar is written `\|`,
+// and comes back as a plain `|`.
+func markdownCells(row string) []string {
+	var cells []string
+	var cur strings.Builder
+	for i := 0; i < len(row); i++ {
+		switch {
+		case row[i] == '\\' && i+1 < len(row) && row[i+1] == '|':
+			cur.WriteByte('|')
+			i++
+		case row[i] == '|':
+			cells = append(cells, strings.TrimSpace(cur.String()))
+			cur.Reset()
+		default:
+			cur.WriteByte(row[i])
+		}
+	}
+	// Drop the empty text before the leading pipe; the trailing pipe leaves
+	// nothing after it to collect.
+	if len(cells) > 0 {
+		cells = cells[1:]
+	}
+	return cells
 }
