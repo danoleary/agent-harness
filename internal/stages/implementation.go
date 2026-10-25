@@ -3,15 +3,12 @@ package stages
 import (
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 	"time"
 
 	"github.com/danoleary/agent-harness/internal/config"
-	"github.com/danoleary/agent-harness/internal/filing"
 	"github.com/danoleary/agent-harness/internal/hostio"
 	"github.com/danoleary/agent-harness/internal/lease"
-	"github.com/danoleary/agent-harness/internal/loopstream"
 	"github.com/danoleary/agent-harness/internal/prompt"
 	"github.com/danoleary/agent-harness/internal/runlog"
 	"github.com/danoleary/agent-harness/internal/session"
@@ -199,14 +196,10 @@ func unrunnableReport(step, missing string, out session.Outcome) string {
 // from a test with hostio.NewFake().
 func Implementation(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Result {
 	slug := ticket.Slug(args.Identifier)
+	f := newFrame(h, log, implementationSession, args.Identifier)
+	f.start(args.DryRun)
 
-	dry := ""
-	if args.DryRun {
-		dry = " (dry-run)"
-	}
-	log.Structured(loopstream.Record{Kind: loopstream.KindStageStart, Ticket: args.Identifier, Stage: "implementation", Message: fmt.Sprintf("run %s — implementation %s%s", h.RunID(), args.Identifier, dry)})
-
-	client, err := h.Tracker()
+	client, t, err := f.fetch()
 	if err != nil {
 		return Result{Err: err}
 	}
@@ -214,16 +207,6 @@ func Implementation(h hostio.Host, cfg config.Config, log *runlog.Logger, args A
 	if claim == nil {
 		claim = lease.Unheld(client, args.Identifier)
 	}
-
-	t, err := client.FetchTicket(args.Identifier)
-	if err != nil {
-		return Result{Err: err}
-	}
-	priority := t.Priority
-	if priority == "" {
-		priority = "No priority"
-	}
-	log.Event(fmt.Sprintf("fetched %s (%s) — %s", t.Identifier, priority, t.Title))
 
 	// Advisory only: warn (don't skip) when the ticket cites code symbols that no
 	// longer exist under the Consumer's declared source roots — the BEH-544 signal
@@ -253,19 +236,9 @@ func Implementation(h hostio.Host, cfg config.Config, log *runlog.Logger, args A
 	subject := NewSubject(h, args.Identifier, log.Dir, t)
 	sessionRun := implementationRun(cfg, subject, resume)
 	findingsDir := sessionRun.FindingsDir
-	if err := os.MkdirAll(findingsDir, 0o755); err != nil {
-		// Degrade a full-disk ENOSPC to a clear warning instead of an opaque hard
-		// error (BEH-540); this runs before the claim, so nothing is left stranded.
-		if isDiskFull(err) {
-			log.Event(diskFullWarning(implementationSession, err))
-			return Result{OK: false}
-		}
-		return Result{Err: err}
-	}
-	// Clear any stale dropbox from a prior run of this ticket before the session
-	// writes (the findings dir is reused across runs; a leftover would be re-filed).
-	if err := filing.ClearDropbox(findingsDir); err != nil {
-		return Result{Err: err}
+	// This runs before the claim, so a full disk leaves nothing stranded (BEH-540).
+	if res, ok := f.dropbox(findingsDir); !ok {
+		return res
 	}
 
 	// A multi-file extract-and-rewire refactor gets a larger active-time cap: it is
@@ -366,7 +339,6 @@ func Implementation(h hostio.Host, cfg config.Config, log *runlog.Logger, args A
 			))
 		}
 
-		log.Structured(loopstream.Record{Kind: loopstream.KindSandboxLaunch, Ticket: args.Identifier, Stage: "implementation", Message: fmt.Sprintf("launching sandbox (cap %d min active)", int(sessionCap.Minutes()))})
 		// Retry a transient launch failure (overlay2/read-only-fs exit 125, or a 137
 		// OOM-kill) before it becomes the verdict (BEH-542). Such a crash at the
 		// worktree-creation step — the session's very first heavy host I/O — otherwise
@@ -384,11 +356,7 @@ func Implementation(h hostio.Host, cfg config.Config, log *runlog.Logger, args A
 				))
 			},
 		}
-		run := h.Agent(launch)
-		outcome = run.Outcome
-		log.Event(fmt.Sprintf(
-			"session exited (code %d) — transcript at logs/%s/%s", outcome.ExitCode, args.Identifier, run.Transcript,
-		))
+		outcome = f.launch(launch, "").Outcome
 
 		// Ground truth, never self-report — verify reads the worktree and branch for
 		// itself off the same Host the stage holds.

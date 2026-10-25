@@ -10,7 +10,10 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/danoleary/agent-harness/internal/config"
+	"github.com/danoleary/agent-harness/internal/hostio"
 	"github.com/danoleary/agent-harness/internal/loopstream"
+	"github.com/danoleary/agent-harness/internal/runlog"
 	"github.com/danoleary/agent-harness/internal/stages"
 )
 
@@ -36,6 +39,22 @@ type Deps struct {
 	Review         Stage
 	Retrospective  Stage
 	Log            Narrator
+}
+
+// ForTicket binds the three Stages to one ticket's slice: one Host, which stamps
+// the run id into every container name and transcript and resolves the tracker
+// client once, shared by every Stage over the same cfg, log and args (--verbose and
+// the lease forward through args). It is the one composition root cmd/pipeline and
+// the ticket loop share (#29); the pipeline decides ordering, the Stages do the work.
+func ForTicket(cfg config.Config, log *runlog.Logger, runID string, args stages.Args) Deps {
+	host := hostio.New(cfg, log, runID, args.Verbose)
+	return Deps{
+		FetchMain:      host.FetchMain,
+		Implementation: func() stages.Result { return stages.Implementation(host, cfg, log, args) },
+		Review:         func() stages.Result { return stages.Review(host, cfg, log, args) },
+		Retrospective:  func() stages.Result { return stages.Retrospective(host, cfg, log, args) },
+		Log:            log,
+	}
 }
 
 // Run executes the pipeline. The order and skip rules (DESIGN.md):

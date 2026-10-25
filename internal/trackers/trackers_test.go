@@ -165,3 +165,40 @@ func TestNewSetupErrorsPointAtDoctor(t *testing.T) {
 		}
 	}
 }
+
+// FromConfig reads every tracker credential off the loaded config (#29), so the
+// composition roots never spell the Secrets mapping. Each kind's credential must
+// reach its adapter: a set one builds it, an unset one is the loud missing-secret
+// error New raises.
+func TestFromConfigCarriesEachKindsCredential(t *testing.T) {
+	cfg := func(tc config.TrackerConfig, h config.Host) config.Config {
+		return config.Config{Host: h, Project: config.Project{Tracker: tc}}
+	}
+	jiraSite := config.Host{JiraBaseURL: "https://acme.atlassian.net", JiraEmail: "a@b.c"}
+	jiraAuthed := jiraSite
+	jiraAuthed.JiraAPIToken = "tok"
+	for _, tc := range []struct {
+		name    string
+		cfg     config.Config
+		wantErr string
+	}{
+		{"linear", cfg(config.TrackerConfig{Kind: "linear"}, config.Host{LinearAPIKey: "lin"}), ""},
+		{"linear without its key", cfg(config.TrackerConfig{Kind: "linear"}, config.Host{}), "LINEAR_API_KEY"},
+		{"github", cfg(config.TrackerConfig{Kind: "github", Repo: "acme/widgets"}, config.Host{GitHubToken: "gh"}), ""},
+		{"jira", cfg(config.TrackerConfig{Kind: "jira"}, jiraAuthed), ""},
+		{"jira without its token", cfg(config.TrackerConfig{Kind: "jira"}, jiraSite), "JIRA_API_TOKEN"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := FromConfig(tc.cfg)
+			if tc.wantErr == "" {
+				if err != nil || got == nil {
+					t.Fatalf("FromConfig = %v, %v; want an adapter", got, err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("FromConfig err = %v, want it to name %s", err, tc.wantErr)
+			}
+		})
+	}
+}

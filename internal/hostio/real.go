@@ -74,13 +74,7 @@ var _ Host = (*Real)(nil)
 // its error) for the rest of the run.
 func (h *Real) Tracker() (tracker.Tracker, error) {
 	if !h.resolved {
-		h.client, h.clientErr = trackers.New(h.cfg.Tracker, trackers.Secrets{
-			LinearKey:   h.cfg.LinearAPIKey,
-			GitHubToken: h.cfg.GitHubToken,
-			JiraBaseURL: h.cfg.JiraBaseURL,
-			JiraEmail:   h.cfg.JiraEmail,
-			JiraToken:   h.cfg.JiraAPIToken,
-		})
+		h.client, h.clientErr = trackers.FromConfig(h.cfg)
 		h.resolved = true
 	}
 	return h.client, h.clientErr

@@ -2,12 +2,10 @@ package stages
 
 import (
 	"fmt"
-	"os"
 
 	"github.com/danoleary/agent-harness/internal/config"
 	"github.com/danoleary/agent-harness/internal/filing"
 	"github.com/danoleary/agent-harness/internal/hostio"
-	"github.com/danoleary/agent-harness/internal/loopstream"
 	"github.com/danoleary/agent-harness/internal/prompt"
 	"github.com/danoleary/agent-harness/internal/runlog"
 	"github.com/danoleary/agent-harness/internal/sandbox"
@@ -42,12 +40,8 @@ func toPromptFindings(prior []filing.PriorFinding) []prompt.FiledFinding {
 // test with hostio.NewFake().
 func Retrospective(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Result {
 	slug := ticket.Slug(args.Identifier)
-
-	dry := ""
-	if args.DryRun {
-		dry = " (dry-run)"
-	}
-	log.Structured(loopstream.Record{Kind: loopstream.KindStageStart, Ticket: args.Identifier, Stage: "retrospective", Message: fmt.Sprintf("run %s — retrospective %s%s", h.RunID(), args.Identifier, dry)})
+	f := newFrame(h, log, retrospectiveSession, args.Identifier)
+	f.start(args.DryRun)
 
 	// Skip a misscheduled retrospective host-side, before the tracker fetch and the
 	// sandbox cap: a ticket whose upstream /tdd + /review steps produced neither a
@@ -63,19 +57,13 @@ func Retrospective(h hostio.Host, cfg config.Config, log *runlog.Logger, args Ar
 		return Result{OK: true}
 	}
 
-	client, err := h.Tracker()
-	if err != nil {
-		return Result{Err: err}
-	}
-
 	// The ticket is fetched for its team id (findings are filed back into it) and
 	// for narration. Retrospective runs *last* and never claims the ticket — the
 	// implementation tool already moved it to In Progress.
-	t, err := client.FetchTicket(args.Identifier)
+	_, t, err := f.fetch()
 	if err != nil {
 		return Result{Err: err}
 	}
-	log.Event(fmt.Sprintf("fetched %s — %s", t.Identifier, t.Title))
 
 	res := RetrospectiveOver(h, cfg, log, NewSubject(h, args.Identifier, log.Dir, t), args.DryRun)
 	if !res.OK || args.DryRun {
@@ -109,34 +97,19 @@ func Retrospective(h hostio.Host, cfg config.Config, log *runlog.Logger, args Ar
 func RetrospectiveOver(h hostio.Host, cfg config.Config, log *runlog.Logger, subject Subject, dryRun bool) Result {
 	t := subject.Ticket
 	subject.Base, _ = h.BaseSHA(subject.Slug)
+	f := newFrame(h, log, retrospectiveSession, t.Identifier)
 	findingsDir := runlog.FindingsDir(subject.LogDir, retrospectiveSession)
-	if err := os.MkdirAll(findingsDir, 0o755); err != nil {
-		// A full host disk fails this mkdir with ENOSPC. The disk being full isn't the
-		// retrospective's fault and the in-sandbox agent can't fix it, so degrade to a
-		// clear, actionable warning rather than a hard pipeline error that masquerades
-		// as a stage crash and forces a manual re-run (BEH-540).
-		if isDiskFull(err) {
-			log.Event(diskFullWarning(retrospectiveSession, err))
-			return Result{OK: false}
-		}
-		return Result{Err: err}
-	}
 	// Gather the finding classes already filed (the team's open findings, every
 	// open harness finding across all tickets, and this ticket's prior dropbox) so
 	// the session treats them as settled and reuses their keys instead of
-	// re-deriving them under new ones (BEH-539, #65). MUST run before
-	// ClearDropbox, which is about to wipe that prior dropbox.
+	// re-deriving them under new ones (BEH-539, #65). MUST run before the dropbox
+	// is readied, which wipes that prior dropbox.
 	prior := h.AlreadyFiled(findingsDir, t.TeamID)
 	if len(prior) > 0 {
 		log.Event(fmt.Sprintf("retrospective: %d already-filed finding class(es) passed to the session as settled context", len(prior)))
 	}
-
-	// Clear any stale dropbox from a prior retrospective run of this ticket before
-	// the session writes. The dir is ticket+session keyed (reused across runs), so
-	// without this a previous run's out.json would both re-file as duplicates and
-	// make the "out.json present" ground truth pass even if this run never wrote.
-	if err := filing.ClearDropbox(findingsDir); err != nil {
-		return Result{Err: err}
+	if res, ok := f.dropbox(findingsDir); !ok {
+		return res
 	}
 
 	filed := toPromptFindings(prior)
@@ -151,12 +124,7 @@ func RetrospectiveOver(h hostio.Host, cfg config.Config, log *runlog.Logger, sub
 		return Result{Err: err}
 	}
 
-	log.Structured(loopstream.Record{Kind: loopstream.KindSandboxLaunch, Ticket: t.Identifier, Stage: "retrospective", Message: fmt.Sprintf("launching sandbox (cap %d min active)", int(cfg.RetrospectiveTimeout.Minutes()))})
-	res := h.Agent(retrospectiveRun(cfg, subject, filed))
-	outcome := res.Outcome
-	log.Event(fmt.Sprintf(
-		"session exited (code %d) — transcript at logs/%s/%s", outcome.ExitCode, t.Identifier, res.Transcript,
-	))
+	outcome := f.launch(retrospectiveRun(cfg, subject, filed), "").Outcome
 
 	// A spending-cap abort can fire after the skill wrote its up-front default `[]`
 	// (BEH-536's incremental write), leaving an empty dropbox that the ground-truth

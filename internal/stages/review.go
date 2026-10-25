@@ -57,26 +57,15 @@ const reviewVerdictMaxAttempts = 2
 func Review(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Result {
 	slug := ticket.Slug(args.Identifier)
 	worktreePath := h.WorktreePath(slug)
-
-	dry := ""
-	if args.DryRun {
-		dry = " (dry-run)"
-	}
-	log.Structured(loopstream.Record{Kind: loopstream.KindStageStart, Ticket: args.Identifier, Stage: "review", Message: fmt.Sprintf("run %s — review %s%s", h.RunID(), args.Identifier, dry)})
-
-	client, err := h.Tracker()
-	if err != nil {
-		return Result{Err: err}
-	}
+	f := newFrame(h, log, reviewSession, args.Identifier)
+	f.start(args.DryRun)
 
 	// The ticket is the intent to review against (review reconstructs intent from
-	// the branch/issue/diff). Review does NOT claim or move it — implementation
-	// already did, and the harness owns tracker state (no transition here).
-	t, err := client.FetchTicket(args.Identifier)
+	// the branch/issue/diff).
+	client, t, err := f.fetch()
 	if err != nil {
 		return Result{Err: err}
 	}
-	log.Event(fmt.Sprintf("fetched %s — %s", t.Identifier, t.Title))
 
 	subject := NewSubject(h, args.Identifier, log.Dir, t)
 	subject.Base, _ = h.BaseSHA(slug)
@@ -174,11 +163,7 @@ func Review(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Res
 		if attempt > 1 {
 			run.Label = fmt.Sprintf("%s-retry%d", reviewSession, attempt)
 		}
-		log.Structured(loopstream.Record{Kind: loopstream.KindSandboxLaunch, Ticket: args.Identifier, Stage: "review", Message: fmt.Sprintf("launching review session (attempt %d/%d, cap %d min active)", attempt, reviewVerdictMaxAttempts, int(cfg.ReviewTimeout.Minutes()))})
-		res := h.Agent(run)
-		log.Event(fmt.Sprintf(
-			"review session exited (code %d) — transcript at logs/%s/%s", res.ExitCode, args.Identifier, res.Transcript,
-		))
+		res := f.launch(run, fmt.Sprintf("attempt %d/%d", attempt, reviewVerdictMaxAttempts))
 		// A spending-cap abort (BEH-494) killed the review session before it could
 		// review anything — name that distinct retry-after-reset class so a log reader
 		// isn't misled by the host-side gate result below (which still runs against the

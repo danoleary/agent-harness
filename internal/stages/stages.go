@@ -9,8 +9,10 @@
 // Docker, git, gh, the tracker — goes through the hostio.Host it is handed, so
 // the composition that assembles the pure decisions in internal/verify and acts
 // on them is reachable from a test (hostio.NewFake) rather than only from a live
-// Docker daemon. The cmd/ entrypoints and cmd/pipeline are the composition root
-// that builds the real one.
+// Docker daemon. The steps every Stage shares — the stage-start record, the ticket
+// fetch, the findings dropbox, the narration around a session — are one frame
+// (frame.go, ADR-0025). The standalone cmd/ entrypoints and pipeline.ForTicket are
+// the composition roots that build the real Host.
 package stages
 
 import (
