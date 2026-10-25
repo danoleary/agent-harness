@@ -377,7 +377,9 @@ loop:
                        clean              -> done
                        stale-base conflict (main moved after the push) -> auto-rebase + force-with-lease
                          re-push, await CI re-run, re-check (capped); only a genuine CONTENT conflict
-                         is left for a human (BEH-570)
+                         is left for a human (BEH-570) — unless it is a prerequisite PR's merge
+                         (the ticket named an open PR that has since merged): then one conflict-
+                         resolution session + host gate, re-push, re-check before parking (#82)
   else (red):
     one re-run of the failed checks first (flake wash); re-poll
     while still red AND attempts < N AND within wall-clock budget:
@@ -664,6 +666,13 @@ A ticket is eligible iff **all** hold:
   `issue_dependencies_summary.total_blocked_by` is non-zero, skips the issue while
   any blocker is open (logging `#69 skipped: blocked by open #66`), and fails the
   selection closed if that read errors.
+  The GitHub adapter also holds a ticket whose **body names a still-open pull
+  request** — a bare `#N` or a same-repo PR URL that resolves to an open PR
+  (logging `#82 skipped: builds on open PR #81`). That prerequisite is an
+  unmerged branch, so working the ticket now would build on a base that changes
+  underneath it when the PR merges. A plain open issue named in prose does not
+  hold it, and neither does a reference that 404s; any other read error fails the
+  selection closed ([ADR-0023](adr/0023-a-ticket-waits-on-an-open-pr-its-body-names.md)).
   The native relation is the way to make a ticket wait on another: it unblocks
   itself when the blocker closes. The `Blocked` label (`tracker.blocked_label`,
   optional) never clears on its own, so it is only for a hold no issue models.
@@ -1207,6 +1216,11 @@ reader over a structured stream rather than a `--tui` flag on the daemon.
   `hostio.Runner.Shell` runs `post_create` and every gate in
   `<image>:branch-<fingerprint>`, built from the worktree's Dockerfile through the
   same `sandbox.Preflight`, when that Dockerfile differs from the checkout's.
+- **A ticket waits on an open PR its body names**
+  ([ADR-0023](adr/0023-a-ticket-waits-on-an-open-pr-its-body-names.md)). GitHub
+  selection skips it; a dispatched one carries `ticket.Prerequisites`, which the
+  implementation envelope names by branch; and the CI watch resolves a conflict
+  with base once when it is that prerequisite's merge.
 - Config: `agent-harness/.env` (`LINEAR_API_KEY`, `ANTHROPIC_API_KEY`,
   `GH_TOKEN`, `PROJECT_PATH`, bot identity, timeouts) + CLI flags (`--verbose`,
   `--once` for a single ticket then exit, label/timeout overrides).

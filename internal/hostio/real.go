@@ -337,11 +337,26 @@ func (h *Real) WatchCI(w CIWatch) ci.Outcome {
 		h.cfg.ProjectPath, h.BranchName(w.Slug), cfg, ciGhTimeout,
 		w.Fix,
 		func() error { return h.Push(w.Slug) },
-		func() (ci.RebaseVerdict, error) { return h.rebaseOntoBase(w.Slug) },
+		func() (ci.RebaseVerdict, error) { return h.rebaseOrResolve(w) },
 		func() bool { return h.BranchDiffEmpty(w.Slug) },
 		func() bool { return h.BranchDocsOnly(w.Slug) },
 	)
 	return ci.WatchAndFix(driver, cfg, time.Now)
+}
+
+// rebaseOrResolve is the CI watch's rebase effect: the reactive rebase, and when
+// that hits a content conflict, the Stage's Resolve (#82). A resolution is
+// re-pushed like a clean replay, so the watch re-polls CI on it and re-reads the
+// merge state exactly as it does after a clean rebase.
+func (h *Real) rebaseOrResolve(w CIWatch) (ci.RebaseVerdict, error) {
+	v, err := h.rebaseOntoBase(w.Slug)
+	if err != nil || v == ci.RebaseClean || w.Resolve == nil || !w.Resolve() {
+		return v, err
+	}
+	if err := h.PushForceWithLease(w.Slug); err != nil {
+		return ci.RebaseClean, fmt.Errorf("force-with-lease re-push after resolving the conflict: %w", err)
+	}
+	return ci.RebaseClean, nil
 }
 
 // rebaseOntoBase is the reactive auto-rebase the CI watch invokes when a green PR

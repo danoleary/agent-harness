@@ -180,6 +180,11 @@ func (c *Client) FetchTicket(key string) (ticket.Ticket, error) {
 		}
 		t.SubIssues = append(t.SubIssues, child)
 	}
+	prereqs, err := c.prerequisites(iss.Body, iss.Number)
+	if err != nil {
+		return ticket.Ticket{}, err
+	}
+	t.Prerequisites = prereqs
 	return t, nil
 }
 

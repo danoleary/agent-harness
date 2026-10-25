@@ -22,6 +22,22 @@ type Ticket struct {
 	// (ADR-0002), so the harness fetches each child host-side and inlines its full
 	// spec into the implementation prompt — the sandbox never reaches Linear.
 	SubIssues []SubIssue
+	// Prerequisites are the still-open, unmerged pull requests the ticket's body
+	// names (#82). Selection holds such a ticket in the queue; when one is
+	// dispatched anyway, the envelope names each branch so the session reads the
+	// design from it instead of assuming the two PRs are disjoint, and the CI watch
+	// knows a later conflict with base may be that PR's merge.
+	Prerequisites []Prerequisite
+}
+
+// Prerequisite is one open pull request a ticket builds on.
+type Prerequisite struct {
+	// Identifier is the PR's Key, e.g. "#81".
+	Identifier string
+	Title      string
+	// Branch is the PR's unmerged head branch, e.g. "feat/gh-80".
+	Branch string
+	URL    string
 }
 
 // Slug is the filesystem- and ref-safe name a Key's worktree and branch are keyed
