@@ -2,7 +2,10 @@
 // host-side; see ADR-0001).
 package ticket
 
-import "strings"
+import (
+	"regexp"
+	"strings"
+)
 
 // Ticket is a Linear ticket, as the harness needs it.
 type Ticket struct {
@@ -97,6 +100,116 @@ func containsAny(text string, needles []string) bool {
 		if strings.Contains(text, n) {
 			return true
 		}
+	}
+	return false
+}
+
+// openQuestionSignals mark a section heading as one a human was meant to settle
+// before the ticket was ready for an agent (#90). Matched against the lowercased
+// heading with "agent ready" folded to "agent-ready". Narrow on purpose: a heading
+// that merely mentions readiness ("Why this is agent-ready") is not one.
+var openQuestionSignals = []string{
+	"open question", "unresolved question", "for a human",
+	"not agent-ready", "not yet agent-ready", "before this is agent-ready",
+}
+
+// settledHeading marks an open-questions heading whose questions are answered.
+// Word-bounded, so "unresolved" never reads as "resolved".
+var settledHeading = regexp.MustCompile(`\b(resolved|answered|decided)\b`)
+
+// OpenQuestions returns the headings of the ticket body's sections that still
+// list questions for a human, in order: "Open questions (for a human before this
+// is agent-ready)" in #55, "Not yet agent-ready", "Questions for a human". A
+// Markdown heading or a line that is all bold counts as a heading; a heading in a
+// fenced block, one marked resolved, and a section whose content is empty or
+// "None" do not. The phrase in running prose is not a section, so it never counts.
+//
+// It is a heuristic for an advisory, never a skip: a ready label is a human's
+// call, and the open questions may not block the work.
+func (t Ticket) OpenQuestions() []string {
+	var found []string
+	open := ""
+	var content strings.Builder
+	flush := func() {
+		if open != "" && !emptySection(content.String()) {
+			found = append(found, open)
+		}
+		open = ""
+		content.Reset()
+	}
+	fence := ""
+	for _, line := range strings.Split(t.Description, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if marker := fenceOpener(trimmed); fence == "" && marker != "" {
+			fence = marker
+		} else if fence != "" {
+			if strings.HasPrefix(trimmed, fence) {
+				fence = ""
+			}
+			content.WriteString("code\n")
+			continue
+		}
+		heading, ok := headingText(line)
+		if !ok {
+			content.WriteString(line + "\n")
+			continue
+		}
+		flush()
+		if isOpenQuestionsHeading(heading) {
+			open = heading
+		}
+	}
+	flush()
+	return found
+}
+
+// fenceOpener returns the ``` or ~~~ run that opens a fenced block, or "".
+func fenceOpener(trimmed string) string {
+	for _, f := range []string{"```", "~~~"} {
+		if strings.HasPrefix(trimmed, f) {
+			return f
+		}
+	}
+	return ""
+}
+
+// headingText returns a line's heading text when the line is an ATX heading
+// (`## Open questions`) or wholly bold (`**Open questions:**`).
+func headingText(line string) (string, bool) {
+	trimmed := strings.TrimLeft(line, " ")
+	if len(line)-len(trimmed) > 3 {
+		return "", false
+	}
+	trimmed = strings.TrimSpace(trimmed)
+	if hashes := len(trimmed) - len(strings.TrimLeft(trimmed, "#")); hashes >= 1 && hashes <= 6 {
+		rest := trimmed[hashes:]
+		if rest == "" || rest[0] != ' ' && rest[0] != '\t' {
+			return "", false
+		}
+		return strings.TrimSpace(strings.TrimRight(strings.TrimSpace(rest), "#")), true
+	}
+	for _, m := range []string{"**", "__"} {
+		inner := strings.TrimSuffix(trimmed, ":")
+		if len(inner) > 2*len(m) && strings.HasPrefix(inner, m) && strings.HasSuffix(inner, m) {
+			text := inner[len(m) : len(inner)-len(m)]
+			if !strings.Contains(text, m) {
+				return strings.TrimSpace(text), true
+			}
+		}
+	}
+	return "", false
+}
+
+func isOpenQuestionsHeading(heading string) bool {
+	h := strings.ReplaceAll(strings.ToLower(heading), "agent ready", "agent-ready")
+	return containsAny(h, openQuestionSignals) && !settledHeading.MatchString(h)
+}
+
+// emptySection reports whether a section's content says nothing is open.
+func emptySection(content string) bool {
+	switch strings.Trim(strings.ToLower(content), " \t\n-*_.:;!()") {
+	case "", "none", "n/a", "no", "nothing":
+		return true
 	}
 	return false
 }

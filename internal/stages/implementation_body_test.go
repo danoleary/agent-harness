@@ -463,3 +463,32 @@ func TestImplementationPostCreateFailureIsStillWarnOnly(t *testing.T) {
 		t.Errorf("post_create retry attempts = %d, want the OOM retry (%d) kept", got, oomMaxAttempts)
 	}
 }
+
+// #90: a ready-labelled ticket whose body still has a section of questions for a
+// human is dispatched anyway (a ready label is a human's call), but the run log
+// says so, naming the section — the dispatch advisory, like ResolvedAdvisory.
+func TestImplementationAdvisesWhenTheTicketStillListsOpenQuestions(t *testing.T) {
+	h := hostio.NewFake()
+	h.Trk.Ticket.Description = "Add `init`.\n\n## Open questions (for a human before this is agent-ready)\n\n- Which trackers?"
+	log := stageLog(t, "PROJ-90")
+
+	res := Implementation(h, stageCfg(), log, Args{Identifier: "PROJ-90"})
+
+	if !res.OK || len(h.Agents) != 1 {
+		t.Fatalf("an open-questions advisory must never skip the dispatch, got %+v with runs %v", res, labels(h.Agents))
+	}
+	if got := narration(t, log); !strings.Contains(got, "still lists open questions") || !strings.Contains(got, "Open questions (for a human before this is agent-ready)") {
+		t.Errorf("run log does not name the open-questions section:\n%s", got)
+	}
+}
+
+func TestImplementationIsQuietWhenTheTicketHasNoOpenQuestions(t *testing.T) {
+	h := hostio.NewFake()
+	log := stageLog(t, "PROJ-91")
+
+	Implementation(h, stageCfg(), log, Args{Identifier: "PROJ-91"})
+
+	if got := narration(t, log); strings.Contains(got, "open questions") {
+		t.Errorf("a ticket with no open-questions section logged an advisory:\n%s", got)
+	}
+}

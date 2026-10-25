@@ -236,6 +236,16 @@ func Implementation(h hostio.Host, cfg config.Config, log *runlog.Logger, args A
 	if adv := h.ResolvedAdvisory(t.Identifier, t.Description); adv != "" {
 		log.Event(adv)
 	}
+	// Advisory only (#90): the ticket is ready-labelled but its body still has a
+	// section of questions for a human. The label is a human's call and the
+	// questions may not block the work, so dispatch goes ahead; the envelope's
+	// open-questions section tells the session what to do with them.
+	if open := t.OpenQuestions(); len(open) > 0 {
+		log.Event(fmt.Sprintf(
+			"⚠ %s still lists open questions for a human (\"%s\") — dispatching anyway; the session is told to record and flag any it has to decide. Settle them in the ticket or drop the ready label if they block the work.",
+			t.Identifier, strings.Join(open, `", "`),
+		))
+	}
 
 	// Advisory + prompt swap (BEH-554): when the ticket's OWN feature branch already
 	// carries un-merged commits referencing it, a prior session resumed this
