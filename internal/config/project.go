@@ -299,20 +299,22 @@ func LoadProject(checkoutPath string) (ProjectConfig, error) {
 }
 
 // missingConfigError says which of the two is missing — the whole
-// .agent-harness/ directory, or only its config.toml — and points at the example.
+// .agent-harness/ directory, or only its config.toml — and points at
+// `agent-harness init`, which writes it, with the example as the hand-copied
+// alternative.
 func missingConfigError(checkoutPath, dir, path string) error {
 	if _, err := os.Stat(dir); errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf(
 			"%s has no %s/ directory, so there is no project config to read.\n"+
 				"The harness reads the Consumer's config.toml and per-Stage prompts from it.\n"+
-				"Fix: copy example/%s/ from the agent-harness repository (%s) into %s and edit its config.toml",
-			checkoutPath, ProjectDirName, ProjectDirName, exampleConfigURL, checkoutPath)
+				"Fix: run `agent-harness init` in %s to scaffold one, or copy example/%s/ from the agent-harness repository (%s) and edit its config.toml",
+			checkoutPath, ProjectDirName, checkoutPath, ProjectDirName, exampleConfigURL)
 	}
 	return fmt.Errorf(
 		"%s does not exist.\n"+
 			"The harness reads the sandbox image, tracker, and gates from it.\n"+
-			"Fix: copy example/%s/config.toml from the agent-harness repository (%s) to %s and edit it",
-		path, ProjectDirName, exampleConfigURL, path)
+			"Fix: run `agent-harness init` in %s, which writes it and keeps the files already there, or copy example/%s/config.toml from the agent-harness repository (%s) to %s and edit it",
+		path, checkoutPath, ProjectDirName, exampleConfigURL, path)
 }
 
 // parseError puts the file:line:column of a TOML syntax error first, the way a

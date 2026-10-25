@@ -36,19 +36,27 @@ type command struct {
 	Name string
 	// File is the executable's filename, looked up across searchDirs. It differs
 	// from Name only for `start`, which is the shipped loop-start.sh launcher
-	// rather than a Go binary, and is empty for `doctor`, which the dispatcher
-	// runs itself.
+	// rather than a Go binary, and is empty for `doctor` and `init`, which the
+	// dispatcher runs itself.
 	File string
 	// Args is the argument grammar shown in the help column ("" for none).
 	Args string
 	// Summary is the one-line description in the help listing.
 	Summary string
+	// Builtin, when set, runs the command in this process instead of exec'ing a
+	// stage binary, and returns the exit code. `init` is one: it writes a few
+	// files and exits, so it has no TTY or signal behaviour for exec to preserve,
+	// and a new Consumer can scaffold even with a broken libexec dir (ADR-0021).
+	// `doctor` also runs in-process but is dispatched by name, because it needs
+	// the resolved search dirs (and their error) that a Builtin is not handed.
+	Builtin func(args []string) int
 }
 
-// commands is the dispatch table, in the order --help lists them: the setup
-// check, the two everyday entrypoints, then the single-ticket pipeline, then the
-// three individual stages it chains.
+// commands is the dispatch table, in the order --help lists them: the one-time
+// project setup and the setup check, the two everyday entrypoints, then the
+// single-ticket pipeline, then the three individual stages it chains.
 var commands = []command{
+	{Name: "init", Args: "[--yes] [--force]", Summary: "scaffold this project's .agent-harness/ directory", Builtin: initMain},
 	{Name: doctorCommand, Args: "[--offline]", Summary: "check the whole setup; print a fix for every problem"},
 	{Name: "start", File: "loop-start.sh", Summary: "start the loop as a detached daemon (logs to loop.log)"},
 	{Name: "loop", File: "loop", Summary: "work the whole ready queue in the foreground until stopped"},
@@ -91,6 +99,9 @@ func main() {
 	if !ok {
 		fmt.Fprintf(os.Stderr, "agent-harness: unknown command %q\n\n%s", argv[0], usage())
 		os.Exit(2)
+	}
+	if cmd.Builtin != nil {
+		os.Exit(cmd.Builtin(argv[1:]))
 	}
 
 	dirs, err := searchDirs(selfDir, os.Getenv("HARNESS_LIBEXEC"))
@@ -252,10 +263,10 @@ func usage() string {
 	fmt.Fprintf(&b, "  %-*s  %s\n", width, "--version", "print the harness version")
 	fmt.Fprintf(&b, "  %-*s  %s\n", width, "--help", "this message")
 
-	b.WriteString("\nEvery command takes --verbose and --dry-run, and answers --help without a credential.\n")
+	b.WriteString("\nEvery other command takes --verbose and --dry-run, and answers --help without a credential.\n")
 	b.WriteString("Stop a running loop with `touch $PROJECT_PATH/.agent-harness/STOP`.\n\n")
 	b.WriteString("Before the first run you need credentials in a .env file, and an .agent-harness/\n")
-	b.WriteString("directory in the project you point it at:\n")
+	b.WriteString("directory in the project you point it at — `agent-harness init` writes both:\n")
 	b.WriteString("  https://github.com/danoleary/agent-harness/blob/main/docs/CONSUMER.md\n")
 	return b.String()
 }

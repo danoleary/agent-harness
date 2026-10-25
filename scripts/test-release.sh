@@ -57,8 +57,9 @@ fixture() { # name -> prints the clone path
         git config user.email test@example.invalid
         git config commit.gpgsign false
         git config tag.gpgsign false
-        mkdir -p .agent-harness docs
+        mkdir -p .agent-harness docs internal/scaffold/templates
         echo 'FROM ghcr.io/danoleary/agent-harness-base:0.5.0' >.agent-harness/Dockerfile
+        printf '# << .Label >>\nFROM ghcr.io/danoleary/agent-harness-base:0.5.0\n' >internal/scaffold/templates/Dockerfile.tmpl
         printf 'text\nFROM ghcr.io/danoleary/agent-harness-base:0.1.0\n' >docs/CONSUMER.md
         printf 'FROM node:24\nARG CLAUDE_VERSION=2.1.283\n' >Dockerfile.base
         git add -A
@@ -120,6 +121,7 @@ git --git-dir="$o" rev-parse -q --verify refs/tags/v0.6.0 >/dev/null || fail "ta
 show() { git --git-dir="$o" show "main:$1"; }
 show .agent-harness/Dockerfile | grep -q 'agent-harness-base:0.6.0' || fail "dogfood pin not bumped"
 show docs/CONSUMER.md | grep -q 'agent-harness-base:0.6.0' || fail "CONSUMER.md pin not bumped"
+show internal/scaffold/templates/Dockerfile.tmpl | grep -q 'agent-harness-base:0.6.0' || fail "init's scaffold pin not bumped"
 show Dockerfile.base | grep -q '^ARG CLAUDE_VERSION=2.2.0$' || fail "claude CLI not bumped"
 git --git-dir="$o" log -1 --format=%s main | grep -q '^Release v0.6.0$' || fail "unexpected commit subject"
 pass

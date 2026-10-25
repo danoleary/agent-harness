@@ -1177,8 +1177,8 @@ reader over a structured stream rather than a `--tui` flag on the daemon.
   generic names (`watch`, `review`, `loop`, …) never reach a shared `bin` dir.
   The release archive's layout *is* the installed layout, so an unpacked archive
   also runs in place.
-- **`agent-harness doctor` checks the whole setup** ([ADR-0020](adr/0020-doctor-checks-the-whole-setup-in-one-pass.md)). The one
-  command the dispatcher runs itself rather than exec'ing, so it still works on a
+- **`agent-harness doctor` checks the whole setup** ([ADR-0020](adr/0020-doctor-checks-the-whole-setup-in-one-pass.md)). One of the two
+  commands the dispatcher runs itself rather than exec'ing, so it still works on a
   broken install. `internal/doctor` runs every check without stopping — the host
   tools, the `.env` `config.ResolveEnvFile` picked and the ones it skipped, each
   credential with a live read-only API call (`GH_TOKEN`'s `X-OAuth-Scopes` must
@@ -1187,6 +1187,14 @@ reader over a structured stream rather than a `--tui` flag on the daemon.
   and prints a fix under each failure. It exits 1 on any failure; `--offline`
   skips the network calls. Every setup error (config load, tracker selection,
   sandbox preflight) ends by pointing at it.
+- **`agent-harness init` scaffolds a Consumer** ([ADR-0021](adr/0021-init-scaffolds-a-consumer-from-recorded-toolchain-defaults.md), proposed).
+  `internal/scaffold` detects the toolchain (Go, pnpm, .NET, Python) and the GitHub
+  origin remote. It writes a loadable `.agent-harness/`: config, a Dockerfile `FROM`
+  the release's base pin, three prompt bodies with `/TODO-…-skill` placeholders,
+  and a masked, gitignored `.env`. It never overwrites without `--force`,
+  never overwrites the `.env` at all, and ends by naming `agent-harness doctor`.
+  Like `doctor`, it runs in the dispatcher's own process, with no stage binary
+  behind it.
 - Config: `agent-harness/.env` (`LINEAR_API_KEY`, `ANTHROPIC_API_KEY`,
   `GH_TOKEN`, `PROJECT_PATH`, bot identity, timeouts) + CLI flags (`--verbose`,
   `--once` for a single ticket then exit, label/timeout overrides).
