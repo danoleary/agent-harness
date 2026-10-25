@@ -91,6 +91,11 @@ type Context struct {
 	// CIFix and RebaseFix invoke no skill and ignore it.
 	Body string
 
+	// Base is the commit the branch was cut from or last rebased onto — its
+	// merge-base with origin/main, resolved host-side. The Review and Retrospective
+	// envelopes scope the diff to it (#86); empty falls back to origin/main.
+	Base string
+
 	// Resume selects the Implement variant.
 	Resume Resume
 	// Filed lists the finding classes already filed, for a Retrospective re-run.
@@ -379,7 +384,7 @@ func resumedBranchWorktreeState(slug, branchPrefix string) string {
 	branch := branchPrefix + "/" + slug
 	return join(
 		"Enter the worktree already created for you at `.claude/worktrees/"+slug+"` on branch `"+branch+"` — the harness owns worktree and branch creation, so do NOT run `scripts/new-worktree.sh`.",
-		"IMPORTANT — RESUMED WORKTREE: branch `"+branch+"` ALREADY carries commit(s) for this ticket ahead of `main` from a previous session — the fix may already be COMPLETE. Before you plan or write any code, enter the worktree and inspect that history: run `git log origin/main..HEAD` (equivalently `git log main..HEAD`) and read the diff. If the ticket's behaviour is already implemented and tested on the branch, do NOT re-implement, rewrite, or redo it — instead verify the gates pass and record \"already fixed on branch — recommend review/handoff\" in your handoff, then stop. Only finish or extend the work if the branch's fix is genuinely incomplete. The ticket prose below may describe the code as still un-fixed even though the branch already resolves it, so trust the branch's git history over the prose.",
+		"IMPORTANT — RESUMED WORKTREE: branch `"+branch+"` ALREADY carries commit(s) for this ticket ahead of `main` from a previous session — the fix may already be COMPLETE. Before you plan or write any code, enter the worktree and inspect that history: run `git log origin/main..HEAD` (not local `main`, which the harness never updates and may be stale) and read the diff. If the ticket's behaviour is already implemented and tested on the branch, do NOT re-implement, rewrite, or redo it — instead verify the gates pass and record \"already fixed on branch — recommend review/handoff\" in your handoff, then stop. Only finish or extend the work if the branch's fix is genuinely incomplete. The ticket prose below may describe the code as still un-fixed even though the branch already resolves it, so trust the branch's git history over the prose.",
 	)
 }
 
@@ -444,10 +449,27 @@ func retrospective(c Context) string {
 		renderBody(c),
 		retroFindingsProtocol,
 		retroAudienceContract,
+		branchBaseSection(c.Base),
 		retroContractSteer(c.Tracker),
 		alreadyFiledSection(c.Filed),
 		bashQuirkSteer,
 	)
+}
+
+// branchBaseSection scopes a Review or Retrospective session's view of the branch
+// to the commits this ticket added (#86). The harness cuts and rebases the branch
+// on origin/main but never moves local `main`, so once a sibling ticket merges
+// mid-run `main...HEAD` also carries that sibling's commits and the session has to
+// work out on its own that the foreign work is not the branch's. Naming the exact
+// base removes the question; an unresolved base falls back to origin/main, whose
+// three-dot diff finds the same fork point.
+func branchBaseSection(base string) string {
+	if base == "" {
+		base = "origin/main"
+	}
+	return "The branch's change is exactly `git log " + base + "..HEAD` and `git diff " + base + "...HEAD`" +
+		" — `" + base + "` is the commit the harness cut the branch from or last rebased it onto. Scope the change with that range only." +
+		" Do NOT diff against local `main`: the harness never updates it, so it may be stale and `main...HEAD` would also show commits from other, already-merged tickets."
 }
 
 // alreadyFiledSection renders the dedup context (BEH-539): the open finding
@@ -494,6 +516,7 @@ func review(c Context) string {
 	return join(
 		renderBody(c),
 		ticketContext(c.Ticket),
+		branchBaseSection(c.Base),
 		priorReviewSection(c.PriorReview),
 		"---",
 		reviewContractFooter(c.Tracker, c.BranchPrefix, c.Slug),

@@ -108,6 +108,7 @@ func Retrospective(h hostio.Host, cfg config.Config, log *runlog.Logger, args Ar
 // absent means it never ran). A dry-run prints the plan and launches nothing.
 func RetrospectiveOver(h hostio.Host, cfg config.Config, log *runlog.Logger, subject Subject, dryRun bool) Result {
 	t := subject.Ticket
+	subject.Base, _ = h.BaseSHA(subject.Slug)
 	findingsDir := runlog.FindingsDir(subject.LogDir, retrospectiveSession)
 	if err := os.MkdirAll(findingsDir, 0o755); err != nil {
 		// A full host disk fails this mkdir with ENOSPC. The disk being full isn't the

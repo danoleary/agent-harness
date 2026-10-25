@@ -230,6 +230,8 @@ func (h *Real) Checkpoint(slug, key, stage string) error {
 
 func (h *Real) HeadSHA(slug string) (string, error) { return h.wt(slug).HeadSHA() }
 
+func (h *Real) BaseSHA(slug string) (string, error) { return h.wt(slug).BaseSHA() }
+
 func (h *Real) EnsureCIRerunCommit(slug, headBefore string) error {
 	return h.wt(slug).EnsureCIRerunCommit(headBefore)
 }

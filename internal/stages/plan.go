@@ -20,6 +20,10 @@ type Subject struct {
 	WorktreePath string
 	Branch       string
 	LogDir       string
+	// Base is the commit the branch was cut from or last rebased onto, resolved
+	// host-side when the Stage runs; the review and retrospective prompts scope
+	// their diff to it (#86). A plan built before then leaves it empty.
+	Base string
 }
 
 // NewSubject resolves identifier's worktree and branch through p — the run's Host,
@@ -174,7 +178,7 @@ func reviewRun(cfg config.Config, s Subject, prior *prompt.PriorReview) hostio.A
 		Model: cfg.ReviewModel,
 		Prompt: prompt.For(prompt.Review, prompt.Context{
 			Ticket: s.Ticket, Slug: s.Slug, BranchPrefix: cfg.BranchPrefix, Tracker: cfg.Tracker.Kind, WorktreePath: s.WorktreePath, Body: cfg.Prompts.Review,
-			PriorReview: prior,
+			PriorReview: prior, Base: s.Base,
 		}),
 		Cap: cfg.ReviewTimeout,
 	}
@@ -187,7 +191,7 @@ func retrospectiveRun(cfg config.Config, s Subject, filed []prompt.FiledFinding)
 		Label: retrospectiveSession,
 		Model: cfg.RetrospectiveModel,
 		Prompt: prompt.For(prompt.Retrospective, prompt.Context{
-			Ticket: s.Ticket, Slug: s.Slug, BranchPrefix: cfg.BranchPrefix, Tracker: cfg.Tracker.Kind, Body: cfg.Prompts.Retro, Filed: filed,
+			Ticket: s.Ticket, Slug: s.Slug, BranchPrefix: cfg.BranchPrefix, Tracker: cfg.Tracker.Kind, Body: cfg.Prompts.Retro, Filed: filed, Base: s.Base,
 		}),
 		FindingsDir: runlog.FindingsDir(s.LogDir, retrospectiveSession),
 		Cap:         cfg.RetrospectiveTimeout,

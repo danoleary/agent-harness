@@ -165,6 +165,9 @@ type Repo interface {
 	StripHandoffPaths(slug string) error
 	Checkpoint(slug, key, stage string) error
 	HeadSHA(slug string) (string, error)
+	// BaseSHA is the commit the branch was cut from or last rebased onto — the
+	// range the review and retrospective sessions diff (#86).
+	BaseSHA(slug string) (string, error)
 	EnsureCIRerunCommit(slug, headBefore string) error
 	CommitsAhead(slug string) int
 	BranchDisjoint(slug string) bool

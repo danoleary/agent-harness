@@ -46,17 +46,19 @@ type Fake struct {
 
 	// --- repo state ---
 
-	Ahead         int
-	Exists        bool
-	Clean         bool
-	DiffEmpty     bool
-	DocsOnly      bool
-	BranchThere   bool
-	Pushed        bool
-	Disjoint      bool
-	Rebased       bool
-	Subjects      []string
-	Head          string
+	Ahead       int
+	Exists      bool
+	Clean       bool
+	DiffEmpty   bool
+	DocsOnly    bool
+	BranchThere bool
+	Pushed      bool
+	Disjoint    bool
+	Rebased     bool
+	Subjects    []string
+	Head        string
+	// Base is what BaseSHA returns; empty reads as an unresolved base.
+	Base          string
 	RebaseVerdict gitpkg.RebaseResult
 	// CollapseOnRebase empties the branch's diff the moment it is rebased — the
 	// BEH-680 race, where a sibling PR landed the same fix while the branch waited.
@@ -210,6 +212,8 @@ func (f *Fake) Checkpoint(slug, key, stage string) error {
 }
 
 func (f *Fake) HeadSHA(string) (string, error) { return f.Head, f.HeadErr }
+
+func (f *Fake) BaseSHA(string) (string, error) { return f.Base, nil }
 
 func (f *Fake) EnsureCIRerunCommit(slug, headBefore string) error {
 	f.record("ci-rerun-commit %s", headBefore)

@@ -82,7 +82,7 @@ runnable by hand against a ticket id before the next is added:
    advisory (a resumed branch can hold *incomplete* work too), so instead of
    skipping, the host swaps the `/tdd` prompt for the `prompt.ResumedBranch` variant,
    which steers the agent to inspect the branch's existing commits (`git log
-   main..HEAD`) and prefer verify-and-handoff over re-implementing.
+   origin/main..HEAD`) and prefer verify-and-handoff over re-implementing.
 2. **`review BEH-NNN`** — run `/review-worktree` over the existing worktree, then
    host-side re-run the gates and, if green, push + open the PR.
 3. **`retrospective BEH-NNN`** — run `/retrospective` over the ticket's

@@ -86,3 +86,19 @@ lands on the ticket, not the branch, so re-emitting it would never unblock.
 It is additive: a first review, or one over a moved branch, reads exactly as
 before. The Consumer body still owns how the review is done; the envelope only
 states a fact about the diff.
+
+## Amendment, 2026-10-25: the review and retrospective envelopes name the branch base
+
+The review skill, the retrospective skill and the retro body told the session to
+read `main...HEAD`. The harness cuts and rebases the branch on origin/main but
+never moves local `main`, so once a sibling ticket merged mid-run that range also
+carried the sibling's commits. Sessions spent turns working out that the foreign
+work was not the branch's, and a less careful reviewer could flag scope creep that
+is not there.
+
+**The host now resolves the branch's base — `git merge-base origin/main <branch>`,
+the commit it was cut from or last rebased onto — and the review and retrospective
+envelopes name it, scoping the change to `<base>..HEAD` / `<base>...HEAD` and
+warning off local `main`** (#86). It sits in the envelope because only the host
+can resolve it before the session starts. A base the host cannot resolve falls back
+to `origin/main`, whose three-dot diff finds the same fork point.
