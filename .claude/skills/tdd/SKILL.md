@@ -18,7 +18,16 @@ prompt around this skill tells you the ticket, the worktree and the branch.
 3. Find the module that owns the behaviour and its `_test.go`. Follow the
    existing test style there — table tests, fakes over mocks, the port
    interfaces in `internal/hostio` and friends — rather than inventing a new one.
-4. Read the repo guards below. `make check` rejects code that breaks them, and
+4. If the ticket describes a concrete incident or reproducing scenario (specific
+   events, timestamps, IDs, inputs), plan a test that replays that scenario's
+   actual data — not a tidied-up fixture — and asserts the incident no longer
+   happens. It is in addition to any test the ticket names, and it is your first
+   Red test. If the ticket lists several candidate fixes, check the one you chose
+   against that replayed scenario before you commit: a fix that passes the
+   requested test can still leave one of the incident's own data points on the
+   wrong side of the boundary it relies on. Arguing in your summary that the fix
+   covers the scenario is not a substitute for the test.
+5. Read the repo guards below. `make check` rejects code that breaks them, and
    finding that out after the code is written costs a rewrite and a full re-run.
 
 ## Repo guards `make check` enforces

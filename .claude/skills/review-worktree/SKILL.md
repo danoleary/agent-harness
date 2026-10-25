@@ -19,7 +19,10 @@ implementation transcript. Write one line: what should now be true.
 ## 2. Read the diff through these lenses, in order
 
 1. **Spec** — does the diff do what the ticket asked, all of it, and nothing
-   unrelated? Is any acceptance criterion missing?
+   unrelated? Is any acceptance criterion missing? If the ticket gives a concrete
+   incident or reproducing scenario, does the fix resolve that example, not just
+   the test the ticket asked for? Walk the scenario's actual data through the
+   change, and if no test replays it, add one.
 2. **Correctness** — error paths, nil/empty inputs, context cancellation,
    goroutine and file-handle leaks, off-by-ones, exit codes (see DESIGN.md
    §Exit-code contract).
