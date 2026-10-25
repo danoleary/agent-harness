@@ -250,6 +250,10 @@ func TestParseTargetReadsTheInstanceFlags(t *testing.T) {
 		{argv: []string{"--loop"}, wantErr: true},
 		{argv: []string{"--loop", "pr-doctor", "--all"}, wantErr: true},
 		{argv: []string{"--loop", "../x"}, wantErr: true},
+		{argv: []string{"--loop="}, wantErr: true},
+		{argv: []string{"--instance="}, wantErr: true},
+		{argv: []string{"logs/loop.jsonl", "--loop", "pr-doctor"}, wantErr: true},
+		{argv: []string{"--instance", "b", "logs/loop.jsonl"}, wantErr: true},
 		{argv: []string{"--instance"}, wantErr: true},
 		{argv: []string{"--instance", "b", "--all"}, wantErr: true},
 	}

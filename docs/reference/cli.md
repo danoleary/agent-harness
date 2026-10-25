@@ -14,7 +14,7 @@ agent-harness <command> [args…]
 | [`init`](#init) | `[--yes] [--force] [--toolchain T] [--repo owner/name]` | scaffold this project's `.agent-harness/` |
 | [`doctor`](#doctor) | `[--offline]` | check the whole setup; print a fix for every problem |
 | [`pipeline`](#pipeline) | `<KEY> \| --next` | one ticket, start to finish, then exit |
-| [`start`](#start) | `[--instance <id>]` | start the ticket loop as a detached daemon |
+| [`start`](#start) | `[<name>] [--instance <id>]` | start a loop as a detached daemon |
 | [`loop`](#loop) | `[<name>] [--instance <id>] [--list] [--dry-run]` | run a loop in the foreground until stopped |
 | [`watch`](#watch) | `[LOGFILE \| --loop <name> \| --instance <id> \| --all]` | live, read-only view of a running loop |
 | [`implementation`](#implementation-review-retrospective) | `<KEY>` | stage 1 alone: implement into a worktree and commit |

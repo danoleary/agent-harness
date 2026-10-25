@@ -99,7 +99,9 @@ func parseTarget(argv []string) (target, error) {
 			i++
 			t.loop = argv[i]
 		case strings.HasPrefix(a, "--loop="):
-			t.loop = strings.TrimPrefix(a, "--loop=")
+			if t.loop = strings.TrimPrefix(a, "--loop="); t.loop == "" {
+				return t, errors.New("--loop needs a loop name, e.g. `--loop=pr-doctor`")
+			}
 		case a == "--instance":
 			if i+1 >= len(argv) || argv[i+1] == "" {
 				return t, errors.New("--instance needs an id, e.g. `--instance b`")
@@ -107,7 +109,9 @@ func parseTarget(argv []string) (target, error) {
 			i++
 			t.instance = argv[i]
 		case strings.HasPrefix(a, "--instance="):
-			t.instance = strings.TrimPrefix(a, "--instance=")
+			if t.instance = strings.TrimPrefix(a, "--instance="); t.instance == "" {
+				return t, errors.New("--instance needs an id, e.g. `--instance=b`")
+			}
 		case a == "--all":
 			t.all = true
 		case t.path == "":
@@ -116,6 +120,11 @@ func parseTarget(argv []string) (target, error) {
 	}
 	if t.all && t.instance != "" {
 		return t, errors.New("--all already follows every instance; drop --instance, or drop --all to follow one")
+	}
+	// A stream named by path is matched to its daemon by where it sits, so a flag
+	// naming another daemon would be silently ignored.
+	if t.path != "" && (t.loop != "" || t.instance != "" || t.all) {
+		return t, fmt.Errorf("%s names its stream already; drop it, or drop --loop/--instance/--all", t.path)
 	}
 	if t.all && t.loop != "" {
 		return t, errors.New("--all follows the ticket loop's instances; drop --loop, or drop --all to follow that loop")
