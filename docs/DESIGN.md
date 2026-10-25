@@ -1177,6 +1177,16 @@ reader over a structured stream rather than a `--tui` flag on the daemon.
   generic names (`watch`, `review`, `loop`, …) never reach a shared `bin` dir.
   The release archive's layout *is* the installed layout, so an unpacked archive
   also runs in place.
+- **`agent-harness doctor` checks the whole setup** ([ADR-0020](adr/0020-doctor-checks-the-whole-setup-in-one-pass.md)). The one
+  command the dispatcher runs itself rather than exec'ing, so it still works on a
+  broken install. `internal/doctor` runs every check without stopping — the host
+  tools, the `.env` `config.ResolveEnvFile` picked and the ones it skipped, each
+  credential with a live read-only API call (`GH_TOKEN`'s `X-OAuth-Scopes` must
+  carry `repo`), the config and prompt bodies, the tracker's repo/team/project
+  and labels, and whether the sandbox image is present, buildable or pullable —
+  and prints a fix under each failure. It exits 1 on any failure; `--offline`
+  skips the network calls. Every setup error (config load, tracker selection,
+  sandbox preflight) ends by pointing at it.
 - Config: `agent-harness/.env` (`LINEAR_API_KEY`, `ANTHROPIC_API_KEY`,
   `GH_TOKEN`, `PROJECT_PATH`, bot identity, timeouts) + CLI flags (`--verbose`,
   `--once` for a single ticket then exit, label/timeout overrides).

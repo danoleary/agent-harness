@@ -276,7 +276,9 @@ func capFailure(o session.Outcome) Result {
 
 // LoadConfig loads the harness config: .env first (best-effort), then the
 // environment. Shared so the pipeline and each standalone tool load it the same
-// way.
+// way. A load error ends by pointing at `agent-harness doctor`: it names the
+// problems the environment and config have, and doctor reports the rest of the
+// setup (tools, live credentials, tracker, image) alongside them.
 func LoadConfig() (config.Config, error) {
 	wd, _ := os.Getwd()
 	envFile := config.ResolveEnvFile(os.Getenv, wd)
@@ -284,7 +286,7 @@ func LoadConfig() (config.Config, error) {
 
 	cfg, err := config.Load(os.Getenv, config.WithWorkingDir(wd))
 	if err != nil {
-		return cfg, err
+		return cfg, config.WithDoctorHint(err)
 	}
 	for _, w := range cfg.Warnings {
 		fmt.Fprintf(os.Stderr, "warning: %s\n", w)

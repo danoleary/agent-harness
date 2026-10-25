@@ -149,3 +149,19 @@ func TestNewNonLinearKindsNeedNoLinearKey(t *testing.T) {
 		t.Errorf("kind=jira must not require a Linear key, got: %v", err)
 	}
 }
+
+// A tracker setup error names one problem; it ends by pointing at doctor, which
+// reports the rest of the setup in the same pass (#54).
+func TestNewSetupErrorsPointAtDoctor(t *testing.T) {
+	for _, tc := range []config.TrackerConfig{
+		{Kind: "linear"},
+		{Kind: "github", Repo: "nope"},
+		{Kind: "jira"},
+		{Kind: "bugzilla"},
+	} {
+		_, err := New(tc, Secrets{})
+		if err == nil || !strings.HasSuffix(err.Error(), config.DoctorHint) {
+			t.Errorf("kind=%s: error %v does not end with %q", tc.Kind, err, config.DoctorHint)
+		}
+	}
+}

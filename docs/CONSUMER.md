@@ -35,7 +35,7 @@ curl -fsSL https://raw.githubusercontent.com/danoleary/agent-harness/main/instal
 It puts a single command, `agent-harness`, on your `PATH` and everything else in
 a private `libexec` dir beside it (ADR-0012), along with `.env.example` and this
 file under `~/.local/share/agent-harness/`. `agent-harness --help` lists every
-command. A `go install` or a downloaded archive from [Releases](../../releases)
+command, and `agent-harness doctor` checks your setup, with a fix for each problem it finds. A `go install` or a downloaded archive from [Releases](../../releases)
 work too.
 
 ## The two surfaces you own

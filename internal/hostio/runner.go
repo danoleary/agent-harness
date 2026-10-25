@@ -129,8 +129,9 @@ func (r *Runner) ShellPreview(s ShellRun) []string {
 
 // Preflight verifies the harness can actually launch a sandbox for this Consumer
 // before a stage commits to a run (claiming the ticket, mutating tracker state).
+// A refusal is a setup error, so it ends by pointing at `agent-harness doctor`.
 func (r *Runner) Preflight() error {
-	return sandbox.Preflight(sandbox.PreflightFor(r.cfg.Image, r.cfg.ProjectPath, r.cfg.Dockerfile))
+	return config.WithDoctorHint(sandbox.Preflight(sandbox.PreflightFor(r.cfg.Image, r.cfg.ProjectPath, r.cfg.Dockerfile)))
 }
 
 func (r *Runner) agentArgs(name string, a AgentRun) []string {
