@@ -75,7 +75,7 @@ The loop log shows `#97 deferred: overlaps PR #81 on <files>`, and the ticket is
 picked up on the first poll after that work merges or closes, so sibling tickets
 that edit one module run one after another. Label a ticket `parallel-ok`
 (`OVERLAP_ESCAPE_LABEL`) to run it anyway, or set `OVERLAP_THRESHOLD=0` to turn
-the check off (ADR-0031).
+the check off (ADR-0032).
 
 ## See also
 

@@ -94,7 +94,7 @@ A `[[loops]]` entry can override the first six for one loop.
 | `STOP_FILE` | `.agent-harness/STOP` | The sentinel that winds every loop down. A relative path resolves against `PROJECT_PATH`. |
 | `GATE_CONCURRENCY` | `1` (`0` = no limit) | How many runs may execute their gates at once, across instances sharing the lock dir. |
 | `GATE_LOCK_DIR` | `<project>/.agent-harness/locks/` | Where the gate slots live. Share one dir across projects to bound the whole host. |
-| `OVERLAP_THRESHOLD` | `1` (`0` = off) | Defer a ready ticket for the poll when it names this many files that one open harness PR or claimed worktree already changes (ADR-0031). |
+| `OVERLAP_THRESHOLD` | `1` (`0` = off) | Defer a ready ticket for the poll when it names this many files that one open harness PR or claimed worktree already changes (ADR-0032). |
 | `OVERLAP_ESCAPE_LABEL` | `parallel-ok` | A ticket carrying this label dispatches whatever it overlaps. |
 | `PR_LOOP_LABEL` | `agent-maintained` | The label that opts a human's PR in to `pr-doctor`. |
 | `PR_LOOP_MAX_ATTEMPTS` | `3` | Attempts per PR before `pr-doctor` labels it `blocked`. |

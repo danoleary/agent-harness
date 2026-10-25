@@ -1,4 +1,4 @@
-# ADR-0031: A ticket that names files in flight waits for them
+# ADR-0032: A ticket that names files in flight waits for them
 
 - Status: Accepted
 - Date: 2026-10-25

@@ -55,7 +55,7 @@ func RepoPRs(cfg config.Config) *github.Pulls {
 	return github.NewPulls(github.NewGhTransport(cfg.ProjectPath), "{owner}/{repo}")
 }
 
-// WatchPRs turns on the overlap check (#97, ADR-0031): selection defers a ticket
+// WatchPRs turns on the overlap check (#97, ADR-0032): selection defers a ticket
 // whose title or body names files an open harness PR, or a claimed ticket's
 // worktree, already changes. OVERLAP_THRESHOLD=0 leaves it off.
 func (s *TicketSource) WatchPRs(prs OpenPRs) *TicketSource {

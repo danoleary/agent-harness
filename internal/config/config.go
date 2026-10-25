@@ -186,7 +186,7 @@ type Host struct {
 
 	// OverlapThreshold is how many files a ready ticket must name that one open
 	// harness PR or claimed branch already changes before selection defers it for
-	// the poll (#97, ADR-0031). 0 turns the check off; defaults to 1.
+	// the poll (#97, ADR-0032). 0 turns the check off; defaults to 1.
 	OverlapThreshold int
 	// OverlapEscapeLabel, on a ticket, dispatches it whatever it overlaps: a human
 	// has judged it safe to run in parallel. Defaults to "parallel-ok".

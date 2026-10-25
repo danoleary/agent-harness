@@ -843,7 +843,7 @@ A ticket is eligible iff **all** hold:
   itself when the blocker closes. The `Blocked` label (`tracker.blocked_label`,
   optional) never clears on its own, so it is only for a hold no issue models.
 - **not overlapping the work in flight** (#97,
-  [ADR-0031](adr/0031-a-ticket-that-names-files-in-flight-waits-for-them.md)), on
+  [ADR-0032](adr/0032-a-ticket-that-names-files-in-flight-waits-for-them.md)), on
   every tracker. Selection reads the files changed by each open PR on
   `branch_prefix` (`/pulls/N/files`) and by each claimed ticket's worktree
   (`git diff --merge-base origin/main`, uncommitted edits included), plus the
@@ -1439,7 +1439,7 @@ reader over a structured stream rather than a `--tui` flag on the daemon.
   | `STOP_FILE` | `.agent-harness/STOP` | the sentinel that stops every loop; cleared at clean startup, `touch` to wind down. Each loop also has its own, `.agent-harness/STOP-<name>` |
   | `GATE_CONCURRENCY` | `1` | how many runs may execute their gates at once across every instance sharing the lock dir (§Loop instances); `0` = no limit |
   | `GATE_LOCK_DIR` | `.agent-harness/locks/` | where the gate slots' lock files live; one dir shared by several projects bounds the whole host |
-  | `OVERLAP_THRESHOLD` | `1` | how many files a ready ticket must name that one open harness PR or claimed worktree already changes before selection defers it for the poll (ADR-0031); `0` = off |
+  | `OVERLAP_THRESHOLD` | `1` | how many files a ready ticket must name that one open harness PR or claimed worktree already changes before selection defers it for the poll (ADR-0032); `0` = off |
   | `OVERLAP_ESCAPE_LABEL` | `parallel-ok` | the ticket label that dispatches a ticket whatever it overlaps |
   | `PR_LOOP_LABEL` | `agent-maintained` | PR loops: the label that opts a PR whose head is off `branch_prefix` in, unless the loop's `source.label` sets one (ADR-0019) |
   | `PR_LOOP_MAX_ATTEMPTS` | `3` | PR loops: attempts per PR, unless `source.max_attempts` sets one; past it the loop comments what it tried and labels the PR `blocked` |

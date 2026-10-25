@@ -23,7 +23,7 @@ type overlapScreen struct {
 }
 
 // DeferOverlaps screens r's selection against the work in flight (#97,
-// ADR-0031). A ticket that names files an open harness PR or a claimed branch
+// ADR-0032). A ticket that names files an open harness PR or a claimed branch
 // already changes waits for this poll: the screen logs `<key> deferred: overlaps
 // PR #N on <files>` and selects again past it. Nothing about the ticket changes,
 // so the next poll re-checks it, and once the overlapping PR merges or closes it
