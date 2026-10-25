@@ -16,7 +16,7 @@ agent-harness <command> [args…]
 | [`pipeline`](#pipeline) | `<KEY> \| --next` | one ticket, start to finish, then exit |
 | [`start`](#start) | `[--instance <id>]` | start the ticket loop as a detached daemon |
 | [`loop`](#loop) | `[<name>] [--instance <id>] [--list] [--dry-run]` | run a loop in the foreground until stopped |
-| [`watch`](#watch) | `[LOGFILE \| --instance <id> \| --all]` | live, read-only view of a running loop |
+| [`watch`](#watch) | `[LOGFILE \| --loop <name> \| --instance <id> \| --all]` | live, read-only view of a running loop |
 | [`implementation`](#implementation-review-retrospective) | `<KEY>` | stage 1 alone: implement into a worktree and commit |
 | [`review`](#implementation-review-retrospective) | `<KEY>` | stage 2 alone: cold review, host gates, push and PR |
 | [`retrospective`](#implementation-review-retrospective) | `<KEY>` | stage 3 alone: file Findings, tear the worktree down |
@@ -78,19 +78,20 @@ argument or config.
 ## `start`
 
 ```
-agent-harness start [--instance <id>]
+agent-harness start [<name>] [--instance <id>]
 ```
 
-Launches the ticket loop as a detached daemon with `nohup`, writes its pidfile,
-and prints how to stop and watch it. See
-[run several instances](../how-to/run-several-instances.md).
+Launches a loop as a detached daemon with `nohup`, writes its pidfile, and
+prints how to stop and watch it. With no name it launches the ticket loop
+(`tickets`). See [run several instances](../how-to/run-several-instances.md).
 
-| Instance | Pidfile | Log |
+| Daemon | Pidfile | Log |
 |---|---|---|
-| default | `.agent-harness/loop.pid` | `.agent-harness/loop.log` |
+| default (`tickets`) | `.agent-harness/loop.pid` | `.agent-harness/loop.log` |
+| `<name>` | `.agent-harness/loop-<name>.pid` | `.agent-harness/loop-<name>.log` |
 | `--instance <id>` | `.agent-harness/loop-<id>.pid` | `.agent-harness/loop-<id>.log` |
 
-Exit codes: `0` launched, `1` that instance is already running (a stale pidfile
+Exit codes: `0` launched, `1` that loop or instance is already running (a stale pidfile
 is removed and ignored) or the `loop` binary is missing, `2` a bad argument.
 There is no `stop` command: `touch` a STOP sentinel, or `kill` the pid.
 
@@ -130,7 +131,7 @@ relies on this: anything but `0` is a crash. Nothing restarts the loop for you.
 ## `watch`
 
 ```
-agent-harness watch [LOGFILE | --instance <id> | --all] [--no-animation] [--no-bell]
+agent-harness watch [LOGFILE | --loop <name> | --instance <id> | --all] [--no-animation] [--no-bell]
 ```
 
 Tails a loop's event stream and shows the current ticket and stage. It never
@@ -140,10 +141,16 @@ controls the loop: Ctrl-C quits the viewer only.
 |---|---|
 | (none) | `$PROJECT_PATH/.agent-harness/logs/loop.jsonl`, the default instance |
 | `LOGFILE` | that stream, e.g. `.agent-harness/logs/loops/pr-doctor/loop.jsonl` |
-| `--instance <id>` | instance `<id>`'s stream |
+| `--loop <name>` | loop `<name>`'s stream, `.agent-harness/logs/loops/<name>/loop.jsonl` |
+| `--instance <id>` | instance `<id>`'s stream (with `--loop`, an instance of that loop) |
 | `--all` | every instance, each line labelled `[default]`, `[b]`, … |
 | `--no-animation` | keep the dashboard, freeze the mascot |
 | `--no-bell` | don't ring when the loop stops or stalls |
+
+It reports the daemon down when the pidfile `start` wrote for that loop or
+instance names no live process, and "winding down" when any sentinel that stops
+it is present: its `STOP-<id>`, its loop's `STOP-<name>`, or the plain `STOP`. A
+`LOGFILE` is matched to its daemon by where it sits under `logs/`.
 
 When stdout isn't a terminal, or `NO_COLOR` is set, it prints plain lines. Exit
 code `2` on a bad argument.

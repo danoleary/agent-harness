@@ -10,14 +10,14 @@ of earlier releases.
 ```bash
 agent-harness loop pr-doctor --dry-run   # list the PRs it would work, and how; changes nothing
 agent-harness loop pr-doctor             # run it in the foreground
+agent-harness start pr-doctor            # or as a detached daemon (loop-pr-doctor.pid, loop-pr-doctor.log)
 touch "$PROJECT_PATH/.agent-harness/STOP-pr-doctor"   # wind it down
 ```
 
 It needs nothing beyond what the ticket loop needs: `gh` and `GH_TOKEN` on the
 host. Run one PR loop per checkout. It logs to
 `.agent-harness/logs/loops/pr-doctor/`, one dir per PR plus its own `loop.jsonl`;
-follow it with
-`agent-harness watch .agent-harness/logs/loops/pr-doctor/loop.jsonl`.
+follow it with `agent-harness watch --loop pr-doctor`.
 
 ## Choose which PRs it touches
 

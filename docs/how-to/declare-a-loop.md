@@ -66,11 +66,17 @@ for it.
 
 The `tickets` loop logs to `.agent-harness/logs/`. Every other loop logs to
 `.agent-harness/logs/loops/<name>/`, one dir per item plus its own `loop.jsonl`.
-Follow one with:
+Start one as a detached daemon, and follow it, with:
 
 ```bash
-agent-harness watch .agent-harness/logs/loops/<name>/loop.jsonl
+agent-harness start <name>        # pidfile .agent-harness/loop-<name>.pid, log loop-<name>.log
+agent-harness watch --loop <name>
 ```
+
+The viewer shows the daemon as down when `loop-<name>.pid` names no live
+process, so a loop run in the foreground with `agent-harness loop <name>` reads
+as down; and it shows "winding down" once `STOP-<name>` or the plain `STOP` is
+present.
 
 Run each loop in its own daemon. The ticket loop may run as
 [several instances](run-several-instances.md); every other loop runs as one

@@ -636,5 +636,77 @@ if PROJECT_PATH="$INST_PROJ" LOOP_BIN="$ARGS_BIN" "$SCRIPT_PATH" --bogus > /dev/
 fi
 echo -e "${GREEN}PASS${NC}"
 
+# --- a named loop (#106) -------------------------------------------------------
+#
+# `start pr-doctor` launches that loop as its own daemon: the name handed to the
+# daemon, and a pidfile and log of its own beside the ticket loop's, so the
+# viewer's `watch --loop pr-doctor` can probe the daemon it follows.
+echo -n "loop-start.sh <name> starts that loop with its own pidfile and log ... "
+NAMED_PROJ="$TEST_DIR/consumer-named"
+mkdir -p "$NAMED_PROJ"
+PROJECT_PATH="$NAMED_PROJ" LOOP_BIN="$ARGS_BIN" "$SCRIPT_PATH" > /dev/null 2>&1
+named_tickets="$(cat "$NAMED_PROJ/.agent-harness/loop.pid" 2>/dev/null || true)"
+STARTED_PIDS="$STARTED_PIDS $named_tickets"
+named_out="$(PROJECT_PATH="$NAMED_PROJ" LOOP_BIN="$ARGS_BIN" "$SCRIPT_PATH" pr-doctor 2>&1)" && named_rc=0 || named_rc=$?
+named_pid="$(cat "$NAMED_PROJ/.agent-harness/loop-pr-doctor.pid" 2>/dev/null || true)"
+STARTED_PIDS="$STARTED_PIDS $named_pid"
+if [ "$named_rc" != "0" ]; then
+    echo -e "${RED}FAIL${NC} - pr-doctor refused to start beside the ticket loop: $named_out"
+    exit 1
+elif [ -z "$named_pid" ] || [ "$named_pid" = "$named_tickets" ] || ! kill -0 "$named_pid" 2>/dev/null; then
+    echo -e "${RED}FAIL${NC} - no live pidfile of its own at $NAMED_PROJ/.agent-harness/loop-pr-doctor.pid"
+    exit 1
+elif ! wait_for_log "$NAMED_PROJ/.agent-harness/loop-pr-doctor.log" "fake-loop started with: pr-doctor"; then
+    echo -e "${RED}FAIL${NC} - the daemon was not told its loop, or did not log to loop-pr-doctor.log"
+    exit 1
+elif ! echo "$named_out" | grep -q "STOP-pr-doctor"; then
+    echo -e "${RED}FAIL${NC} - the launch must say how to stop pr-doctor alone, got: $named_out"
+    exit 1
+elif ! echo "$named_out" | grep -q "watch --loop pr-doctor"; then
+    echo -e "${RED}FAIL${NC} - the launch must say how to watch pr-doctor, got: $named_out"
+    exit 1
+elif [ "$(cat "$NAMED_PROJ/.agent-harness/loop.pid")" != "$named_tickets" ]; then
+    echo -e "${RED}FAIL${NC} - pr-doctor overwrote the ticket loop's pidfile"
+    exit 1
+else
+    echo -e "${GREEN}PASS${NC}"
+fi
+
+echo -n "loop-start.sh refuses a second start of the same loop, and a bad or second name ... "
+if PROJECT_PATH="$NAMED_PROJ" LOOP_BIN="$ARGS_BIN" "$SCRIPT_PATH" pr-doctor > /dev/null 2>&1; then
+    STARTED_PIDS="$STARTED_PIDS $(cat "$NAMED_PROJ/.agent-harness/loop-pr-doctor.pid" 2>/dev/null || true)"
+    echo -e "${RED}FAIL${NC} - a second pr-doctor started over a live one"
+    exit 1
+fi
+for bad in "../x" "PR" "pr-doctor tickets"; do
+    # shellcheck disable=SC2086 # the last case is two names on purpose
+    if PROJECT_PATH="$BAD_PROJ" LOOP_BIN="$ARGS_BIN" "$SCRIPT_PATH" $bad > /dev/null 2>&1; then
+        STARTED_PIDS="$STARTED_PIDS $(cat "$BAD_PROJ"/.agent-harness/loop*.pid 2>/dev/null || true)"
+        echo -e "${RED}FAIL${NC} - loop name '$bad' was accepted"
+        exit 1
+    fi
+done
+if ls "$BAD_PROJ"/.agent-harness/loop*.pid > /dev/null 2>&1; then
+    echo -e "${RED}FAIL${NC} - a refused loop name still wrote a pidfile"
+    exit 1
+fi
+echo -e "${GREEN}PASS${NC}"
+
+echo -n "loop-start.sh tickets is the default ticket loop's daemon ... "
+TICKETS_PROJ="$TEST_DIR/consumer-tickets"
+mkdir -p "$TICKETS_PROJ"
+PROJECT_PATH="$TICKETS_PROJ" LOOP_BIN="$ARGS_BIN" "$SCRIPT_PATH" tickets > /dev/null 2>&1
+tickets_pid="$(cat "$TICKETS_PROJ/.agent-harness/loop.pid" 2>/dev/null || true)"
+STARTED_PIDS="$STARTED_PIDS $tickets_pid"
+if [ -z "$tickets_pid" ] || ! kill -0 "$tickets_pid" 2>/dev/null; then
+    echo -e "${RED}FAIL${NC} - 'tickets' did not write the default loop.pid"
+    exit 1
+elif ls "$TICKETS_PROJ"/.agent-harness/loop-*.pid > /dev/null 2>&1; then
+    echo -e "${RED}FAIL${NC} - 'tickets' wrote a pidfile of its own beside loop.pid"
+    exit 1
+else
+    echo -e "${GREEN}PASS${NC}"
+fi
+
 echo
 echo -e "${GREEN}All tests passed!${NC}"

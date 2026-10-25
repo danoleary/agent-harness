@@ -352,3 +352,24 @@ func TestLoopInstanceRefusesWhatWouldCollide(t *testing.T) {
 		}
 	}
 }
+
+// Every daemon `agent-harness start` launches has its own pidfile, so the viewer
+// can probe the one it follows (#106): the default ticket loop keeps loop.pid,
+// another loop has loop-<name>.pid, and an instance has loop-<id>.pid whichever
+// loop it runs. Ids may not be loop names, so the two never share a file.
+func TestEachDaemonHasItsOwnPidFile(t *testing.T) {
+	for _, tc := range []struct {
+		loop Loop
+		want string
+	}{
+		{Loop{Name: DefaultLoopName}, ".agent-harness/loop.pid"},
+		{Loop{}, ".agent-harness/loop.pid"},
+		{Loop{Name: PRDoctorLoopName}, ".agent-harness/loop-pr-doctor.pid"},
+		{Loop{Name: DefaultLoopName, Instance: "b"}, ".agent-harness/loop-b.pid"},
+		{Loop{Name: "triage", Instance: "b"}, ".agent-harness/loop-b.pid"},
+	} {
+		if got := tc.loop.PidFile(); got != tc.want {
+			t.Errorf("%+v.PidFile() = %q, want %q", tc.loop, got, tc.want)
+		}
+	}
+}

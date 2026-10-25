@@ -165,24 +165,51 @@ func TestDaemonAliveReadsPidLiveness(t *testing.T) {
 	}
 }
 
-func TestResolvePidPathIsSiblingOfLogsDir(t *testing.T) {
-	// loop.pid lives at the harness root, beside the logs/ dir the stream is under.
-	got := resolvePidPath(filepath.Join("some", "harness", "logs", "loop.jsonl"))
-	want := filepath.Join("some", "harness", "loop.pid")
-	if got != want {
-		t.Fatalf("resolvePidPath = %q, want %q", got, want)
+// A stream named by path is followed with the files of the daemon that writes
+// it (#106): the default ticket loop's logs/loop.jsonl sits beside loop.pid and
+// STOP, a named loop's logs/loops/<name>/loop.jsonl beside loop-<name>.pid and
+// STOP-<name>, and an instance's logs/instances/<id>/loop.jsonl beside
+// loop-<id>.pid and STOP-<id> — each under the same .agent-harness/.
+func TestAStreamPathIsFollowedWithItsDaemonsFiles(t *testing.T) {
+	runtime := filepath.Join("/src/app", ".agent-harness")
+	for _, tc := range []struct {
+		stream string
+		pid    string
+		stops  []string
+	}{
+		{
+			stream: filepath.Join(runtime, "logs", "loop.jsonl"),
+			pid:    filepath.Join(runtime, "loop.pid"),
+			stops:  []string{filepath.Join(runtime, "STOP-tickets"), filepath.Join(runtime, "STOP")},
+		},
+		{
+			stream: filepath.Join(runtime, "logs", "loops", "pr-doctor", "loop.jsonl"),
+			pid:    filepath.Join(runtime, "loop-pr-doctor.pid"),
+			stops:  []string{filepath.Join(runtime, "STOP-pr-doctor"), filepath.Join(runtime, "STOP")},
+		},
+		{
+			stream: filepath.Join(runtime, "logs", "instances", "b", "loop.jsonl"),
+			pid:    filepath.Join(runtime, "loop-b.pid"),
+			stops:  []string{filepath.Join(runtime, "STOP-b"), filepath.Join(runtime, "STOP-tickets"), filepath.Join(runtime, "STOP")},
+		},
+	} {
+		f := followStream(tc.stream)
+		if f.stream != tc.stream || f.pid != tc.pid || !equal(f.stops, tc.stops) {
+			t.Errorf("followStream(%q) = %+v; want pid %q, stops %v", tc.stream, f, tc.pid, tc.stops)
+		}
 	}
 }
 
-// The STOP sentinel lives at the harness root (.agent-harness/STOP) — beside loop.pid
-// and the logs/ dir the stream is under — so the viewer resolves it from the stream
-// path exactly as it resolves the pidfile.
-func TestResolveStopPathIsSiblingOfLogsDir(t *testing.T) {
-	got := resolveStopPath(filepath.Join("some", "harness", "logs", "loop.jsonl"))
-	want := filepath.Join("some", "harness", "STOP")
-	if got != want {
-		t.Fatalf("resolveStopPath = %q, want %q", got, want)
+func equal(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
 	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // stopRequested is a pure existence probe (a read, never control): a present
@@ -217,6 +244,12 @@ func TestParseTargetReadsTheInstanceFlags(t *testing.T) {
 		{argv: []string{"--instance", "b"}, want: target{instance: "b"}},
 		{argv: []string{"--instance=b"}, want: target{instance: "b"}},
 		{argv: []string{"--all"}, want: target{all: true}},
+		{argv: []string{"--loop", "pr-doctor"}, want: target{loop: "pr-doctor"}},
+		{argv: []string{"--loop=pr-doctor"}, want: target{loop: "pr-doctor"}},
+		{argv: []string{"--loop", "triage", "--instance", "b"}, want: target{loop: "triage", instance: "b"}},
+		{argv: []string{"--loop"}, wantErr: true},
+		{argv: []string{"--loop", "pr-doctor", "--all"}, wantErr: true},
+		{argv: []string{"--loop", "../x"}, wantErr: true},
 		{argv: []string{"--instance"}, wantErr: true},
 		{argv: []string{"--instance", "b", "--all"}, wantErr: true},
 	}
@@ -239,13 +272,69 @@ func TestFollowingAnInstanceReadsItsOwnFiles(t *testing.T) {
 	if f.pid != filepath.Join(runtime, "loop-b.pid") {
 		t.Errorf("pid = %q", f.pid)
 	}
-	if f.stop != filepath.Join(runtime, "STOP-b") {
-		t.Errorf("stop = %q", f.stop)
+	if !equal(f.stops, []string{filepath.Join(runtime, "STOP-b"), filepath.Join(runtime, "STOP-tickets"), filepath.Join(runtime, "STOP")}) {
+		t.Errorf("stops = %q", f.stops)
 	}
 
 	plain := followFor(target{}, runtime)
-	if plain.stream != filepath.Join(runtime, "logs", "loop.jsonl") || plain.pid != filepath.Join(runtime, "loop.pid") || plain.stop != filepath.Join(runtime, "STOP") {
+	if plain.stream != filepath.Join(runtime, "logs", "loop.jsonl") || plain.pid != filepath.Join(runtime, "loop.pid") || plain.stops[len(plain.stops)-1] != filepath.Join(runtime, "STOP") {
 		t.Errorf("the default instance moved: %+v", plain)
+	}
+}
+
+// --loop <name> follows a named loop (#106): its stream under logs/loops/<name>/,
+// the loop-<name>.pid `agent-harness start <name>` writes, and both sentinels
+// that wind it down — its own STOP-<name> and the plain STOP — rather than files
+// one dir up from its stream that nothing writes.
+func TestFollowingANamedLoopReadsItsOwnFiles(t *testing.T) {
+	runtime := filepath.Join("/src/app", ".agent-harness")
+	f := followFor(target{loop: "pr-doctor"}, runtime)
+	if f.stream != filepath.Join(runtime, "logs", "loops", "pr-doctor", "loop.jsonl") {
+		t.Errorf("stream = %q", f.stream)
+	}
+	if f.pid != filepath.Join(runtime, "loop-pr-doctor.pid") {
+		t.Errorf("pid = %q", f.pid)
+	}
+	if !equal(f.stops, []string{filepath.Join(runtime, "STOP-pr-doctor"), filepath.Join(runtime, "STOP")}) {
+		t.Errorf("stops = %q", f.stops)
+	}
+
+	tickets := followFor(target{loop: "tickets"}, runtime)
+	if tickets.stream != filepath.Join(runtime, "logs", "loop.jsonl") || tickets.pid != filepath.Join(runtime, "loop.pid") {
+		t.Errorf("--loop tickets must follow the default ticket loop, got %+v", tickets)
+	}
+
+	inst := followFor(target{loop: "triage", instance: "b"}, runtime)
+	if inst.pid != filepath.Join(runtime, "loop-b.pid") || !equal(inst.stops, []string{filepath.Join(runtime, "STOP-b"), filepath.Join(runtime, "STOP-triage"), filepath.Join(runtime, "STOP")}) {
+		t.Errorf("instance b of triage = %+v", inst)
+	}
+}
+
+// A viewer following a named loop shows the stop request whichever of its
+// sentinels the operator touched, and not one meant for another loop.
+func TestANamedLoopIsWindingDownOnItsOwnOrThePlainStop(t *testing.T) {
+	runtime := t.TempDir()
+	f := followFor(target{loop: "pr-doctor"}, runtime)
+	touch := func(name string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(runtime, name), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	touch("STOP-tickets")
+	if anyStopRequested(f.stops) {
+		t.Fatalf("STOP-tickets must not wind pr-doctor down")
+	}
+	touch("STOP-pr-doctor")
+	if !anyStopRequested(f.stops) {
+		t.Fatalf("STOP-pr-doctor must show pr-doctor winding down")
+	}
+	if err := os.Remove(filepath.Join(runtime, "STOP-pr-doctor")); err != nil {
+		t.Fatal(err)
+	}
+	touch("STOP")
+	if !anyStopRequested(f.stops) {
+		t.Fatalf("the plain STOP must show pr-doctor winding down")
 	}
 }
 
