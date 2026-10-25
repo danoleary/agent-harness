@@ -436,3 +436,22 @@ func TestListInProgressClaimsScopesToTheConfiguredTeamAndReadyLabel(t *testing.T
 		t.Errorf("labels.name = %v, want agent-ready", got)
 	}
 }
+
+// A skipped Key is passed over (the overlap check deferred it, #97): the next
+// eligible ticket in order wins, and its labels come back for the escape label.
+func TestSelectNextTicketPassesOverSkippedKeys(t *testing.T) {
+	urgent := eligibleNode("BEH-URGENT", 1)
+	low := issueNode{identifier: "BEH-LOW", priority: 4, labels: []string{"ready-for-agent", "parallel-ok"}}
+	tr, _ := selectTransport(t, urgent, low)
+
+	got, ok, err := NewClient(tr, testOptions()).SelectNextTicket("BEH-URGENT")
+	if err != nil || !ok {
+		t.Fatalf("ok=%v err=%v", ok, err)
+	}
+	if got.Identifier != "BEH-LOW" {
+		t.Errorf("selected = %q, want BEH-LOW", got.Identifier)
+	}
+	if !got.HasLabel("parallel-ok") {
+		t.Errorf("labels = %v, want them carried onto the ticket", got.Labels)
+	}
+}

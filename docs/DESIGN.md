@@ -795,6 +795,19 @@ A ticket is eligible iff **all** hold:
   The native relation is the way to make a ticket wait on another: it unblocks
   itself when the blocker closes. The `Blocked` label (`tracker.blocked_label`,
   optional) never clears on its own, so it is only for a hold no issue models.
+- **not overlapping the work in flight** (#97,
+  [ADR-0029](adr/0029-a-ticket-that-names-files-in-flight-waits-for-them.md)), on
+  every tracker. Selection reads the files changed by each open PR on
+  `branch_prefix` (`/pulls/N/files`) and by each claimed ticket's worktree
+  (`git diff --merge-base origin/main`, uncommitted edits included). It predicts the
+  candidate's files from the paths, file names and backticked module names in
+  its title and body (`overlap.Predict`). If one piece of work shares
+  `OVERLAP_THRESHOLD` (default 1) of those files, the ticket is passed over for this
+  poll (logging `#97 deferred: overlaps PR #81 on <files>`) and the next ready
+  ticket is selected. It is re-checked every poll, so it dispatches on the first
+  poll after that PR merges or closes. A ticket labelled `parallel-ok`
+  (`OVERLAP_ESCAPE_LABEL`) is never deferred. A failed read of the work in flight
+  is narrated and fails *open*, which is the behaviour before the check existed.
 - **not gated on a telemetry re-measure**: a low-confidence perf *watch/confirm*
   ticket whose first acceptance criterion is to re-pull the metric over a wider
   Sentry window before any fix is excluded — the Implementation stage owns no
@@ -1375,6 +1388,8 @@ reader over a structured stream rather than a `--tui` flag on the daemon.
   | `STOP_FILE` | `.agent-harness/STOP` | the sentinel that stops every loop; cleared at clean startup, `touch` to wind down. Each loop also has its own, `.agent-harness/STOP-<name>` |
   | `GATE_CONCURRENCY` | `1` | how many runs may execute their gates at once across every instance sharing the lock dir (§Loop instances); `0` = no limit |
   | `GATE_LOCK_DIR` | `.agent-harness/locks/` | where the gate slots' lock files live; one dir shared by several projects bounds the whole host |
+  | `OVERLAP_THRESHOLD` | `1` | how many files a ready ticket must name that one open harness PR or claimed worktree already changes before selection defers it for the poll (ADR-0029); `0` = off |
+  | `OVERLAP_ESCAPE_LABEL` | `parallel-ok` | the ticket label that dispatches a ticket whatever it overlaps |
   | `PR_LOOP_LABEL` | `agent-maintained` | PR loops: the label that opts a PR whose head is off `branch_prefix` in, unless the loop's `source.label` sets one (ADR-0019) |
   | `PR_LOOP_MAX_ATTEMPTS` | `3` | PR loops: attempts per PR, unless `source.max_attempts` sets one; past it the loop comments what it tried and labels the PR `blocked` |
 

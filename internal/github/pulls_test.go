@@ -149,3 +149,21 @@ func TestCommentsAndLabelsUseTheIssueEndpoints(t *testing.T) {
 		t.Errorf("label body = %v", got[1].body)
 	}
 }
+
+// A PR's files are its work in flight for the overlap check (#97). A rename
+// changes both paths: an edit to the old one conflicts too.
+func TestFilesListsEveryPathAPRChanges(t *testing.T) {
+	tr, _ := fakeTransport(map[string]any{
+		"GET /repos/acme/widgets/pulls/12/files?per_page=100": []any{
+			map[string]any{"filename": "internal/loop/loop.go"},
+			map[string]any{"filename": "docs/new.md", "previous_filename": "docs/old.md"},
+		},
+	})
+	got, err := NewPulls(tr, "acme/widgets").Files(12)
+	if err != nil {
+		t.Fatalf("Files: %v", err)
+	}
+	if want := []string{"internal/loop/loop.go", "docs/new.md", "docs/old.md"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("Files = %v, want %v", got, want)
+	}
+}

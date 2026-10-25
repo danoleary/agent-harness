@@ -271,7 +271,7 @@ func (t *FakeTracker) FetchTicket(key tracker.Key) (ticket.Ticket, error) {
 	return tk, nil
 }
 
-func (t *FakeTracker) SelectNextTicket() (ticket.Ticket, bool, error) {
+func (t *FakeTracker) SelectNextTicket(...tracker.Key) (ticket.Ticket, bool, error) {
 	return ticket.Ticket{}, false, nil
 }
 

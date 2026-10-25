@@ -102,6 +102,31 @@ func (p *Pulls) OpenPRs() ([]PullRequest, error) {
 	return out, nil
 }
 
+// Files lists the paths one PR changes, both sides of a rename included: the
+// PR's work in flight, which the ticket loop's overlap check compares a candidate
+// ticket against (#97). One page of 100 covers the PRs the harness opens.
+func (p *Pulls) Files(number int) ([]string, error) {
+	data, err := p.transport("GET", p.path("/pulls/%d/files?per_page=100", number), nil)
+	if err != nil {
+		return nil, err
+	}
+	var files []struct {
+		Filename         string `json:"filename"`
+		PreviousFilename string `json:"previous_filename"`
+	}
+	if err := json.Unmarshal(data, &files); err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, f := range files {
+		out = append(out, f.Filename)
+		if f.PreviousFilename != "" {
+			out = append(out, f.PreviousFilename)
+		}
+	}
+	return out, nil
+}
+
 // MergeState reads one PR's mergeability. The list endpoint never carries it, and
 // GitHub computes it lazily, so an unread PR answers MergeUnknown until the next
 // poll. The REST shape is mapped onto the GraphQL one ci.ClassifyMergeState reads,

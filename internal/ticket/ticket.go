@@ -31,6 +31,22 @@ type Ticket struct {
 	// design from it instead of assuming the two PRs are disjoint, and the CI watch
 	// knows a later conflict with base may be that PR's merge.
 	Prerequisites []Prerequisite
+	// Labels are the ticket's tracker labels, as selection read them. The overlap
+	// check reads its escape label here (#97).
+	Labels []string
+}
+
+// HasLabel reports whether the ticket carries label (empty never matches).
+func (t Ticket) HasLabel(label string) bool {
+	if label == "" {
+		return false
+	}
+	for _, l := range t.Labels {
+		if l == label {
+			return true
+		}
+	}
+	return false
 }
 
 // Prerequisite is one open pull request a ticket builds on.

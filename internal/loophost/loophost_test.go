@@ -43,7 +43,13 @@ func (t *queueTracker) ListInProgressClaims() ([]tracker.InProgressClaim, error)
 	return t.claims, t.claimsErr
 }
 
-func (t *queueTracker) SelectNextTicket() (ticket.Ticket, bool, error) {
+// SelectNextTicket offers the scripted ticket, unless the caller skips it.
+func (t *queueTracker) SelectNextTicket(skip ...tracker.Key) (ticket.Ticket, bool, error) {
+	for _, k := range skip {
+		if t.nextOK && k == t.next.Identifier {
+			return ticket.Ticket{}, false, nil
+		}
+	}
 	return t.next, t.nextOK, t.nextErr
 }
 

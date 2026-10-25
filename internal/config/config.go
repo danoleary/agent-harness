@@ -178,6 +178,14 @@ type Host struct {
 	// Consumer; point several Consumers at one directory to bound the whole host.
 	GateLockDir string
 
+	// OverlapThreshold is how many files a ready ticket must name that one open
+	// harness PR or claimed branch already changes before selection defers it for
+	// the poll (#97, ADR-0029). 0 turns the check off; defaults to 1.
+	OverlapThreshold int
+	// OverlapEscapeLabel, on a ticket, dispatches it whatever it overlaps: a human
+	// has judged it safe to run in parallel. Defaults to "parallel-ok".
+	OverlapEscapeLabel string
+
 	// PRLoopLabel is the opt-in label that lets a PR loop (`loop pr-doctor`) work a
 	// PR whose head branch is not on the harness's branch_prefix (ADR-0019), unless
 	// the loop's source.label sets its own. Defaults to "agent-maintained".
@@ -287,6 +295,8 @@ const (
 	defaultStopFile                   = ProjectDirName + "/STOP"
 	defaultGateConcurrency            = 1
 	defaultPRLoopLabel                = "agent-maintained"
+	defaultOverlapThreshold           = 1
+	defaultOverlapEscapeLabel         = "parallel-ok"
 	defaultPRLoopMaxAttempts          = 3
 	// 8 GiB: the 5 GiB MinFreeDiskBytes sandbox floor plus headroom, so reclaim fires
 	// before a launch would ever be refused (ADR-0027).
@@ -532,6 +542,9 @@ func (h *Host) knobs(get Getenv) []knob {
 		bind("STOP_FILE", &h.StopFile, text, defaultStopFile, strict),
 		bind("GATE_CONCURRENCY", &h.GateConcurrency, ceilingCount, defaultGateConcurrency, strict),
 		bind("GATE_LOCK_DIR", &h.GateLockDir, text, "", strict),
+
+		bind("OVERLAP_THRESHOLD", &h.OverlapThreshold, switchCount, defaultOverlapThreshold, strict),
+		bind("OVERLAP_ESCAPE_LABEL", &h.OverlapEscapeLabel, text, defaultOverlapEscapeLabel, strict),
 
 		bind("PR_LOOP_LABEL", &h.PRLoopLabel, text, defaultPRLoopLabel, strict),
 		bind("PR_LOOP_MAX_ATTEMPTS", &h.PRLoopMaxAttempts, positiveCount, defaultPRLoopMaxAttempts, strict),

@@ -159,6 +159,12 @@ in_progress_label = "in-progress"
 # the first poll after its last blocker closes, with nobody having to touch it.
 # On GitHub, naming a still-open PR in the body (`builds on #81`) holds it too,
 # until that PR merges or closes.
+# The harness also waits, on any tracker, when a ticket's title or body names a
+# file that an open harness PR or a claimed ticket's worktree already changes
+# (`#97 deferred: overlaps PR #81 on <files>` in the loop log). Sibling tickets
+# that edit one module therefore run one after another. Label a ticket
+# `parallel-ok` (OVERLAP_ESCAPE_LABEL) to run it anyway, or set
+# OVERLAP_THRESHOLD=0 to turn the check off.
 # To hold a ticket for a human reason, leave the ready label off. `blocked_label`
 # is optional, and redundant beside those two: it names a label that screens a
 # ticket out until a human removes it, and nothing ever removes it for you.
