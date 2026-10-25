@@ -48,6 +48,9 @@ prompt around this skill tells you the ticket, the worktree and the branch.
   `scripts/test-*.sh`.
 - `example/.agent-harness/` is loaded by the test suite; keep it valid if you
   change the config schema, and update `docs/reference/config.md` alongside it.
+- A new env setting goes in `internal/config/config.go`,
+  `docs/reference/env.md` and `.env.example`. The scaffold copy,
+  `internal/scaffold/templates/env.example`, is drift-checked against it.
 
 ## The loop
 
