@@ -675,6 +675,22 @@ func TestReviewCommitsLocallyOnly(t *testing.T) {
 	}
 }
 
+// #95: the harness rebases the branch onto origin/main before it pushes, which
+// rewrites every SHA on it, so a review-fix commit message that names the
+// implementation commit by SHA lands in the PR pointing at a commit that is not
+// there. The envelope — not just one repo's skill — tells the session to name a
+// commit by its subject line, so it holds even over an empty Consumer body.
+func TestReviewNamesCommitsBySubjectNotSHA(t *testing.T) {
+	p := For(Review, Context{Ticket: sample, Slug: "beh-362", WorktreePath: sampleWorktree, BranchPrefix: testPrefix, Body: ""})
+
+	if !regexp.MustCompile(`(?i)rebase.{0,80}rewrit.{0,40}SHA`).MatchString(p) {
+		t.Error("review envelope does not say the harness's rebase rewrites the branch's SHAs")
+	}
+	if !regexp.MustCompile(`(?i)(do not|don't|never).{0,40}SHA.{0,120}subject line`).MatchString(p) {
+		t.Error("review envelope does not steer the fix commit to name a commit by subject line, not SHA")
+	}
+}
+
 func TestReviewCarriesBashQuirkSteer(t *testing.T) {
 	assertCarriesBashQuirkSteer(t, bReview(t, sample, "beh-362", sampleWorktree), "review prompt")
 }
