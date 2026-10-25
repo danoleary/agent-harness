@@ -283,6 +283,7 @@ func (h *Real) WatchCI(w CIWatch) ci.Outcome {
 		PollBudget:     h.cfg.CIPollBudget,
 		PollStall:      h.cfg.CIPollStall,
 		PollMaxBudget:  h.cfg.CIPollMaxBudget,
+		NoChecksGrace:  h.cfg.CINoChecksGrace,
 	}
 	wt := h.Worktree()
 	driver := ci.NewGhDriver(

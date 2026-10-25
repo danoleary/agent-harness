@@ -75,6 +75,7 @@ A bad value here falls back to the default.
 | `CI_POLL_BUDGET_MS` | `720000` (12m) | Cap on one wait for checks to finish. |
 | `CI_POLL_STALL_MS` | `480000` (8m) | Give up when the pending check set stops changing this long. |
 | `CI_POLL_MAX_BUDGET_MS` | `1500000` (25m) | Keep polling past `CI_POLL_BUDGET_MS`, up to this, while a real gate is still running. |
+| `CI_NO_CHECKS_GRACE_MS` | `180000` (3m) | If no check has registered by then and no workflow run exists for the head commit, pass: no workflow applies to the diff. |
 
 ## The loop daemon
 
