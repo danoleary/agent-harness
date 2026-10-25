@@ -2,6 +2,8 @@ package pipeline
 
 import (
 	"fmt"
+	"sort"
+	"strings"
 
 	"github.com/danoleary/agent-harness/internal/lease"
 	"github.com/danoleary/agent-harness/internal/loopstream"
@@ -10,13 +12,19 @@ import (
 
 // NextResolver is the tracker surface `pipeline --next` needs: a pure read to
 // select the top-of-queue eligible ticket, plus the queue the selected ticket's
-// lease claims through. Claim-on-select (ADR-0003) is ResolveNext composing the
-// two — selection stays side-effect-free so dry-run can resolve a ticket without
-// mutating the tracker.
+// lease claims through, with the read that confirms the claim is this run's
+// (#89). Claim-on-select (ADR-0003) is ResolveNext composing the two — selection
+// stays side-effect-free so dry-run can resolve a ticket without mutating the
+// tracker.
 type NextResolver interface {
 	SelectNextTicket() (ticket.Ticket, bool, error)
-	lease.Queue
+	lease.Exclusive
 }
+
+// maxLostClaims bounds how many selected tickets one poll may lose to other
+// instances before it gives up and idles. Each loss names a ticket another
+// instance holds, so a queue this contended is one the next poll serves better.
+const maxLostClaims = 5
 
 // NextSelection is the outcome of resolving `pipeline --next`.
 type NextSelection struct {
@@ -47,39 +55,69 @@ type NextSelection struct {
 // "mutates no Linear"). A selection or claim failure exits 1. queueHint, when
 // set, is appended to the empty-queue narration so it says how a ticket gets
 // queued (config.TrackerConfig.QueueHint).
-func ResolveNext(r NextResolver, dryRun bool, queueHint string, log Narrator) NextSelection {
-	t, ok, err := r.SelectNextTicket()
-	if err != nil {
-		log.Event("pipeline — ticket selection failed: " + err.Error())
-		return NextSelection{ExitCode: 1, Err: err}
-	}
-	if !ok {
-		// A normal steady state, not a failure — the loop will later wrap --next and
-		// reads this exit-0 as "nothing to do" without remapping codes.
-		msg := "no eligible ticket — queue empty"
-		if queueHint != "" {
-			msg += "; " + queueHint
+//
+// The claim is exclusive (#89): under lock, which every loop instance on the
+// Consumer shares, the ticket is re-read and claimed only if it is still
+// unclaimed. A ticket another instance won is lost, not an error — this run
+// claimed nothing, so it releases nothing — and selection runs again. A queue
+// that keeps offering only tickets other instances hold is an empty poll.
+func ResolveNext(r NextResolver, lock lease.Locker, dryRun bool, queueHint string, log Narrator) NextSelection {
+	lost := map[string]bool{}
+	for {
+		t, ok, err := r.SelectNextTicket()
+		if err != nil {
+			log.Event("pipeline — ticket selection failed: " + err.Error())
+			return NextSelection{ExitCode: 1, Err: err}
 		}
-		log.Event(msg)
-		return NextSelection{ExitCode: 0}
+		if !ok {
+			// A normal steady state, not a failure — the loop will later wrap --next and
+			// reads this exit-0 as "nothing to do" without remapping codes.
+			msg := "no eligible ticket — queue empty"
+			if queueHint != "" {
+				msg += "; " + queueHint
+			}
+			log.Event(msg)
+			return NextSelection{ExitCode: 0}
+		}
+		if dryRun {
+			// Selection is side-effect-free, so previewing WHICH ticket --next would grab
+			// is honest and useful — but it claims nothing.
+			log.Event(fmt.Sprintf("dry-run — selected %s (not claiming)", t.Identifier))
+			return NextSelection{Identifier: t.Identifier, ExitCode: 0}
+		}
+		if lost[t.Identifier] || len(lost) >= maxLostClaims {
+			// The queue has not caught up with the claims other instances made, so
+			// selecting again would only offer them again.
+			log.Event(fmt.Sprintf("no unclaimed ticket — every selected ticket is held by another run (%s); re-polling later", strings.Join(sortedKeys(lost), ", ")))
+			return NextSelection{ExitCode: 0}
+		}
+		claim, won, err := lease.Claim(r, lock, t.Identifier)
+		if err != nil {
+			log.Event(fmt.Sprintf("pipeline — claiming %s failed: %v", t.Identifier, err))
+			return NextSelection{ExitCode: 1, Err: err}
+		}
+		if !won {
+			log.Event(fmt.Sprintf("%s was claimed by another run first — selecting again", t.Identifier))
+			lost[t.Identifier] = true
+			continue
+		}
+		log.Structured(loopstream.Record{
+			Kind:    loopstream.KindTicketSelected,
+			Ticket:  t.Identifier,
+			Message: fmt.Sprintf("selected %s (%s) — claimed → In Progress", t.Identifier, priorityOrNone(t.Priority)),
+		})
+		return NextSelection{Identifier: t.Identifier, Lease: claim, Proceed: true}
 	}
-	if dryRun {
-		// Selection is side-effect-free, so previewing WHICH ticket --next would grab
-		// is honest and useful — but it claims nothing.
-		log.Event(fmt.Sprintf("dry-run — selected %s (not claiming)", t.Identifier))
-		return NextSelection{Identifier: t.Identifier, ExitCode: 0}
+}
+
+// sortedKeys is a set's members in order, for narration.
+func sortedKeys(set map[string]bool) []string {
+	out := make([]string, 0, len(set))
+	for k := range set {
+		out = append(out, k)
 	}
-	claim := lease.Unheld(r, t.Identifier)
-	if err := claim.Hold(); err != nil {
-		log.Event(fmt.Sprintf("pipeline — claiming %s failed: %v", t.Identifier, err))
-		return NextSelection{ExitCode: 1, Err: err}
-	}
-	log.Structured(loopstream.Record{
-		Kind:    loopstream.KindTicketSelected,
-		Ticket:  t.Identifier,
-		Message: fmt.Sprintf("selected %s (%s) — claimed → In Progress", t.Identifier, priorityOrNone(t.Priority)),
-	})
-	return NextSelection{Identifier: t.Identifier, Lease: claim, Proceed: true}
+	sort.Strings(out)
+	return out
 }
 
 // priorityOrNone renders a ticket's priority for narration, defaulting an unset

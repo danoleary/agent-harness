@@ -79,6 +79,17 @@ touch .agent-harness/STOP   # finish the current ticket, then stop
 a foreground run, Ctrl-C once stops after the current ticket; twice kills the
 container now and keeps the worktree.
 
+A deep backlog of independent tickets goes faster with a second daemon. Each
+instance has its own pidfile, log and `STOP-<id>`; the two never claim the same
+ticket, and by default only one runs its gates at a time (`GATE_CONCURRENCY`).
+See [CONSUMER.md](docs/CONSUMER.md#running-more-than-one-instance):
+
+```bash
+agent-harness start --instance b    # beside the default instance
+agent-harness watch --all           # every instance, each line labeled
+touch .agent-harness/STOP-b         # stop instance b alone; plain STOP stops all
+```
+
 A second loop, `pr-doctor`, fixes harness PRs (and PRs you label
 `agent-maintained`) that went red on CI or conflict with `main` after review.
 `--dry-run` prints the loop and what it would do; `--list` names every loop. A

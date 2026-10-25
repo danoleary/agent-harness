@@ -145,3 +145,93 @@ func TestReaperDisabledByNonPositiveTTL(t *testing.T) {
 		t.Fatalf("released = %v, want none when ClaimTTL is non-positive", released)
 	}
 }
+
+// sharedBoard is one tracker's In Progress claims and origin's branches, as every
+// loop instance against one Consumer sees them (#89).
+type sharedBoard struct {
+	claims   map[string]time.Time
+	branches map[string]bool
+	released []string
+}
+
+// instance is one loop instance's Source over the shared board: next yields the
+// keys it claims, in order.
+func (b *sharedBoard) instance(now func() time.Time, next ...string) *fakeSource {
+	return &fakeSource{
+		next: func() (string, bool) {
+			if len(next) == 0 {
+				return "", false
+			}
+			key := next[0]
+			next = next[1:]
+			b.claims[key] = now()
+			return key, true
+		},
+		release: func(key string) error {
+			delete(b.claims, key)
+			b.released = append(b.released, key)
+			return nil
+		},
+		claims: func() ([]StaleClaim, error) {
+			var out []StaleClaim
+			for key, at := range b.claims {
+				out = append(out, StaleClaim{Key: key, StartedAt: at})
+			}
+			return out, nil
+		},
+		remoteBranch: func(key string) bool { return b.branches[key] },
+	}
+}
+
+// One instance's reaper never releases a healthy claim another instance holds
+// (#89): not inside the TTL before the first push, and not past it once the
+// branch is pushed. A claim no instance is working is still reaped.
+func TestOneInstancesReaperSparesAnotherInstancesHealthyClaim(t *testing.T) {
+	now := fixedNow
+	clock := testClock{now: func() time.Time { return now }, sleep: func(time.Duration) {}}
+	board := &sharedBoard{
+		claims:   map[string]time.Time{"BEH-9": fixedNow.Add(-2 * time.Hour)}, // a dead daemon's
+		branches: map[string]bool{},
+	}
+	limits := Limits{ClaimTTL: 30 * time.Minute, PollInterval: time.Minute, TickInterval: 2 * time.Second}
+
+	// Instance b: one reaper pass, then stop.
+	reapFromB := func() {
+		Run(Deps{
+			Host:     &fakeHost{clearStop: func() error { return nil }, fetchMain: func() error { return nil }, stopRequested: stopAfter(1)},
+			Source:   board.instance(clock.Now),
+			Pipeline: &fakePipeline{},
+			Limits:   limits,
+			Clock:    clock,
+			Log:      &recorder{},
+		})
+	}
+
+	// Instance a works BEH-1; b reaps while it does.
+	var releasedMidRun []string
+	Run(Deps{
+		Host:   &fakeHost{clearStop: func() error { return nil }, fetchMain: func() error { return nil }, stopRequested: stopAfter(1)},
+		Source: board.instance(clock.Now, "BEH-1"),
+		Pipeline: &fakePipeline{run: func(key string) stages.Result {
+			now = now.Add(10 * time.Minute) // mid-implementation, nothing pushed yet
+			reapFromB()
+			board.branches[key] = true // the first push
+			now = now.Add(40 * time.Minute)
+			reapFromB()
+			releasedMidRun = append(releasedMidRun, board.released...)
+			return stages.Result{OK: true, Disposition: stages.Shipped}
+		}},
+		Limits: limits,
+		Clock:  clock,
+		Log:    &recorder{},
+	})
+
+	for _, key := range releasedMidRun {
+		if key == "BEH-1" {
+			t.Fatalf("instance b released BEH-1, which instance a was working (released %v)", releasedMidRun)
+		}
+	}
+	if len(releasedMidRun) == 0 || releasedMidRun[0] != "BEH-9" {
+		t.Errorf("released = %v, want the dead claim BEH-9 reaped", releasedMidRun)
+	}
+}

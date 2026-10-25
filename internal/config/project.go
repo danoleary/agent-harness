@@ -262,6 +262,27 @@ func ProjectDir(checkoutPath string) string {
 	return filepath.Join(checkoutPath, ProjectDirName)
 }
 
+// LocksDir is where the loop instances of one Consumer keep the lock files they
+// share (#89): the claim lock, and the gate slots unless GATE_LOCK_DIR moves them.
+func LocksDir(checkoutPath string) string {
+	return filepath.Join(ProjectDir(checkoutPath), "locks")
+}
+
+// ClaimLockFile is the lock every loop instance of a Consumer holds while it
+// confirms and claims a selected ticket, so two never claim one ticket (#89).
+func ClaimLockFile(checkoutPath string) string {
+	return filepath.Join(LocksDir(checkoutPath), "claim.lock")
+}
+
+// GateSlotsDir is where the gate slots' lock files live: GATE_LOCK_DIR when set,
+// else the Consumer's LocksDir.
+func (h Host) GateSlotsDir() string {
+	if h.GateLockDir != "" {
+		return h.GateLockDir
+	}
+	return LocksDir(h.ProjectPath)
+}
+
 // exampleConfigURL is where a Consumer with no config finds a complete one to copy.
 const exampleConfigURL = "https://github.com/danoleary/agent-harness/tree/main/example/.agent-harness"
 

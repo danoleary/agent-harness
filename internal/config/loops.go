@@ -92,6 +92,10 @@ type StepConfig struct {
 // Loop is one loop, resolved and validated.
 type Loop struct {
 	Name string
+	// Instance names one of several daemons running this loop against one
+	// Consumer at once (#89), each with its own sentinel and logs. Empty is the
+	// default instance, whose paths are the loop's own.
+	Instance string
 	// BuiltIn marks a loop the harness defines when no [[loops]] entry of that name
 	// replaces it.
 	BuiltIn bool
@@ -175,11 +179,43 @@ func (l Loop) StepNames() []string {
 // STOP sentinel stops every loop as well.
 func (l Loop) StopFile() string { return ProjectDirName + "/STOP-" + l.Name }
 
+// InstanceStopFile is a named instance's own STOP sentinel (STOP-<instance>),
+// relative to the checkout, or "" for the default instance. The loop's sentinel
+// and the plain STOP stop the instance as well.
+func (l Loop) InstanceStopFile() string {
+	if l.Instance == "" {
+		return ""
+	}
+	return ProjectDirName + "/STOP-" + l.Instance
+}
+
+// PidFile is where `agent-harness start` records an instance's daemon pid,
+// relative to the checkout: loop.pid for the default instance, loop-<id>.pid for
+// a named one. scripts/loop-start.sh writes the same names.
+func PidFile(instance string) string {
+	if instance == "" {
+		return ProjectDirName + "/loop.pid"
+	}
+	return ProjectDirName + "/loop-" + instance + ".pid"
+}
+
+// DefaultInstanceLabel is how `agent-harness watch --all` labels the instance
+// started with no id, so no named instance may take it.
+const DefaultInstanceLabel = "default"
+
+// InstancesLogsDir is where named instances keep their logs, one dir each,
+// relative to the checkout. `agent-harness watch --all` reads it.
+const InstancesLogsDir = ProjectDirName + "/logs/instances"
+
 // LogsDir is where the loop keeps its per-item log dirs and the loop.jsonl stream
 // the viewer follows, relative to the checkout. The default ticket loop keeps the
 // logs/ it always had, so `agent-harness watch` finds it unchanged; every other
-// loop has its own dir beside it, so loops can run side by side.
+// loop has its own dir beside it, so loops can run side by side. A named instance
+// has its own dir under logs/instances/, so two instances' streams never mix.
 func (l Loop) LogsDir() string {
+	if l.Instance != "" {
+		return filepath.Join(InstancesLogsDir, l.Instance)
+	}
 	if l.Name == DefaultLoopName {
 		return filepath.Join(ProjectDirName, "logs")
 	}
@@ -265,6 +301,35 @@ func (p Project) LoopNamed(name string) (Loop, bool) {
 		}
 	}
 	return Loop{}, false
+}
+
+// LoopInstance is the named loop run as instance id (#89); an empty id is the
+// default instance. An id names the instance's sentinel, pidfile and logs, so it
+// follows the loop-name rule and may not be a loop's name: STOP-<id> must stop
+// that one instance and nothing else. Only a ticket loop runs as several
+// instances; the PR loop's reaper assumes it is the only PR loop on the checkout.
+func (p Project) LoopInstance(name, id string) (Loop, error) {
+	l, ok := p.LoopNamed(name)
+	if !ok {
+		return Loop{}, fmt.Errorf("no loop named %q in this project", name)
+	}
+	if id == "" {
+		return l, nil
+	}
+	if !loopNameRE.MatchString(id) {
+		return Loop{}, fmt.Errorf("instance %q must be lowercase letters, digits and dashes: it names the instance's STOP sentinel, pidfile and log dir", id)
+	}
+	if _, clash := p.LoopNamed(id); clash {
+		return Loop{}, fmt.Errorf("instance %q names a loop, so STOP-%s would stop that loop too; pick another id", id, id)
+	}
+	if id == DefaultInstanceLabel {
+		return Loop{}, fmt.Errorf("instance %q is the name `agent-harness watch --all` gives the instance started with no id; pick another id", id)
+	}
+	if l.Source.Kind != SourceTracker {
+		return Loop{}, fmt.Errorf("loop %q cannot run as instance %q: only a ticket loop (source %q) runs as several instances", l.Name, id, SourceTracker)
+	}
+	l.Instance = id
+	return l, nil
 }
 
 // stepSpec is what the loader knows about one Step: the Source it runs on, the

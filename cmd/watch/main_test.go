@@ -203,3 +203,72 @@ func TestStopRequestedReadsSentinelPresence(t *testing.T) {
 		t.Fatalf("a present (empty) STOP sentinel must report requested")
 	}
 }
+
+// --instance <id> follows one named loop instance, --all follows every one; a
+// bare path is still the stream to tail (#89).
+func TestParseTargetReadsTheInstanceFlags(t *testing.T) {
+	cases := []struct {
+		argv    []string
+		want    target
+		wantErr bool
+	}{
+		{argv: nil, want: target{}},
+		{argv: []string{"logs/loop.jsonl"}, want: target{path: "logs/loop.jsonl"}},
+		{argv: []string{"--instance", "b"}, want: target{instance: "b"}},
+		{argv: []string{"--instance=b"}, want: target{instance: "b"}},
+		{argv: []string{"--all"}, want: target{all: true}},
+		{argv: []string{"--instance"}, wantErr: true},
+		{argv: []string{"--instance", "b", "--all"}, wantErr: true},
+	}
+	for _, c := range cases {
+		got, err := parseTarget(c.argv)
+		if (err != nil) != c.wantErr || (!c.wantErr && got != c.want) {
+			t.Errorf("parseTarget(%v) = %+v, %v; want %+v (error %v)", c.argv, got, err, c.want, c.wantErr)
+		}
+	}
+}
+
+// A named instance's stream, pidfile and own sentinel are the ones
+// `agent-harness start --instance <id>` and the daemon write.
+func TestFollowingAnInstanceReadsItsOwnFiles(t *testing.T) {
+	runtime := filepath.Join("/src/app", ".agent-harness")
+	f := followFor(target{instance: "b"}, runtime)
+	if f.stream != filepath.Join(runtime, "logs", "instances", "b", "loop.jsonl") {
+		t.Errorf("stream = %q", f.stream)
+	}
+	if f.pid != filepath.Join(runtime, "loop-b.pid") {
+		t.Errorf("pid = %q", f.pid)
+	}
+	if f.stop != filepath.Join(runtime, "STOP-b") {
+		t.Errorf("stop = %q", f.stop)
+	}
+
+	plain := followFor(target{}, runtime)
+	if plain.stream != filepath.Join(runtime, "logs", "loop.jsonl") || plain.pid != filepath.Join(runtime, "loop.pid") || plain.stop != filepath.Join(runtime, "STOP") {
+		t.Errorf("the default instance moved: %+v", plain)
+	}
+}
+
+// --all finds the default instance and every named one that has a stream dir,
+// each labeled with its instance.
+func TestAllInstancesFindsEveryStream(t *testing.T) {
+	runtime := t.TempDir()
+	for _, id := range []string{"b", "c"} {
+		if err := os.MkdirAll(filepath.Join(runtime, "logs", "instances", id), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got := allInstances(runtime)
+
+	var labels []string
+	for _, f := range got {
+		labels = append(labels, f.label)
+	}
+	if len(got) != 3 || labels[0] != defaultInstanceLabel || labels[1] != "b" || labels[2] != "c" {
+		t.Fatalf("instances = %v, want [%s b c]", labels, defaultInstanceLabel)
+	}
+	if got[1].stream != filepath.Join(runtime, "logs", "instances", "b", "loop.jsonl") || got[1].pid != filepath.Join(runtime, "loop-b.pid") {
+		t.Errorf("instance b = %+v", got[1])
+	}
+}

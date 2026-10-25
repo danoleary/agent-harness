@@ -56,6 +56,25 @@ func (c *Client) SelectNextTicket() (ticket.Ticket, bool, error) {
 type availableTransition struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
+	// To is the status the transition leads to.
+	To struct {
+		ID string `json:"id"`
+	} `json:"to"`
+}
+
+// transitions lists the transitions an issue offers from its current status.
+func (c *Client) transitions(key string) ([]availableTransition, error) {
+	data, err := c.transport("GET", "/rest/api/2/issue/"+url.PathEscape(key)+"/transitions", nil)
+	if err != nil {
+		return nil, err
+	}
+	var body struct {
+		Transitions []availableTransition `json:"transitions"`
+	}
+	if err := json.Unmarshal(data, &body); err != nil {
+		return nil, err
+	}
+	return body.Transitions, nil
 }
 
 // transition performs a named workflow transition on an issue: it lists the
@@ -68,17 +87,11 @@ func (c *Client) transition(key, name string) error {
 	if name == "" {
 		return fmt.Errorf("no transition configured for issue %s", key)
 	}
-	data, err := c.transport("GET", "/rest/api/2/issue/"+url.PathEscape(key)+"/transitions", nil)
+	available, err := c.transitions(key)
 	if err != nil {
 		return err
 	}
-	var body struct {
-		Transitions []availableTransition `json:"transitions"`
-	}
-	if err := json.Unmarshal(data, &body); err != nil {
-		return err
-	}
-	for _, tr := range body.Transitions {
+	for _, tr := range available {
 		if tr.Name == name {
 			_, err := c.transport("POST", "/rest/api/2/issue/"+url.PathEscape(key)+"/transitions", map[string]any{
 				"transition": map[string]any{"id": tr.ID},
@@ -94,6 +107,43 @@ func (c *Client) transition(key, name string) error {
 // select queue and surfaces it to the reaper.
 func (c *Client) MoveToInProgress(key string) error {
 	return c.transition(key, c.opts.InProgressTransition)
+}
+
+// StillReady reports whether a selected ticket is still unclaimed (#89): the
+// claim transition is still offered and leads somewhere other than the status
+// the issue is in. A claimed issue usually no longer offers it; a workflow with a
+// global "Start Progress" offers it from everywhere, and the status read catches
+// that. Both reads go to the one issue, which Jira answers consistently, unlike
+// the JQL search selection runs.
+func (c *Client) StillReady(key string) (bool, error) {
+	available, err := c.transitions(key)
+	if err != nil {
+		return false, err
+	}
+	target := ""
+	for _, tr := range available {
+		if tr.Name == c.opts.InProgressTransition {
+			target = tr.To.ID
+		}
+	}
+	if target == "" {
+		return false, nil
+	}
+	data, err := c.transport("GET", c.issuePath(key, "fields=status"), nil)
+	if err != nil {
+		return false, err
+	}
+	var iss struct {
+		Fields struct {
+			Status struct {
+				ID string `json:"id"`
+			} `json:"status"`
+		} `json:"fields"`
+	}
+	if err := json.Unmarshal(data, &iss); err != nil {
+		return false, err
+	}
+	return iss.Fields.Status.ID != target, nil
 }
 
 // ReleaseToTodo undoes a claim that yielded nothing, returning the ticket to the

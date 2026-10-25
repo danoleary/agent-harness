@@ -17,6 +17,46 @@
 
 set -euo pipefail
 
+# One optional argument: --instance <id> (or --instance=<id>) starts one of
+# several ticket-loop daemons against the same Consumer (#89). Each instance has
+# its own pidfile, log and STOP-<id> sentinel; the default instance (no id) keeps
+# loop.pid, loop.log and the loop's STOP-tickets. Claims, gate slots and the plain
+# STOP are shared by every instance.
+LOOP_INSTANCE=""
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --instance)
+            if [ "$#" -lt 2 ] || [ -z "$2" ]; then
+                echo "loop-start.sh: --instance needs an id, e.g. --instance b" >&2
+                exit 2
+            fi
+            LOOP_INSTANCE="$2"
+            shift 2
+            ;;
+        --instance=*)
+            LOOP_INSTANCE="${1#--instance=}"
+            if [ -z "$LOOP_INSTANCE" ]; then
+                echo "loop-start.sh: --instance needs an id, e.g. --instance b" >&2
+                exit 2
+            fi
+            shift
+            ;;
+        *)
+            echo "loop-start.sh: unknown argument '$1' (usage: loop-start.sh [--instance <id>])" >&2
+            exit 2
+            ;;
+    esac
+done
+# The id names files, so it is held to the loop-name rule: lowercase letters,
+# digits and dashes, not starting with a dash. The daemon re-checks it and also
+# refuses an id that names a loop.
+case "$LOOP_INSTANCE" in
+    -*|*[!a-z0-9-]*)
+        echo "loop-start.sh: instance '$LOOP_INSTANCE' must be lowercase letters, digits and dashes" >&2
+        exit 2
+        ;;
+esac
+
 # Resolve the harness dir (the parent of scripts/) so the script works from any
 # cwd — bin/loop, the pidfile, and the log all default to living under it.
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -121,20 +161,32 @@ else
     RUNTIME_DIR="$HARNESS_DIR"
 fi
 
-LOOP_PIDFILE="${LOOP_PIDFILE:-$RUNTIME_DIR/loop.pid}"
-LOOP_LOGFILE="${LOOP_LOGFILE:-$RUNTIME_DIR/loop.log}"
+# A named instance's files carry its id, so instances never share a pidfile, a
+# log or a sentinel (config.PidFile is the daemon's side of this naming).
+if [ -n "$LOOP_INSTANCE" ]; then
+    LOOP_PIDFILE="${LOOP_PIDFILE:-$RUNTIME_DIR/loop-$LOOP_INSTANCE.pid}"
+    LOOP_LOGFILE="${LOOP_LOGFILE:-$RUNTIME_DIR/loop-$LOOP_INSTANCE.log}"
+    STOP_HINT="${RUNTIME_DIR}/STOP-$LOOP_INSTANCE"
+    set -- --instance "$LOOP_INSTANCE"
+else
+    LOOP_PIDFILE="${LOOP_PIDFILE:-$RUNTIME_DIR/loop.pid}"
+    LOOP_LOGFILE="${LOOP_LOGFILE:-$RUNTIME_DIR/loop.log}"
+    STOP_HINT="${RUNTIME_DIR}/STOP"
+fi
 
 # The runtime dir must exist before nohup redirects into it.
 mkdir -p "$(dirname "$LOOP_LOGFILE")" "$(dirname "$LOOP_PIDFILE")"
 
-# Refuse to start a second daemon over a live one: a running pid in the pidfile
-# means a loop is already up, and two would race the same ready-for-agent queue.
+# Refuse to start a second daemon over a live one of the same instance: a running
+# pid in the pidfile means that instance is already up. Another instance is
+# welcome — the claim lock stops two instances working one ticket (#89) — but two
+# daemons behind one pidfile could not be stopped or watched apart.
 # A STALE pidfile (its process is gone — a crashed or killed daemon) is cleared
 # and ignored so it can't wedge restarts.
 if [ -f "$LOOP_PIDFILE" ]; then
     existing="$(cat "$LOOP_PIDFILE" 2>/dev/null || true)"
     if [ -n "$existing" ] && kill -0 "$existing" 2>/dev/null; then
-        echo "loop already running (pid $existing, pidfile $LOOP_PIDFILE); touch ${RUNTIME_DIR}/STOP to stop it first" >&2
+        echo "loop already running (pid $existing, pidfile $LOOP_PIDFILE); touch $STOP_HINT to stop it first, or start another with --instance <id>" >&2
         exit 1
     fi
     rm -f "$LOOP_PIDFILE"
@@ -156,12 +208,18 @@ fi
 # Detached background launch: nohup divorces the daemon from this shell's session
 # so it survives the operator logging out; output appends to the log; $! captures
 # the PID for the pidfile.
-nohup "$LOOP_BIN" >> "$LOOP_LOGFILE" 2>&1 &
+# ${1+"$@"}: macOS bash 3.2 treats a bare "$@" with no arguments as unbound
+# under set -u.
+nohup "$LOOP_BIN" ${1+"$@"} >> "$LOOP_LOGFILE" 2>&1 &
 loop_pid=$!
 echo "$loop_pid" > "$LOOP_PIDFILE"
 
 echo "loop started (pid $loop_pid); logging to $LOOP_LOGFILE"
-echo "  stop gracefully:  touch ${RUNTIME_DIR}/STOP"
+echo "  stop gracefully:  touch $STOP_HINT"
+if [ -n "$LOOP_INSTANCE" ]; then
+    echo "  stop every loop:  touch ${RUNTIME_DIR}/STOP"
+    echo "  watch it:         agent-harness watch --instance $LOOP_INSTANCE"
+fi
 echo "  hard kill:        kill $loop_pid"
 
 # Optional: hold a sleep assertion for as long as the daemon lives (#49). Idle

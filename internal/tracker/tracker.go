@@ -79,6 +79,11 @@ type InProgressClaim struct {
 type Queue interface {
 	SelectNextTicket() (ticket.Ticket, bool, error)
 	MoveToInProgress(key Key) error
+	// StillReady re-reads one selected ticket and reports whether it is still
+	// unclaimed. Selection reads a queue that can lag a claim another loop instance
+	// made a moment ago; this read goes to the ticket itself, so claim-on-select
+	// can confirm it before claiming (#89).
+	StillReady(key Key) (bool, error)
 	ReleaseToTodo(key Key) error
 	// MoveToCanceled moves a ticket into the tracker's terminal canceled state,
 	// consuming a recommend-close verdict (BEH-682): a run that found the branch

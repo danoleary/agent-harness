@@ -19,6 +19,47 @@ type Queue interface {
 	MoveToCanceled(key tracker.Key) error
 }
 
+// Exclusive is the queue a selected ticket is claimed through when another
+// instance may have selected it too (#89): the claim mutations, plus a fresh
+// read of whether the ticket is still unclaimed. The read goes to the one
+// ticket, not the queue, so a queue index that lags a claim cannot fool it.
+type Exclusive interface {
+	Queue
+	StillReady(key tracker.Key) (bool, error)
+}
+
+// Locker serialises claims across every loop instance working one Consumer: the
+// confirmation read and the claim happen while it is held, so no other
+// instance's claim lands between them.
+type Locker interface {
+	Lock() (unlock func(), err error)
+}
+
+// Claim claims a ticket selection just picked, exclusively (#89). Under lock it
+// confirms the ticket is still unclaimed and only then moves it In Progress.
+// won=false with no error means another run holds the ticket: this run claimed
+// nothing, so it has nothing to release, and selects again. A failed read is an
+// error and claims nothing.
+func Claim(q Exclusive, lock Locker, key tracker.Key) (l *Lease, won bool, err error) {
+	unlock, err := lock.Lock()
+	if err != nil {
+		return nil, false, err
+	}
+	defer unlock()
+	ready, err := q.StillReady(key)
+	if err != nil {
+		return nil, false, err
+	}
+	if !ready {
+		return nil, false, nil
+	}
+	l = Unheld(q, key)
+	if err := l.Hold(); err != nil {
+		return nil, false, err
+	}
+	return l, true, nil
+}
+
 // Lease is one run's claim on one ticket. It is not safe for concurrent use: a
 // run works its ticket from one goroutine.
 type Lease struct {

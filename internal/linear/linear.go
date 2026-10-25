@@ -107,6 +107,18 @@ const fetchIssueStatesQuery = `
 	}
 `
 
+// issueStateQuery reads one ticket's workflow state type, for the claim's
+// confirmation read (#89).
+const issueStateQuery = `
+	query IssueState($id: String!) {
+		issue(id: $id) {
+			state {
+				type
+			}
+		}
+	}
+`
+
 const moveIssueMutation = `
 	mutation MoveIssue($id: String!, $stateId: String!) {
 		issueUpdate(id: $id, input: { stateId: $stateId }) {
@@ -314,6 +326,30 @@ func (c *Client) MoveToInProgress(identifier string) error {
 	return c.moveToState(identifier, `started "In Progress"`, func(s []issueState) string {
 		return pickState(s, "started", "In Progress")
 	})
+}
+
+// StillReady reports whether a selected ticket is still unclaimed: its state is
+// still the unstarted type selection draws from (#89). It reads the one issue, so
+// it sees a claim another instance made a moment ago.
+func (c *Client) StillReady(identifier string) (bool, error) {
+	data, err := c.transport(issueStateQuery, map[string]any{"id": identifier})
+	if err != nil {
+		return false, err
+	}
+	var resp struct {
+		Issue *struct {
+			State *struct {
+				Type string `json:"type"`
+			} `json:"state"`
+		} `json:"issue"`
+	}
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return false, err
+	}
+	if resp.Issue == nil || resp.Issue.State == nil {
+		return false, fmt.Errorf("Linear issue not found: %s", identifier)
+	}
+	return resp.Issue.State.Type == "unstarted", nil
 }
 
 // ReleaseToTodo moves a ticket back to its team's unstarted "Todo" state, undoing

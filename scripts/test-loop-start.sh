@@ -557,5 +557,84 @@ else
     echo -e "${GREEN}PASS${NC}"
 fi
 
+# --- several instances of the ticket loop (#89) -------------------------------
+#
+# `start --instance b` is a second daemon over the same Consumer: its own
+# pidfile and log beside the default instance's, the id handed to the daemon,
+# and the same already-running guard per instance.
+ARGS_BIN="$TEST_DIR/fake-loop-args"
+cat > "$ARGS_BIN" <<'ARGSEOF'
+#!/bin/bash
+echo "fake-loop started with: $*"
+exec sleep 60
+ARGSEOF
+chmod +x "$ARGS_BIN"
+
+echo -n "loop-start.sh --instance b starts beside a running default instance ... "
+INST_PROJ="$TEST_DIR/consumer-instances"
+mkdir -p "$INST_PROJ"
+PROJECT_PATH="$INST_PROJ" LOOP_BIN="$ARGS_BIN" "$SCRIPT_PATH" > /dev/null 2>&1
+inst_a="$(cat "$INST_PROJ/.agent-harness/loop.pid" 2>/dev/null || true)"
+STARTED_PIDS="$STARTED_PIDS $inst_a"
+inst_out="$(PROJECT_PATH="$INST_PROJ" LOOP_BIN="$ARGS_BIN" "$SCRIPT_PATH" --instance b 2>&1)" && inst_rc=0 || inst_rc=$?
+inst_b="$(cat "$INST_PROJ/.agent-harness/loop-b.pid" 2>/dev/null || true)"
+STARTED_PIDS="$STARTED_PIDS $inst_b"
+if [ "$inst_rc" != "0" ]; then
+    echo -e "${RED}FAIL${NC} - instance b refused to start beside the default instance: $inst_out"
+    exit 1
+elif [ -z "$inst_b" ] || [ "$inst_b" = "$inst_a" ] || ! kill -0 "$inst_b" 2>/dev/null; then
+    echo -e "${RED}FAIL${NC} - no live pidfile of its own at $INST_PROJ/.agent-harness/loop-b.pid"
+    exit 1
+elif ! wait_for_log "$INST_PROJ/.agent-harness/loop-b.log" "fake-loop started with: --instance b"; then
+    echo -e "${RED}FAIL${NC} - the daemon was not told its instance, or did not log to loop-b.log"
+    exit 1
+elif ! echo "$inst_out" | grep -q "STOP-b"; then
+    echo -e "${RED}FAIL${NC} - the launch must say how to stop instance b alone, got: $inst_out"
+    exit 1
+elif [ "$(cat "$INST_PROJ/.agent-harness/loop.pid")" != "$inst_a" ]; then
+    echo -e "${RED}FAIL${NC} - instance b overwrote the default instance's pidfile"
+    exit 1
+else
+    echo -e "${GREEN}PASS${NC}"
+fi
+
+echo -n "loop-start.sh refuses a second start of the same instance ... "
+again_out="$(PROJECT_PATH="$INST_PROJ" LOOP_BIN="$ARGS_BIN" "$SCRIPT_PATH" --instance=b 2>&1)" && again_rc=0 || again_rc=$?
+if [ "$again_rc" = "0" ]; then
+    STARTED_PIDS="$STARTED_PIDS $(cat "$INST_PROJ/.agent-harness/loop-b.pid" 2>/dev/null || true)"
+    echo -e "${RED}FAIL${NC} - a second instance b started over a live one"
+    exit 1
+elif [ "$(cat "$INST_PROJ/.agent-harness/loop-b.pid")" != "$inst_b" ]; then
+    echo -e "${RED}FAIL${NC} - the refused start overwrote instance b's pidfile"
+    exit 1
+elif ! echo "$again_out" | grep -q "already running"; then
+    echo -e "${RED}FAIL${NC} - expected an 'already running' message, got: $again_out"
+    exit 1
+else
+    echo -e "${GREEN}PASS${NC}"
+fi
+
+echo -n "loop-start.sh refuses an instance id that is not a safe file name ... "
+# A fresh Consumer, so a refusal can only be the id's, never the already-running
+# guard's.
+BAD_PROJ="$TEST_DIR/consumer-bad-ids"
+mkdir -p "$BAD_PROJ"
+for bad in "../x" "B" "-b" ""; do
+    if PROJECT_PATH="$BAD_PROJ" LOOP_BIN="$ARGS_BIN" "$SCRIPT_PATH" --instance "$bad" > /dev/null 2>&1; then
+        STARTED_PIDS="$STARTED_PIDS $(cat "$BAD_PROJ"/.agent-harness/loop*.pid 2>/dev/null || true)"
+        echo -e "${RED}FAIL${NC} - instance id '$bad' was accepted"
+        exit 1
+    fi
+done
+if ls "$BAD_PROJ"/.agent-harness/loop*.pid > /dev/null 2>&1; then
+    echo -e "${RED}FAIL${NC} - a refused instance id still wrote a pidfile"
+    exit 1
+fi
+if PROJECT_PATH="$INST_PROJ" LOOP_BIN="$ARGS_BIN" "$SCRIPT_PATH" --bogus > /dev/null 2>&1; then
+    echo -e "${RED}FAIL${NC} - an unknown argument was accepted"
+    exit 1
+fi
+echo -e "${GREEN}PASS${NC}"
+
 echo
 echo -e "${GREEN}All tests passed!${NC}"

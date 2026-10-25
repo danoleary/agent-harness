@@ -9,7 +9,8 @@ import (
 )
 
 // `loop` runs the ticket loop, `loop <name>` the named loop, and --list and
-// --dry-run print without running anything. --prs, the PR loop's old flag, is
+// --dry-run print without running anything. --instance <id> names one of several
+// daemons running the loop (#89); its value is never taken for a loop name. --prs, the PR loop's old flag, is
 // refused with its replacement: ignoring it would start a real ticket loop.
 func TestParseFlags(t *testing.T) {
 	cases := []struct {
@@ -25,6 +26,11 @@ func TestParseFlags(t *testing.T) {
 		{argv: []string{"--dry-run"}, want: flags{dryRun: true}},
 		{argv: []string{"--prs"}, wantErr: "agent-harness loop pr-doctor"},
 		{argv: []string{"tickets", "pr-doctor"}, wantErr: "one loop at a time"},
+		{argv: []string{"--instance", "b"}, want: flags{instance: "b"}},
+		{argv: []string{"--instance=b", "tickets"}, want: flags{name: "tickets", instance: "b"}},
+		{argv: []string{"tickets", "--instance", "b", "--dry-run"}, want: flags{name: "tickets", instance: "b", dryRun: true}},
+		{argv: []string{"--instance"}, wantErr: "--instance needs an id"},
+		{argv: []string{"--instance", "--dry-run"}, wantErr: "--instance needs an id"},
 	}
 	for _, c := range cases {
 		got, err := parseFlags(c.argv)
@@ -103,5 +109,28 @@ func TestDescribeLoopPrintsTheResolvedSourceAndSteps(t *testing.T) {
 	}
 	if strings.Contains(got, "watch_ci") {
 		t.Errorf("a step the loop leaves out must not be printed:\n%s", got)
+	}
+}
+
+// A named instance's dry run prints the sentinel that stops it alone, beside the
+// shared ones, and its own stream (#89).
+func TestDescribeLoopNamesTheInstancesOwnSentinelAndStream(t *testing.T) {
+	cfg := config.Config{Host: config.Host{ProjectPath: "/src/app", StopFile: ".agent-harness/STOP"}}
+	l, err := config.Project{}.LoopInstance("", "b")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got := describeLoop(cfg, l, limitsFrom(cfg, l))
+
+	for _, want := range []string{
+		"loop tickets, instance b",
+		"/src/app/.agent-harness/STOP-b",
+		"/src/app/.agent-harness/STOP-tickets",
+		"/src/app/.agent-harness/logs/instances/b/loop.jsonl",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("--dry-run missing %q:\n%s", want, got)
+		}
 	}
 }

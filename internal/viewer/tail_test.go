@@ -123,3 +123,26 @@ func writeLine(t *testing.T, path, line string) {
 		t.Fatalf("write: %v", err)
 	}
 }
+
+// A labeled tailer starts every line it renders with its instance, so the
+// streams of several loop instances can share one terminal (#89).
+func TestLabeledTailerPrefixesEveryLineWithItsInstance(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "loop.jsonl")
+	tl := NewLabeledTailer(path, "b")
+
+	writeLine(t, path, `{"ts":"t1","kind":"ticket-selected","ticket":"BEH-5","message":"selected BEH-5"}`)
+	writeLine(t, path, `{"ts":"t2","kind":"stage-start","ticket":"BEH-5","stage":"review","message":"run X — review BEH-5"}`)
+	var out bytes.Buffer
+	if _, err := tl.Poll(&out); err != nil {
+		t.Fatalf("poll: %v", err)
+	}
+	lines := strings.Split(strings.TrimRight(out.String(), "\n"), "\n")
+	if len(lines) < 2 {
+		t.Fatalf("expected both records rendered, got %q", out.String())
+	}
+	for _, line := range lines {
+		if !strings.HasPrefix(line, "[b] ") {
+			t.Errorf("line %q does not name its instance", line)
+		}
+	}
+}

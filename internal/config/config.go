@@ -167,6 +167,17 @@ type Host struct {
 	// It defaults above that floor with headroom; 0 disables reclaim entirely.
 	LoopDiskReclaimThreshold uint64
 
+	// GateConcurrency is how many runs may execute their Gates at once (#89),
+	// across every loop instance sharing GateLockDir: a run past the limit waits
+	// for a slot before its gate step, and only for that step. 0 is no limit;
+	// defaults to 1, because each gate set is a container's worth of build and
+	// test load and two at once already overload a laptop.
+	GateConcurrency int
+	// GateLockDir is where the gate slots' lock files live. Empty is the
+	// Consumer's .agent-harness/locks/, which bounds the loop instances of one
+	// Consumer; point several Consumers at one directory to bound the whole host.
+	GateLockDir string
+
 	// PRLoopLabel is the opt-in label that lets a PR loop (`loop pr-doctor`) work a
 	// PR whose head branch is not on the harness's branch_prefix (ADR-0019), unless
 	// the loop's source.label sets its own. Defaults to "agent-maintained".
@@ -274,6 +285,7 @@ const (
 	defaultLoopMaxRuntime             = time.Duration(0)
 	defaultLoopClaimTTL               = 30 * time.Minute
 	defaultStopFile                   = ProjectDirName + "/STOP"
+	defaultGateConcurrency            = 1
 	defaultPRLoopLabel                = "agent-maintained"
 	defaultPRLoopMaxAttempts          = 3
 	// 8 GiB: the 5 GiB MinFreeDiskBytes sandbox floor plus headroom, so reclaim fires
@@ -518,6 +530,8 @@ func (h *Host) knobs(get Getenv) []knob {
 		bind("LOOP_CLAIM_TTL_MS", &h.LoopClaimTTL, positiveMillis, defaultLoopClaimTTL, strict),
 		bind("LOOP_DISK_RECLAIM_THRESHOLD_BYTES", &h.LoopDiskReclaimThreshold, reclaimBytes, defaultLoopDiskReclaimThreshold, strict),
 		bind("STOP_FILE", &h.StopFile, text, defaultStopFile, strict),
+		bind("GATE_CONCURRENCY", &h.GateConcurrency, ceilingCount, defaultGateConcurrency, strict),
+		bind("GATE_LOCK_DIR", &h.GateLockDir, text, "", strict),
 
 		bind("PR_LOOP_LABEL", &h.PRLoopLabel, text, defaultPRLoopLabel, strict),
 		bind("PR_LOOP_MAX_ATTEMPTS", &h.PRLoopMaxAttempts, positiveCount, defaultPRLoopMaxAttempts, strict),

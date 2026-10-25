@@ -77,6 +77,15 @@ A **Source**, its **Steps** and its own limits, run by one daemon under a name
 `pr-doctor`, or a `[[loops]]` entry in `config.toml`. Each has its own STOP
 sentinel (`STOP-<name>`) and its own `loop.jsonl`.
 
+**Instance** (of a loop):
+One of several daemons running the same ticket loop against one Consumer
+(`--instance <id>`; ADR-0024). Each has its own pidfile, log, `STOP-<id>` and
+`logs/instances/<id>/`; the one with no id is the default instance. Instances
+share the claim lock, so two never hold one **Lease**, and the gate slots, so only
+`GATE_CONCURRENCY` runs gate at once.
+_Avoid_: worker, replica, second loop (a second *loop* is a different Source and
+Pipeline; an instance is the same loop again).
+
 **PR loop**:
 A loop whose **Source** is `github_prs` (ADR-0019); the built-in one is
 `pr-doctor`. The Source is the open PRs that conflict with `main` or have red CI
