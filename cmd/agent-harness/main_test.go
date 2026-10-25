@@ -186,6 +186,25 @@ func TestUsageListsEveryCommand(t *testing.T) {
 	}
 }
 
+// The footnote says which commands take the per-run flags. `start` rejects
+// --verbose and --dry-run and `watch` would read either as a stream path, so a
+// blanket "every other command takes them" sends an operator into a usage
+// error (#119).
+func TestUsageNamesTheCommandsThatTakeTheRunFlags(t *testing.T) {
+	got := usage()
+	if strings.Contains(got, "Every other command takes") {
+		t.Errorf("usage still claims every command takes --verbose and --dry-run:\n%s", got)
+	}
+	for _, want := range []string{
+		"pipeline, implementation, review and retrospective also take --dry-run, --verbose and --force",
+		"Every command but start and watch answers --help",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("usage does not say %q:\n%s", want, got)
+		}
+	}
+}
+
 // The `start` entry is the one command implemented by a shell script rather than
 // a Go binary, and the mismatch is deliberate — pin it so a rename of the shipped
 // launcher cannot silently break dispatch.

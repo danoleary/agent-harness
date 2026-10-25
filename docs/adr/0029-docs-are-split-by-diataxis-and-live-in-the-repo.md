@@ -58,3 +58,8 @@ moves or is renamed fails `make check` instead of leaving a dead link.
   the matching reference page in the same PR. The link test only catches a page
   that moved or a broken link. It doesn't catch a reference table that has drifted
   from the code.
+- The env vars are the exception (#138). `internal/config` records every key
+  `Load` reads and fails `make check` when one has no row in
+  `docs/reference/env.md` or no line in `.env.example`, commented out or not. A
+  key left out on purpose goes in that test's allowlist with its reason. The test
+  checks that each key is present. It doesn't check the defaults or the wording.

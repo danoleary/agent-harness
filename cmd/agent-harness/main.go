@@ -56,7 +56,7 @@ type command struct {
 // project setup and the setup check, the two everyday entrypoints, then the
 // single-ticket pipeline, then the three individual stages it chains.
 var commands = []command{
-	{Name: "init", Args: "[--yes] [--force]", Summary: "scaffold this project's .agent-harness/ directory", Builtin: initMain},
+	{Name: "init", Args: initArgs, Summary: "scaffold this project's .agent-harness/ directory", Builtin: initMain},
 	{Name: doctorCommand, Args: "[--offline]", Summary: "check the whole setup; print a fix for every problem"},
 	{Name: "start", File: "loop-start.sh", Args: "[<name>] [--instance <id>]", Summary: "start a loop as a detached daemon (logs to loop.log, or loop-<name>.log / loop-<id>.log)"},
 	{Name: "loop", File: "loop", Args: "[<name>] [--instance <id>] [--list] [--dry-run]", Summary: "run a loop until stopped: the ready queue by default, or pr-doctor, or a [[loops]] entry"},
@@ -263,7 +263,8 @@ func usage() string {
 	fmt.Fprintf(&b, "  %-*s  %s\n", width, "--version", "print the harness version")
 	fmt.Fprintf(&b, "  %-*s  %s\n", width, "--help", "this message")
 
-	b.WriteString("\nEvery other command takes --verbose and --dry-run, and answers --help without a credential.\n")
+	b.WriteString("\npipeline, implementation, review and retrospective also take --dry-run, --verbose and --force.\n")
+	b.WriteString("Every command but start and watch answers --help without a credential.\n")
 	b.WriteString("Stop a running loop with `touch $PROJECT_PATH/.agent-harness/STOP`.\n\n")
 	b.WriteString("Before the first run you need credentials in a .env file, and an .agent-harness/\n")
 	b.WriteString("directory in the project you point it at — `agent-harness init` writes both:\n")

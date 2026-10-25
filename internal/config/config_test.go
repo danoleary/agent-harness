@@ -964,7 +964,8 @@ func TestLoadMissingCredentialsSaySearchedFilesAndWhereToGetThem(t *testing.T) {
 	}), WithWorkingDir(wd))
 	assertMentions(t, err,
 		"GH_TOKEN is not set",
-		"https://github.com/settings/tokens/new?scopes=repo&description=agent-harness",
+		"https://github.com/settings/tokens/new?scopes=repo,workflow&description=agent-harness",
+		"repo and workflow scopes",
 		"no Claude credential is set",
 		"https://platform.claude.com/settings/keys",
 		"claude setup-token",

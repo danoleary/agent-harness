@@ -930,3 +930,23 @@ func TestReviewWithoutARedGateCarriesOnlyThePromise(t *testing.T) {
 		t.Errorf("every review envelope promises the red-gate re-launch:\n%s", p)
 	}
 }
+
+// #133: the harness rebases the branch before push and resolves conflicts in its
+// own session, so every implementation variant must tell the session not to
+// rebase or merge origin/main itself, and that fetching origin/main (e.g. for the
+// next free ADR number) is read-only. A session that synced on its own rebuilt
+// its commit by hand from a soft reset, outside any reviewed path.
+func TestImplementForbidsRebasingOntoOriginMain(t *testing.T) {
+	for name, p := range map[string]string{
+		"fresh":          bImpl(t, sample, "beh-362"),
+		"resumed-branch": bResumed(t, sample, "beh-362"),
+		"after-refusal":  bResume(t, sample, "beh-362", sampleWorktree),
+	} {
+		if !regexp.MustCompile("(?i)do not rebase or merge `?origin/main`? into the branch").MatchString(p) {
+			t.Errorf("%s prompt does not forbid rebasing/merging origin/main:\n%s", name, p)
+		}
+		if !regexp.MustCompile("(?i)fetch `?origin/main`? only to read it").MatchString(p) {
+			t.Errorf("%s prompt does not make the origin/main fetch read-only:\n%s", name, p)
+		}
+	}
+}

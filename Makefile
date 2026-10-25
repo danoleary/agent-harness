@@ -1,5 +1,5 @@
 # Agent harness — Go toolchain shortcuts. Requires Go 1.26+.
-.PHONY: build install uninstall base-image release test implementation review retrospective pipeline loop watch vet fmt fmt-check check-exec check-bash3 check-buildvcs check-ci check-adr check-bundle-links check-scripts check tidy
+.PHONY: build install uninstall base-image release test implementation review retrospective pipeline loop watch vet fmt fmt-check check-exec check-bash3 check-awk check-buildvcs check-ci check-adr check-bundle-links check-scripts check tidy
 
 # Build the tool binaries into ./bin.
 #
@@ -146,6 +146,12 @@ check-exec:
 check-bash3:
 	@./scripts/check-bash3-compat.sh
 
+# Fail on awk regex interval expressions ({n,m}) and gawk-only functions in the
+# scripts: the sandbox's mawk silently never matches an interval, so a guard
+# using one passes vacuously there while it works on macOS and in CI (#129).
+check-awk:
+	@./scripts/check-awk-portability.sh
+
 # Fail if a VCS-stamping go command in a Makefile drops -buildvcs=false, which
 # breaks builds from a linked worktree (BEH-459).
 check-buildvcs:
@@ -181,7 +187,7 @@ check-scripts:
 	@./scripts/run-script-tests.sh
 
 # The pre-push gate: format check, vet, the script guards, and the full test suite.
-check: fmt-check vet check-exec check-bash3 check-buildvcs check-ci check-adr check-bundle-links check-scripts test
+check: fmt-check vet check-exec check-bash3 check-awk check-buildvcs check-ci check-adr check-bundle-links check-scripts test
 
 tidy:
 	go mod tidy

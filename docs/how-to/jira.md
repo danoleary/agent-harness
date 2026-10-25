@@ -71,9 +71,10 @@ agent-harness doctor
 agent-harness pipeline --next --dry-run
 ```
 
-`doctor` signs in and checks it can see `project_key`. The harness checks the
-other keys only when it uses them: a missing or misspelled transition fails the
-claim with `no transition configured for issue PROJ-1` or
+`doctor` signs in and checks it can see `project_key`. Loading the config fails
+if `project_key`, either JQL key or any of the three transitions is missing. A
+misspelled transition name is only caught when the harness uses it: it fails the
+claim with
 `transition "In Progres" not available on issue PROJ-1`.
 
 ## See also
