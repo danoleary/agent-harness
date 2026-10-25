@@ -104,6 +104,16 @@ func TestOpenQuestions(t *testing.T) {
 			want: []string{"Open question", "Questions for a human"},
 		},
 		{
+			name: "questions under sub-headings of the section",
+			body: "## Open questions (for a human)\n\n### Trackers\n\nWhich?\n\n**Defaults**\n\nWhich?\n\n## Plan\n\nB.",
+			want: []string{"Open questions (for a human)"},
+		},
+		{
+			name: "a heading that says its questions are still to be decided",
+			body: "## Open questions (to be decided by a human)\n\n- Which trackers?",
+			want: []string{"Open questions (to be decided by a human)"},
+		},
+		{
 			name: "a section that says it has none",
 			body: "## Open questions\n\nNone.\n\n## Plan\n\nB.",
 		},

@@ -117,6 +117,10 @@ var openQuestionSignals = []string{
 // Word-bounded, so "unresolved" never reads as "resolved".
 var settledHeading = regexp.MustCompile(`\b(resolved|answered|decided)\b`)
 
+// pendingHeading marks a settled word that says the opposite: "to be decided",
+// "not yet resolved", "still to be answered".
+var pendingHeading = regexp.MustCompile(`\b(not|yet|be)\s+(yet\s+)?(resolved|answered|decided)\b`)
+
 // OpenQuestions returns the headings of the ticket body's sections that still
 // list questions for a human, in order: "Open questions (for a human before this
 // is agent-ready)" in #55, "Not yet agent-ready", "Questions for a human". A
@@ -128,7 +132,7 @@ var settledHeading = regexp.MustCompile(`\b(resolved|answered|decided)\b`)
 // call, and the open questions may not block the work.
 func (t Ticket) OpenQuestions() []string {
 	var found []string
-	open := ""
+	open, openLevel := "", 0
 	var content strings.Builder
 	flush := func() {
 		if open != "" && !emptySection(content.String()) {
@@ -149,14 +153,16 @@ func (t Ticket) OpenQuestions() []string {
 			content.WriteString("code\n")
 			continue
 		}
-		heading, ok := headingText(line)
-		if !ok {
+		heading, level, ok := headingText(line)
+		// A deeper heading or a bold label inside an open section ("### Trackers")
+		// is part of its content, not the end of it.
+		if !ok || open != "" && level > openLevel {
 			content.WriteString(line + "\n")
 			continue
 		}
 		flush()
 		if isOpenQuestionsHeading(heading) {
-			open = heading
+			open, openLevel = heading, level
 		}
 	}
 	flush()
@@ -173,36 +179,40 @@ func fenceOpener(trimmed string) string {
 	return ""
 }
 
-// headingText returns a line's heading text when the line is an ATX heading
-// (`## Open questions`) or wholly bold (`**Open questions:**`).
-func headingText(line string) (string, bool) {
+// boldHeadingLevel ranks a wholly bold line below every ATX heading level.
+const boldHeadingLevel = 7
+
+// headingText returns a line's heading text and level when the line is an ATX
+// heading (`## Open questions`, level 2) or wholly bold (`**Open questions:**`,
+// boldHeadingLevel).
+func headingText(line string) (string, int, bool) {
 	trimmed := strings.TrimLeft(line, " ")
 	if len(line)-len(trimmed) > 3 {
-		return "", false
+		return "", 0, false
 	}
 	trimmed = strings.TrimSpace(trimmed)
 	if hashes := len(trimmed) - len(strings.TrimLeft(trimmed, "#")); hashes >= 1 && hashes <= 6 {
 		rest := trimmed[hashes:]
 		if rest == "" || rest[0] != ' ' && rest[0] != '\t' {
-			return "", false
+			return "", 0, false
 		}
-		return strings.TrimSpace(strings.TrimRight(strings.TrimSpace(rest), "#")), true
+		return strings.TrimSpace(strings.TrimRight(strings.TrimSpace(rest), "#")), hashes, true
 	}
 	for _, m := range []string{"**", "__"} {
 		inner := strings.TrimSuffix(trimmed, ":")
 		if len(inner) > 2*len(m) && strings.HasPrefix(inner, m) && strings.HasSuffix(inner, m) {
 			text := inner[len(m) : len(inner)-len(m)]
 			if !strings.Contains(text, m) {
-				return strings.TrimSpace(text), true
+				return strings.TrimSpace(text), boldHeadingLevel, true
 			}
 		}
 	}
-	return "", false
+	return "", 0, false
 }
 
 func isOpenQuestionsHeading(heading string) bool {
 	h := strings.ReplaceAll(strings.ToLower(heading), "agent ready", "agent-ready")
-	return containsAny(h, openQuestionSignals) && !settledHeading.MatchString(h)
+	return containsAny(h, openQuestionSignals) && (!settledHeading.MatchString(h) || pendingHeading.MatchString(h))
 }
 
 // emptySection reports whether a section's content says nothing is open.
