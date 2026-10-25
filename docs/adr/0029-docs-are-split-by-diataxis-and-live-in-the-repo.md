@@ -1,4 +1,4 @@
-# ADR-0026: The docs are split by Diátaxis and live in the repo, not a wiki
+# ADR-0029: The docs are split by Diátaxis and live in the repo, not a wiki
 
 - Status: Accepted
 - Date: 2026-10-25
