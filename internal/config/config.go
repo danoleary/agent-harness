@@ -698,7 +698,8 @@ const (
 // scripts/loop-start.sh resolves PROJECT_PATH in this same order. The two must
 // agree: if the script read one file and the daemon another, the pidfile and log
 // would land under a different project than the one being worked, and the viewer
-// would report a running daemon as stopped.
+// would report a running daemon as stopped. scripts/test-loop-start.sh pins the
+// script's side of the order.
 //
 // Only an existing file is returned, so an operator who exports the variables
 // directly gets "" and no file is read.
