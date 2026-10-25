@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/danoleary/agent-harness/internal/config"
+	"github.com/danoleary/agent-harness/internal/gittest"
 	"github.com/danoleary/agent-harness/internal/hostio"
 	"github.com/danoleary/agent-harness/internal/runlog"
 	"github.com/danoleary/agent-harness/internal/session"
@@ -30,8 +31,12 @@ func gatingRunsLogged(t *testing.T, cfg config.Config, runs int) (int32, []strin
 	var roots []string
 	var inside, worst atomic.Int32
 	var wg sync.WaitGroup
+	// One handoff carrying a code change, so the docs-only skip never fires; every
+	// run gates the same worktree, each through its own Host.
+	repo := gittest.New(t)
+	repo.Handoff("proj-1")
 	for i := 0; i < runs; i++ {
-		h := hostio.NewFake()
+		h := hostio.NewFake(repo.Checkout(), "proj-1")
 		h.ShellFn = func(int, hostio.ShellRun) session.Outcome {
 			n := inside.Add(1)
 			for {
@@ -54,7 +59,7 @@ func gatingRunsLogged(t *testing.T, cfg config.Config, runs int) (int32, []strin
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if res := e.Gates("proj-1", "gate"); !res.Green() {
+			if res := e.Gates("gate"); !res.Green() {
 				t.Errorf("gates = %+v, want green", res)
 			}
 		}()

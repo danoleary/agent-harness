@@ -25,41 +25,41 @@ const oomExitCode = 137
 // GroundTruth is the host-side git state the decisions below read for themselves:
 // the harness's own assertions about a ticket's worktree and branch, verified
 // independently of whatever the sandbox reported (CONTEXT.md "Ground truth").
-// Every method is keyed by the ticket slug, matching the port a Stage already
-// holds — [hostio.Host] satisfies it, so a Stage passes the Host it has and
-// nothing re-packs the reads into a struct on the way in.
+// Its methods are [git.Worktree]'s own, so a Stage hands over the ticket's
+// worktree as it holds it and nothing re-packs the reads into a struct on the way
+// in.
 //
-// Declaring the port HERE, rather than having internal/git hand back a verify
-// type, is also what keeps the dependency pointing the right way: the low-level
-// git module no longer imports the decision module, and can be used without it.
+// Declaring the port HERE, rather than importing internal/git, is also what keeps
+// the dependency pointing the right way: the low-level git module does not import
+// the decision module, and this one can be tested over a scripted worktree.
 type GroundTruth interface {
-	// WorktreeExists reports whether the ticket's worktree directory exists.
-	WorktreeExists(slug string) bool
-	// WorktreeClean reports whether the worktree has no uncommitted changes.
-	WorktreeClean(slug string) bool
+	// Exists reports whether the ticket's worktree directory exists.
+	Exists() bool
+	// Clean reports whether the worktree has no uncommitted changes.
+	Clean() bool
 	// CommitsAhead is the number of commits on the feature branch ahead of
 	// origin/main.
-	CommitsAhead(slug string) int
-	// BranchDisjoint reports whether the feature branch shares NO common ancestor
+	CommitsAhead() int
+	// DisjointHistory reports whether the feature branch shares NO common ancestor
 	// with origin/main (an empty `git merge-base`). A disjoint branch is "ahead" by
 	// all of its own commits (963 in BEH-355), so it passes the commits-ahead check,
 	// yet it is never a real single-ticket handoff and its rebase collides
 	// immediately.
-	BranchDisjoint(slug string) bool
-	// BranchDiffEmpty reports whether the branch's committed tip makes zero net
-	// change against origin/main (an empty `git diff origin/main`).
-	BranchDiffEmpty(slug string) bool
+	DisjointHistory() bool
+	// DiffEmpty reports whether the branch's committed tip makes zero net change
+	// against origin/main (an empty `git diff origin/main`).
+	DiffEmpty() bool
 	// BranchExists reports whether the feature branch resolves to a git revision in
 	// the host checkout.
-	BranchExists(slug string) bool
+	BranchExists() bool
 	// BranchPushed reports whether the feature branch reached origin.
-	BranchPushed(slug string) bool
-	// IsRebased reports whether origin/main is now an ancestor of the branch tip.
-	IsRebased(slug string) bool
-	// PRExists reports whether the branch has reached a PR in ANY state (open,
-	// merged, or closed).
-	PRExists(slug string) bool
+	BranchPushed() bool
+	// IsRebasedOnto reports whether ref is an ancestor of the branch tip.
+	IsRebasedOnto(ref string) bool
 }
+
+// baseRef is the base every decision here measures a branch against.
+const baseRef = "origin/main"
 
 // Result is the one verdict every decision in this package returns: OK plus the
 // Reason that is logged either way, so a blocked push or a kept worktree always
@@ -111,11 +111,11 @@ type Result struct {
 // Tdd decides whether a tdd session really did its job. Success requires both a
 // worktree and at least one commit on the feature branch — the agent's own
 // "I'm done" is never authoritative (DESIGN.md: success is ground-truth).
-func Tdd(g GroundTruth, slug string) Result {
-	if !g.WorktreeExists(slug) {
+func Tdd(g GroundTruth) Result {
+	if !g.Exists() {
 		return Result{OK: false, Reason: "worktree was not created"}
 	}
-	ahead := g.CommitsAhead(slug)
+	ahead := g.CommitsAhead()
 	if ahead < 1 {
 		return Result{OK: false, Reason: "no handoff commit ahead of origin/main"}
 	}
@@ -131,7 +131,7 @@ func Tdd(g GroundTruth, slug string) Result {
 	// shape, so the failure carries DisjointWorkTrapped for the caller's regraft
 	// rescue. Reading it off the same walk is what keeps the rescue's precondition
 	// from drifting from the gate that produced it.
-	if g.BranchDisjoint(slug) {
+	if g.DisjointHistory() {
 		return Result{
 			OK:                  false,
 			DisjointWorkTrapped: true,
@@ -221,8 +221,8 @@ func Retrospective(dropboxExists bool, out session.Outcome) Result {
 // routinely has transcripts but no branch (the session crashed before creating
 // the worktree). Skipping whenever the branch is missing would suppress those
 // legitimate retrospectives, so a single real input is enough to proceed.
-func RetrospectivePreconditions(g GroundTruth, slug string, priorTranscripts bool) Result {
-	if !priorTranscripts && !g.BranchExists(slug) {
+func RetrospectivePreconditions(g GroundTruth, priorTranscripts bool) Result {
+	if !priorTranscripts && !g.BranchExists() {
 		return Result{OK: false, Reason: "no upstream sessions to retrospect — feature branch does not resolve and no implementation/review transcripts exist; the /tdd + /review steps produced nothing"}
 	}
 	return Result{OK: true, Reason: "upstream inputs present — a feature branch and/or prior session transcripts exist to retrospect"}
@@ -276,8 +276,8 @@ func RetrospectivePreconditions(g GroundTruth, slug string, priorTranscripts boo
 // BEH-439 leak). Blocking keeps the worktree for a human decision — distinct from
 // the BEH-569 case (there the review never ran; here it ran and found a real,
 // unresolved issue).
-func Review(g GroundTruth, slug string, gate session.Outcome, out session.Outcome) Result {
-	clean := g.WorktreeClean(slug)
+func Review(g GroundTruth, gate session.Outcome, out session.Outcome) Result {
+	clean := g.Clean()
 	gatesGreen := gate.ExitCode == 0
 	complete, completeReason := reviewQualitative(out)
 
@@ -294,7 +294,7 @@ func Review(g GroundTruth, slug string, gate session.Outcome, out session.Outcom
 	switch {
 	case !clean:
 		r.Reason = "worktree has uncommitted changes — the gate validated a different tree than would ship; not pushing"
-	case g.BranchDiffEmpty(slug):
+	case g.DiffEmpty():
 		r.RecommendClose = true
 		r.Reason = "branch makes zero net change against origin/main (empty diff) — nothing to ship; recommend closing the ticket as a duplicate/superseded rather than opening an empty-commit PR"
 	case !gatesGreen:
@@ -392,8 +392,8 @@ func reviewVerdictRetry(out session.Outcome, clean, gatesGreen bool) bool {
 // close as superseded rather than pushed. A non-empty branch is the normal ship path
 // (OK true), clearing the push. A clean worktree is the rebase precondition, so —
 // unlike Review — no clean-tree re-check is needed here.
-func PostRebasePush(g GroundTruth, slug string) Result {
-	if g.BranchDiffEmpty(slug) {
+func PostRebasePush(g GroundTruth) Result {
+	if g.DiffEmpty() {
 		return Result{OK: false, RecommendClose: true, Reason: "rebase collapsed the branch to zero net change against origin/main (empty diff) — nothing to ship; recommend closing the ticket as superseded rather than pushing an empty branch that `gh pr create` cannot open"}
 	}
 	return Result{OK: true, Reason: "branch still carries a real diff after the rebase — clear to push + open PR"}
@@ -415,17 +415,17 @@ func PostRebasePush(g GroundTruth, slug string) Result {
 // the whole guard exists for: a CLEAN worktree still on the stale base, because
 // the session resolved nothing and `rebase --abort`ed — a clean tree alone would
 // wave that through and push a still-stale branch.
-func RebaseResolution(g GroundTruth, slug string, out session.Outcome) Result {
+func RebaseResolution(g GroundTruth, out session.Outcome) Result {
 	if out.SpendingCapAbort {
 		return Result{OK: false, SpendingCapAbort: true, Reason: "conflict-resolution session aborted before resolving — spending cap reached, retry after reset"}
 	}
 	if out.ExitCode != 0 {
 		return Result{OK: false, Reason: fmt.Sprintf("conflict-resolution session exited %d before resolving the rebase conflict", out.ExitCode)}
 	}
-	if !g.WorktreeClean(slug) {
+	if !g.Clean() {
 		return Result{OK: false, Reason: "conflict-resolution session left the worktree dirty (unresolved or uncommitted conflict) — rebase did not cleanly complete"}
 	}
-	if !g.IsRebased(slug) {
+	if !g.IsRebasedOnto(baseRef) {
 		return Result{OK: false, Reason: "conflict-resolution session left the branch on its stale base (origin/main is not an ancestor) — it aborted the rebase rather than resolving it"}
 	}
 	return Result{OK: true, Reason: "conflict resolved and branch rebased onto origin/main — re-gating before push"}
@@ -449,15 +449,16 @@ func RebaseResolution(g GroundTruth, slug string, out session.Outcome) Result {
 // human can see it. Any PR state counts: merged and closed are both terminal
 // dispositions a human owns, whereas "no PR" means the work is still invisible.
 //
-// The push is checked first, so the gh round-trip PRExists costs is never spent on
-// a branch git says never reached origin — and an incoherent ground truth (gh
-// answering for such a branch) takes the conservative keep: a stale breadcrumb
-// costs disk, a wrong reap costs the work.
-func WorktreeReap(g GroundTruth, slug string) Result {
-	if !g.BranchPushed(slug) {
+// prExists asks gh whether the branch reached a PR in any state. It is not git, so
+// it is not [GroundTruth], and it is a func so the push can be checked first: the
+// gh round-trip is never spent on a branch git says never reached origin — and an
+// incoherent ground truth (gh answering for such a branch) takes the conservative
+// keep: a stale breadcrumb costs disk, a wrong reap costs the work.
+func WorktreeReap(g GroundTruth, prExists func() bool) Result {
+	if !g.BranchPushed() {
 		return Result{OK: false, Reason: "branch not pushed to origin yet"}
 	}
-	if !g.PRExists(slug) {
+	if !prExists() {
 		return Result{OK: false, Reason: "branch is pushed but has no PR; the committed-fix recovery needs the worktree to complete it"}
 	}
 	return Result{OK: true, Reason: "ticket clean (PR open + retrospective filed)"}

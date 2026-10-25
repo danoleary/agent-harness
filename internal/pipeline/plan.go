@@ -25,7 +25,7 @@ import (
 // mints because no run exists yet (ADR-0018).
 func Plan(cfg config.Config, identifier string) string {
 	id := strings.ToUpper(identifier)
-	preview := hostio.NewPreview(cfg)
+	preview := hostio.NewPreview(cfg, ticket.Slug(id))
 	// Stub ticket: the tracker is deliberately not fetched under dry-run, so the
 	// prompt bodies show structure with an empty title/description.
 	s := stages.NewSubject(preview, id, runlog.TicketDir(stages.LogsRoot(cfg), id), ticket.Ticket{Identifier: id})

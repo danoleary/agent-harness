@@ -9,11 +9,14 @@ import (
 	"time"
 
 	"github.com/danoleary/agent-harness/internal/config"
+	gitpkg "github.com/danoleary/agent-harness/internal/git"
+	"github.com/danoleary/agent-harness/internal/gittest"
 	"github.com/danoleary/agent-harness/internal/hostio"
 	"github.com/danoleary/agent-harness/internal/lease"
 	"github.com/danoleary/agent-harness/internal/runlog"
 	"github.com/danoleary/agent-harness/internal/sandbox"
 	"github.com/danoleary/agent-harness/internal/session"
+	"github.com/danoleary/agent-harness/internal/ticket"
 )
 
 // These tests reach the *body* of the implementation stage — the composition that
@@ -21,6 +24,35 @@ import (
 // claimForImplementation) and acts on them. Before the hostio.Host seam the body
 // reached straight for gitpkg/sandbox/session/trackers at package level, so not one
 // of its branches was reachable without a Docker daemon and a live tracker.
+//
+// Git is real here (#28): each test's host is bound to a temp repo, and a session
+// that "commits" does so with git from inside AgentFn. A state a test needs — a
+// lost worktree, a disjoint root, a provisioning failure — is one git holds.
+
+// fresh is a healthy host for key over a repo with no worktree for the ticket yet:
+// the state the implementation stage starts from.
+func fresh(t *testing.T, key string) (*hostio.Fake, *gittest.Repo) {
+	t.Helper()
+	repo := gittest.New(t)
+	return hostio.NewFake(repo.Checkout(), ticket.Slug(key)), repo
+}
+
+// handedOff is a healthy host for key whose worktree carries one committed handoff
+// ahead of origin/main: the state implementation hands review.
+func handedOff(t *testing.T, key string) (*hostio.Fake, *gittest.Repo) {
+	t.Helper()
+	h, repo := fresh(t, key)
+	repo.Handoff(ticket.Slug(key))
+	return h, repo
+}
+
+// commitsHandoff is a /tdd session that commits its handoff and exits 0.
+func commitsHandoff(h *hostio.Fake, repo *gittest.Repo) func(int, hostio.AgentRun) session.Outcome {
+	return func(int, hostio.AgentRun) session.Outcome {
+		repo.Commit(h.Worktree(), "fix.txt", "the fix\n", gittest.HandoffSubject)
+		return session.Outcome{}
+	}
+}
 
 // stageCfg is a minimal but complete Consumer config: one gate, a post_create hook,
 // prompt bodies, and caps. Individual tests override what they are about.
@@ -80,10 +112,17 @@ func labels(runs []hostio.AgentRun) []string {
 // the handoff artifacts → file findings. Every one of those is a host-side effect
 // the stage no longer performs itself.
 func TestImplementationHappyPathClaimsProvisionsAndVerifies(t *testing.T) {
-	h := hostio.NewFake()
-	h.Exists = false
+	h, repo := fresh(t, "PROJ-1")
+	cfg := stageCfg()
+	cfg.HandoffStripPaths = []string{"node_modules"}
+	h.AgentFn = func(call int, run hostio.AgentRun) session.Outcome {
+		if err := os.MkdirAll(filepath.Join(h.Worktree().Path(), "node_modules", "esbuild"), 0o755); err != nil {
+			t.Fatalf("install: %v", err)
+		}
+		return commitsHandoff(h, repo)(call, run)
+	}
 
-	res := Implementation(h, stageCfg(), stageLog(t, "PROJ-1"), Args{Identifier: "PROJ-1"})
+	res := Implementation(h, cfg, stageLog(t, "PROJ-1"), Args{Identifier: "PROJ-1"})
 
 	if !res.OK {
 		t.Fatalf("a worktree ahead of main is a passing handoff, got %+v", res)
@@ -94,8 +133,8 @@ func TestImplementationHappyPathClaimsProvisionsAndVerifies(t *testing.T) {
 	if got := labels(h.Agents); len(got) != 1 || got[0] != implementationSession {
 		t.Errorf("agent runs = %v, want one /tdd session", got)
 	}
-	if !strings.Contains(strings.Join(h.Calls, "|"), "strip") {
-		t.Errorf("a passing handoff must strip the Consumer's build artifacts before the reviewer sees it (BEH-412); calls = %v", h.Calls)
+	if _, err := os.Stat(filepath.Join(h.Worktree().Path(), "node_modules")); !os.IsNotExist(err) {
+		t.Errorf("a passing handoff must strip the Consumer's build artifacts before the reviewer sees it (BEH-412); stat = %v", err)
 	}
 	if got := h.Filed; len(got) != 1 || got[0] != "PROJ-1" {
 		t.Errorf("filed = %v, want the dropbox filed to the tracker after every session (ADR-0001)", got)
@@ -107,7 +146,7 @@ func TestImplementationHappyPathClaimsProvisionsAndVerifies(t *testing.T) {
 // --next path selection already claimed it, so a preflight failure must release it
 // back to Todo rather than leave a dequeued ticket nobody is working.
 func TestImplementationPreflightFailureReleasesASelectedTicket(t *testing.T) {
-	h := hostio.NewFake()
+	h, _ := fresh(t, "PROJ-2")
 	h.PreflightErr = errors.New("insufficient free disk to launch a sandbox")
 
 	res := Implementation(h, stageCfg(), stageLog(t, "PROJ-2"), Args{Identifier: "PROJ-2", Lease: lease.Held(h.Trk, "PROJ-2")})
@@ -124,7 +163,7 @@ func TestImplementationPreflightFailureReleasesASelectedTicket(t *testing.T) {
 }
 
 func TestImplementationHandPassedPreflightFailureReleasesNothing(t *testing.T) {
-	h := hostio.NewFake()
+	h, _ := fresh(t, "PROJ-3")
 	h.PreflightErr = errors.New("docker daemon not reachable")
 
 	Implementation(h, stageCfg(), stageLog(t, "PROJ-3"), Args{Identifier: "PROJ-3"})
@@ -141,8 +180,8 @@ func TestImplementationHandPassedPreflightFailureReleasesNothing(t *testing.T) {
 // build, the claim and the launch — and --force overrides it for the rare false
 // positive.
 func TestImplementationSkipsWorkAlreadyMergedOnMain(t *testing.T) {
-	h := hostio.NewFake()
-	h.AlreadyOnMain = true
+	h, repo := fresh(t, "PROJ-4")
+	repo.Merge("fix.txt", "the fix\n", "PROJ-4: the fix")
 
 	res := Implementation(h, stageCfg(), stageLog(t, "PROJ-4"), Args{Identifier: "PROJ-4"})
 
@@ -153,8 +192,9 @@ func TestImplementationSkipsWorkAlreadyMergedOnMain(t *testing.T) {
 		t.Errorf("a skipped ticket must cost no claim and no session; claimed=%v agents=%v", h.Trk.Claimed, labels(h.Agents))
 	}
 
-	forced := hostio.NewFake()
-	forced.AlreadyOnMain = true
+	forced, repo := fresh(t, "PROJ-4")
+	repo.Merge("other.txt", "a related change\n", "PROJ-4: a related change")
+	forced.AgentFn = commitsHandoff(forced, repo)
 	if res := Implementation(forced, stageCfg(), stageLog(t, "PROJ-4"), Args{Identifier: "PROJ-4", Force: true}); !res.OK {
 		t.Fatalf("--force must dispatch anyway, got %+v", res)
 	}
@@ -168,8 +208,7 @@ func TestImplementationSkipsWorkAlreadyMergedOnMain(t *testing.T) {
 // mints a fresh container name and transcript) and with the resume prompt — which
 // asserts the worktree already exists rather than recreating it.
 func TestImplementationRetriesAUsagePolicyRefusalWithTheResumePrompt(t *testing.T) {
-	h := hostio.NewFake()
-	h.Ahead = 0 // no handoff commit
+	h, _ := fresh(t, "PROJ-5")
 	h.AgentFn = func(call int, _ hostio.AgentRun) session.Outcome {
 		return session.Outcome{ExitCode: 1, UsagePolicyRefusal: true}
 	}
@@ -197,36 +236,26 @@ func TestImplementationRetriesAUsagePolicyRefusalWithTheResumePrompt(t *testing.
 // creation failure is fatal upstream, so reaching a refusal verdict with no worktree
 // means one vanished mid-run.
 func TestImplementationDoesNotRetryARefusalThatLeftNoWorktree(t *testing.T) {
-	h := hostio.NewFake()
-	h.Ahead = 0
+	h, _ := fresh(t, "PROJ-6")
 	h.AgentFn = func(int, hostio.AgentRun) session.Outcome {
+		if err := os.RemoveAll(h.Worktree().Path()); err != nil {
+			t.Fatalf("lose the worktree: %v", err)
+		}
 		return session.Outcome{ExitCode: 1, UsagePolicyRefusal: true}
 	}
 
-	Implementation(worktreeLost{h}, stageCfg(), stageLog(t, "PROJ-6"), Args{Identifier: "PROJ-6"})
+	Implementation(h, stageCfg(), stageLog(t, "PROJ-6"), Args{Identifier: "PROJ-6"})
 
 	if got := labels(h.Agents); len(got) != 1 {
 		t.Errorf("agent runs = %v, want exactly one — there is no worktree to resume", got)
 	}
 }
 
-// worktreeLost is a Fake whose worktree is gone by the time the verdict is read.
-type worktreeLost struct {
-	*hostio.Fake
-}
-
-func (w worktreeLost) Agent(run hostio.AgentRun) hostio.Result {
-	res := w.Fake.Agent(run)
-	w.Fake.Exists = false
-	return res
-}
-
 // BEH-543/BEH-707: an environmental crash that left the pre-provisioned worktree
 // clean has nothing to salvage, so the claim goes back to Todo for a later run to
 // re-grab — and the stage reports Retryable so the pipeline re-attempts it once.
 func TestImplementationReleasesTheClaimAfterAnEnvironmentalCrash(t *testing.T) {
-	h := hostio.NewFake()
-	h.Ahead = 0
+	h, _ := fresh(t, "PROJ-7")
 	h.AgentFn = func(int, hostio.AgentRun) session.Outcome {
 		return session.Outcome{ExitCode: sandbox.ExitOOMKill}
 	}
@@ -245,8 +274,7 @@ func TestImplementationReleasesTheClaimAfterAnEnvironmentalCrash(t *testing.T) {
 // so re-launching the identical prompt fails identically. It must NOT consume the
 // environmental-crash retry, and the ticket stays claimed for a human.
 func TestImplementationDoesNotRetryAZeroWorkCrash(t *testing.T) {
-	h := hostio.NewFake()
-	h.Ahead = 0
+	h, _ := fresh(t, "PROJ-8")
 	h.AgentFn = func(int, hostio.AgentRun) session.Outcome {
 		return session.Outcome{NoRealTurns: true}
 	}
@@ -269,18 +297,19 @@ func TestImplementationDoesNotRetryAZeroWorkCrash(t *testing.T) {
 // checkpoint commit, so the session's uncommitted diff is a `git log` away instead
 // of a bare worktree needing manual rescue. It never flips the verdict.
 func TestImplementationCheckpointsUncommittedWorkOnAFailedVerdict(t *testing.T) {
-	h := hostio.NewFake()
-	h.Ahead = 0
-	h.Clean = false
-	h.AgentFn = func(int, hostio.AgentRun) session.Outcome { return session.Outcome{ExitCode: 1} }
+	h, repo := fresh(t, "PROJ-9")
+	h.AgentFn = func(int, hostio.AgentRun) session.Outcome {
+		repo.Dirty(h.Worktree())
+		return session.Outcome{ExitCode: 1}
+	}
 
 	res := Implementation(h, stageCfg(), stageLog(t, "PROJ-9"), Args{Identifier: "PROJ-9"})
 
 	if res.OK {
 		t.Fatal("a checkpoint must not flip the verdict — the work is unverified")
 	}
-	if !strings.Contains(strings.Join(h.Calls, "|"), "checkpoint PROJ-9 tdd") {
-		t.Errorf("uncommitted work must be checkpoint-committed (BEH-479); calls = %v", h.Calls)
+	if want := strings.SplitN(gitpkg.CheckpointMessage("PROJ-9", "tdd"), "\n", 2)[0]; repo.Subject(h.Worktree()) != want || !h.Worktree().Clean() {
+		t.Errorf("uncommitted work must be checkpoint-committed (BEH-479); HEAD is %q, want %q", repo.Subject(h.Worktree()), want)
 	}
 	if len(h.Trk.Released) != 0 {
 		t.Errorf("a salvageable diff keeps the claim; released = %v", h.Trk.Released)
@@ -289,44 +318,33 @@ func TestImplementationCheckpointsUncommittedWorkOnAFailedVerdict(t *testing.T) 
 
 // BEH-609: verified work trapped on a disjoint branch is re-grafted onto a fresh
 // base off origin/main and re-verified, rather than discarded to a doomed re-run.
+// The regraft is git's: the second ground-truth read sees the branch it rewrote.
 func TestImplementationRegraftsWorkTrappedOnADisjointBranch(t *testing.T) {
-	h := hostio.NewFake()
-	h.Ahead, h.Disjoint = 3, true
-	h.RegraftErr = nil
-	// The regraft rewrites history, so the second ground-truth read sees a healthy
-	// branch. Flip it when the stage asks for the regraft.
-	h.AgentFn = func(int, hostio.AgentRun) session.Outcome { return session.Outcome{} }
-	res := Implementation(regrafting{h}, stageCfg(), stageLog(t, "PROJ-10"), Args{Identifier: "PROJ-10"})
+	h, repo := fresh(t, "PROJ-10")
+	h.AgentFn = func(int, hostio.AgentRun) session.Outcome {
+		repo.Disjoint(h.Worktree())
+		return session.Outcome{}
+	}
+
+	res := Implementation(h, stageCfg(), stageLog(t, "PROJ-10"), Args{Identifier: "PROJ-10"})
 
 	if !res.OK {
 		t.Fatalf("a clean regraft turns trapped work into a healthy handoff (BEH-609), got %+v", res)
 	}
-	if !strings.Contains(strings.Join(h.Calls, "|"), "regraft") {
-		t.Errorf("calls = %v, want the disjoint branch re-grafted", h.Calls)
+	wt := h.Worktree()
+	if wt.DisjointHistory() || !wt.IsRebasedOnto(gitpkg.BaseRef) {
+		t.Error("the regrafted branch must share origin/main's history")
 	}
-}
-
-// regrafting is a Fake whose ground truth heals once Regraft has run — the BEH-609
-// re-read verify performs after the re-graft. The regraft re-roots the branch onto
-// origin/main, so its history stops being disjoint while the committed work stays.
-type regrafting struct {
-	*hostio.Fake
-}
-
-func (r regrafting) Regraft(slug string) error {
-	if err := r.Fake.Regraft(slug); err != nil {
-		return err
+	if got := repo.Git(wt.Path(), "show", "HEAD:trapped.txt"); got != "verified work" {
+		t.Errorf("the trapped work must survive the regraft, got %q", got)
 	}
-	r.Fake.Disjoint = false
-	return nil
 }
 
 // A provisioning failure means there is no worktree to run against: release the
 // claim and report the retryable env class (BEH-543).
 func TestImplementationReleasesTheClaimWhenProvisioningFails(t *testing.T) {
-	h := hostio.NewFake()
-	h.Exists = false
-	h.CreateErr = errors.New("git worktree add: no space left on device")
+	h, repo := fresh(t, "PROJ-11")
+	repo.BlockWorktrees()
 
 	res := Implementation(h, stageCfg(), stageLog(t, "PROJ-11"), Args{Identifier: "PROJ-11"})
 
@@ -344,7 +362,7 @@ func TestImplementationReleasesTheClaimWhenProvisioningFails(t *testing.T) {
 // --dry-run stays a pure prompt/command inspector: nothing claimed, nothing
 // launched, and the preview comes from the same builder the launch would use.
 func TestImplementationDryRunClaimsNothingAndLaunchesNothing(t *testing.T) {
-	h := hostio.NewFake()
+	h, _ := fresh(t, "PROJ-12")
 
 	res := Implementation(h, stageCfg(), stageLog(t, "PROJ-12"), Args{Identifier: "PROJ-12", DryRun: true})
 
@@ -354,12 +372,15 @@ func TestImplementationDryRunClaimsNothingAndLaunchesNothing(t *testing.T) {
 	if len(h.Trk.Claimed) != 0 || len(h.Agents) != 0 || len(h.Shells) != 0 {
 		t.Errorf("a dry run must mutate nothing; claimed=%v agents=%v shells=%v", h.Trk.Claimed, labels(h.Agents), h.Shells)
 	}
+	if h.Worktree().Exists() {
+		t.Error("a dry run must not create the worktree")
+	}
 }
 
 // A tracker that cannot be built (or cannot resolve the ticket) is a hard setup
 // error the wrapper prints before exiting — never a silent "not OK".
 func TestImplementationSurfacesATrackerFailureAsAHardError(t *testing.T) {
-	h := hostio.NewFake()
+	h, _ := fresh(t, "PROJ-13")
 	h.TrackerErr = errors.New("LINEAR_API_KEY is not set")
 
 	res := Implementation(h, stageCfg(), stageLog(t, "PROJ-13"), Args{Identifier: "PROJ-13"})
@@ -373,16 +394,16 @@ func TestImplementationSurfacesATrackerFailureAsAHardError(t *testing.T) {
 // failure releases it to Todo and asks the pipeline to retry; the retry must claim
 // it again rather than work a ticket another selector can now grab.
 func TestImplementationRetryAfterAReleaseReclaimsTheTicket(t *testing.T) {
-	h := hostio.NewFake()
-	h.Exists = false
-	h.CreateErr = errors.New("git worktree add: disk I/O error")
+	h, repo := fresh(t, "PROJ-1")
+	repo.BlockWorktrees()
+	h.AgentFn = commitsHandoff(h, repo)
 	args := Args{Identifier: "PROJ-1", Lease: lease.Held(h.Trk, "PROJ-1")}
 
 	first := Implementation(h, stageCfg(), stageLog(t, "PROJ-1"), args)
 	if !first.Retryable {
 		t.Fatalf("a provisioning failure is a retryable environmental crash, got %+v", first)
 	}
-	h.CreateErr = nil
+	repo.Unblock()
 	second := Implementation(h, stageCfg(), stageLog(t, "PROJ-1"), args)
 
 	if !second.OK {
@@ -399,7 +420,7 @@ func TestImplementationRetryAfterAReleaseReclaimsTheTicket(t *testing.T) {
 // A claim the tracker refuses is a hard error: nothing is provisioned or launched
 // for a ticket this run does not hold.
 func TestImplementationClaimFailureLaunchesNothing(t *testing.T) {
-	h := hostio.NewFake()
+	h, _ := fresh(t, "PROJ-1")
 	h.Trk.ClaimErr = errors.New("tracker unreachable")
 
 	res := Implementation(h, stageCfg(), stageLog(t, "PROJ-1"), Args{Identifier: "PROJ-1"})
@@ -418,8 +439,7 @@ func TestImplementationClaimFailureLaunchesNothing(t *testing.T) {
 // The stage stops before any session launches and says why.
 func TestImplementationAbortsWhenPostCreateCannotRun(t *testing.T) {
 	for _, code := range []int{127, 126} {
-		h := hostio.NewFake()
-		h.Exists = false
+		h, _ := fresh(t, "PROJ-46")
 		h.ShellOutcome = session.Outcome{ExitCode: code, StderrTail: "bash: line 1: pnpm: command not found"}
 		log := stageLog(t, "PROJ-46")
 
@@ -446,9 +466,9 @@ func TestImplementationAbortsWhenPostCreateCannotRun(t *testing.T) {
 // BEH-490 still holds for every other non-zero exit: a failed install degrades to a
 // warning and the session provisions in-session. The OOM-kill keeps its retry.
 func TestImplementationPostCreateFailureIsStillWarnOnly(t *testing.T) {
-	h := hostio.NewFake()
-	h.Exists = false
+	h, repo := fresh(t, "PROJ-47")
 	h.ShellOutcome = session.Outcome{ExitCode: 1, StderrTail: "ERR_PNPM_FETCH_404"}
+	h.AgentFn = commitsHandoff(h, repo)
 	log := stageLog(t, "PROJ-47")
 
 	res := Implementation(h, stageCfg(), log, Args{Identifier: "PROJ-47"})
@@ -461,5 +481,35 @@ func TestImplementationPostCreateFailureIsStillWarnOnly(t *testing.T) {
 	}
 	if got := h.Shells[0].Retry.MaxAttempts; got != oomMaxAttempts {
 		t.Errorf("post_create retry attempts = %d, want the OOM retry (%d) kept", got, oomMaxAttempts)
+	}
+}
+
+// #90: a ready-labelled ticket whose body still has a section of questions for a
+// human is dispatched anyway (a ready label is a human's call), but the run log
+// says so, naming the section — the dispatch advisory, like ResolvedAdvisory.
+func TestImplementationAdvisesWhenTheTicketStillListsOpenQuestions(t *testing.T) {
+	h, repo := fresh(t, "PROJ-90")
+	h.AgentFn = commitsHandoff(h, repo)
+	h.Trk.Ticket.Description = "Add `init`.\n\n## Open questions (for a human before this is agent-ready)\n\n- Which trackers?"
+	log := stageLog(t, "PROJ-90")
+
+	res := Implementation(h, stageCfg(), log, Args{Identifier: "PROJ-90"})
+
+	if !res.OK || len(h.Agents) != 1 {
+		t.Fatalf("an open-questions advisory must never skip the dispatch, got %+v with runs %v", res, labels(h.Agents))
+	}
+	if got := narration(t, log); !strings.Contains(got, "still lists open questions") || !strings.Contains(got, "Open questions (for a human before this is agent-ready)") {
+		t.Errorf("run log does not name the open-questions section:\n%s", got)
+	}
+}
+
+func TestImplementationIsQuietWhenTheTicketHasNoOpenQuestions(t *testing.T) {
+	h, _ := fresh(t, "PROJ-91")
+	log := stageLog(t, "PROJ-91")
+
+	Implementation(h, stageCfg(), log, Args{Identifier: "PROJ-91"})
+
+	if got := narration(t, log); strings.Contains(got, "open questions") {
+		t.Errorf("a ticket with no open-questions section logged an advisory:\n%s", got)
 	}
 }

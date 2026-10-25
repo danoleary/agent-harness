@@ -15,6 +15,7 @@ import (
 	"github.com/danoleary/agent-harness/internal/loopstream"
 	"github.com/danoleary/agent-harness/internal/runlog"
 	"github.com/danoleary/agent-harness/internal/stages"
+	"github.com/danoleary/agent-harness/internal/ticket"
 )
 
 // Narrator is the slice of *runlog.Logger the orchestration needs: one-line
@@ -41,13 +42,13 @@ type Deps struct {
 	Log            Narrator
 }
 
-// ForTicket binds the three Stages to one ticket's slice: one Host, which stamps
-// the run id into every container name and transcript and resolves the tracker
-// client once, shared by every Stage over the same cfg, log and args (--verbose and
-// the lease forward through args). It is the one composition root cmd/pipeline and
+// ForTicket binds the three Stages to one ticket's slice: one Host, bound to that
+// ticket's worktree, which stamps the run id into every container name and
+// transcript and resolves the tracker client once, shared by every Stage over the
+// same cfg, log and args (--verbose and the lease forward through args). It is the one composition root cmd/pipeline and
 // the ticket loop share (#29); the pipeline decides ordering, the Stages do the work.
 func ForTicket(cfg config.Config, log *runlog.Logger, runID string, args stages.Args) Deps {
-	host := hostio.New(cfg, log, runID, args.Verbose)
+	host := hostio.New(cfg, log, runID, args.Verbose, ticket.Slug(args.Identifier))
 	return Deps{
 		FetchMain:      host.FetchMain,
 		Implementation: func() stages.Result { return stages.Implementation(host, cfg, log, args) },

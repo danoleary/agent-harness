@@ -11,7 +11,6 @@ import (
 // host resolved it, so they diff the ticket's own commits and not a stale local
 // `main` that also carries already-merged sibling tickets.
 func TestReviewAndRetrospectiveSessionsAreHandedTheBranchBase(t *testing.T) {
-	const base = "f00dfeedf00dfeedf00dfeedf00dfeedf00dfeed"
 	for name, launch := range map[string]func(*hostio.Fake){
 		"review": func(h *hostio.Fake) { Review(h, stageCfg(), stageLog(t, "PROJ-1"), Args{Identifier: "PROJ-1"}) },
 		"retrospective": func(h *hostio.Fake) {
@@ -19,8 +18,11 @@ func TestReviewAndRetrospectiveSessionsAreHandedTheBranchBase(t *testing.T) {
 			Retrospective(h, stageCfg(), stageLog(t, "PROJ-1"), Args{Identifier: "PROJ-1"})
 		},
 	} {
-		h := hostio.NewFake()
-		h.Base = base
+		h, repo := handedOff(t, "PROJ-1")
+		base := repo.Git(repo.Dir, "rev-parse", "origin/main")
+		// A sibling merges after the branch was cut: local main never sees it, and the
+		// base stays the commit the branch was cut from.
+		repo.Merge("other.txt", "unrelated\n", "a sibling merged")
 		launch(h)
 		if len(h.Agents) == 0 {
 			t.Fatalf("%s launched no session", name)

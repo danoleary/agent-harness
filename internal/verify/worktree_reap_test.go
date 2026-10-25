@@ -9,7 +9,7 @@ import (
 // `gh pr create` timed out, so no PR exists. Reaping here destroys the worktree the
 // loop's committed-fix recovery needs, and the ticket loops until the breaker trips.
 func TestWorktreeReapKeepsAPushedBranchWithNoPR(t *testing.T) {
-	got := WorktreeReap(&truth{t: t, pushed: true, pr: false}, slug)
+	got := reap(&truth{t: t, pushed: true, pr: false})
 	if got.OK {
 		t.Fatal("reaped a pushed branch with no PR, want it kept (the recovery needs the worktree)")
 	}
@@ -23,7 +23,7 @@ func TestWorktreeReapKeepsAPushedBranchWithNoPR(t *testing.T) {
 // coming first is what keeps the gh round-trip off that path entirely.
 func TestWorktreeReapKeepsAnUnpushedBranchWithoutAskingGh(t *testing.T) {
 	g := &truth{t: t, pushed: false, pr: false}
-	got := WorktreeReap(g, slug)
+	got := WorktreeReap(g, g.PRExists)
 	if got.OK {
 		t.Fatal("reaped an unpushed branch, want it kept")
 	}
@@ -40,7 +40,7 @@ func TestWorktreeReapKeepsAnUnpushedBranchWithoutAskingGh(t *testing.T) {
 // The normal ship path: pushed and PR'd, so the PR captures everything and the
 // worktree is pure disk cost.
 func TestWorktreeReapReapsAPushedBranchWithAPR(t *testing.T) {
-	got := WorktreeReap(&truth{t: t, pushed: true, pr: true}, slug)
+	got := reap(&truth{t: t, pushed: true, pr: true})
 	if !got.OK {
 		t.Fatalf("kept a pushed branch with a PR, want it reaped (reason: %q)", got.Reason)
 	}
@@ -50,7 +50,10 @@ func TestWorktreeReapReapsAPushedBranchWithAPR(t *testing.T) {
 // branch git says never reached origin). Prefer the conservative keep — a stale
 // breadcrumb costs disk, a wrong reap costs the work.
 func TestWorktreeReapPrefersKeepOnIncoherentGroundTruth(t *testing.T) {
-	if WorktreeReap(&truth{t: t, pushed: false, pr: true}, slug).OK {
+	if reap(&truth{t: t, pushed: false, pr: true}).OK {
 		t.Fatal("reaped an unpushed branch that reports a PR, want it kept")
 	}
 }
+
+// reap decides over g, asking g for the PR too.
+func reap(g *truth) Result { return WorktreeReap(g, g.PRExists) }

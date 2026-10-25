@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/danoleary/agent-harness/internal/config"
+	gitpkg "github.com/danoleary/agent-harness/internal/git"
 	"github.com/danoleary/agent-harness/internal/hostio"
 	"github.com/danoleary/agent-harness/internal/lease"
 	"github.com/danoleary/agent-harness/internal/prompt"
@@ -105,13 +106,14 @@ func retryableEnvCrash(outcome session.Outcome, capAborted bool) bool {
 // that advertised readiness it did not have, and it only surfaced on the first failed
 // test (BEH-796). Re-running is cheap and safe because a Consumer's post_create is
 // required to be idempotent.
-func provisionWorktree(h hostio.Host, cfg config.Config, slug string, log *runlog.Logger) error {
-	worktreePath := h.WorktreePath(slug)
-	if !h.WorktreeExists(slug) {
-		if err := h.CreateWorktree(slug); err != nil {
+func provisionWorktree(h hostio.Host, cfg config.Config, log *runlog.Logger) error {
+	wt := h.Worktree()
+	worktreePath := wt.Path()
+	if !wt.Exists() {
+		if err := wt.Create(); err != nil {
 			return fmt.Errorf("creating worktree %s: %w", worktreePath, err)
 		}
-		log.Event("created worktree " + worktreePath + " on " + h.BranchName(slug) + " (host-side)")
+		log.Event("created worktree " + worktreePath + " on " + wt.Branch() + " (host-side)")
 	} else {
 		reused := "reusing existing worktree " + worktreePath
 		if cfg.PostCreate != "" {
@@ -120,7 +122,7 @@ func provisionWorktree(h hostio.Host, cfg config.Config, slug string, log *runlo
 		log.Event(reused)
 	}
 	if cfg.PostCreate != "" {
-		return runPostCreate(h, cfg, slug, log)
+		return runPostCreate(h, cfg, log)
 	}
 	return nil
 }
@@ -142,9 +144,9 @@ var errPostCreateUnrunnable = errors.New("post_create could not run in the workt
 // PATH. The session runs in a different container whose PATH is fine, so nothing it
 // installs reaches the gate container, and every session launched over it is spent
 // on a pipeline that can never push (#46). It returns errPostCreateUnrunnable.
-func runPostCreate(h hostio.Host, cfg config.Config, slug string, log *runlog.Logger) error {
+func runPostCreate(h hostio.Host, cfg config.Config, log *runlog.Logger) error {
 	log.Event("provisioning worktree — running post_create toolchain setup")
-	run := postCreateRun(cfg, h.WorktreePath(slug))
+	run := postCreateRun(cfg, h.Worktree().Path())
 	run.Retry = hostio.Retry{
 		MaxAttempts: oomMaxAttempts,
 		Backoff:     session.ConstantBackoff(oomRetryBackoff),
@@ -193,9 +195,9 @@ func unrunnableReport(step, missing string, out session.Outcome) string {
 // /tdd session in a Docker sandbox, verify the worktree + handoff commit by
 // ground truth, and file any dropped findings. No push, no PR (review owns
 // those). Every host-side effect goes through h, so the whole body is reachable
-// from a test with hostio.NewFake().
+// from a test with hostio.NewFake over a temp repo.
 func Implementation(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Result {
-	slug := ticket.Slug(args.Identifier)
+	wt := h.Worktree()
 	f := newFrame(h, log, implementationSession, args.Identifier)
 	f.start(args.DryRun)
 
@@ -219,6 +221,16 @@ func Implementation(h hostio.Host, cfg config.Config, log *runlog.Logger, args A
 	if adv := h.ResolvedAdvisory(t.Identifier, t.Description); adv != "" {
 		log.Event(adv)
 	}
+	// Advisory only (#90): the ticket is ready-labelled but its body still has a
+	// section of questions for a human. The label is a human's call and the
+	// questions may not block the work, so dispatch goes ahead; the envelope's
+	// open-questions section tells the session what to do with them.
+	if open := t.OpenQuestions(); len(open) > 0 {
+		log.Event(fmt.Sprintf(
+			"⚠ %s still lists open questions for a human (\"%s\") — dispatching anyway; the session is told to record and flag any it has to decide. Settle them in the ticket or drop the ready label if they block the work.",
+			t.Identifier, strings.Join(open, `", "`),
+		))
+	}
 
 	// Advisory + prompt swap (BEH-554): when the ticket's OWN feature branch already
 	// carries un-merged commits referencing it, a prior session resumed this
@@ -229,7 +241,7 @@ func Implementation(h hostio.Host, cfg config.Config, log *runlog.Logger, args A
 	// incomplete work) — instead we steer the session to verify-and-handoff over
 	// re-implementing by swapping in the ResumedBranch variant.
 	resume := prompt.Fresh
-	if adv := h.ResumedBranchAdvisory(slug, t.Identifier); adv != "" {
+	if adv := wt.ResumedBranchAdvisory(t.Identifier); adv != "" {
 		log.Event(adv)
 		resume = prompt.ResumedBranch
 	}
@@ -298,7 +310,7 @@ func Implementation(h hostio.Host, cfg config.Config, log *runlog.Logger, args A
 	// A post_create the shell could not run is NOT retryable: re-attempting in the
 	// same environment fails the same way, so the stage stops before any session
 	// launches (#46). The claim goes back — nothing was worked.
-	if err := provisionWorktree(h, cfg, slug, log); errors.Is(err, errPostCreateUnrunnable) {
+	if err := provisionWorktree(h, cfg, log); errors.Is(err, errPostCreateUnrunnable) {
 		releaseClaim(claim, "post_create could not run in the worktree-command container (#46)", log)
 		return Result{OK: false}
 	} else if err != nil {
@@ -359,8 +371,8 @@ func Implementation(h hostio.Host, cfg config.Config, log *runlog.Logger, args A
 		outcome = f.launch(launch, "").Outcome
 
 		// Ground truth, never self-report — verify reads the worktree and branch for
-		// itself off the same Host the stage holds.
-		result = verify.Tdd(h, slug)
+		// itself off the ticket's worktree.
+		result = verify.Tdd(wt)
 		capAborted = outcome.SpendingCapAbort
 
 		// Retry only the usage-policy refusal, and only while it left no handoff
@@ -369,7 +381,7 @@ func Implementation(h hostio.Host, cfg config.Config, log *runlog.Logger, args A
 		// prompt (which asserts the worktree already exists and forbids recreating
 		// it) would otherwise burn a whole session on a false premise. Everything
 		// else is the final verdict.
-		if result.OK || !outcome.UsagePolicyRefusal || !h.WorktreeExists(slug) {
+		if result.OK || !outcome.UsagePolicyRefusal || !wt.Exists() {
 			break
 		}
 	}
@@ -383,11 +395,11 @@ func Implementation(h hostio.Host, cfg config.Config, log *runlog.Logger, args A
 	// into a healthy, handoff-able branch. A regraft failure falls through to the
 	// existing failed-verdict handling, which keeps the worktree for manual recovery.
 	if !result.OK && !capAborted && result.DisjointWorkTrapped {
-		if rErr := h.Regraft(slug); rErr != nil {
+		if rErr := wt.RegraftOntoBase(gitpkg.BaseRef); rErr != nil {
 			log.Event("⚠ disjoint branch detected but the regraft failed (" + rErr.Error() + ") — keeping the worktree for manual recovery (BEH-609)")
 		} else {
 			log.Event("↻ verified work was trapped on a disjoint branch — re-grafted its content diff onto a fresh base off origin/main (BEH-609)")
-			result = verify.Tdd(h, slug)
+			result = verify.Tdd(wt)
 		}
 	}
 
@@ -399,7 +411,7 @@ func Implementation(h hostio.Host, cfg config.Config, log *runlog.Logger, args A
 		// stage re-provisions the worktree via post_create instead (BEH-412/641).
 		// Warn-only: the handoff commit already landed and the stripped paths are
 		// all regenerable, so a strip failure must not fail the run.
-		if err := h.StripHandoffPaths(slug); err != nil {
+		if err := wt.StripPaths(cfg.HandoffStripPaths); err != nil {
 			log.Event("⚠ could not strip " + strings.Join(cfg.HandoffStripPaths, ", ") + " from the worktree (" + err.Error() + ") — the reviewer should re-run the project's post_create")
 		}
 	} else {
@@ -429,14 +441,14 @@ func Implementation(h hostio.Host, cfg config.Config, log *runlog.Logger, args A
 		// work is unverified and the run still fails (exit 1); the checkpoint only
 		// makes recovery cheap. The commit subject loudly marks it a checkpoint so a
 		// reviewer never mistakes it for a verified handoff.
-		if h.WorktreeExists(slug) && !h.WorktreeClean(slug) {
+		if wt.Exists() && !wt.Clean() {
 			// "tdd", not implementationSession: the checkpoint subject is reviewer-
 			// facing, so it uses this stage's human name (matching its "tdd ✓/✗" logs)
 			// rather than the machine identifier used for container/transcript names.
-			if cErr := h.Checkpoint(slug, args.Identifier, "tdd"); cErr != nil {
-				log.Event("⚠ uncommitted work remains in the worktree at " + h.WorktreePath(slug) + " and the recovery checkpoint commit failed (" + cErr.Error() + ") — recover it manually before re-running")
+			if cErr := wt.Checkpoint(args.Identifier, "tdd"); cErr != nil {
+				log.Event("⚠ uncommitted work remains in the worktree at " + wt.Path() + " and the recovery checkpoint commit failed (" + cErr.Error() + ") — recover it manually before re-running")
 			} else {
-				log.Event("✓ harness recovery checkpoint committed on " + h.BranchName(slug) + " — the session's uncommitted diff is preserved (unverified: finish or re-run, then amend, before opening a PR)")
+				log.Event("✓ harness recovery checkpoint committed on " + wt.Branch() + " — the session's uncommitted diff is preserved (unverified: finish or re-run, then amend, before opening a PR)")
 			}
 		} else if retryableEnvCrash(outcome, capAborted) {
 			// The session crashed environmentally and left the pre-provisioned worktree

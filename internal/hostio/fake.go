@@ -2,7 +2,6 @@ package hostio
 
 import (
 	"fmt"
-	"path/filepath"
 
 	"github.com/danoleary/agent-harness/internal/ci"
 	"github.com/danoleary/agent-harness/internal/filing"
@@ -18,10 +17,18 @@ import (
 // bodies hold the harness's entire policy, and before it existed the only way to
 // reach a single line of them was a live Docker daemon and a live tracker.
 //
-// [NewFake] returns a *healthy* host — preflight green, worktree present and
-// clean, branch ahead of main with a non-empty diff, sessions exiting 0 with a
-// review verdict emitted, gh answering — so a test overrides only the one signal
-// it is about and every other field stays out of its way.
+// [NewFake] returns a *healthy* host — preflight green, sessions exiting 0 with a
+// review verdict emitted, fetches and pushes succeeding, gh answering — so a test
+// overrides only the one signal it is about and every other field stays out of its
+// way.
+//
+// Git is not scripted. The Fake is built over a real [gitpkg.Checkout] — a temp
+// repo with a local bare origin, in a test (internal/gittest) — and its Worktree is
+// that checkout's real worktree for the ticket. A worktree that exists, is clean,
+// is ahead, is disjoint or has collapsed is one git made so, and a session that
+// "commits" does so with git from inside AgentFn. Boolean flags could state
+// impossible combinations (no worktree, yet clean) and could not change mid-run
+// without a per-test subclass; real git can do neither (#28, ADR-0025).
 //
 // Fake is deliberately in the non-test build: internal/stages, internal/pipeline
 // and (later) internal/loop all need it, and a _test.go fake is importable by
@@ -44,42 +51,22 @@ type Fake struct {
 	AgentFn func(call int, run AgentRun) session.Outcome
 	ShellFn func(call int, run ShellRun) session.Outcome
 
-	// --- repo state ---
+	// --- repo ---
 
-	Ahead       int
-	Exists      bool
-	Clean       bool
-	DiffEmpty   bool
-	DocsOnly    bool
-	BranchThere bool
-	Pushed      bool
-	Disjoint    bool
-	Rebased     bool
-	Subjects    []string
-	Head        string
-	// Base is what BaseSHA returns; empty reads as an unresolved base.
-	Base          string
-	RebaseVerdict gitpkg.RebaseResult
-	// CollapseOnRebase empties the branch's diff the moment it is rebased — the
-	// BEH-680 race, where a sibling PR landed the same fix while the branch waited.
-	CollapseOnRebase bool
-	// HeadOnRebase, when set, becomes Head the moment the branch is rebased — the
-	// replay rewrites every SHA on the branch.
-	HeadOnRebase   string
-	Resolved       string
-	ResumedAdvice  string
-	AlreadyOnMain  bool
-	CreateErr      error
-	CheckoutErr    error
-	RemoveErr      error
-	StripErr       error
-	CheckpointErr  error
-	RegraftErr     error
-	HeadErr        error
-	RerunCommitErr error
+	co   gitpkg.Checkout
+	slug string
+	// Branch, when set, is the branch the worktree carries in place of
+	// `<branch_prefix>/<slug>` — a PR's head branch, as for [NewOnBranch].
+	Branch string
+	// Resolved is what ResolvedAdvisory returns: the advisory scans the Consumer's
+	// source roots, not git.
+	Resolved string
 
-	// --- remote state ---
+	// --- remote ---
 
+	// FetchErr, PushErr and ForcePushErr fail the matching remote call. Unset, the
+	// call really runs against the checkout's origin — a local bare repo in a test —
+	// so a push reaches origin and BranchPushed reads true after it.
 	FetchErr     error
 	PushErr      error
 	ForcePushErr error
@@ -108,30 +95,23 @@ type Fake struct {
 	Filed   []string
 	Routed  []string
 	Calls   []string
-	Removed []string
 }
 
 var _ Host = (*Fake)(nil)
 
-// NewFake returns a Fake scripted as a healthy host on the happy path.
-func NewFake() *Fake {
+// NewFake returns a Fake scripted as a healthy host on the happy path, bound to the
+// ticket slug over co.
+func NewFake(co gitpkg.Checkout, slug string) *Fake {
 	return &Fake{
-		AgentOutcome:  session.Outcome{ReviewVerdictEmitted: true},
-		Ahead:         1,
-		Exists:        true,
-		Clean:         true,
-		BranchThere:   true,
-		Pushed:        true,
-		Rebased:       true,
-		Subjects:      []string{"feat: do the thing"},
-		Head:          "abc1234",
-		RebaseVerdict: gitpkg.RebaseClean,
-		PRURL:         "https://github.com/acme/widgets/pull/1",
-		PRThere:       true,
-		OpenPRThere:   true,
-		ChecksOK:      true,
-		CI:            ci.Outcome{OK: true, Reason: "all checks green"},
-		Trk:           NewFakeTracker(),
+		AgentOutcome: session.Outcome{ReviewVerdictEmitted: true},
+		co:           co,
+		slug:         slug,
+		PRURL:        "https://github.com/acme/widgets/pull/1",
+		PRThere:      true,
+		OpenPRThere:  true,
+		ChecksOK:     true,
+		CI:           ci.Outcome{OK: true, Reason: "all checks green"},
+		Trk:          NewFakeTracker(),
 	}
 }
 
@@ -174,91 +154,44 @@ func (f *Fake) ShellPreview(s ShellRun) []string {
 
 // --- repo ---
 
-func (f *Fake) WorktreePath(slug string) string { return filepath.Join("/fake/worktrees", slug) }
-func (f *Fake) BranchName(slug string) string   { return "feat/" + slug }
-func (f *Fake) WorktreeExists(string) bool      { return f.Exists }
-
-func (f *Fake) CreateWorktree(slug string) error {
-	f.record("create-worktree %s", slug)
-	if f.CreateErr == nil {
-		f.Exists = true
+// Worktree is the ticket's real worktree in the Fake's checkout.
+func (f *Fake) Worktree() gitpkg.Worktree {
+	if f.Branch != "" {
+		return f.co.WorktreeOn(f.slug, f.Branch)
 	}
-	return f.CreateErr
+	return f.co.Worktree(f.slug)
 }
 
-func (f *Fake) CheckoutBranch(slug string) error {
-	f.record("checkout-branch %s", slug)
-	if f.CheckoutErr == nil {
-		f.Exists = true
-	}
-	return f.CheckoutErr
-}
-
-func (f *Fake) RemoveWorktree(slug string) error {
-	f.record("remove-worktree %s", slug)
-	if f.RemoveErr == nil {
-		f.Removed = append(f.Removed, slug)
-	}
-	return f.RemoveErr
-}
-
-func (f *Fake) WorktreeClean(string) bool { return f.Clean }
-
-func (f *Fake) StripHandoffPaths(slug string) error { f.record("strip %s", slug); return f.StripErr }
-
-func (f *Fake) Checkpoint(slug, key, stage string) error {
-	f.record("checkpoint %s %s", key, stage)
-	return f.CheckpointErr
-}
-
-func (f *Fake) HeadSHA(string) (string, error) { return f.Head, f.HeadErr }
-
-func (f *Fake) BaseSHA(string) (string, error) { return f.Base, nil }
-
-func (f *Fake) EnsureCIRerunCommit(slug, headBefore string) error {
-	f.record("ci-rerun-commit %s", headBefore)
-	return f.RerunCommitErr
-}
-
-func (f *Fake) CommitsAhead(string) int        { return f.Ahead }
-func (f *Fake) BranchDisjoint(string) bool     { return f.Disjoint }
-func (f *Fake) BranchDiffEmpty(string) bool    { return f.DiffEmpty }
-func (f *Fake) BranchDocsOnly(string) bool     { return f.DocsOnly }
-func (f *Fake) BranchExists(string) bool       { return f.BranchThere }
-func (f *Fake) BranchPushed(string) bool       { return f.Pushed }
-func (f *Fake) CommitSubjects(string) []string { return f.Subjects }
-
-func (f *Fake) Rebase(slug string) gitpkg.RebaseResult {
-	f.record("rebase %s", slug)
-	if f.CollapseOnRebase {
-		f.DiffEmpty = true
-	}
-	if f.HeadOnRebase != "" {
-		f.Head = f.HeadOnRebase
-	}
-	return f.RebaseVerdict
-}
-
-func (f *Fake) AbortRebase(slug string)                     { f.record("abort-rebase %s", slug) }
-func (f *Fake) IsDisjoint(string) bool                      { return f.Disjoint }
-func (f *Fake) IsRebased(string) bool                       { return f.Rebased }
-func (f *Fake) Regraft(slug string) error                   { f.record("regraft %s", slug); return f.RegraftErr }
-func (f *Fake) TicketAlreadyOnMain(string) bool             { return f.AlreadyOnMain }
-func (f *Fake) ResolvedAdvisory(string, string) string      { return f.Resolved }
-func (f *Fake) ResumedBranchAdvisory(string, string) string { return f.ResumedAdvice }
+func (f *Fake) TicketAlreadyOnMain(key string) bool    { return f.co.TicketAlreadyOnMain(key) }
+func (f *Fake) ResolvedAdvisory(string, string) string { return f.Resolved }
 
 // --- remote ---
 
-func (f *Fake) FetchMain() error { f.record("fetch-main"); return f.FetchErr }
-
-func (f *Fake) Push(slug string) error { f.record("push %s", slug); return f.PushErr }
-
-func (f *Fake) PushForceWithLease(slug string) error {
-	f.record("push-force %s", slug)
-	return f.ForcePushErr
+func (f *Fake) FetchMain() error {
+	f.record("fetch-main")
+	if f.FetchErr != nil {
+		return f.FetchErr
+	}
+	return f.co.FetchMain()
 }
 
-func (f *Fake) CreatePR(slug, title, body string) (string, error) {
+func (f *Fake) Push() error {
+	f.record("push")
+	if f.PushErr != nil {
+		return f.PushErr
+	}
+	return f.Worktree().Push()
+}
+
+func (f *Fake) PushForceWithLease() error {
+	f.record("push-force")
+	if f.ForcePushErr != nil {
+		return f.ForcePushErr
+	}
+	return f.Worktree().PushForceWithLease()
+}
+
+func (f *Fake) CreatePR(title, body string) (string, error) {
 	f.record("create-pr %s", title)
 	if f.CreatePRErr != nil {
 		return "", f.CreatePRErr
@@ -266,13 +199,13 @@ func (f *Fake) CreatePR(slug, title, body string) (string, error) {
 	return f.PRURL, nil
 }
 
-func (f *Fake) PRExists(string) bool           { return f.PRThere }
-func (f *Fake) OpenPRExists(string) bool       { return f.OpenPRThere }
+func (f *Fake) PRExists() bool                 { f.record("pr-exists"); return f.PRThere }
+func (f *Fake) OpenPRExists() bool             { f.record("open-pr-exists"); return f.OpenPRThere }
 func (f *Fake) ChecksReadable() (bool, string) { return f.ChecksOK, f.ChecksDetail }
 
 func (f *Fake) WatchCI(w CIWatch) ci.Outcome {
 	f.Watches = append(f.Watches, w)
-	f.record("watch-ci %s", w.Slug)
+	f.record("watch-ci")
 	if f.CIFn != nil {
 		return f.CIFn(w)
 	}

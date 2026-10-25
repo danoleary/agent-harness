@@ -9,7 +9,6 @@ import (
 	"github.com/danoleary/agent-harness/internal/prompt"
 	"github.com/danoleary/agent-harness/internal/runlog"
 	"github.com/danoleary/agent-harness/internal/sandbox"
-	"github.com/danoleary/agent-harness/internal/ticket"
 	"github.com/danoleary/agent-harness/internal/verify"
 )
 
@@ -37,9 +36,9 @@ func toPromptFindings(prior []filing.PriorFinding) []prompt.FiledFinding {
 // /findings/out.json (an empty `[]` is success; absent means it never ran). On a
 // fully clean ticket (branch pushed + findings filed) it tears the worktree down.
 // Every host-side effect goes through h, so the whole body is reachable from a
-// test with hostio.NewFake().
+// test with hostio.NewFake over a temp repo.
 func Retrospective(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Result {
-	slug := ticket.Slug(args.Identifier)
+	wt := h.Worktree()
 	f := newFrame(h, log, retrospectiveSession, args.Identifier)
 	f.start(args.DryRun)
 
@@ -52,7 +51,7 @@ func Retrospective(h hostio.Host, cfg config.Config, log *runlog.Logger, args Ar
 	// even on a *failed* slice ("exactly the run worth mining"), which routinely has
 	// transcripts but no branch — one real input is enough to proceed. A skip is a
 	// clean no-op, not a failure — return OK so it never reds the pipeline.
-	if pre := verify.RetrospectivePreconditions(h, slug, hasUpstreamTranscripts(log.Dir)); !pre.OK {
+	if pre := verify.RetrospectivePreconditions(wt, hasUpstreamTranscripts(log.Dir)); !pre.OK {
 		log.Event(fmt.Sprintf("retrospective ⊘ skipped %s — %s", args.Identifier, pre.Reason))
 		return Result{OK: true}
 	}
@@ -76,10 +75,10 @@ func Retrospective(h hostio.Host, cfg config.Config, log *runlog.Logger, args Ar
 	// resolve from the main checkout.
 	// WorktreeReap checks the push first and returns, so an unpushed branch never
 	// spends the gh round-trip PRExists costs.
-	reap := verify.WorktreeReap(h, slug)
+	reap := verify.WorktreeReap(wt, h.PRExists)
 	if !reap.OK {
 		log.Event("worktree kept — " + reap.Reason)
-	} else if err := h.RemoveWorktree(slug); err != nil {
+	} else if err := wt.Remove(); err != nil {
 		log.Event("worktree kept — removal failed: " + err.Error())
 	} else {
 		log.Event("worktree removed — " + reap.Reason)
@@ -96,7 +95,7 @@ func Retrospective(h hostio.Host, cfg config.Config, log *runlog.Logger, args Ar
 // absent means it never ran). A dry-run prints the plan and launches nothing.
 func RetrospectiveOver(h hostio.Host, cfg config.Config, log *runlog.Logger, subject Subject, dryRun bool) Result {
 	t := subject.Ticket
-	subject.Base, _ = h.BaseSHA(subject.Slug)
+	subject.Base, _ = h.Worktree().BaseSHA()
 	f := newFrame(h, log, retrospectiveSession, t.Identifier)
 	findingsDir := runlog.FindingsDir(subject.LogDir, retrospectiveSession)
 	// Gather the finding classes already filed (the team's open findings, every

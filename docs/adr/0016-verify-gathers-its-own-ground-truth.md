@@ -1,6 +1,6 @@
 # ADR-0016: verify gathers its own ground truth
 
-- Status: Accepted
+- Status: Accepted — the port's shape amended by [ADR-0025](0025-the-host-is-bound-to-one-ticket-and-git-is-not-faked.md): `GroundTruth` is now `git.Worktree`'s own method set with no slug, and `WorktreeReap` takes the PR lookup as a func
 - Date: 2026-09-27
 
 ## Context

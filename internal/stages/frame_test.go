@@ -20,6 +20,14 @@ import (
 // The frame is the lifecycle every Stage shares (#29). These tests are its only
 // ones: a Stage body test asserts what the body decides, not the frame again.
 
+// frameHost is a healthy host bound to PROJ-1 over a temp repo; the frame reads
+// nothing of git, so the repo is only there to bind it.
+func frameHost(t *testing.T) *hostio.Fake {
+	t.Helper()
+	h, _ := fresh(t, "PROJ-1")
+	return h
+}
+
 // records reads the loop.jsonl a Stage's logger feeds — the viewer's stream.
 func records(t *testing.T, log *runlog.Logger) []loopstream.Record {
 	t.Helper()
@@ -45,7 +53,7 @@ func records(t *testing.T, log *runlog.Logger) []loopstream.Record {
 func TestFrameStartRecordsTheStageStart(t *testing.T) {
 	for _, dry := range []bool{false, true} {
 		log := stageLog(t, "PROJ-1")
-		newFrame(hostio.NewFake(), log, reviewSession, "PROJ-1").start(dry)
+		newFrame(frameHost(t), log, reviewSession, "PROJ-1").start(dry)
 
 		got := records(t, log)
 		if len(got) != 1 || got[0].Kind != loopstream.KindStageStart || got[0].Stage != reviewSession || got[0].Ticket != "PROJ-1" {
@@ -64,7 +72,7 @@ func TestFrameStartRecordsTheStageStart(t *testing.T) {
 // fetch hands the body the tracker and the ticket, and narrates what it fetched.
 // Either half failing is the Stage's hard error.
 func TestFrameFetchResolvesTheTicket(t *testing.T) {
-	h := hostio.NewFake()
+	h := frameHost(t)
 	h.Trk.Ticket = ticket.Ticket{Title: "a ticket", Priority: "High"}
 	log := stageLog(t, "PROJ-1")
 
@@ -89,7 +97,7 @@ func TestFrameFetchResolvesTheTicket(t *testing.T) {
 // An unset priority reads as such, rather than as an empty pair of brackets.
 func TestFrameFetchNamesAMissingPriority(t *testing.T) {
 	log := stageLog(t, "PROJ-1")
-	if _, _, err := newFrame(hostio.NewFake(), log, reviewSession, "PROJ-1").fetch(); err != nil {
+	if _, _, err := newFrame(frameHost(t), log, reviewSession, "PROJ-1").fetch(); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(narration(t, log), "fetched PROJ-1 (No priority) — a ticket") {
@@ -102,7 +110,7 @@ func TestFrameFetchNamesAMissingPriority(t *testing.T) {
 func TestFrameDropboxCreatesTheDirAndClearsAStaleDropbox(t *testing.T) {
 	log := stageLog(t, "PROJ-1")
 	dir := filepath.Join(log.Dir, "findings", "x")
-	f := newFrame(hostio.NewFake(), log, implementationSession, "PROJ-1")
+	f := newFrame(frameHost(t), log, implementationSession, "PROJ-1")
 
 	if res, ok := f.dropbox(dir); !ok {
 		t.Fatalf("dropbox on a fresh dir = %+v, want ok", res)
@@ -125,7 +133,7 @@ func TestFrameDropboxFailsWhenTheDirCannotBeCreated(t *testing.T) {
 	if err := os.WriteFile(blocker, nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	res, ok := newFrame(hostio.NewFake(), log, implementationSession, "PROJ-1").dropbox(filepath.Join(blocker, "findings"))
+	res, ok := newFrame(frameHost(t), log, implementationSession, "PROJ-1").dropbox(filepath.Join(blocker, "findings"))
 	if ok || res.Err == nil {
 		t.Errorf("dropbox under a file = %+v, %v; want a hard error", res, ok)
 	}
@@ -135,7 +143,7 @@ func TestFrameDropboxFailsWhenTheDirCannotBeCreated(t *testing.T) {
 // says where its transcript went — the one place the three Stages narrate a
 // session.
 func TestFrameLaunchNarratesTheSession(t *testing.T) {
-	h := hostio.NewFake()
+	h := frameHost(t)
 	h.AgentFn = func(int, hostio.AgentRun) session.Outcome { return session.Outcome{ExitCode: 3} }
 	log := stageLog(t, "PROJ-1")
 
@@ -155,7 +163,7 @@ func TestFrameLaunchNarratesTheSession(t *testing.T) {
 // A Stage that launches more than once names which launch this is.
 func TestFrameLaunchCarriesTheLaunchNote(t *testing.T) {
 	log := stageLog(t, "PROJ-1")
-	newFrame(hostio.NewFake(), log, reviewSession, "PROJ-1").launch(hostio.AgentRun{Label: "review", Cap: 30 * time.Minute}, "attempt 1/2")
+	newFrame(frameHost(t), log, reviewSession, "PROJ-1").launch(hostio.AgentRun{Label: "review", Cap: 30 * time.Minute}, "attempt 1/2")
 	if got := records(t, log); len(got) != 1 || got[0].Message != "launching sandbox (attempt 1/2, cap 30 min active)" {
 		t.Errorf("launch records = %+v", got)
 	}

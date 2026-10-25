@@ -189,7 +189,7 @@ func (p *TicketPipeline) Recover(item loop.WorkItem) (stages.Result, bool) {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		return stages.Result{}, false
 	}
-	rec := ship.Recover(hostio.New(cfg, log, runID, false), p.log, item.Key)
+	rec := ship.Recover(hostio.New(cfg, log, runID, false, ticket.Slug(item.Key)), p.log, item.Key)
 	out := stages.Result{}
 	if rec.Shipped {
 		out = stages.Result{OK: true, Disposition: stages.Shipped}

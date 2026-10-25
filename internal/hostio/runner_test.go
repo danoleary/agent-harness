@@ -269,7 +269,7 @@ func TestPreviewNamesContainersWithPlaceholders(t *testing.T) {
 		Host:    config.Host{ProjectPath: "/Users/dan/my-project"},
 		Project: config.Project{Image: "myproject-agent-harness:latest", BranchPrefix: "feat"},
 	}
-	p := NewPreview(cfg)
+	p := NewPreview(cfg, "proj-1")
 
 	agent := p.AgentPreview(AgentRun{Label: "implementation", Model: "claude-opus-5-5"})
 	shell := p.ShellPreview(ShellRun{Label: "gate-check", Command: "go test ./...", WorktreePath: "/wt"})
@@ -281,7 +281,7 @@ func TestPreviewNamesContainersWithPlaceholders(t *testing.T) {
 	if got, want := flagValue(shell, "--name"), prefix+"<run-id>-<pid>-gate-check"; got != want {
 		t.Errorf("shell preview --name = %q, want %q", got, want)
 	}
-	if got, want := p.BranchName("proj-1"), "feat/proj-1"; got != want {
+	if got, want := p.Worktree().Branch(), "feat/proj-1"; got != want {
 		t.Errorf("preview branch = %q, want %q", got, want)
 	}
 }

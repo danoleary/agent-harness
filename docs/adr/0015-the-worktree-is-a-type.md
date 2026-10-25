@@ -1,6 +1,6 @@
 # ADR-0015: The worktree is a type
 
-- Status: Accepted
+- Status: Accepted — amended by [ADR-0025](0025-the-host-is-bound-to-one-ticket-and-git-is-not-faked.md)
 - Date: 2026-09-22
 
 ## Context
@@ -113,7 +113,8 @@ worktree path. Both are now internal detail.
   worktree" is one file.
 - `hostio.Real`'s Repo/Remote halves become one-line forwards over `h.wt(slug)`.
   The adapter still binds the checkout and the prefix once (ADR-0013); it now hands
-  down a value instead of three arguments.
+  down a value instead of three arguments. (ADR-0025 deleted those forwards: the
+  Host is bound to one ticket and hands the `Worktree` itself to the Stage.)
 - `internal/git` imported `internal/verify` for `Worktree.GroundTruth`'s return type
   — the wrong-way dependency ADR-0016 removed by moving the gather behind the verify
   decision, splitting that method into `CommitsAhead` + `DisjointHistory`. This ADR

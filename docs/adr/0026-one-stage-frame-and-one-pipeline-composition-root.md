@@ -1,4 +1,4 @@
-# ADR-0025: One Stage frame, and one pipeline composition root
+# ADR-0026: One Stage frame, and one pipeline composition root
 
 - Status: Accepted
 - Date: 2026-10-25

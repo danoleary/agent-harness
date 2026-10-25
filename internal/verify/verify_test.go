@@ -8,7 +8,7 @@ import (
 )
 
 func TestTddPassesWhenWorktreeAndCommitAhead(t *testing.T) {
-	r := Tdd(&truth{t: t, exists: true, ahead: 1}, slug)
+	r := Tdd(&truth{t: t, exists: true, ahead: 1})
 	if !r.OK {
 		t.Errorf("expected OK, got %+v", r)
 	}
@@ -17,13 +17,13 @@ func TestTddPassesWhenWorktreeAndCommitAhead(t *testing.T) {
 	if !regexp.MustCompile(`1 commit ahead`).MatchString(r.Reason) {
 		t.Errorf("reason %q should name the single commit (no plural)", r.Reason)
 	}
-	if got := Tdd(&truth{t: t, exists: true, ahead: 3}, slug).Reason; !regexp.MustCompile(`3 commits ahead`).MatchString(got) {
+	if got := Tdd(&truth{t: t, exists: true, ahead: 3}).Reason; !regexp.MustCompile(`3 commits ahead`).MatchString(got) {
 		t.Errorf("reason %q should pluralise a multi-commit handoff", got)
 	}
 }
 
 func TestTddFailsWhenNoWorktree(t *testing.T) {
-	r := Tdd(&truth{t: t, exists: false, ahead: 0}, slug)
+	r := Tdd(&truth{t: t, exists: false, ahead: 0})
 	if r.OK {
 		t.Error("expected failure when worktree absent")
 	}
@@ -33,7 +33,7 @@ func TestTddFailsWhenNoWorktree(t *testing.T) {
 }
 
 func TestTddFailsWhenNoCommitAhead(t *testing.T) {
-	r := Tdd(&truth{t: t, exists: true, ahead: 0}, slug)
+	r := Tdd(&truth{t: t, exists: true, ahead: 0})
 	if r.OK {
 		t.Error("expected failure when no commit ahead")
 	}
@@ -50,7 +50,7 @@ func TestTddFailsWhenNoCommitAhead(t *testing.T) {
 // trying to replay every disjoint commit. A disjoint history is never a real
 // single-ticket handoff; it must be a suspect/FAILED ground truth, not success.
 func TestTddFailsWhenHistoryDisjoint(t *testing.T) {
-	r := Tdd(&truth{t: t, exists: true, ahead: 963, disjoint: true}, slug)
+	r := Tdd(&truth{t: t, exists: true, ahead: 963, disjoint: true})
 	if r.OK {
 		t.Error("a disjoint-history branch (no common ancestor) must NOT pass as a healthy handoff")
 	}
@@ -67,16 +67,16 @@ func TestTddFailsWhenHistoryDisjoint(t *testing.T) {
 // branch that failed for another reason), which would send those to a regraft that
 // has nothing to recover.
 func TestTddFlagsTrappedWorkOnlyOnADisjointBranchWithCommits(t *testing.T) {
-	if !Tdd(&truth{t: t, exists: true, ahead: 3, disjoint: true}, slug).DisjointWorkTrapped {
+	if !Tdd(&truth{t: t, exists: true, ahead: 3, disjoint: true}).DisjointWorkTrapped {
 		t.Error("worktree + committed work + disjoint history is trapped verified work — should be recoverable")
 	}
-	if Tdd(&truth{t: t, exists: true, ahead: 3}, slug).DisjointWorkTrapped {
+	if Tdd(&truth{t: t, exists: true, ahead: 3}).DisjointWorkTrapped {
 		t.Error("a healthy (non-disjoint) branch is not the trapped-work case")
 	}
-	if Tdd(&truth{t: t, exists: true, ahead: 0, disjoint: true}, slug).DisjointWorkTrapped {
+	if Tdd(&truth{t: t, exists: true, ahead: 0, disjoint: true}).DisjointWorkTrapped {
 		t.Error("a disjoint branch with no commit has no verified work to regraft")
 	}
-	if Tdd(&truth{t: t, exists: false, disjoint: true}, slug).DisjointWorkTrapped {
+	if Tdd(&truth{t: t, exists: false, disjoint: true}).DisjointWorkTrapped {
 		t.Error("no worktree means nothing was produced to recover")
 	}
 }
@@ -87,9 +87,9 @@ func TestTddFlagsTrappedWorkOnlyOnADisjointBranchWithCommits(t *testing.T) {
 // meaningful once both refs resolve.
 func TestTddDoesNotReadDisjointBeforeCommitsAhead(t *testing.T) {
 	g := &truth{t: t, exists: true, ahead: 0, disjoint: true}
-	Tdd(g, slug)
+	Tdd(g)
 	for _, read := range g.reads {
-		if read == "BranchDisjoint" {
+		if read == "DisjointHistory" {
 			t.Fatalf("reads = %v, want the disjoint read skipped for a branch with nothing ahead", g.reads)
 		}
 	}
@@ -178,7 +178,7 @@ func TestRetrospectivePresentDropboxWinsOverTurnZero(t *testing.T) {
 // masks the misscheduling or manufacture a self-referential finding, so the
 // stage skips host-side before paying the cap.
 func TestRetrospectivePreconditionsSkipWhenNoInputs(t *testing.T) {
-	r := RetrospectivePreconditions(&truth{t: t, branch: false}, slug, false)
+	r := RetrospectivePreconditions(&truth{t: t, branch: false}, false)
 	if r.OK {
 		t.Error("expected NOT-OK (skip) when neither the branch nor any transcript exists")
 	}
@@ -194,21 +194,21 @@ func TestRetrospectivePreconditionsSkipWhenNoInputs(t *testing.T) {
 // be skipped. Symmetrically a branch alone (a diff with no session logs) is also
 // worth a pass. The skip is BOTH-absent, deliberately not either-absent.
 func TestRetrospectivePreconditionsProceedWhenOnlyTranscripts(t *testing.T) {
-	r := RetrospectivePreconditions(&truth{t: t, branch: false}, slug, true)
+	r := RetrospectivePreconditions(&truth{t: t, branch: false}, true)
 	if !r.OK {
 		t.Errorf("transcripts present (a mineable failed slice) must proceed, got %+v", r)
 	}
 }
 
 func TestRetrospectivePreconditionsProceedWhenOnlyBranch(t *testing.T) {
-	r := RetrospectivePreconditions(&truth{t: t, branch: true}, slug, false)
+	r := RetrospectivePreconditions(&truth{t: t, branch: true}, false)
 	if !r.OK {
 		t.Errorf("a feature branch present (a diff to review) must proceed, got %+v", r)
 	}
 }
 
 func TestRetrospectivePreconditionsProceedWhenBothPresent(t *testing.T) {
-	r := RetrospectivePreconditions(&truth{t: t, branch: true}, slug, true)
+	r := RetrospectivePreconditions(&truth{t: t, branch: true}, true)
 	if !r.OK {
 		t.Errorf("both inputs present must proceed, got %+v", r)
 	}
@@ -270,14 +270,14 @@ func TestRetrospectiveReportsSpendingCapAbort(t *testing.T) {
 var reviewed = session.Outcome{ReviewVerdictEmitted: true}
 
 func TestReviewPushesWhenGatesGreenAndWorktreeClean(t *testing.T) {
-	r := Review(&truth{t: t, clean: true}, slug, session.Outcome{}, reviewed)
+	r := Review(&truth{t: t, clean: true}, session.Outcome{}, reviewed)
 	if !r.OK {
 		t.Errorf("green gates over a clean worktree with a completed review must clear the push gate, got %+v", r)
 	}
 }
 
 func TestReviewBlocksPushWhenGatesRed(t *testing.T) {
-	r := Review(&truth{t: t, clean: true}, slug, session.Outcome{ExitCode: 1}, reviewed)
+	r := Review(&truth{t: t, clean: true}, session.Outcome{ExitCode: 1}, reviewed)
 	if r.OK {
 		t.Error("gates red must NOT clear the push gate — no branch ships on a failing gate")
 	}
@@ -322,7 +322,7 @@ func TestReviewNamesAnUnrunnableGateAsAnEnvironmentFailure(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			r := Review(&truth{t: t, clean: true}, slug, tc.gate, session.Outcome{})
+			r := Review(&truth{t: t, clean: true}, tc.gate, session.Outcome{})
 			if r.OK {
 				t.Fatal("a gate that could not run must not clear the push gate")
 			}
@@ -348,7 +348,7 @@ func TestReviewOrdinaryRedGateIsStillRed(t *testing.T) {
 		{ExitCode: 2, StderrTail: "make: *** [Makefile:12: test] Error 1"},
 		{ExitCode: 1},
 	} {
-		r := Review(&truth{t: t, clean: true}, slug, gate, reviewed)
+		r := Review(&truth{t: t, clean: true}, gate, reviewed)
 		if r.Reason != "harness gate re-run is red — not pushing" {
 			t.Errorf("gate %+v: reason = %q, want the red-gate reason", gate, r.Reason)
 		}
@@ -361,12 +361,12 @@ func TestReviewOrdinaryRedGateIsStillRed(t *testing.T) {
 func TestReviewFlagsASessionGateRunnerPathMismatch(t *testing.T) {
 	gate := session.Outcome{ExitCode: 127, StderrTail: "bash: line 1: go: command not found"}
 
-	r := Review(&truth{t: t, clean: true}, slug, gate, reviewed)
+	r := Review(&truth{t: t, clean: true}, gate, reviewed)
 	if !regexp.MustCompile(`shell/PATH difference between the session and the gate runner`).MatchString(r.Reason) {
 		t.Errorf("reason %q should flag the session/gate-runner PATH mismatch", r.Reason)
 	}
 
-	r = Review(&truth{t: t, clean: true}, slug, gate, session.Outcome{ExitCode: 137})
+	r = Review(&truth{t: t, clean: true}, gate, session.Outcome{ExitCode: 137})
 	if regexp.MustCompile(`PATH difference`).MatchString(r.Reason) {
 		t.Errorf("reason %q claims the session's gate passed, but the session never reached its verdict", r.Reason)
 	}
@@ -397,7 +397,7 @@ func TestCommandUnrunnableIsTheShellsOwnExitCode(t *testing.T) {
 // the push is blocked even when the gate is green — the harness ships only what it
 // actually verified.
 func TestReviewBlocksPushWhenWorktreeDirty(t *testing.T) {
-	r := Review(&truth{t: t, clean: false}, slug, session.Outcome{}, reviewed)
+	r := Review(&truth{t: t, clean: false}, session.Outcome{}, reviewed)
 	if r.OK {
 		t.Error("a dirty worktree must NOT clear the push gate even with green gates")
 	}
@@ -413,7 +413,7 @@ func TestReviewBlocksPushWhenWorktreeDirty(t *testing.T) {
 // is never opened on a gate re-run alone (the gate only proves the diff compiles —
 // it is not a review).
 func TestReviewBlocksPushWhenReviewIncompleteDespiteGreenGate(t *testing.T) {
-	r := Review(&truth{t: t, clean: true}, slug, session.Outcome{}, session.Outcome{ExitCode: 137})
+	r := Review(&truth{t: t, clean: true}, session.Outcome{}, session.Outcome{ExitCode: 137})
 	if r.OK {
 		t.Error("an incomplete qualitative review (no verdict) must NOT clear the push gate even with green gates over a clean worktree")
 	}
@@ -429,7 +429,7 @@ func TestReviewBlocksPushWhenReviewIncompleteDespiteGreenGate(t *testing.T) {
 // would otherwise reach the PR unaddressed (the BEH-439 leak). Fail closed and keep
 // the worktree for a human decision.
 func TestReviewBlocksPushWhenReviewVerdictBlocked(t *testing.T) {
-	r := Review(&truth{t: t, clean: true}, slug, session.Outcome{}, session.Outcome{ReviewVerdictEmitted: true, ReviewBlocked: true})
+	r := Review(&truth{t: t, clean: true}, session.Outcome{}, session.Outcome{ReviewVerdictEmitted: true, ReviewBlocked: true})
 	if r.OK {
 		t.Error("a blocked review disposition must NOT clear the push gate even with green gates, a clean worktree, and a completed review")
 	}
@@ -449,7 +449,7 @@ func TestReviewBlocksPushWhenReviewVerdictBlocked(t *testing.T) {
 // completed review over a zero-net-diff branch is the recommend-close disposition:
 // not a push, not a plain failure, but a handoff for a human to close the ticket.
 func TestReviewRecommendsCloseWhenDiffEmpty(t *testing.T) {
-	r := Review(&truth{t: t, clean: true, diffEmpty: true}, slug, session.Outcome{}, reviewed)
+	r := Review(&truth{t: t, clean: true, diffEmpty: true}, session.Outcome{}, reviewed)
 	if r.OK {
 		t.Error("a zero-net-diff branch must NOT clear the push gate — there is nothing to ship")
 	}
@@ -469,7 +469,7 @@ func TestReviewRecommendsCloseWhenDiffEmpty(t *testing.T) {
 // read is spent at all.
 func TestReviewDoesNotRecommendCloseWhenWorktreeDirty(t *testing.T) {
 	g := &truth{t: t, clean: false, diffEmpty: true}
-	r := Review(g, slug, session.Outcome{}, reviewed)
+	r := Review(g, session.Outcome{}, reviewed)
 	if r.RecommendClose {
 		t.Error("an empty committed diff with a DIRTY worktree must not recommend close — the real change may be uncommitted")
 	}
@@ -481,7 +481,7 @@ func TestReviewDoesNotRecommendCloseWhenWorktreeDirty(t *testing.T) {
 // A non-empty diff is the normal ship path — recommend-close must stay off so the
 // branch pushes as usual.
 func TestReviewDoesNotRecommendCloseWhenDiffPresent(t *testing.T) {
-	r := Review(&truth{t: t, clean: true, diffEmpty: false}, slug, session.Outcome{}, reviewed)
+	r := Review(&truth{t: t, clean: true, diffEmpty: false}, session.Outcome{}, reviewed)
 	if r.RecommendClose {
 		t.Error("a branch with a real diff must not be flagged recommend-close")
 	}
@@ -498,7 +498,7 @@ func TestReviewDoesNotRecommendCloseWhenDiffPresent(t *testing.T) {
 // the rebase, a re-check of the branch's emptiness must route to the same
 // recommend-close disposition rather than push + open a PR that has nothing to open.
 func TestPostRebasePushRecommendsCloseWhenBranchCollapsedToEmpty(t *testing.T) {
-	r := PostRebasePush(&truth{t: t, diffEmpty: true}, slug)
+	r := PostRebasePush(&truth{t: t, diffEmpty: true})
 	if r.OK {
 		t.Error("a branch the rebase collapsed to zero net diff must NOT clear the push gate — there is nothing to open a PR for")
 	}
@@ -513,7 +513,7 @@ func TestPostRebasePushRecommendsCloseWhenBranchCollapsedToEmpty(t *testing.T) {
 // The normal path: the rebase replayed the branch and it still carries a real diff,
 // so the push proceeds — recommend-close must stay off.
 func TestPostRebasePushClearsWhenDiffPresent(t *testing.T) {
-	r := PostRebasePush(&truth{t: t, diffEmpty: false}, slug)
+	r := PostRebasePush(&truth{t: t, diffEmpty: false})
 	if r.RecommendClose {
 		t.Error("a branch that still has a real diff after the rebase must not be flagged recommend-close")
 	}
@@ -527,7 +527,7 @@ func TestPostRebasePushClearsWhenDiffPresent(t *testing.T) {
 // verdict (the "## Review:" report), the seven-lens pass ran — complete, regardless
 // of how the container exited.
 func TestReviewReportsCompleteWhenVerdictEmitted(t *testing.T) {
-	r := Review(&truth{t: t, clean: true}, slug, session.Outcome{}, session.Outcome{ExitCode: 137, ReviewVerdictEmitted: true})
+	r := Review(&truth{t: t, clean: true}, session.Outcome{}, session.Outcome{ExitCode: 137, ReviewVerdictEmitted: true})
 	if !r.ReviewComplete {
 		t.Errorf("a verdict-emitting session is a complete review whatever the exit code, got %+v", r)
 	}
@@ -538,7 +538,7 @@ func TestReviewReportsCompleteWhenVerdictEmitted(t *testing.T) {
 // the qualitative review never ran — it must be flagged incomplete, naming the OOM
 // so a log reader isn't misled into thinking the green gate was a full review.
 func TestReviewFlagsOomBeforeVerdict(t *testing.T) {
-	r := Review(&truth{t: t, clean: true}, slug, session.Outcome{}, session.Outcome{ExitCode: 137})
+	r := Review(&truth{t: t, clean: true}, session.Outcome{}, session.Outcome{ExitCode: 137})
 	if r.ReviewComplete {
 		t.Error("an OOM before the verdict is NOT a complete review")
 	}
@@ -555,7 +555,7 @@ func TestReviewFlagsOomBeforeVerdict(t *testing.T) {
 // only proof the lenses ran. The exit code is named so the cause is traceable, but
 // it must NOT be mislabelled as an OOM when it isn't.
 func TestReviewFlagsNonOomEndBeforeVerdict(t *testing.T) {
-	r := Review(&truth{t: t, clean: true}, slug, session.Outcome{}, session.Outcome{ExitCode: 1})
+	r := Review(&truth{t: t, clean: true}, session.Outcome{}, session.Outcome{ExitCode: 1})
 	if r.ReviewComplete {
 		t.Error("ending before the verdict is not a complete review, whatever the exit code")
 	}
@@ -579,7 +579,7 @@ func TestReviewFlagsNonOomEndBeforeVerdict(t *testing.T) {
 // the drift the loop had when it re-evaluated a separate predicate against state its
 // own body had just mutated.
 func TestReviewRetriesOnCleanExitOverAGreenGate(t *testing.T) {
-	r := Review(&truth{t: t, clean: true}, slug, session.Outcome{}, session.Outcome{})
+	r := Review(&truth{t: t, clean: true}, session.Outcome{}, session.Outcome{})
 	if !r.Retry {
 		t.Errorf("a clean-exit, gate-green, clean-tree review without a verdict should be retried, got %+v", r)
 	}
@@ -588,7 +588,7 @@ func TestReviewRetriesOnCleanExitOverAGreenGate(t *testing.T) {
 // A review that already emitted its verdict is complete — there is nothing to
 // re-launch, regardless of the other inputs.
 func TestReviewDoesNotRetryWhenVerdictEmitted(t *testing.T) {
-	r := Review(&truth{t: t, clean: true}, slug, session.Outcome{}, reviewed)
+	r := Review(&truth{t: t, clean: true}, session.Outcome{}, reviewed)
 	if r.Retry {
 		t.Errorf("a review that already produced a verdict must not be re-launched, got %+v", r)
 	}
@@ -598,7 +598,7 @@ func TestReviewDoesNotRetryWhenVerdictEmitted(t *testing.T) {
 // completeness report already names — NOT the cheap clean-exit retry this targets. A
 // re-launch over a memory-pressured host is not the byte-identical recovery here.
 func TestReviewDoesNotRetryOnOomExit(t *testing.T) {
-	r := Review(&truth{t: t, clean: true}, slug, session.Outcome{}, session.Outcome{ExitCode: 137})
+	r := Review(&truth{t: t, clean: true}, session.Outcome{}, session.Outcome{ExitCode: 137})
 	if r.Retry {
 		t.Errorf("an OOM (137) before the verdict is not the clean-exit retry class, got %+v", r)
 	}
@@ -607,7 +607,7 @@ func TestReviewDoesNotRetryOnOomExit(t *testing.T) {
 // A spending-cap abort is its own retry-after-reset class — the session is killed
 // before doing any work, so an in-stage re-launch would just burn the same cap.
 func TestReviewDoesNotRetryOnSpendingCapAbort(t *testing.T) {
-	r := Review(&truth{t: t, clean: true}, slug, session.Outcome{}, session.Outcome{SpendingCapAbort: true})
+	r := Review(&truth{t: t, clean: true}, session.Outcome{}, session.Outcome{SpendingCapAbort: true})
 	if r.Retry {
 		t.Errorf("a spending-cap abort defers until the cap resets, never an in-stage re-launch, got %+v", r)
 	}
@@ -616,7 +616,7 @@ func TestReviewDoesNotRetryOnSpendingCapAbort(t *testing.T) {
 // A dirty worktree means the gate validated a different tree than would ship, so the
 // diff is not the proven-good artifact the cheap retry assumes. Fall through.
 func TestReviewDoesNotRetryWhenWorktreeDirty(t *testing.T) {
-	r := Review(&truth{t: t, clean: false}, slug, session.Outcome{}, session.Outcome{})
+	r := Review(&truth{t: t, clean: false}, session.Outcome{}, session.Outcome{})
 	if r.Retry {
 		t.Errorf("a dirty worktree is not the proven-good diff this retry assumes, got %+v", r)
 	}
@@ -625,7 +625,7 @@ func TestReviewDoesNotRetryWhenWorktreeDirty(t *testing.T) {
 // Red gates mean the diff itself is broken — re-running the review cannot make it
 // shippable, so it must fall through to fail-closed rather than re-launch.
 func TestReviewDoesNotRetryWhenGatesRed(t *testing.T) {
-	r := Review(&truth{t: t, clean: true}, slug, session.Outcome{ExitCode: 1}, session.Outcome{})
+	r := Review(&truth{t: t, clean: true}, session.Outcome{ExitCode: 1}, session.Outcome{})
 	if r.Retry {
 		t.Errorf("a red gate means the diff is broken — re-running the review can't fix it, got %+v", r)
 	}
@@ -636,7 +636,7 @@ func TestReviewDoesNotRetryWhenGatesRed(t *testing.T) {
 // judged entirely on git ground truth (session exit, worktree clean, branch
 // actually rebased), never the agent's say-so.
 func TestRebaseResolutionPassesWhenResolvedRebasedAndClean(t *testing.T) {
-	r := RebaseResolution(&truth{t: t, clean: true, rebased: true}, slug, session.Outcome{})
+	r := RebaseResolution(&truth{t: t, clean: true, rebased: true}, session.Outcome{})
 	if !r.OK {
 		t.Fatalf("a clean session that rebased onto base with a clean worktree should pass: %q", r.Reason)
 	}
@@ -652,7 +652,7 @@ func TestRebaseResolutionPassesWhenResolvedRebasedAndClean(t *testing.T) {
 // observable: it settles the verdict before any git read is spent.
 func TestRebaseResolutionSpendingCapTakesPrecedence(t *testing.T) {
 	g := &truth{t: t, clean: true, rebased: false}
-	r := RebaseResolution(g, slug, session.Outcome{ExitCode: 1, SpendingCapAbort: true})
+	r := RebaseResolution(g, session.Outcome{ExitCode: 1, SpendingCapAbort: true})
 	if r.OK {
 		t.Fatal("a spending-cap abort did not resolve the conflict — must not pass")
 	}
@@ -668,7 +668,7 @@ func TestRebaseResolutionSpendingCapTakesPrecedence(t *testing.T) {
 }
 
 func TestRebaseResolutionFailsOnNonZeroSessionExit(t *testing.T) {
-	r := RebaseResolution(&truth{t: t, clean: true, rebased: true}, slug, session.Outcome{ExitCode: 2})
+	r := RebaseResolution(&truth{t: t, clean: true, rebased: true}, session.Outcome{ExitCode: 2})
 	if r.OK {
 		t.Fatal("a non-zero session exit means the resolution session failed — must not pass")
 	}
@@ -684,7 +684,7 @@ func TestRebaseResolutionFailsOnNonZeroSessionExit(t *testing.T) {
 // conflict): the rebase did not cleanly complete. The dirty signal is reported
 // even though the branch is also not rebased — dirty is the more actionable cause.
 func TestRebaseResolutionFailsWhenWorktreeDirty(t *testing.T) {
-	r := RebaseResolution(&truth{t: t, clean: false, rebased: false}, slug, session.Outcome{})
+	r := RebaseResolution(&truth{t: t, clean: false, rebased: false}, session.Outcome{})
 	if r.OK {
 		t.Fatal("a dirty worktree means the rebase did not cleanly complete — must not pass")
 	}
@@ -697,7 +697,7 @@ func TestRebaseResolutionFailsWhenWorktreeDirty(t *testing.T) {
 // rebase rather than resolving it. A clean worktree alone would wave this through, so
 // the not-rebased guard is what stops the harness pushing a stale-base branch.
 func TestRebaseResolutionFailsWhenNotRebased(t *testing.T) {
-	r := RebaseResolution(&truth{t: t, clean: true, rebased: false}, slug, session.Outcome{})
+	r := RebaseResolution(&truth{t: t, clean: true, rebased: false}, session.Outcome{})
 	if r.OK {
 		t.Fatal("a clean worktree still on the stale base did not rebase — must not pass")
 	}
