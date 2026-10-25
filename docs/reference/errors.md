@@ -67,6 +67,16 @@ off.
 | `sandbox image "…" missing and the pull failed` | check the ref and `docker login` |
 | `is out of date with <Dockerfile> and the rebuild failed` | the same as a failed build |
 
+## Interrupted sessions
+
+`⏸ session interrupted by signal N` means a stop signal killed a session from
+outside: exit 130 is SIGINT (a Ctrl-C), 143 is SIGTERM (a `docker stop`, or the
+host shutting down). The run ends **Interrupted**, not failed. The harness skips
+the handoff check and the retrospective, leaves the ticket In Progress with its
+worktree for the next run, and the circuit breaker doesn't count it. Nothing to
+fix unless you didn't send the signal: then look for what is stopping containers.
+Exit 137 (SIGKILL) is not an interruption — it is an OOM-kill or the session cap.
+
 ## Worktree setup and gates
 
 | Message | Cause | Fix |

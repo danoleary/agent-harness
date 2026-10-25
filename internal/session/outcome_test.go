@@ -1,6 +1,8 @@
 package session
 
 import (
+	"os/exec"
+	"syscall"
 	"testing"
 
 	"github.com/danoleary/agent-harness/internal/sandbox"
@@ -40,5 +42,57 @@ func TestOutcomeRetryable(t *testing.T) {
 				t.Errorf("Outcome{%d, %q}.Retryable() = %v, want %v", c.o.ExitCode, c.o.DockerReason, got, c.want)
 			}
 		})
+	}
+}
+
+// A session killed from outside by a stop signal exits 128+N (#99). That is an
+// interruption — the run was cut short, not broken — so it is classified apart
+// from a real failure and from the retryable crashes. 137 (SIGKILL) is not one:
+// it is the OOM-kill and the watchdog's own kill, which have their own classes.
+func TestOutcomeInterrupted(t *testing.T) {
+	cases := []struct {
+		name string
+		code int
+		want syscall.Signal
+		ok   bool
+	}{
+		{"SIGTERM 143", 143, syscall.SIGTERM, true},
+		{"SIGINT 130", 130, syscall.SIGINT, true},
+		{"SIGHUP 129", 129, syscall.SIGHUP, true},
+		{"SIGQUIT 131", 131, syscall.SIGQUIT, true},
+		{"SIGKILL 137 is the OOM/watchdog class", sandbox.ExitOOMKill, 0, false},
+		{"SIGSEGV 139 is a crash", 139, 0, false},
+		{"success", 0, 0, false},
+		{"real failure", 1, 0, false},
+		{"cannot start", sandbox.ExitCannotStart, 0, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			o := Outcome{ExitCode: c.code}
+			sig, ok := o.Interrupted()
+			if ok != c.ok || sig != c.want {
+				t.Errorf("Outcome{%d}.Interrupted() = (%v, %v), want (%v, %v)", c.code, sig, ok, c.want, c.ok)
+			}
+			if ok && o.Retryable() {
+				t.Errorf("Outcome{%d} is both interrupted and retryable", c.code)
+			}
+		})
+	}
+}
+
+// When the docker client itself is the process the signal killed, it has no exit
+// code of its own (-1); the session reports it the way a shell would, as 128+N, so
+// it is classified the same as a container that died of the signal.
+func TestExitCodeOfSignalledProcess(t *testing.T) {
+	cmd := exec.Command("sh", "-c", "kill -TERM $$")
+	err := cmd.Run()
+	if got := waitExitCode(err); got != 128+int(syscall.SIGTERM) {
+		t.Errorf("exitCode(signalled by SIGTERM) = %d, want %d", got, 128+int(syscall.SIGTERM))
+	}
+	if got := waitExitCode(exec.Command("sh", "-c", "exit 3").Run()); got != 3 {
+		t.Errorf("waitExitCode(exit 3) = %d, want 3", got)
+	}
+	if got := waitExitCode(nil); got != 0 {
+		t.Errorf("waitExitCode(nil) = %d, want 0", got)
 	}
 }

@@ -152,3 +152,19 @@ func TestBreakerReportListsDistinctTickets(t *testing.T) {
 		t.Errorf("distinct-ticket report %q must not claim a single ticket failed 3×", rep)
 	}
 }
+
+// An interrupted run is neutral (#99): a stop signal killed its session from
+// outside, so it says nothing about whether the ticket can ship.
+func TestBreakerNeutralOnInterrupted(t *testing.T) {
+	b := newBreaker(2)
+	b.record("BEH-1", stages.Result{})
+	b.record("BEH-1", stages.Result{Disposition: stages.Interrupted}) // neutral
+	b.record("BEH-1", stages.Result{Disposition: stages.Interrupted}) // neutral
+	if b.tripped() {
+		t.Error("interruptions must not advance the counter")
+	}
+	b.record("BEH-2", stages.Result{})
+	if !b.tripped() {
+		t.Error("the interruptions must not reset the counter either")
+	}
+}

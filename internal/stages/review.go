@@ -183,6 +183,9 @@ func Review(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Res
 	target := fix.Target{Slug: subject.Slug, Ticket: t}
 
 	reviewOutcome := runReviewSession(1)
+	if res, ok := f.interrupted(reviewOutcome); ok {
+		return res
+	}
 
 	// --- ground truth + push gate (harness, host-side) ---
 	// Refresh origin/main so the commit range + PR base are current.
@@ -221,6 +224,9 @@ func Review(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Res
 			attempt-1, reviewVerdictMaxAttempts-1,
 		))
 		reviewOutcome = runReviewSession(attempt)
+		if res, ok := f.interrupted(reviewOutcome); ok {
+			return res
+		}
 		gateRes = fixes.Gates(fmt.Sprintf("%s-retry%d", gateStep, attempt))
 		gateExit = gateRes.Outcome.ExitCode
 		result = verify.Review(wt, gateRes.Outcome, reviewOutcome)

@@ -175,6 +175,47 @@ func (o Outcome) Retryable() bool {
 	return o.ExitCode == sandbox.ExitCannotStart && sandbox.IsRetryableStartFailure(o.DockerReason)
 }
 
+// interruptSignals are the stop signals whose 128+N exit means the session was
+// interrupted from outside — an operator's Ctrl-C, a `docker stop`, a host
+// shutting down — rather than failing (#99). SIGKILL is deliberately absent: its
+// 137 is the OOM-kill and the watchdog's own `docker kill`, each with its own
+// class (Retryable, CapKilled).
+var interruptSignals = []syscall.Signal{syscall.SIGHUP, syscall.SIGINT, syscall.SIGQUIT, syscall.SIGTERM}
+
+// Interrupted reports whether the session was killed by a stop signal (exit
+// 128+N, chiefly 130 for SIGINT and 143 for SIGTERM) and which one (#99). Such a
+// session did not finish, so nothing about its worktree is a verdict on the
+// work: the caller skips verification and leaves the ticket for a later run.
+// It is never Retryable — whatever sent the signal is usually taking the whole
+// process down with it.
+func (o Outcome) Interrupted() (syscall.Signal, bool) {
+	for _, sig := range interruptSignals {
+		if o.ExitCode == 128+int(sig) {
+			return sig, true
+		}
+	}
+	return 0, false
+}
+
+// waitExitCode is the exit status cmd.Wait's err means. A process a signal killed has
+// no exit code of its own (ExitCode is -1), so it is reported the way a shell
+// would, 128+N: a docker client SIGTERMed alongside its container then reads the
+// same as the container dying of the signal (#99). Any other error is a launch
+// failure, 1.
+func waitExitCode(err error) int {
+	if err == nil {
+		return 0
+	}
+	exitErr, ok := err.(*exec.ExitError)
+	if !ok {
+		return 1
+	}
+	if ws, ok := exitErr.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
+		return 128 + int(ws.Signal())
+	}
+	return exitErr.ExitCode()
+}
+
 // streamFlags are the notable stream signals pumpStdout detects while scanning the
 // stdout transcript, surfaced onto Outcome: the retryable pre-work aborts plus
 // whether the review session reached its verdict.
@@ -439,14 +480,7 @@ func Run(dockerArgs []string, opts Options) Outcome {
 	}()
 	wg.Wait()
 
-	exitCode := 0
-	if err := cmd.Wait(); err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			exitCode = exitErr.ExitCode()
-		} else {
-			exitCode = 1
-		}
-	}
+	exitCode := waitExitCode(cmd.Wait())
 
 	// Exit 125 means docker couldn't start the container at all (daemon down,
 	// image missing, bad flag). The reason is teed only to the transcript, so

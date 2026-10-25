@@ -369,6 +369,9 @@ func Implementation(h hostio.Host, cfg config.Config, log *runlog.Logger, args A
 			},
 		}
 		outcome = f.launch(launch, "").Outcome
+		if res, ok := f.interrupted(outcome); ok {
+			return res
+		}
 
 		// Ground truth, never self-report — verify reads the worktree and branch for
 		// itself off the ticket's worktree.
