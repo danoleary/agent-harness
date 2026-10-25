@@ -133,8 +133,9 @@ type Host struct {
 	// (non-EXPECTED) required gate is still in flight keeps polling up to this ceiling
 	// instead of timing out — a slow-but-running gate (the browser-backed linting_and_tests
 	// routinely outlasts the 12 min soft budget) must not be abandoned mid-run and routed to
-	// manual triage. Zero (or ≤ CIPollBudget) disables the extension; CIPollBudget is then
-	// the only bound (the pre-BEH-685 behaviour).
+	// manual triage. CI_POLL_MAX_BUDGET_MS unset, zero or unparseable reads as the 25m
+	// default (defaultCIPollMaxBudget), not as "off"; to disable the extension set it ≤
+	// CI_POLL_BUDGET_MS, and CIPollBudget is then the only bound (the pre-BEH-685 behaviour).
 	CIPollMaxBudget time.Duration
 	// CINoChecksGrace bounds the "no checks reported yet" state separately from
 	// CIPollBudget: once it is spent with no check registered and no workflow run for the
@@ -348,7 +349,7 @@ func Load(get Getenv, opts ...Option) (Config, error) {
 
 // Where an operator makes each credential the harness asks for.
 const (
-	GitHubTokenURL  = "https://github.com/settings/tokens/new?scopes=repo&description=agent-harness"
+	GitHubTokenURL  = "https://github.com/settings/tokens/new?scopes=repo,workflow&description=agent-harness"
 	AnthropicKeyURL = "https://platform.claude.com/settings/keys"
 )
 
@@ -419,7 +420,7 @@ func loadHost(get Getenv, workingDir string) (Host, error) {
 		problems = append(problems,
 			"GH_TOKEN is not set. The harness pushes branches and opens pull requests with it, "+
 				"and reads GitHub Issues with it when tracker.kind = \"github\".\n"+
-				"  Fix: create a classic token with the repo scope at "+GitHubTokenURL+" and set GH_TOKEN to it.")
+				"  Fix: create a classic token with the repo and workflow scopes at "+GitHubTokenURL+" and set GH_TOKEN to it.")
 	}
 	if h.ProjectPath == "" {
 		missingVar = true
