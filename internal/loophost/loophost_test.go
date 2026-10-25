@@ -12,6 +12,7 @@ import (
 	"github.com/danoleary/agent-harness/internal/hostio"
 	"github.com/danoleary/agent-harness/internal/loop"
 	"github.com/danoleary/agent-harness/internal/loopstream"
+	"github.com/danoleary/agent-harness/internal/stages"
 	"github.com/danoleary/agent-harness/internal/ticket"
 	"github.com/danoleary/agent-harness/internal/tracker"
 )
@@ -49,7 +50,7 @@ func (t *queueTracker) SelectNextTicket() (ticket.Ticket, bool, error) {
 // wants: no credential, no Docker, no network.
 func hostFor(t *testing.T, cfg config.Config) *Daemon {
 	t.Helper()
-	return NewDaemon(withProject(t, cfg), nil)
+	return NewDaemon(withProject(t, cfg), config.Loop{Name: "tickets"}, nil)
 }
 
 // sourceFor builds a TicketSource over the scripted tracker and a throwaway
@@ -142,6 +143,45 @@ func TestStopRequestedFoldsTheSentinelAndTheSignal(t *testing.T) {
 	}
 }
 
+// Each loop has its own sentinel, STOP-<name>, so loops running side by side wind
+// down one at a time; the plain STOP stops every loop. Startup clears both.
+func TestEachLoopHasItsOwnStopSentinelAndPlainStopStopsAll(t *testing.T) {
+	project := t.TempDir()
+	cfg := withProject(t, config.Config{Host: config.Host{ProjectPath: project, StopFile: ".agent-harness/STOP"}})
+	prs := NewDaemon(cfg, config.Loop{Name: "pr-doctor"}, nil)
+	tickets := NewDaemon(cfg, config.Loop{Name: "tickets"}, nil)
+	own := filepath.Join(project, ".agent-harness", "STOP-pr-doctor")
+	plain := filepath.Join(project, ".agent-harness", "STOP")
+	if prs.LoopStopFile() != own {
+		t.Fatalf("LoopStopFile = %q, want %q", prs.LoopStopFile(), own)
+	}
+
+	touch(t, own)
+	if !prs.StopRequested() || tickets.StopRequested() {
+		t.Errorf("STOP-pr-doctor must stop pr-doctor alone: prs %v, tickets %v", prs.StopRequested(), tickets.StopRequested())
+	}
+	touch(t, plain)
+	if !tickets.StopRequested() {
+		t.Error("the plain STOP must stop every loop")
+	}
+	if err := prs.ClearStopFile(); err != nil {
+		t.Fatalf("ClearStopFile: %v", err)
+	}
+	if prs.StopRequested() {
+		t.Error("startup must clear the loop's own sentinel and the plain one")
+	}
+}
+
+func touch(t *testing.T, path string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // --- queue ------------------------------------------------------------------
 
 // A selection failure comes back as an error, not an empty queue: the daemon
@@ -173,7 +213,7 @@ func TestCheckAccessRejectsADeadTokenOrTracker(t *testing.T) {
 	trk := newQueueTracker()
 	var cfg config.Config
 	cfg.Tracker.Kind = "linear"
-	h := NewDaemon(withProject(t, cfg), sourceFor(t, cfg, trk).CheckAccess)
+	h := NewDaemon(withProject(t, cfg), config.Loop{Name: "tickets"}, sourceFor(t, cfg, trk).CheckAccess)
 	dead := errors.New("GH_TOKEN check failed")
 	h.checkToken = func() error { return dead }
 	trk.nextErr = errors.New("HTTP 401")
@@ -396,5 +436,19 @@ func TestHeldBranchesMapsEachClaimToItsBranch(t *testing.T) {
 	trk.claimsErr = errors.New("tracker down")
 	if _, err := h.HeldBranches(); err == nil {
 		t.Error("a failed claim read must be returned, not read as nothing held")
+	}
+}
+
+// The ticket Pipeline runs the loop's Steps: the built-in ticket loop runs all
+// three Stages, and a loop that leaves out retro runs no retrospective.
+func TestTicketDepsFollowTheLoopsSteps(t *testing.T) {
+	builtIn, _ := config.Project{}.LoopNamed("")
+	if d := ticketDeps(builtIn, hostio.NewFake(), config.Config{}, nil, stages.Args{}); d.Implementation == nil || d.Review == nil || d.Retrospective == nil {
+		t.Errorf("the built-in ticket loop runs all three Stages, got %+v", d)
+	}
+	noRetro := builtIn
+	noRetro.Steps = noRetro.Steps[:2]
+	if d := ticketDeps(noRetro, hostio.NewFake(), config.Config{}, nil, stages.Args{}); d.Retrospective != nil {
+		t.Error("a loop without retro must run no retrospective")
 	}
 }

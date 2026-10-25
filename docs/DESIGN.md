@@ -475,19 +475,21 @@ loop:
 
 ## The PR loop
 
-`agent-harness loop --prs` (ADR-0019, step b; temporary until `loop <name>`) is the
-same daemon over a second Source and Pipeline (`internal/prloop`). It fixes open
-PRs that went red or conflicting after their review stage finished.
+`agent-harness loop pr-doctor` (ADR-0019) is the same daemon over a second Source
+and Pipeline (`internal/prloop`). It fixes open PRs that went red or conflicting
+after their review stage finished. The sketch below is the built-in loop's Steps;
+§Declared loops covers what config can change.
 
 ```
 poll (Source github_prs, read-only judgement — also what --dry-run prints):
   for each open PR:
     skip fork | base != main | labelled blocked | held (in-progress label)
-    skip unless head on <branch_prefix>/  OR  labelled PR_LOOP_LABEL       // opt-in
+    skip unless head on <branch_prefix>/  OR  labelled source.label | PR_LOOP_LABEL  // opt-in
     skip if the ticket loop holds the branch (an In Progress ticket's slug)  // lease keyed on the branch
     kind = conflict if mergeable=CONFLICTING/DIRTY, else ci if a check is red, else skip
+    skip if source.when leaves the kind out
     skip if a marker comment already records (head sha, kind)               // a new push = a new item
-    attempts since the last hand-off >= PR_LOOP_MAX_ATTEMPTS
+    attempts since the last hand-off >= source.max_attempts | PR_LOOP_MAX_ATTEMPTS
       -> comment what was tried + label blocked (once), skip
   first workable PR: add in-progress label (the lease), post the attempt marker
 
@@ -506,12 +508,42 @@ pipeline (one PR, worktree .claude/worktrees/pr-<n> on the PR's head branch):
   remove the in-progress label; remove the worktree if clean
 ```
 
-It writes its own stream (`logs/prs/loop.jsonl`, per-PR logs under
-`logs/prs/pr-<n>/`) and has its own sentinel (`PR_LOOP_STOP_FILE`), so it runs
-beside the ticket loop. A push is **Shipped** for the breaker, as a ticket's PR
+It writes its own stream (`logs/loops/pr-doctor/loop.jsonl`, per-PR logs under
+`logs/loops/pr-doctor/pr-<n>/`) and has its own sentinel (`STOP-pr-doctor`), so it
+runs beside the ticket loop. A push is **Shipped** for the breaker, as a ticket's PR
 is; nothing pushed is **NoPR**. The reaper releases an `in-progress` label older
 than the claim TTL (timed by its attempt marker): the reaper runs only between
 this daemon's own items, so one PR loop per checkout.
+
+## Declared loops
+
+`agent-harness loop <name>` runs one loop; `--list` names them and `--dry-run`
+prints one as it resolved (ADR-0019 step c). The two above are built in
+(`config.BuiltInLoops`); `[[loops]]` in `config.toml` replaces one by name or adds
+another:
+
+```
+loop     = name + source{kind, params} + steps[] + limits
+source   : tracker | github_prs{label, when[conflicting, ci_failing], max_attempts}
+steps    : tracker    -> implement, review, [retro]
+           github_prs -> checkout_pr, fix, gates, push_existing, [watch_ci], [retro]
+limits   : poll_interval cap_backoff claim_ttl max_runtime max_consecutive_failures max_items
+           (each overrides its LOOP_* knob for this loop; unset keeps the knob)
+```
+
+Every Step is Go code with its own ground-truth check, so config picks, orders and
+parameterises Steps and supplies prompt bodies (a step's `prompt`, relative to
+`.agent-harness/`), but cannot add one that runs a shell command or an unchecked
+agent. `config.LoadProject` validates the lot with every problem at once, each at
+its `config.toml:line:column` (`config/positions.go` re-walks the file with
+go-toml's own parser to place them): unknown source or step, a step on the wrong
+Source, a step before what it needs (`push_existing` after `gates`, `watch_ci`
+after `push_existing`, `retro` last), a missing required step, `ci_failing`
+without `watch_ci`, and an unreadable or blank prompt file.
+
+Each loop has its own sentinel (`.agent-harness/STOP-<name>`; the plain `STOP`
+stops them all, and a starting loop clears both) and its own logs dir: `logs/`
+for `tickets`, as before, and `logs/loops/<name>/` for every other loop.
 
 ## Key invariants & decisions
 
@@ -1263,10 +1295,12 @@ reader over a structured stream rather than a `--tui` flag on the daemon.
   | `LOOP_DISK_RECLAIM_THRESHOLD_BYTES` | `8589934592` (8 GiB) | soft free-disk floor below which the loop prunes merged worktrees between tickets (ADR-0005); `0` disables reclaim |
   | `LOOP_CLAIM_TTL_MS` | `1800000` (30 min) | grace period after which an In Progress claim with no branch/PR is reaped back to Todo (§Stale-claim reaper) |
   | `LOOP_KEEP_AWAKE` | `0` (off) | read by `scripts/loop-start.sh`, not the daemon: `1` attaches `caffeinate -is -w <loop pid>` so macOS idle sleep can't freeze a detached loop; released when the loop exits. `-s` needs AC power; a closed lid still sleeps outside clamshell mode; no `caffeinate` → warn and launch anyway |
-  | `STOP_FILE` | `.agent-harness/STOP` | sentinel path; cleared at clean startup, `touch` to wind down |
-  | `PR_LOOP_LABEL` | `agent-maintained` | `loop --prs`: the label that opts a PR whose head is off `branch_prefix` in to the PR loop (ADR-0019) |
-  | `PR_LOOP_MAX_ATTEMPTS` | `3` | `loop --prs`: attempts per PR; past it the loop comments what it tried and labels the PR `blocked` |
-  | `PR_LOOP_STOP_FILE` | `.agent-harness/STOP-prs` | `loop --prs`: its own sentinel, so it winds down independently of the ticket loop |
+  | `STOP_FILE` | `.agent-harness/STOP` | the sentinel that stops every loop; cleared at clean startup, `touch` to wind down. Each loop also has its own, `.agent-harness/STOP-<name>` |
+  | `PR_LOOP_LABEL` | `agent-maintained` | PR loops: the label that opts a PR whose head is off `branch_prefix` in, unless the loop's `source.label` sets one (ADR-0019) |
+  | `PR_LOOP_MAX_ATTEMPTS` | `3` | PR loops: attempts per PR, unless `source.max_attempts` sets one; past it the loop comments what it tried and labels the PR `blocked` |
+
+  A loop's own `[[loops]]` limits override the `LOOP_*` knobs above for that loop
+  (§Declared loops).
 
   `LOOP_MAX_TICKETS`/`LOOP_MAX_RUNTIME_MS` default to **unlimited** because the loop
   is deliberately long-running (§The loop) — they exist as opt-in insurance for an

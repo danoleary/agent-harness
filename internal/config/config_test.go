@@ -424,16 +424,16 @@ func TestLoadPRLoopDefaultsAndOverrides(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if cfg.PRLoopLabel != "agent-maintained" || cfg.PRLoopMaxAttempts != 3 || cfg.PRLoopStopFile != ".agent-harness/STOP-prs" {
-		t.Errorf("PR loop defaults = %q / %d / %q, want agent-maintained / 3 / .agent-harness/STOP-prs", cfg.PRLoopLabel, cfg.PRLoopMaxAttempts, cfg.PRLoopStopFile)
+	if cfg.PRLoopLabel != "agent-maintained" || cfg.PRLoopMaxAttempts != 3 {
+		t.Errorf("PR loop defaults = %q / %d, want agent-maintained / 3", cfg.PRLoopLabel, cfg.PRLoopMaxAttempts)
 	}
 
-	cfg, err = Load(fullEnv(t, map[string]string{"PR_LOOP_LABEL": "bot-fix", "PR_LOOP_MAX_ATTEMPTS": "5", "PR_LOOP_STOP_FILE": "/tmp/stop-prs"}))
+	cfg, err = Load(fullEnv(t, map[string]string{"PR_LOOP_LABEL": "bot-fix", "PR_LOOP_MAX_ATTEMPTS": "5"}))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if cfg.PRLoopLabel != "bot-fix" || cfg.PRLoopMaxAttempts != 5 || cfg.PRLoopStopFile != "/tmp/stop-prs" {
-		t.Errorf("PR loop overrides = %q / %d / %q", cfg.PRLoopLabel, cfg.PRLoopMaxAttempts, cfg.PRLoopStopFile)
+	if cfg.PRLoopLabel != "bot-fix" || cfg.PRLoopMaxAttempts != 5 {
+		t.Errorf("PR loop overrides = %q / %d", cfg.PRLoopLabel, cfg.PRLoopMaxAttempts)
 	}
 
 	if _, err := Load(fullEnv(t, map[string]string{"PR_LOOP_MAX_ATTEMPTS": "0"})); err == nil || !strings.Contains(err.Error(), "PR_LOOP_MAX_ATTEMPTS") {

@@ -1,30 +1,107 @@
 package main
 
-import "testing"
+import (
+	"strings"
+	"testing"
+	"time"
 
-// `loop --prs` runs the PR loop and `loop --prs --dry-run` only prints its plan.
-// A bare --dry-run is refused rather than ignored: ignoring it would start a real
-// ticket loop when the operator asked for a dry run.
+	"github.com/danoleary/agent-harness/internal/config"
+)
+
+// `loop` runs the ticket loop, `loop <name>` the named loop, and --list and
+// --dry-run print without running anything. --prs, the PR loop's old flag, is
+// refused with its replacement: ignoring it would start a real ticket loop.
 func TestParseFlags(t *testing.T) {
 	cases := []struct {
 		argv    []string
 		want    flags
-		wantErr bool
+		wantErr string
 	}{
 		{argv: nil, want: flags{}},
-		{argv: []string{"--prs"}, want: flags{prs: true}},
-		{argv: []string{"--prs", "--dry-run"}, want: flags{prs: true, dryRun: true}},
-		{argv: []string{"--dry-run", "--prs", "--verbose"}, want: flags{prs: true, dryRun: true}},
-		{argv: []string{"--dry-run"}, wantErr: true},
+		{argv: []string{"pr-doctor"}, want: flags{name: "pr-doctor"}},
+		{argv: []string{"pr-doctor", "--dry-run"}, want: flags{name: "pr-doctor", dryRun: true}},
+		{argv: []string{"--dry-run", "--verbose", "tickets"}, want: flags{name: "tickets", dryRun: true}},
+		{argv: []string{"--list"}, want: flags{list: true}},
+		{argv: []string{"--dry-run"}, want: flags{dryRun: true}},
+		{argv: []string{"--prs"}, wantErr: "agent-harness loop pr-doctor"},
+		{argv: []string{"tickets", "pr-doctor"}, wantErr: "one loop at a time"},
 	}
 	for _, c := range cases {
 		got, err := parseFlags(c.argv)
-		if (err != nil) != c.wantErr {
-			t.Errorf("parseFlags(%v) error = %v, wantErr %v", c.argv, err, c.wantErr)
+		if c.wantErr != "" {
+			if err == nil || !strings.Contains(err.Error(), c.wantErr) {
+				t.Errorf("parseFlags(%v) error = %v, want one mentioning %q", c.argv, err, c.wantErr)
+			}
 			continue
 		}
-		if err == nil && got != c.want {
-			t.Errorf("parseFlags(%v) = %+v, want %+v", c.argv, got, c.want)
+		if err != nil || got != c.want {
+			t.Errorf("parseFlags(%v) = %+v, %v; want %+v", c.argv, got, err, c.want)
 		}
+	}
+}
+
+// A loop's own limits override the LOOP_* env knobs; a limit it leaves unset keeps
+// the knob's value.
+func TestLimitsFromPrefersTheLoopsOwnLimits(t *testing.T) {
+	cfg := config.Config{Host: config.Host{LoopPollInterval: time.Minute, LoopCapBackoff: 45 * time.Minute, LoopClaimTTL: 30 * time.Minute, LoopMaxConsecutiveFailures: 3, LoopMaxTickets: 0}}
+	l := config.Loop{Name: "pr-doctor", Limits: config.LoopLimits{PollInterval: 10 * time.Minute, MaxConsecutiveFailures: 5, MaxItems: 7}}
+
+	got := limitsFrom(cfg, l)
+
+	if got.PollInterval != 10*time.Minute || got.MaxConsecutiveFailures != 5 || got.MaxTickets != 7 {
+		t.Errorf("the loop's own limits must win, got %+v", got)
+	}
+	if got.CapBackoff != 45*time.Minute || got.ClaimTTL != 30*time.Minute || got.TickInterval != tickInterval {
+		t.Errorf("unset limits keep the env knobs, got %+v", got)
+	}
+}
+
+// --list names every loop the project can run, its Source and Steps, and which
+// are built in.
+func TestRenderListNamesEveryLoop(t *testing.T) {
+	got := renderList(config.Project{}.AllLoops())
+	for _, want := range []string{
+		"tickets", "(default, built in)", "tracker", "implement → review → retro",
+		"pr-doctor", "github_prs", "checkout_pr → fix → gates → push_existing → watch_ci → retro",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("--list missing %q:\n%s", want, got)
+		}
+	}
+}
+
+// --dry-run prints the named loop as it resolved: its Source with the parameters
+// in force, each Step with what it checks and any prompt body it supplies, the
+// limits, its sentinel and its stream.
+func TestDescribeLoopPrintsTheResolvedSourceAndSteps(t *testing.T) {
+	cfg := config.Config{
+		Host:    config.Host{ProjectPath: "/src/app", PRLoopLabel: "agent-maintained", PRLoopMaxAttempts: 3, LoopPollInterval: time.Minute, LoopCapBackoff: time.Hour, LoopMaxConsecutiveFailures: 3, LoopClaimTTL: 30 * time.Minute},
+		Project: config.Project{BranchPrefix: "feat"},
+	}
+	l := config.Loop{
+		Name:   "conflicts",
+		Source: config.LoopSource{Kind: config.SourceGitHubPRs, When: []string{config.WhenConflicting}},
+		Steps: []config.Step{
+			{Use: config.StepCheckoutPR}, {Use: config.StepFix, PromptPath: "prompts/fix-pr.md", Prompt: "x"},
+			{Use: config.StepGates}, {Use: config.StepPushExisting},
+		},
+		Limits: config.LoopLimits{PollInterval: 10 * time.Minute},
+	}
+
+	got := describeLoop(cfg, l, limitsFrom(cfg, l))
+
+	for _, want := range []string{
+		"loop conflicts", "nothing below was changed",
+		"source: github_prs", `opt-in label "agent-maintained"`, "when conflicting", "3 attempts per PR",
+		"1. checkout_pr", "2. fix", "body prompts/fix-pr.md", "3. gates", "4. push_existing",
+		"poll every 10m0s",
+		"/src/app/.agent-harness/STOP-conflicts", "/src/app/.agent-harness/logs/loops/conflicts/loop.jsonl",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("--dry-run missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "watch_ci") {
+		t.Errorf("a step the loop leaves out must not be printed:\n%s", got)
 	}
 }

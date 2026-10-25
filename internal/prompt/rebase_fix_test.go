@@ -175,3 +175,25 @@ func TestRebaseFixMergeVariantKeepsHistory(t *testing.T) {
 		t.Error("merge variant must forbid rewriting the human's history")
 	}
 }
+
+// A loop's fix step may supply a Project body (ADR-0019, ADR-0009). It leads
+// every fix prompt and the envelope follows it whole; with no body each prompt is
+// the envelope alone, as before.
+func TestFixPromptsLeadWithALoopsFixBody(t *testing.T) {
+	for _, stage := range []Stage{RebaseFix, CIFix} {
+		for _, merge := range []bool{false, true} {
+			base := Context{Ticket: sample, Slug: "beh-362", BranchPrefix: "feat", WorktreePath: sampleWorktree, Merge: merge}
+			withBody := base
+			withBody.Body = "Run `make lint` on {{.Slug}} before you commit."
+
+			bare, led := For(stage, base), For(stage, withBody)
+
+			if !strings.HasPrefix(led, "Run `make lint` on beh-362 before you commit.\n\n---\n\n") {
+				t.Errorf("%v merge=%v: the body must lead, rendered:\n%.200s", stage, merge, led)
+			}
+			if !strings.HasSuffix(led, bare) {
+				t.Errorf("%v merge=%v: the whole envelope must follow the body", stage, merge)
+			}
+		}
+	}
+}

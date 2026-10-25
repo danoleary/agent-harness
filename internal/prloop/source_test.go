@@ -357,19 +357,59 @@ func TestClaimsAndReleaseWorkTheHeldLabel(t *testing.T) {
 // The Source's knobs come from the Consumer's config: its branch prefix, the PR
 // loop's opt-in label and budget, and — when its tracker is GitHub Issues — the
 // label names it already uses for held and blocked work, so one repository speaks
-// one vocabulary.
+// one vocabulary. The built-in pr-doctor loop takes the label and budget from the
+// PR_LOOP_* env knobs.
 func TestOptionsFromConfig(t *testing.T) {
 	cfg := config.Config{
 		Host:    config.Host{PRLoopLabel: "bot-fix", PRLoopMaxAttempts: 5},
 		Project: config.Project{BranchPrefix: "fix"},
 	}
-	want := Options{BranchPrefix: "fix", OptInLabel: "bot-fix", HeldLabel: "in-progress", BlockedLabel: "blocked", MaxAttempts: 5, BaseBranch: "main"}
-	if got := OptionsFrom(cfg); got != want {
+	prDoctor, _ := cfg.LoopNamed(config.PRDoctorLoopName)
+	want := Options{BranchPrefix: "fix", OptInLabel: "bot-fix", HeldLabel: "in-progress", BlockedLabel: "blocked", MaxAttempts: 5, BaseBranch: "main", LogDir: ".agent-harness/logs/loops/pr-doctor"}
+	if got := OptionsFrom(cfg, prDoctor); got != want {
 		t.Errorf("OptionsFrom = %+v, want %+v", got, want)
 	}
 
 	cfg.Tracker = config.TrackerConfig{Kind: "github", InProgressLabel: "wip", BlockedLabel: "on-hold"}
-	if got := OptionsFrom(cfg); got.HeldLabel != "wip" || got.BlockedLabel != "on-hold" {
+	if got := OptionsFrom(cfg, prDoctor); got.HeldLabel != "wip" || got.BlockedLabel != "on-hold" {
 		t.Errorf("OptionsFrom = %+v, want the GitHub tracker's wip / on-hold labels", got)
+	}
+}
+
+// A declared loop's source parameters override the env knobs: its own opt-in
+// label, its own budget, and which failure kinds it is for.
+func TestOptionsFromADeclaredLoop(t *testing.T) {
+	cfg := config.Config{
+		Host:    config.Host{PRLoopLabel: "bot-fix", PRLoopMaxAttempts: 5},
+		Project: config.Project{BranchPrefix: "feat"},
+	}
+	l := config.Loop{Name: "conflicts", Source: config.LoopSource{Kind: config.SourceGitHubPRs, Label: "rebase-me", When: []string{config.WhenConflicting}, MaxAttempts: 1}}
+	got := OptionsFrom(cfg, l)
+	if got.OptInLabel != "rebase-me" || got.MaxAttempts != 1 || got.Only != Conflict || got.LogDir != ".agent-harness/logs/loops/conflicts" {
+		t.Errorf("OptionsFrom = %+v", got)
+	}
+}
+
+// A loop for one failure kind skips a PR failing the other way: it is another
+// loop's work, or no loop's.
+func TestNextYieldsOnlyTheKindTheLoopIsFor(t *testing.T) {
+	gh := newFakeGitHub(harnessPR(12, "abc1234"), harnessPR(13, "def5678"))
+	gh.checks["abc1234"] = github.ChecksRed
+	gh.merge[13] = ci.MergeConflicting
+	opts := testOptions
+	opts.Only = Conflict
+	s := NewSource(gh, opts, nil, &quietLog{})
+
+	item, _, ok, err := s.Next()
+
+	if err != nil || !ok || item.Key != "PR-13" {
+		t.Fatalf("Next = %+v ok=%v err=%v, want the conflicting PR-13", item, ok, err)
+	}
+	plan, _ := s.Plan()
+	if !strings.Contains(plan[0].Skip, "not this loop's") {
+		t.Errorf("PR-12's skip = %q", plan[0].Skip)
+	}
+	if len(gh.posted[12]) != 0 || len(gh.added[12]) != 0 {
+		t.Error("a PR of the other kind must not be touched")
 	}
 }

@@ -3,6 +3,8 @@ package loophost
 import (
 	"fmt"
 	"os"
+	"path/filepath"
+	"time"
 
 	"github.com/danoleary/agent-harness/internal/config"
 	gitpkg "github.com/danoleary/agent-harness/internal/git"
@@ -10,6 +12,7 @@ import (
 	"github.com/danoleary/agent-harness/internal/lease"
 	"github.com/danoleary/agent-harness/internal/loop"
 	"github.com/danoleary/agent-harness/internal/pipeline"
+	"github.com/danoleary/agent-harness/internal/runlog"
 	"github.com/danoleary/agent-harness/internal/ship"
 	"github.com/danoleary/agent-harness/internal/stages"
 	"github.com/danoleary/agent-harness/internal/ticket"
@@ -113,29 +116,47 @@ func (s *TicketSource) HasRemoteBranch(key string) bool {
 	return s.checkout().TicketHasRemoteBranch(key)
 }
 
-// TicketPipeline is the ticket loop's [loop.Pipeline]: the implementation → review
-// → retrospective Stages over one ticket, and the committed-fix recovery that
-// finishes a branch a previous run left unpushed (ADR-0019).
+// TicketPipeline is a ticket loop's [loop.Pipeline]: the implementation → review
+// → retrospective Stages over one ticket, as the loop's Steps choose them, and the
+// committed-fix recovery that finishes a branch a previous run left unpushed
+// (ADR-0019).
 type TicketPipeline struct {
-	log loop.Narrator
+	log  loop.Narrator
+	loop config.Loop
 }
 
 var _ loop.Pipeline = (*TicketPipeline)(nil)
 
-// NewTicketPipeline builds the ticket Pipeline; log is the daemon's narration
-// sink, which the recovery narrates to.
-func NewTicketPipeline(log loop.Narrator) *TicketPipeline {
-	return &TicketPipeline{log: log}
+// NewTicketPipeline builds the ticket Pipeline for l; log is the daemon's
+// narration sink, which the recovery narrates to.
+func NewTicketPipeline(log loop.Narrator, l config.Loop) *TicketPipeline {
+	return &TicketPipeline{log: log, loop: l}
 }
 
-// Run runs the full implementation → review → retrospective chain over one
-// already-claimed ticket, mirroring cmd/pipeline's wiring: its own ticket-keyed
-// runlog and run id (the daemon runs many tickets, so each gets its own log dir).
-// The stage args carry the lease the Source claimed on selection, so the
-// implementation stage skips its own claim, releases on a preflight failure
-// (ADR-0003), and re-claims on a retry after a release (#25).
+// setup loads the config with the loop's prompt bodies in place, mints a run id,
+// and opens the ticket's runlog under the loop's own logs dir, whose loop.jsonl the
+// daemon narrates to as well.
+func (p *TicketPipeline) setup(key string) (config.Config, *runlog.Logger, string, error) {
+	cfg, err := stages.LoadConfig()
+	if err != nil {
+		return config.Config{}, nil, "", err
+	}
+	p.loop.ApplyPrompts(&cfg.Prompts)
+	log, err := runlog.New(filepath.Join(cfg.ProjectPath, p.loop.LogsDir()), key)
+	if err != nil {
+		return cfg, nil, "", err
+	}
+	return cfg, log, runlog.MakeRunID(time.Now()), nil
+}
+
+// Run runs the loop's Stages over one already-claimed ticket, mirroring
+// cmd/pipeline's wiring: its own ticket-keyed runlog and run id (the daemon runs
+// many tickets, so each gets its own log dir). The stage args carry the lease the
+// Source claimed on selection, so the implementation stage skips its own claim,
+// releases on a preflight failure (ADR-0003), and re-claims on a retry after a
+// release (#25).
 func (p *TicketPipeline) Run(item loop.WorkItem, claim *lease.Lease) stages.Result {
-	cfg, log, runID, err := stages.Setup(item.Key)
+	cfg, log, runID, err := p.setup(item.Key)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		// A setup failure produced no PR; surface it as a plain no-PR outcome so the
@@ -146,13 +167,22 @@ func (p *TicketPipeline) Run(item loop.WorkItem, claim *lease.Lease) stages.Resu
 	// One Host for the whole slice: the three stages share the run id it stamps into
 	// every container name and transcript, and the tracker client it resolves once.
 	host := hostio.New(cfg, log, runID, args.Verbose)
-	return pipeline.Run(pipeline.Deps{
+	return pipeline.Run(ticketDeps(p.loop, host, cfg, log, args))
+}
+
+// ticketDeps binds the loop's Stages to one ticket. A loop without the retro step
+// runs no retrospective.
+func ticketDeps(l config.Loop, host hostio.Host, cfg config.Config, log *runlog.Logger, args stages.Args) pipeline.Deps {
+	d := pipeline.Deps{
 		FetchMain:      host.FetchMain,
 		Implementation: func() stages.Result { return stages.Implementation(host, cfg, log, args) },
 		Review:         func() stages.Result { return stages.Review(host, cfg, log, args) },
-		Retrospective:  func() stages.Result { return stages.Retrospective(host, cfg, log, args) },
 		Log:            log,
-	})
+	}
+	if l.Has(config.StepRetro) {
+		d.Retrospective = func() stages.Result { return stages.Retrospective(host, cfg, log, args) }
+	}
+	return d
 }
 
 // Recover finishes a branch a previous run left committed, gate-green and
@@ -160,7 +190,7 @@ func (p *TicketPipeline) Run(item loop.WorkItem, claim *lease.Lease) stages.Resu
 // branch" the review stage ends on — run over a Host bound to this ticket. A setup
 // failure means there is nothing to recover: fall through to the normal release.
 func (p *TicketPipeline) Recover(item loop.WorkItem) (stages.Result, bool) {
-	cfg, log, runID, err := stages.Setup(item.Key)
+	cfg, log, runID, err := p.setup(item.Key)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		return stages.Result{}, false

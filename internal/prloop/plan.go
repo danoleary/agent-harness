@@ -17,7 +17,7 @@ func planFor(it Item) string {
 	}
 }
 
-// RenderPlan prints the Source's judgement of every open PR for `loop --prs
+// RenderPlan prints the Source's judgement of every open PR for `loop <name>
 // --dry-run`: which PRs it would work and how, which it would hand to a human, and
 // why it skips the rest.
 func RenderPlan(cands []Candidate) string {

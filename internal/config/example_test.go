@@ -103,3 +103,20 @@ func TestExampleConsumerDeclaresACachePruneCommand(t *testing.T) {
 		t.Error("example config must demonstrate cache.prune_command alongside volume + path")
 	}
 }
+
+// The example demonstrates [[loops]] through the loader: the PR loop written out,
+// with a fix-step body it reads from prompts/, so a Consumer copying it gets a
+// loop that resolves rather than one that fails at load.
+func TestExampleConsumerDeclaresALoop(t *testing.T) {
+	pc, err := LoadProject(exampleConsumer())
+	if err != nil {
+		t.Fatalf("example Consumer config failed to load: %v", err)
+	}
+	l, ok := Project{Loops: pc.ResolvedLoops}.LoopNamed(PRDoctorLoopName)
+	if !ok || l.BuiltIn {
+		t.Fatalf("example config must declare the pr-doctor loop, got %+v", pc.ResolvedLoops)
+	}
+	if l.Prompt(StepFix) == "" || l.Limits.PollInterval == 0 {
+		t.Errorf("the example loop must demonstrate a fix-step body and a per-loop limit, got %+v", l)
+	}
+}

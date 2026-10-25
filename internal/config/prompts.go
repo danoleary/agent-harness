@@ -21,6 +21,10 @@ type PromptBodies struct {
 	Implement string
 	Review    string
 	Retro     string
+	// Fix is the body a loop's `fix` step supplies for its RebaseFix and CIFix
+	// sessions. It is optional and empty by default: those sessions invoke no
+	// skill, so the envelope alone is a complete prompt.
+	Fix string
 }
 
 // LoadPrompts reads the per-Stage body files from

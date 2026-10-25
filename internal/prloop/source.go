@@ -74,6 +74,12 @@ type Options struct {
 	// BaseBranch is the only base the harness lands on; a PR into another base is
 	// not the loop's to fix.
 	BaseBranch string
+	// Only, when set, is the one failure kind this loop works (its source.when);
+	// empty works both.
+	Only Kind
+	// LogDir is the loop's log dir relative to the checkout, which the hand-off
+	// comment points a human at.
+	LogDir string
 }
 
 // The labels the loop uses when the Consumer's tracker does not already name them.
@@ -82,10 +88,11 @@ const (
 	defaultBlockedLabel = "blocked"
 )
 
-// OptionsFrom reads the Source's knobs off the Consumer's config. With GitHub
-// Issues as the tracker, the held and blocked labels follow the names its tickets
+// OptionsFrom reads the Source's knobs off the Consumer's config and the loop's
+// source parameters, which override the PR_LOOP_* env knobs. With GitHub Issues
+// as the tracker, the held and blocked labels follow the names its tickets
 // already use, so one repository speaks one vocabulary.
-func OptionsFrom(cfg config.Config) Options {
+func OptionsFrom(cfg config.Config, l config.Loop) Options {
 	o := Options{
 		BranchPrefix: cfg.BranchPrefix,
 		OptInLabel:   cfg.PRLoopLabel,
@@ -93,6 +100,19 @@ func OptionsFrom(cfg config.Config) Options {
 		BlockedLabel: defaultBlockedLabel,
 		MaxAttempts:  cfg.PRLoopMaxAttempts,
 		BaseBranch:   baseBranch,
+		LogDir:       l.LogsDir(),
+	}
+	if l.Source.Label != "" {
+		o.OptInLabel = l.Source.Label
+	}
+	if l.Source.MaxAttempts > 0 {
+		o.MaxAttempts = l.Source.MaxAttempts
+	}
+	switch conflicts, red := l.Source.Yields(config.WhenConflicting), l.Source.Yields(config.WhenCIFailing); {
+	case conflicts && !red:
+		o.Only = Conflict
+	case red && !conflicts:
+		o.Only = CIRed
 	}
 	if cfg.Tracker.Kind == "github" {
 		if l := cfg.Tracker.InProgressLabel; l != "" {
@@ -181,7 +201,7 @@ func (s *Source) CheckAccess() error {
 }
 
 // Plan judges every open PR without changing anything: it is what Next acts on,
-// and what `loop --prs --dry-run` prints. A PR whose state cannot be read is
+// and what `loop <name> --dry-run` prints. A PR whose state cannot be read is
 // skipped with the error, so one bad PR never stalls the poll; a failed list read,
 // or not knowing which branches another loop holds, fails the whole poll.
 func (s *Source) Plan() ([]Candidate, error) {
@@ -241,6 +261,9 @@ func (s *Source) judge(pr github.PullRequest, held map[string]string) Candidate 
 		default:
 			return skip("green")
 		}
+	}
+	if s.opts.Only != "" && c.Kind != s.opts.Only {
+		return skip("%s — not this loop's (its source.when leaves it out)", c.Kind.describe())
 	}
 
 	comments, err := s.gh.Comments(pr.Number)
@@ -430,8 +453,8 @@ func (s *Source) handOffComment(c Candidate) string {
 	for _, a := range c.Tried {
 		fmt.Fprintf(&b, "- the %s at `%s` (%s)\n", a.Kind.describe(), short(a.SHA), a.At.UTC().Format("2006-01-02 15:04Z"))
 	}
-	fmt.Fprintf(&b, "\nIt is still failing with a %s at `%s`. The run logs are under `.agent-harness/logs/prs/%s/`. Remove the `%s` label to give it another %d attempts.\n",
-		c.Kind.describe(), short(c.PR.HeadSHA), strings.ToLower(Key(c.PR.Number)), s.opts.BlockedLabel, s.opts.MaxAttempts)
+	fmt.Fprintf(&b, "\nIt is still failing with a %s at `%s`. The run logs are under `%s/%s/`. Remove the `%s` label to give it another %d attempts.\n",
+		c.Kind.describe(), short(c.PR.HeadSHA), s.opts.LogDir, strings.ToLower(Key(c.PR.Number)), s.opts.BlockedLabel, s.opts.MaxAttempts)
 	return b.String()
 }
 

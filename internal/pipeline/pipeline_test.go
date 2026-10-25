@@ -363,3 +363,21 @@ func TestRunFoldsTheDispositionInPrecedenceOrder(t *testing.T) {
 		})
 	}
 }
+
+// A loop without the retro step leaves Retrospective nil: the run ends after
+// review, and its verdict is the two Stages that ran.
+func TestRunWithoutARetrospectiveEndsAfterReview(t *testing.T) {
+	r := &recorder{}
+	out := Run(Deps{
+		FetchMain:      func() error { return nil },
+		Implementation: r.stage("impl", stages.Result{OK: true}),
+		Review:         r.stage("review", stages.Result{OK: true, Disposition: stages.Shipped}),
+		Log:            r,
+	})
+	if want := []string{"impl", "review"}; !reflect.DeepEqual(r.order, want) {
+		t.Errorf("stage order = %v, want %v", r.order, want)
+	}
+	if !out.OK || out.Disposition != stages.Shipped {
+		t.Errorf("Run = %+v, want an OK shipped run", out)
+	}
+}
