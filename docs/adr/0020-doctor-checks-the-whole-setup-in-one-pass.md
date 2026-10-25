@@ -38,7 +38,7 @@ The checks are read-only. Each one gives a verdict: ok, warn, fail or skip.
 | `.env` | `config.ResolveEnvFile` and `config.LoadDotEnv`, as a Stage does. Names the file that was read and every candidate that was skipped |
 | PROJECT_PATH | `config.ProjectPathProblem`, the same check as `config.Load` |
 | Claude credential | `GET /v1/models` with `ANTHROPIC_API_KEY`. Warns when `CLAUDE_CODE_OAUTH_TOKEN` is also set, because Claude Code then uses the API key |
-| GH_TOKEN | `GET /user`. `X-OAuth-Scopes` must be present (classic token) and include `repo` |
+| GH_TOKEN | `GET /user`. `X-OAuth-Scopes` must be present (classic token) and include `repo`; a missing `workflow` warns (amended, #119) |
 | config.toml, prompt bodies | `config.LoadProject`, `config.LoadPrompts` |
 | tracker | the credential is accepted and the configured repo/team/project and labels exist |
 | sandbox image | present (`docker image inspect`), buildable (the declared Dockerfile exists) or pullable (`docker manifest inspect`). Never builds or pulls |
@@ -93,6 +93,10 @@ The ticket left two questions open. They are answered here:
   warns about it (`ci.PreflightMessage`): the PR still ships, but its CI is not
   watched. Making it a failure in `doctor` matches the README's "must be a
   classic PAT", and still lets a run started anyway go ahead.
+- `doctor` asks for the same scopes as the startup check (`github.CheckToken`):
+  `repo` and `workflow` (amended, #119). A token without `workflow` is a **warn**,
+  not a fail. The harness works until a branch edits `.github/workflows/`, and
+  then GitHub refuses the push.
 - The tracker checks duplicate a little of what each adapter knows: the Linear
   GraphQL shape, the GitHub label path and the Jira project path. They do not go
   through the `tracker.Tracker` port because the port has no "does this exist?"

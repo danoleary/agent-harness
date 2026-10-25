@@ -293,7 +293,9 @@ func TestClaudeCredential(t *testing.T) {
 
 // GH_TOKEN must be a classic token with `repo`: the scope list only exists on a
 // classic token's X-OAuth-Scopes header, and a fine-grained PAT cannot read the
-// check runs the post-PR CI watch depends on.
+// check runs the post-PR CI watch depends on. `workflow` is the scope the startup
+// check (github.CheckToken) also asks for: without it GitHub refuses a push that
+// edits .github/workflows/, so its absence warns rather than passing silently (#119).
 func TestGitHubTokenScopes(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -302,7 +304,8 @@ func TestGitHubTokenScopes(t *testing.T) {
 		want   Status
 		detail string
 	}{
-		{"classic with repo", ptr("repo, workflow"), 200, OK, "repo"},
+		{"classic with repo and workflow", ptr("repo, workflow"), 200, OK, "workflow"},
+		{"classic without workflow", ptr("repo, read:org"), 200, Warn, "workflow"},
 		{"classic without repo", ptr("read:org, gist"), 200, Fail, "repo"},
 		{"fine-grained", nil, 200, Fail, "fine-grained"},
 		{"rejected", ptr("repo"), 401, Fail, "rejected"},
@@ -323,7 +326,7 @@ func TestGitHubTokenScopes(t *testing.T) {
 			if !strings.Contains(r.Detail, tc.detail) {
 				t.Errorf("detail %q does not mention %q", r.Detail, tc.detail)
 			}
-			if r.Status == Fail && !strings.Contains(r.Fix, "github.com/settings/tokens") {
+			if r.Status != OK && !strings.Contains(r.Fix, "github.com/settings/tokens") {
 				t.Errorf("fix %q does not link the classic-token page", r.Fix)
 			}
 		})

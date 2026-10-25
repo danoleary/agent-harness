@@ -453,6 +453,24 @@ func (pc *ProjectConfig) validate() []string {
 			problems = append(problems, "tracker.ready_label is required for kind=linear (the human-applied gate that makes a ticket eligible for unattended work)")
 		}
 	}
+	// Jira has no defaults either: without a project or the two JQL queues the
+	// adapter has nothing to select from or reap, and without the transition names
+	// it cannot claim, release or cancel. Each would otherwise surface at first
+	// use, e.g. "no transition configured" at the first claim (#119).
+	if pc.Tracker.Kind == "jira" {
+		for _, k := range []struct{ key, value, what string }{
+			{"project_key", pc.Tracker.ProjectKey, "the Jira project Findings are filed in, e.g. \"PROJ\""},
+			{"ready_jql", pc.Tracker.ReadyJQL, "the JQL for the ready queue"},
+			{"in_progress_jql", pc.Tracker.InProgressJQL, "the JQL for claimed tickets, which the stale-claim reaper sweeps"},
+			{"in_progress_transition", pc.Tracker.InProgressTransition, "the workflow transition name that claims a ticket"},
+			{"todo_transition", pc.Tracker.TodoTransition, "the transition name that releases a ticket"},
+			{"cancel_transition", pc.Tracker.CanceledTransition, "the transition name that closes a ticket the review recommends closing"},
+		} {
+			if k.value == "" {
+				problems = append(problems, fmt.Sprintf("tracker.%s is required for kind=jira (%s)", k.key, k.what))
+			}
+		}
+	}
 	if len(pc.Gates) == 0 {
 		problems = append(problems, "at least one [[gates]] entry is required")
 	}
