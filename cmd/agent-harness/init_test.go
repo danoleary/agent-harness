@@ -57,3 +57,25 @@ func TestRunInitRefusalExitsNonZero(t *testing.T) {
 		t.Errorf("refusal does not say what to pass: %s", errOut.String())
 	}
 }
+
+// The dispatcher's `init` row is the first thing a new Consumer reads, so it must
+// advertise every flag init actually defines, not a subset that drifted (#119).
+func TestInitRowAdvertisesEveryInitFlag(t *testing.T) {
+	cmd, _ := lookup("init")
+	var out, errOut bytes.Buffer
+	if code := runInit([]string{"--help"}, t.TempDir(), strings.NewReader(""), &out, &errOut); code != 0 {
+		t.Fatalf("init --help exit %d: %s", code, errOut.String())
+	}
+	for _, line := range strings.Split(out.String(), "\n") {
+		if !strings.HasPrefix(line, "  -") {
+			continue
+		}
+		name := strings.Fields(strings.TrimPrefix(line, "  -"))[0]
+		if len(name) == 1 {
+			continue // a shorthand, e.g. -y for --yes
+		}
+		if !strings.Contains(cmd.Args, "--"+name) {
+			t.Errorf("init row %q does not advertise --%s", cmd.Args, name)
+		}
+	}
+}

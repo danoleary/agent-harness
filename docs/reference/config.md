@@ -84,11 +84,11 @@ is env-only. Setup guides: [GitHub Issues](../how-to/github-issues.md),
 | `cancel_transition` | jira | yes | Transition name that closes a ticket the review recommends closing. |
 | `findings_issue_type` | jira | no | Issue type for filed Findings. Default `"Task"`. |
 
-"Needed" means the tracker can't work without it. Only Linear's needed keys,
-and `kind`, are checked at config load; GitHub's `repo` is checked when the
-tracker is built. A missing Jira key
-surfaces when the harness first uses it, for example
-`no transition configured for issue PROJ-1` at claim time.
+"Needed" means the tracker can't work without it. `kind` and the needed Linear
+and Jira keys are checked at config load; GitHub's `repo` is checked when the
+tracker is built. A Jira transition name that is set but misspelled still
+surfaces at first use, for example `transition "In Progres" not available on
+issue PROJ-1` at claim time.
 
 ## `[feedback]`
 

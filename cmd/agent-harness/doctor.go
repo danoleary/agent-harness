@@ -45,8 +45,8 @@ func parseDoctorArgs(args []string) (offline, help bool, err error) {
 		case "--offline":
 			offline = true
 		case "--verbose", "--dry-run":
-			// Every command takes these (see usage); doctor is read-only and
-			// already prints everything, so they change nothing.
+			// The per-run flags of pipeline and the stages; doctor is read-only
+			// and already prints everything, so they are accepted and change nothing.
 		case "--help", "-h":
 			return false, true, nil
 		default:

@@ -156,3 +156,71 @@ func TestTheIndexListsEveryPage(t *testing.T) {
 		t.Error("docs/README.md does not link the ADR directory, docs/adr/")
 	}
 }
+
+// TestTheTDDSkillListsEveryGuard keeps the /tdd skill's "Repo guards" list in step
+// with `make check`: every check-* prerequisite of check: (bar check-scripts,
+// which runs the guards' own tests) must be named there, with the script it runs,
+// so a session learns a guard before writing code rather than when the gate goes
+// red (#136).
+func TestTheTDDSkillListsEveryGuard(t *testing.T) {
+	root := repoRoot(t)
+	b, err := os.ReadFile(filepath.Join(root, "Makefile"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	makefile := strings.Split(string(b), "\n")
+
+	var guards []string
+	for _, l := range makefile {
+		if prereqs, ok := strings.CutPrefix(l, "check:"); ok {
+			for _, p := range strings.Fields(prereqs) {
+				if strings.HasPrefix(p, "check-") && p != "check-scripts" {
+					guards = append(guards, p)
+				}
+			}
+		}
+	}
+	if len(guards) == 0 {
+		t.Fatal("found no check-* prerequisites on the Makefile's check: line")
+	}
+
+	const skill = ".claude/skills/tdd/SKILL.md"
+	var section []string
+	in := false
+	for _, l := range prose(t, filepath.Join(root, skill)) {
+		if strings.HasPrefix(l, "## ") {
+			in = strings.HasPrefix(l, "## Repo guards")
+		}
+		if in {
+			section = append(section, l)
+		}
+	}
+	if len(section) == 0 {
+		t.Fatalf("%s has no \"## Repo guards\" section", skill)
+	}
+	listed := strings.Join(section, "\n")
+
+	scriptRe := regexp.MustCompile(`scripts/[\w.-]+\.sh`)
+	for _, guard := range guards {
+		if !strings.Contains(listed, "`"+guard+"`") {
+			t.Errorf("%s: the Repo guards section does not name `%s`; add a line saying what it rejects", skill, guard)
+		}
+		script := ""
+		for i, l := range makefile {
+			if l == guard+":" {
+				for _, r := range makefile[i+1:] {
+					if !strings.HasPrefix(r, "\t") {
+						break
+					}
+					if s := scriptRe.FindString(r); s != "" {
+						script = s
+						break
+					}
+				}
+			}
+		}
+		if script != "" && !strings.Contains(listed, "`"+script+"`") {
+			t.Errorf("%s: the Repo guards section does not name `%s`, which `%s` runs", skill, script, guard)
+		}
+	}
+}

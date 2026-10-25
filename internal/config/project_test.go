@@ -626,17 +626,51 @@ command = "c"
 	}
 }
 
+// Jira's needed [tracker] keys fail at load like Linear's, rather than at the
+// first claim as "no transition configured" or as a JQL search over nothing
+// (#119). Each case drops one key from an otherwise complete Jira tracker.
+func TestLoadProjectJiraRequiresItsNeededKeys(t *testing.T) {
+	keys := []string{"project_key", "ready_jql", "in_progress_jql",
+		"in_progress_transition", "todo_transition", "cancel_transition"}
+	for _, missing := range keys {
+		t.Run(missing, func(t *testing.T) {
+			body := "image = \"x\"\n[tracker]\nkind = \"jira\"\n"
+			for _, k := range keys {
+				if k != missing {
+					body += k + " = \"v\"\n"
+				}
+			}
+			body += "[[gates]]\nname = \"check\"\ncommand = \"c\"\n"
+			dir := t.TempDir()
+			writeProjectConfig(t, dir, body)
+			_, err := LoadProject(dir)
+			if err == nil || !strings.Contains(err.Error(), "tracker."+missing+" is required for kind=jira") {
+				t.Errorf("want an error naming tracker.%s, got: %v", missing, err)
+			}
+		})
+	}
+}
+
 // The two fields are linear-only: GitHub scopes by repo and Jira by project key,
 // so requiring a Linear team key of them would be a new barrier to the very
 // Consumers the Tracker port exists to serve.
 func TestLoadProjectNonLinearKindsNeedNoTeamKey(t *testing.T) {
-	for _, kind := range []string{"github", "jira"} {
+	for kind, keys := range map[string]string{
+		"github": "",
+		"jira": `project_key = "PROJ"
+ready_jql = "labels = ready"
+in_progress_jql = "status = 'In Progress'"
+in_progress_transition = "Start"
+todo_transition = "Stop"
+cancel_transition = "Cancel"`,
+	} {
 		t.Run(kind, func(t *testing.T) {
 			dir := t.TempDir()
 			writeProjectConfig(t, dir, `
 image = "x"
 [tracker]
 kind = "`+kind+`"
+`+keys+`
 [[gates]]
 name = "check"
 command = "c"

@@ -51,7 +51,7 @@ Nothing restarts a stopped loop. The `loop` exit code tells a deliberate stop
 | `SESSION_IDLE_TIMEOUT (…) must be below the … cap` | the idle timeout can never fire | lower it, or raise the cap |
 | `<KEY> must be <want>, got "<raw>"` | a bad `LOOP_*`, `GATE_*` or `PR_LOOP_*` value | [env reference](env.md#the-loop-daemon) |
 | `loops[i] ("name"): …` | a `[[loops]]` problem: an unknown step, a step out of order, a missing prompt | [declare a loop](../how-to/declare-a-loop.md) |
-| `no transition configured for issue PROJ-1` / `transition "…" not available on issue PROJ-1` | a Jira transition key is missing or misspelled | [Jira](../how-to/jira.md#2-find-your-transition-names) |
+| `no transition configured for issue PROJ-1` / `transition "…" not available on issue PROJ-1` | a Jira transition name is misspelled (a missing key fails at config load) | [Jira](../how-to/jira.md#2-find-your-transition-names) |
 
 ## Sandbox preflight
 

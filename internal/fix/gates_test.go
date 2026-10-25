@@ -16,21 +16,31 @@ import (
 	"github.com/danoleary/agent-harness/internal/session"
 )
 
+// meetDeadline bounds how long, from the start of gatingRuns, its gates wait for
+// each other: long enough that a loaded machine still meets, short enough that a
+// limiter which serialises gates fails the test instead of hanging it.
+const meetDeadline = 10 * time.Second
+
 // gatingRuns runs `runs` gate sets at once, one per loop instance, each with its
 // own Host and run log over one shared lock dir, and reports the most gates that
-// were running at any moment.
-func gatingRuns(t *testing.T, cfg config.Config, runs int) int32 {
+// were running at any moment. With meet > 0 each gate holds until meet gates are
+// inside at once (or meetDeadline passes), so overlap is a barrier rather than a
+// race between sleeps (#131); with meet 0 each gate just holds briefly.
+func gatingRuns(t *testing.T, cfg config.Config, runs, meet int) int32 {
 	t.Helper()
-	worst, _ := gatingRunsLogged(t, cfg, runs)
+	worst, _ := gatingRunsLogged(t, cfg, runs, meet)
 	return worst
 }
 
 // gatingRunsLogged is gatingRuns that also returns each run's logs root.
-func gatingRunsLogged(t *testing.T, cfg config.Config, runs int) (int32, []string) {
+func gatingRunsLogged(t *testing.T, cfg config.Config, runs, meet int) (int32, []string) {
 	t.Helper()
 	var roots []string
 	var inside, worst atomic.Int32
 	var wg sync.WaitGroup
+	met := make(chan struct{})
+	var meetOnce sync.Once
+	giveUp := time.Now().Add(meetDeadline)
 	// One handoff carrying a code change, so the docs-only skip never fires; every
 	// run gates the same worktree, each through its own Host.
 	repo := gittest.New(t)
@@ -45,7 +55,17 @@ func gatingRunsLogged(t *testing.T, cfg config.Config, runs int) (int32, []strin
 					break
 				}
 			}
-			time.Sleep(20 * time.Millisecond)
+			if meet <= 0 {
+				time.Sleep(20 * time.Millisecond)
+			} else {
+				if n >= int32(meet) {
+					meetOnce.Do(func() { close(met) })
+				}
+				select {
+				case <-met:
+				case <-time.After(time.Until(giveUp)):
+				}
+			}
 			inside.Add(-1)
 			return session.Outcome{}
 		}
@@ -76,19 +96,21 @@ func TestGateLimitOfOneNeverRunsTwoGateSetsAtOnce(t *testing.T) {
 	cfg.GateConcurrency = 1
 	cfg.GateLockDir = t.TempDir()
 
-	if worst := gatingRuns(t, cfg, 3); worst != 1 {
+	if worst := gatingRuns(t, cfg, 3, 0); worst != 1 {
 		t.Errorf("%d gates ran at once under a limit of 1", worst)
 	}
 }
 
-// The limit is a count, not a mutex: at 2, two runs gate side by side.
+// The limit is a count, not a mutex: at 2, two runs gate side by side. Each gate
+// holds until the other has entered, so the test does not depend on the two
+// windows happening to overlap on a loaded machine (#131).
 func TestGateLimitOfTwoLetsTwoRunsGateTogether(t *testing.T) {
 	cfg := config.Config{}
 	cfg.Gates = []config.Gate{{Name: "build", Command: "make"}}
 	cfg.GateConcurrency = 2
 	cfg.GateLockDir = t.TempDir()
 
-	if worst := gatingRuns(t, cfg, 2); worst != 2 {
+	if worst := gatingRuns(t, cfg, 2, 2); worst != 2 {
 		t.Errorf("%d gates ran at once under a limit of 2, want 2", worst)
 	}
 }
@@ -101,7 +123,7 @@ func TestAGateRunThatWaitsForASlotNarratesIt(t *testing.T) {
 	cfg.GateConcurrency = 1
 	cfg.GateLockDir = t.TempDir()
 
-	_, roots := gatingRunsLogged(t, cfg, 2)
+	_, roots := gatingRunsLogged(t, cfg, 2, 0)
 
 	var all strings.Builder
 	for _, root := range roots {

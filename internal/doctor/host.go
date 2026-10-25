@@ -173,13 +173,16 @@ func checkClaude(p Probes) Result {
 // fineGrainedPrefix marks a fine-grained personal access token.
 const fineGrainedPrefix = "github_pat_"
 
-// checkGitHubToken checks GH_TOKEN is a live classic token with the `repo` scope.
-// Only a classic token (or a gh OAuth token) answers with X-OAuth-Scopes; a
-// fine-grained PAT has none, and it cannot read the check runs the post-PR CI
-// watch depends on.
+// checkGitHubToken checks GH_TOKEN is a live classic token with the `repo` scope,
+// and warns without `workflow` — the two scopes the startup check
+// (github.CheckToken) asks a replacement for. Only a classic token (or a gh OAuth
+// token) answers with X-OAuth-Scopes; a fine-grained PAT has none, and it cannot
+// read the check runs the post-PR CI watch depends on. `workflow` only warns:
+// without it the harness works until a branch edits .github/workflows/, and then
+// GitHub refuses the push.
 func checkGitHubToken(p Probes) Result {
 	const name = "GH_TOKEN"
-	fix := "create a classic token with the repo scope at " + config.GitHubTokenURL + " and set GH_TOKEN to it"
+	fix := "create a classic token with the repo and workflow scopes at " + config.GitHubTokenURL + " and set GH_TOKEN to it"
 	token := p.Getenv("GH_TOKEN")
 	switch {
 	case token == "":
@@ -208,13 +211,19 @@ func checkGitHubToken(p Probes) Result {
 		return fineGrained(fix)
 	}
 	scopes := strings.Join(header, ",")
-	for _, s := range strings.Split(scopes, ",") {
-		if strings.TrimSpace(s) == "repo" {
-			return Result{Name: name, Status: OK, Detail: "classic token with the repo scope"}
-		}
+	has := map[string]bool{}
+	for _, sc := range strings.Split(scopes, ",") {
+		has[strings.TrimSpace(sc)] = true
 	}
-	return Result{Name: name, Status: Fail,
-		Detail: fmt.Sprintf("classic token without the repo scope (has: %s)", orNone(scopes)), Fix: fix}
+	switch {
+	case !has["repo"]:
+		return Result{Name: name, Status: Fail,
+			Detail: fmt.Sprintf("classic token without the repo scope (has: %s)", orNone(scopes)), Fix: fix}
+	case !has["workflow"]:
+		return Result{Name: name, Status: Warn,
+			Detail: "classic token with repo but not workflow; GitHub will refuse a push that edits .github/workflows/", Fix: fix}
+	}
+	return Result{Name: name, Status: OK, Detail: "classic token with the repo and workflow scopes"}
 }
 
 func fineGrained(fix string) Result {

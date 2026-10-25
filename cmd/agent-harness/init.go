@@ -17,6 +17,10 @@ func initMain(args []string) int {
 	return runInit(args, checkoutRoot(), os.Stdin, os.Stdout, os.Stderr)
 }
 
+// initArgs is init's flag grammar, shared by its own usage and the dispatcher's
+// help row so the two cannot drift apart (#119).
+const initArgs = "[--yes] [--force] [--toolchain T] [--repo owner/name]"
+
 // runInit scaffolds dir's .agent-harness/ (internal/scaffold, ADR-0021).
 func runInit(args []string, dir string, in io.Reader, out, errOut io.Writer) int {
 	fs := flag.NewFlagSet("init", flag.ContinueOnError)
@@ -27,7 +31,7 @@ func runInit(args []string, dir string, in io.Reader, out, errOut io.Writer) int
 	toolchain := fs.String("toolchain", "", "the project toolchain: go, pnpm, dotnet or python (default: detected)")
 	repo := fs.String("repo", "", "the GitHub owner/name whose issues are the tickets (default: the origin remote)")
 	fs.Usage = func() {
-		fmt.Fprint(fs.Output(), "usage: agent-harness init [--yes] [--force] [--toolchain T] [--repo owner/name]\n\n"+
+		fmt.Fprint(fs.Output(), "usage: agent-harness init "+initArgs+"\n\n"+
 			"Scaffold this checkout's .agent-harness/ directory: config.toml, a Dockerfile FROM\n"+
 			"the pinned sandbox base, the three prompt bodies, and a gitignored .env.\n\n")
 		fs.PrintDefaults()

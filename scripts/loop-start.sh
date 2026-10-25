@@ -124,18 +124,22 @@ LOOP_BIN="${LOOP_BIN:-$HARNESS_DIR/bin/loop}"
 # Writing the pidfile anywhere else makes a running daemon look stopped.
 #
 # PROJECT_PATH comes from the environment, else from the same env file the daemon
-# itself reads, looked up in the same order (config.ResolveEnvFile):
+# itself reads, looked up in the same order (config.EnvFileCandidates):
 #
 #   1. $HARNESS_ENV_FILE                                      explicit
-#   2. $HARNESS_DIR/.env                                      beside the binary
+#   2. $PWD/.env                                              a harness checkout
 #   3. $PWD/.agent-harness/.env                                in the project
-#   4. ${XDG_CONFIG_HOME:-$HOME/.config}/agent-harness/.env   operator config dir
+#   4. $PROJECT_PATH/.agent-harness/.env                       PROJECT_PATH exported
+#   5. ${XDG_CONFIG_HOME:-$HOME/.config}/agent-harness/.env   operator config dir
 #
-# The sibling file is checked before the rest so a from-source operator's existing
-# layout keeps winning. The in-repo file is what an operator gets when they keep
-# credentials beside the config and prompts their project already commits; the
-# harness masks that exact path in every container, so the sandbox cannot read it.
-# The config dir is for an operator driving several projects from one install.
+# The two lookups must agree (#118). The daemon inherits this shell's cwd and
+# resolves from it; it never looks beside this script. A file only the script
+# read could name the project while the daemon loaded another file's credentials.
+# The cwd .env is how a from-source operator runs, from the checkout root. The
+# in-repo file is what an operator gets when they keep credentials beside the
+# config and prompts their project already commits; the harness masks that exact
+# path in every container, so the sandbox cannot read it. The config dir is for an
+# operator driving several projects from one install.
 #
 # Without a lookup that covers all of them, PROJECT_PATH stays unset, the pidfile
 # and log default beside the binary instead of under the Consumer's
@@ -152,8 +156,9 @@ harness_config_home="${XDG_CONFIG_HOME:-${HOME:-}/.config}"
 env_file_value() {
     for env_candidate in \
         "${HARNESS_ENV_FILE:-}" \
-        "$HARNESS_DIR/.env" \
+        "$PWD/.env" \
         "$PWD/.agent-harness/.env" \
+        "${PROJECT_PATH:+$PROJECT_PATH/.agent-harness/.env}" \
         "${harness_config_home}/agent-harness/.env"; do
         [ -n "$env_candidate" ] || continue
         [ -f "$env_candidate" ] || continue

@@ -184,12 +184,12 @@ else
     echo -e "${GREEN}PASS${NC}"
 fi
 
-# --- PROJECT_PATH is read from the sibling .env when unset in the environment --
+# --- PROJECT_PATH is read from <cwd>/.env when unset in the environment -------
 #
-# The operator's normal path: `./scripts/loop-start.sh` with no exported env, the
-# same .env the daemon itself reads. The .env must be GREPPED, never sourced — it
+# The from-source operator's normal path: `./scripts/loop-start.sh` from the
+# checkout root with no exported env, the same .env the daemon itself reads. The .env must be GREPPED, never sourced — it
 # holds live credentials.
-echo -n "loop-start.sh reads PROJECT_PATH from the sibling .env ... "
+echo -n "loop-start.sh reads PROJECT_PATH from <cwd>/.env ... "
 ENV_HARNESS="$TEST_DIR/harness-with-env"
 mkdir -p "$ENV_HARNESS/scripts" "$ENV_HARNESS/bin"
 cp "$SCRIPT_PATH" "$ENV_HARNESS/scripts/loop-start.sh"
@@ -214,11 +214,10 @@ else
     echo -e "${GREEN}PASS${NC}"
 fi
 
-# --- PROJECT_PATH is read from the operator config dir when there is no sibling .env
+# --- PROJECT_PATH is read from the operator config dir when there is no <cwd>/.env
 #
 # The download-only operator: binaries on PATH, credentials in
-# ~/.config/agent-harness/.env, and no harness checkout for a sibling .env to sit
-# beside. Without this lookup PROJECT_PATH stays unset here, the pidfile and log
+# ~/.config/agent-harness/.env, and no harness checkout holding a .env. Without this lookup PROJECT_PATH stays unset here, the pidfile and log
 # default beside the binary instead of under the Consumer's .agent-harness/, and
 # `watch` reports a running daemon as stopped.
 echo -n "loop-start.sh reads PROJECT_PATH from the operator config dir ... "
@@ -247,12 +246,12 @@ else
     echo -e "${GREEN}PASS${NC}"
 fi
 
-# --- a sibling .env still outranks the config dir --------------------------
+# --- <cwd>/.env still outranks the config dir ------------------------------
 #
-# The from-source operator must not have their behaviour changed by the new
-# lookup: the .env beside the binary is the one the daemon itself prefers when it
-# runs from that directory, so loop-start.sh must agree with it.
-echo -n "loop-start.sh prefers a sibling .env over the operator config dir ... "
+# The from-source operator must not have their behaviour changed by the config-dir
+# lookup: <cwd>/.env is the one the daemon itself prefers, so loop-start.sh must
+# agree with it.
+echo -n "loop-start.sh prefers <cwd>/.env over the operator config dir ... "
 BOTH_HARNESS="$TEST_DIR/harness-both"
 mkdir -p "$BOTH_HARNESS/scripts" "$BOTH_HARNESS/bin"
 cp "$SCRIPT_PATH" "$BOTH_HARNESS/scripts/loop-start.sh"
@@ -268,7 +267,7 @@ echo "PROJECT_PATH=\"$IGNORED_PROJ\"" > "$BOTH_XDG/agent-harness/.env"
 both_pid="$(cat "$SIBLING_PROJ/.agent-harness/loop.pid" 2>/dev/null || true)"
 STARTED_PIDS="$STARTED_PIDS $both_pid"
 if [ -f "$IGNORED_PROJ/.agent-harness/loop.pid" ]; then
-    echo -e "${RED}FAIL${NC} - the config-dir .env won; a sibling .env must outrank it"
+    echo -e "${RED}FAIL${NC} - the config-dir .env won; <cwd>/.env must outrank it"
     exit 1
 elif [ -z "$both_pid" ] || ! kill -0 "$both_pid" 2>/dev/null; then
     echo -e "${RED}FAIL${NC} - no live pidfile at $SIBLING_PROJ/.agent-harness/loop.pid"
@@ -294,7 +293,7 @@ mkdir -p "$REPO_PROJ/.agent-harness"
     echo "GH_TOKEN=\$(touch $TEST_DIR/SOURCED_THE_REPO_ENV)"
     echo "PROJECT_PATH=\"$REPO_PROJ\""
 } > "$REPO_PROJ/.agent-harness/.env"
-# Run FROM the project, with no sibling .env and an empty config dir.
+# Run FROM the project, with no <cwd>/.env and an empty config dir.
 ( cd "$REPO_PROJ" && env -u PROJECT_PATH XDG_CONFIG_HOME="$TEST_DIR/empty-xdg" "$REPO_HARNESS/scripts/loop-start.sh" > /dev/null 2>&1 )
 repo_pid="$(cat "$REPO_PROJ/.agent-harness/loop.pid" 2>/dev/null || true)"
 STARTED_PIDS="$STARTED_PIDS $repo_pid"
@@ -303,6 +302,57 @@ if [ -f "$TEST_DIR/SOURCED_THE_REPO_ENV" ]; then
     exit 1
 elif [ -z "$repo_pid" ] || ! kill -0 "$repo_pid" 2>/dev/null; then
     echo -e "${RED}FAIL${NC} - no live pidfile at $REPO_PROJ/.agent-harness/loop.pid (PROJECT_PATH not read from the project)"
+    exit 1
+else
+    echo -e "${GREEN}PASS${NC}"
+fi
+
+# --- the lookup is the daemon's: <cwd>/.env, not a .env beside the script (#118)
+#
+# The daemon inherits the caller's cwd and resolves its env file from THAT
+# (config.EnvFileCandidates); it never looks beside the script. A .env beside the
+# script that the daemon cannot see must not decide the project, or the pidfile
+# and log land under one project while the daemon reads another's credentials.
+echo -n "loop-start.sh reads the working directory's .env, not one beside the script ... "
+CWD_HARNESS="$TEST_DIR/harness-cwd"
+mkdir -p "$CWD_HARNESS/scripts" "$CWD_HARNESS/bin"
+cp "$SCRIPT_PATH" "$CWD_HARNESS/scripts/loop-start.sh"
+cp "$FAKE_BIN" "$CWD_HARNESS/bin/loop"
+CWD_PROJ="$TEST_DIR/consumer-cwd-wins"
+BESIDE_PROJ="$TEST_DIR/consumer-beside-script"
+CWD_RUN="$TEST_DIR/run-from-here"
+mkdir -p "$CWD_PROJ" "$BESIDE_PROJ" "$CWD_RUN"
+echo "PROJECT_PATH=\"$CWD_PROJ\"" > "$CWD_RUN/.env"
+echo "PROJECT_PATH=\"$BESIDE_PROJ\"" > "$CWD_HARNESS/.env"
+( cd "$CWD_RUN" && env -u PROJECT_PATH XDG_CONFIG_HOME="$TEST_DIR/empty-xdg" "$CWD_HARNESS/scripts/loop-start.sh" > /dev/null 2>&1 )
+cwd_pid="$(cat "$CWD_PROJ/.agent-harness/loop.pid" 2>/dev/null || true)"
+STARTED_PIDS="$STARTED_PIDS $cwd_pid $(cat "$BESIDE_PROJ/.agent-harness/loop.pid" 2>/dev/null || true)"
+if [ -f "$BESIDE_PROJ/.agent-harness/loop.pid" ]; then
+    echo -e "${RED}FAIL${NC} - the .env beside the script won; the daemon reads <cwd>/.env"
+    exit 1
+elif [ -z "$cwd_pid" ] || ! kill -0 "$cwd_pid" 2>/dev/null; then
+    echo -e "${RED}FAIL${NC} - no live pidfile at $CWD_PROJ/.agent-harness/loop.pid (<cwd>/.env not read)"
+    exit 1
+else
+    echo -e "${GREEN}PASS${NC}"
+fi
+
+# --- <cwd>/.env outranks <cwd>/.agent-harness/.env, as in the daemon -----------
+echo -n "loop-start.sh prefers <cwd>/.env over <cwd>/.agent-harness/.env ... "
+RANK_RUN="$TEST_DIR/run-both-cwd-files"
+RANK_PROJ="$TEST_DIR/consumer-cwd-env-wins"
+RANK_IGNORED="$TEST_DIR/consumer-cwd-in-repo-loses"
+mkdir -p "$RANK_RUN/.agent-harness" "$RANK_PROJ" "$RANK_IGNORED"
+echo "PROJECT_PATH=\"$RANK_PROJ\"" > "$RANK_RUN/.env"
+echo "PROJECT_PATH=\"$RANK_IGNORED\"" > "$RANK_RUN/.agent-harness/.env"
+( cd "$RANK_RUN" && env -u PROJECT_PATH XDG_CONFIG_HOME="$TEST_DIR/empty-xdg" "$CWD_HARNESS/scripts/loop-start.sh" > /dev/null 2>&1 )
+rank_pid="$(cat "$RANK_PROJ/.agent-harness/loop.pid" 2>/dev/null || true)"
+STARTED_PIDS="$STARTED_PIDS $rank_pid $(cat "$RANK_IGNORED/.agent-harness/loop.pid" 2>/dev/null || true)"
+if [ -f "$RANK_IGNORED/.agent-harness/loop.pid" ]; then
+    echo -e "${RED}FAIL${NC} - <cwd>/.agent-harness/.env won; <cwd>/.env must outrank it"
+    exit 1
+elif [ -z "$rank_pid" ] || ! kill -0 "$rank_pid" 2>/dev/null; then
+    echo -e "${RED}FAIL${NC} - no live pidfile at $RANK_PROJ/.agent-harness/loop.pid"
     exit 1
 else
     echo -e "${GREEN}PASS${NC}"
@@ -530,6 +580,29 @@ elif [ -f "$CAFF_RECORD" ]; then
     echo -e "${RED}FAIL${NC} - LOOP_KEEP_AWAKE=0 in the environment did not outrank the .env"
     exit 1
 else
+    echo -e "${GREEN}PASS${NC}"
+fi
+
+# The daemon also reads $PROJECT_PATH/.agent-harness/.env when PROJECT_PATH is
+# exported and the cwd has no env file (#118), so the launcher must too.
+echo -n "loop-start.sh reads LOOP_KEEP_AWAKE from \$PROJECT_PATH/.agent-harness/.env ... "
+PP_PROJ="$TEST_DIR/consumer-awake-in-repo"
+PP_RUN="$TEST_DIR/run-awake-elsewhere"
+mkdir -p "$PP_PROJ/.agent-harness" "$PP_RUN"
+echo "LOOP_KEEP_AWAKE=1" > "$PP_PROJ/.agent-harness/.env"
+rm -f "$CAFF_RECORD"
+( cd "$PP_RUN" && PATH="$CAFF_BIN:$PATH" PROJECT_PATH="$PP_PROJ" XDG_CONFIG_HOME="$TEST_DIR/empty-xdg" env -u LOOP_KEEP_AWAKE -u HARNESS_ENV_FILE "$CWD_HARNESS/scripts/loop-start.sh" > /dev/null 2>&1 )
+pp_pid="$(cat "$PP_PROJ/.agent-harness/loop.pid" 2>/dev/null || true)"
+STARTED_PIDS="$STARTED_PIDS $pp_pid"
+wait_for_log "$CAFF_RECORD" "is" || true
+if [ -z "$pp_pid" ] || ! kill -0 "$pp_pid" 2>/dev/null; then
+    echo -e "${RED}FAIL${NC} - no live pidfile at $PP_PROJ/.agent-harness/loop.pid"
+    exit 1
+elif [ "$(cat "$CAFF_RECORD" 2>/dev/null)" != "-is -w $pp_pid" ]; then
+    echo -e "${RED}FAIL${NC} - LOOP_KEEP_AWAKE=1 in \$PROJECT_PATH/.agent-harness/.env did not start caffeinate"
+    exit 1
+else
+    kill "$pp_pid" 2>/dev/null || true
     echo -e "${GREEN}PASS${NC}"
 fi
 
