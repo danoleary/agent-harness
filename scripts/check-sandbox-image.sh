@@ -1,13 +1,14 @@
 #!/bin/bash
 # Probe a built sandbox image for its toolchain the way a Gate sees it (#40).
 #
-# The harness runs post_create and every Gate as `bash -lc <command>` through the
-# base image's entrypoint. A login shell sources /etc/profile, which RESETS PATH,
-# so a toolchain put on PATH only by a Dockerfile `ENV PATH=...` is visible to the
-# in-session shell and invisible to the Gate: `make check` exits 127 host-side on
-# a branch that passed it in-session. This probe runs the image exactly that way
-# and fails, naming each tool, if one does not resolve — so the regression is
-# caught when the image changes, not at a ticket's push gate.
+# The harness runs post_create and every Gate as a non-login `bash -c <command>`
+# through the base image's entrypoint (#38), so the Gate sees exactly the image's
+# `ENV PATH` — /etc/profile and /etc/profile.d are NOT sourced. A toolchain the
+# Gate cannot resolve makes `make check` exit 127 host-side, which stops the run
+# as an environment failure. This probe runs the image exactly that way and
+# fails, naming each tool, if one does not resolve — so the regression is caught
+# when the image changes, not at a ticket's push gate. Probe in the Gate's shell
+# and no other: a different shell checks a PATH the Gate never sees (#83).
 #
 # Needs a docker daemon and a built image, so it stays OUT of `make check` (which
 # is offline-runnable); CI runs it after building the image. bash-3.2-safe.
@@ -49,7 +50,7 @@ done
 # PROJECT_PATH is what the entrypoint stats to pick the runtime uid; a root-owned
 # /tmp makes it drop to the image's node user, so the probe runs unprivileged
 # like a real session does.
-if ! out="$("$DOCKER" run --rm -e PROJECT_PATH=/tmp "$image" bash -lc "$probe")"; then
+if ! out="$("$DOCKER" run --rm -e PROJECT_PATH=/tmp "$image" bash -c "$probe")"; then
     echo "could not run $image to probe it" >&2
     exit 1
 fi
@@ -65,12 +66,12 @@ EOF
 
 if [ -n "$missing" ]; then
     for t in $missing; do
-        echo "missing from a login shell's PATH in $image: $t"
+        echo "missing from the Gate's PATH in $image: $t"
     done
     echo
-    echo "A Gate runs \`bash -lc\`, whose /etc/profile resets PATH: put the toolchain"
-    echo "on PATH in /etc/profile.d/ (or symlink it into /usr/local/bin), not only via ENV."
+    echo "A Gate runs a non-login \`bash -c\`, which sources no profile script: put the"
+    echo "toolchain on PATH with the Dockerfile's ENV PATH=..., not in /etc/profile.d/."
     exit 1
 fi
 
-echo "✓ $image: $* on a login shell's PATH"
+echo "✓ $image: $* on the Gate's PATH"

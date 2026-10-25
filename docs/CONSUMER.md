@@ -71,8 +71,8 @@ branch_prefix = "feat"
 # missing. But if the shell cannot run it at all (exit 127 command not found,
 # 126 not executable), the run stops before any session: the command is not on
 # PATH in this container, and the agent's own container cannot fix that. Make
-# sure your image's login shell (`bash -lc`) sees every tool post_create and the
-# gates call.
+# sure your image's `ENV PATH` holds every tool post_create and the gates call:
+# they run as a non-login `bash -c`, which sources no profile script.
 post_create = '''
 dotnet restore
 '''
@@ -235,20 +235,14 @@ Put your toolchain on `PATH` with `ENV PATH=...` in the Dockerfile. The agent
 session, the `post_create` hook and every gate all see that same image `PATH`:
 the harness runs `post_create` and gates as a non-login `bash -c <command>`,
 so `/etc/profile` and `~/.profile` are **not** sourced. Anything a gate needs
-must come from the image's `ENV`, not from a login-shell profile script.
+must come from the image's `ENV`, not from a login-shell profile script. A
+`PATH` you set only in `/etc/profile.d/*.sh` never reaches a gate: the gate
+exits 127, and the run stops as an environment failure. Check with
+`docker run --rm -e PROJECT_PATH=/tmp <image> bash -c 'command -v <tool>'`, or run
+`scripts/check-sandbox-image.sh <image> <tool>...` from the harness repo.
 
 Pin the immutable semver tag, never `:latest`. A base bump should be a
 deliberate, reviewable edit, not a silent floating pull.
-
-`post_create` and every gate run as `bash -lc <command>`, and a login shell's
-`/etc/profile` **resets `PATH`**. A toolchain you put on `PATH` only with
-`ENV PATH=...` is visible in the session and missing from the gate, which then
-exits 127 on a branch that passed in-session. Install to a directory already on
-the default `PATH` (`/usr/local/bin`, `/usr/bin`), symlink into one, or re-add
-your directory in an `/etc/profile.d/*.sh`. Other `ENV` vars survive a login
-shell. Check with
-`docker run --rm -e PROJECT_PATH=/tmp <image> bash -lc 'command -v <tool>'`, or run
-`scripts/check-sandbox-image.sh <image> <tool>...` from the harness repo.
 
 ## Secrets
 
