@@ -5,10 +5,12 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/danoleary/agent-harness/internal/ci"
 	"github.com/danoleary/agent-harness/internal/config"
 	"github.com/danoleary/agent-harness/internal/gittest"
 	"github.com/danoleary/agent-harness/internal/runlog"
 	"github.com/danoleary/agent-harness/internal/session"
+	"github.com/danoleary/agent-harness/internal/ship"
 )
 
 func testReal(t *testing.T, cfg config.Config) *Real {
@@ -211,5 +213,57 @@ func TestNewOnBranchBindsOneSlugToTheNamedBranch(t *testing.T) {
 	}
 	if got := filepath.Base(h.Worktree().Path()); got != "pr-12" {
 		t.Errorf("Path ends in %q, want the slug", got)
+	}
+}
+
+// #103: the CI watch's reactive rebase is a decision table over the replay verdict
+// and the resolve callback. Only a content conflict is offered to resolve (#82); a
+// disjoint history is never offered, since no resolution session can fix it. Only a
+// clean replay, or a conflict resolve reports fixed, is force-with-lease re-pushed.
+func TestRebaseDecisionOffersResolveOnlyOnAContentConflict(t *testing.T) {
+	type resolver int
+	const (
+		none resolver = iota
+		declines
+		accepts
+	)
+	cases := []struct {
+		name        string
+		replay      ship.Replayed
+		resolve     resolver
+		wantVerdict ci.RebaseVerdict
+		wantPush    bool
+		wantOffered bool
+	}{
+		{"clean replay, no resolver", ship.ReplayClean, none, ci.RebaseClean, true, false},
+		{"clean replay is never offered to resolve", ship.ReplayClean, accepts, ci.RebaseClean, true, false},
+		{"conflict, no resolver", ship.ReplayConflict, none, ci.RebaseConflict, false, false},
+		{"conflict, resolve declines", ship.ReplayConflict, declines, ci.RebaseConflict, false, true},
+		{"conflict, resolve accepts", ship.ReplayConflict, accepts, ci.RebaseClean, true, true},
+		{"disjoint, no resolver", ship.ReplayDisjoint, none, ci.RebaseConflict, false, false},
+		{"disjoint is never offered to resolve", ship.ReplayDisjoint, accepts, ci.RebaseConflict, false, false},
+		{"disjoint, resolve would decline", ship.ReplayDisjoint, declines, ci.RebaseConflict, false, false},
+		{"unknown replay verdict is a conflict", ship.Replayed(99), accepts, ci.RebaseConflict, false, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			offered := false
+			var resolve func() bool
+			if tc.resolve != none {
+				resolve = func() bool { offered = true; return tc.resolve == accepts }
+			}
+
+			verdict, push := rebaseDecision(tc.replay, resolve)
+
+			if verdict != tc.wantVerdict {
+				t.Errorf("verdict = %v, want %v", verdict, tc.wantVerdict)
+			}
+			if push != tc.wantPush {
+				t.Errorf("push = %v, want %v", push, tc.wantPush)
+			}
+			if offered != tc.wantOffered {
+				t.Errorf("resolve offered = %v, want %v", offered, tc.wantOffered)
+			}
+		})
 	}
 }

@@ -319,17 +319,31 @@ func (h *Real) rebaseOntoBase(resolve func() bool) (ci.RebaseVerdict, error) {
 	if err := h.FetchMain(); err != nil {
 		return ci.RebaseConflict, fmt.Errorf("fetch %s before rebase: %w", baseRef, err)
 	}
-	switch ship.Replay(h) {
-	case ship.ReplayClean:
-	case ship.ReplayConflict:
-		if resolve == nil || !resolve() {
-			return ci.RebaseConflict, nil
-		}
-	default:
-		return ci.RebaseConflict, nil
+	verdict, push := rebaseDecision(ship.Replay(h), resolve)
+	if !push {
+		return verdict, nil
 	}
 	if err := h.PushForceWithLease(); err != nil {
-		return ci.RebaseClean, fmt.Errorf("force-with-lease re-push after rebase: %w", err)
+		return verdict, fmt.Errorf("force-with-lease re-push after rebase: %w", err)
 	}
-	return ci.RebaseClean, nil
+	return verdict, nil
+}
+
+// rebaseDecision is the git-free half of [Real.rebaseOntoBase]: it maps the replay
+// verdict and the resolve callback to the watch's RebaseVerdict and whether the
+// rewritten branch is force-with-lease re-pushed. Only a content conflict is offered
+// to resolve; a disjoint history (or any verdict this switch does not know) goes to
+// a human without one, because no resolution session can fix it (#82, #103).
+func rebaseDecision(replay ship.Replayed, resolve func() bool) (verdict ci.RebaseVerdict, push bool) {
+	switch replay {
+	case ship.ReplayClean:
+		return ci.RebaseClean, true
+	case ship.ReplayConflict:
+		if resolve != nil && resolve() {
+			return ci.RebaseClean, true
+		}
+		return ci.RebaseConflict, false
+	default:
+		return ci.RebaseConflict, false
+	}
 }
