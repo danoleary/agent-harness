@@ -62,7 +62,7 @@ The built-in `tickets` loop watches each PR's CI to a verdict before the
 retrospective runs and the next ticket starts, and fixes a red check itself. That
 watch is often most of the review stage. If you run `pr-doctor` beside it, leave
 `watch_ci` out of the ticket loop; the review stage then stops once the PR is
-open, and `pr-doctor` fixes a check that goes red later (ADR-0030):
+open, and `pr-doctor` fixes a check that goes red later (ADR-0032):
 
 ```toml
 [[loops]]

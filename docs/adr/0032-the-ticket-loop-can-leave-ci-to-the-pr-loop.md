@@ -1,4 +1,4 @@
-# ADR-0030: The ticket loop can leave CI to the PR loop
+# ADR-0032: The ticket loop can leave CI to the PR loop
 
 - Status: Accepted
 - Date: 2026-10-25
