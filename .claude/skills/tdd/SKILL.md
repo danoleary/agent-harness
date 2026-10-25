@@ -41,8 +41,15 @@ prompt around this skill tells you the ticket, the worktree and the branch.
 - **Two ADRs can't share a number, and every `ADR-NNNN` reference (Go comment or
   Markdown) or `adr/NNNN-<slug>.md` link must name an existing file** —
   `check-adr` (`scripts/check-adr-numbers.sh`); see Finish.
+- **Every relative link in `README.md` must name a file on `install.sh`'s
+  `DOCS` list** (not a directory, not a path outside the bundle), and every doc
+  on that list must exist — `check-bundle-links`
+  (`scripts/check-bundle-links.sh`). The installed README sits beside only
+  those docs; link anything else by its `https://github.com/...` URL or add it
+  to `DOCS`.
 - **CI runs `make check` itself, never its sub-targets one by one** — `check-ci`
-  (`scripts/check-ci-runs-check.sh`); wire a new guard into `check:` only.
+  (`scripts/check-ci-runs-check.sh`); wire a new guard into `check:` only, and
+  add a line for it to this list (`internal/docs` fails the gate otherwise).
 - A changed `scripts/<name>.sh` that has a sibling `scripts/test-<name>.sh` must
   change that test too (CI checks this), and `check-scripts` runs every
   `scripts/test-*.sh`.
