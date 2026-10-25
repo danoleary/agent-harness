@@ -65,6 +65,10 @@ func TestLoadPromptsMissingBodyIsAnError(t *testing.T) {
 	if !strings.Contains(strings.ToLower(err.Error()), "skill") {
 		t.Errorf("error must point at naming the skill; got: %v", err)
 	}
+	// And at the command that writes the missing ones.
+	if !strings.Contains(err.Error(), "agent-harness init") {
+		t.Errorf("error must point at `agent-harness init`; got: %v", err)
+	}
 }
 
 // A body that exists but holds only whitespace is the same hole as a missing one:

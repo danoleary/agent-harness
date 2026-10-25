@@ -1,0 +1,23 @@
+# This project's sandbox image (ADR-0008): the published base, plus the
+# << .Label >> toolchain, and nothing else. Scaffolded by `agent-harness init`.
+#
+# TODO(agent-harness init): these are starting defaults, not decisions. Check each
+# line against how this project actually builds, then delete this comment.
+#
+# Pin the IMMUTABLE semver tag, never `:latest`, so a base bump is a deliberate,
+# reviewable edit rather than a silent floating pull. The base already carries the
+# claude CLI, git, bash and the uid-re-exec entrypoint — do not reinstall those.
+FROM ghcr.io/danoleary/agent-harness-base:0.6.2
+
+<< .Layer >>
+# ENV PATH is the whole story: post_create and every Gate run as a non-login
+# `bash -c`, which sources no profile script, so they see the image's PATH exactly
+# as the session does. Check a tool is reachable with
+#   docker run --rm -e PROJECT_PATH=/tmp <image> bash -c 'command -v <tool>'
+
+# Image-internal paths this layer bakes that the session must be able to WRITE,
+# colon-separated. The container enters as root and drops to the bind-mounted
+# checkout's owner uid; the entrypoint chowns each path listed here when that uid
+# differs from the image's. The [cache] path does NOT belong here — the harness
+# passes that itself.
+ENV HARNESS_CHOWN_PATHS="<< .ChownPaths >>"

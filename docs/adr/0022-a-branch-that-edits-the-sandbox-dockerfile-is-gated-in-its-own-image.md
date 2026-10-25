@@ -1,4 +1,4 @@
-# ADR-0021: A branch that edits the sandbox Dockerfile is gated in its own image
+# ADR-0022: A branch that edits the sandbox Dockerfile is gated in its own image
 
 - Status: Accepted
 - Date: 2026-10-25

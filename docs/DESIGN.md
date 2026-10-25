@@ -863,7 +863,7 @@ commits `agent-harness/Dockerfile` and names the local tag `herd-agent-harness:l
 A branch that edits the Consumer Dockerfile is changing its own sandbox, so its
 worktree commands — `post_create` and the host-side gate re-run — run in an image
 built from the **worktree's** Dockerfile, tagged `<image>:branch-<fingerprint>`
-(`sandbox.WorktreeImage`; ADR-0021). Otherwise a branch that fixes a missing
+(`sandbox.WorktreeImage`; ADR-0022). Otherwise a branch that fixes a missing
 toolchain could never turn its own gate green. The agent sessions still run in the
 checkout's image.
 
@@ -1184,8 +1184,8 @@ reader over a structured stream rather than a `--tui` flag on the daemon.
   generic names (`watch`, `review`, `loop`, …) never reach a shared `bin` dir.
   The release archive's layout *is* the installed layout, so an unpacked archive
   also runs in place.
-- **`agent-harness doctor` checks the whole setup** ([ADR-0020](adr/0020-doctor-checks-the-whole-setup-in-one-pass.md)). The one
-  command the dispatcher runs itself rather than exec'ing, so it still works on a
+- **`agent-harness doctor` checks the whole setup** ([ADR-0020](adr/0020-doctor-checks-the-whole-setup-in-one-pass.md)). One of the two
+  commands the dispatcher runs itself rather than exec'ing, so it still works on a
   broken install. `internal/doctor` runs every check without stopping — the host
   tools, the `.env` `config.ResolveEnvFile` picked and the ones it skipped, each
   credential with a live read-only API call (`GH_TOKEN`'s `X-OAuth-Scopes` must
@@ -1194,8 +1194,16 @@ reader over a structured stream rather than a `--tui` flag on the daemon.
   and prints a fix under each failure. It exits 1 on any failure; `--offline`
   skips the network calls. Every setup error (config load, tracker selection,
   sandbox preflight) ends by pointing at it.
+- **`agent-harness init` scaffolds a Consumer** ([ADR-0021](adr/0021-init-scaffolds-a-consumer-from-recorded-toolchain-defaults.md), proposed).
+  `internal/scaffold` detects the toolchain (Go, pnpm, .NET, Python) and the GitHub
+  origin remote. It writes a loadable `.agent-harness/`: config, a Dockerfile `FROM`
+  the release's base pin, three prompt bodies with `/TODO-…-skill` placeholders,
+  and a masked, gitignored `.env`. It never overwrites without `--force`,
+  never overwrites the `.env` at all, and ends by naming `agent-harness doctor`.
+  Like `doctor`, it runs in the dispatcher's own process, with no stage binary
+  behind it.
 - **A branch that edits the sandbox Dockerfile is gated in its own image**
-  ([ADR-0021](adr/0021-a-branch-that-edits-the-sandbox-dockerfile-is-gated-in-its-own-image.md)).
+  ([ADR-0022](adr/0022-a-branch-that-edits-the-sandbox-dockerfile-is-gated-in-its-own-image.md)).
   `hostio.Runner.Shell` runs `post_create` and every gate in
   `<image>:branch-<fingerprint>`, built from the worktree's Dockerfile through the
   same `sandbox.Preflight`, when that Dockerfile differs from the checkout's.

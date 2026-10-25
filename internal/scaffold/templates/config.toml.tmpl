@@ -1,0 +1,58 @@
+# This project's agent-harness config (ADR-0008), scaffolded by
+# `agent-harness init` for a << .Label >> toolchain. Every key is explained in
+# docs/CONSUMER.md: https://github.com/danoleary/agent-harness/blob/main/docs/CONSUMER.md
+#
+# TODO(agent-harness init): the post_create hook and the gates below are starting
+# defaults, not decisions. Make them the commands this project's CI runs, then
+# delete this comment. Nothing here is a credential; those live in
+# .agent-harness/.env, which is gitignored and masked in every sandbox.
+
+# The sandbox image: the harness BUILDS this Dockerfile, tagged as `image`.
+image = << toml .Image >>
+dockerfile = ".agent-harness/Dockerfile"
+
+# The harness keys verify/push/PR off `<branch_prefix>/<slug>`.
+branch_prefix = "feat"
+
+# Per-worktree toolchain setup, run in the worktree before every session. It MUST
+# be idempotent: the harness runs it on every provisioning pass, resumed worktrees
+# included.
+post_create = '''
+<< .PostCreate >>
+'''
+<< if .HandoffStripPaths >>
+# Regenerable build output deleted when the implementation stage hands the
+# worktree over, so the reviewer never inherits the sandbox's linux binaries.
+handoff_strip_paths = << tomlList .HandoffStripPaths >>
+<< end >>
+# Two optional keys that need this project's layout, and are disabled rather than
+# guessed while they are absent — see docs/CONSUMER.md:
+#   docs_only_excluded_roots = ["src/", ".github/"]   # dirs whose changes can turn CI red
+#   source_roots = ["src"]                            # dirs the resolved-symbol advisory greps
+<< with .Cache >>
+# A persistent toolchain cache, mounted into every sandbox and gate container.
+[cache]
+volume = << toml .Volume >>
+path = << toml .Path >>
+<<- if .Prune >>
+# Runs on the HOST between tickets when free disk is low.
+prune_command = << toml .Prune >>
+<<- end >>
+<< end >>
+# Tickets come from this repo's GitHub issues that a human has labelled
+# `ready_label`. To use Linear or Jira instead, see docs/CONSUMER.md.
+[tracker]
+kind = "github"
+repo = << toml .Repo >>
+findings_label_id = "agent-harness"
+ready_label = "ready-for-agent"
+in_progress_label = "in-progress"
+
+# Ordered, named gates. ALL must pass host-side before the harness pushes and
+# opens the PR.
+<<- range .Gates >>
+
+[[gates]]
+name = << toml .Name >>
+command = << toml .Command >>
+<<- end >>

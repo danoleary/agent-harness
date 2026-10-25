@@ -29,8 +29,9 @@ die() {
 }
 
 # Files that pin the published base image. Missing ones are skipped, so a
-# Consumer subtree without example/ still works.
-PIN_FILES=".agent-harness/Dockerfile example/.agent-harness/Dockerfile docs/CONSUMER.md"
+# Consumer subtree without example/ still works. The scaffold template is the
+# Dockerfile `agent-harness init` writes, so a release's init pins its own base.
+PIN_FILES=".agent-harness/Dockerfile example/.agent-harness/Dockerfile docs/CONSUMER.md internal/scaffold/templates/Dockerfile.tmpl"
 BASE_REF='ghcr\.io/[A-Za-z0-9._-]+/agent-harness-base'
 
 want=""
