@@ -1,6 +1,6 @@
 ---
 name: review-worktree
-description: Cold-review a feature worktree in this Go repo against its ticket, fix what is wrong in a local commit, and report a Disposition. Use when the harness review stage invokes /review-worktree <path>.
+description: Cold-review a feature worktree in this Go repo against its ticket, fix any real defect in a local commit, and report a Disposition. Use when the harness review stage invokes /review-worktree <path>.
 ---
 
 # /review-worktree — cold review of a finished branch
@@ -34,8 +34,16 @@ Do the reading before running any gate.
 ## 3. Fix
 
 Fix every real finding yourself. Then run `make check` as its own Bash call and
-commit the fixes locally as one commit: `Review fixes for <ticket>`. Do not
-change unrelated code, and do not rewrite the implementer's commit.
+commit the fixes locally as one commit: `Review fixes for <ticket> over <short
+HEAD you reviewed>`, so stacked review commits from different runs can be told
+apart. Do not change unrelated code, and do not rewrite the implementer's commit.
+
+No real finding means no commit. A cosmetic tidy-up is not a finding.
+
+If the prompt says the branch is UNCHANGED SINCE THE LAST REVIEW and
+`git rev-parse HEAD` matches the HEAD it names, the diff already has a verdict:
+skip the lenses, run `make check`, and re-emit the prior Disposition line in your
+report. Commit only for a real defect, and name it.
 
 ## 4. Report
 

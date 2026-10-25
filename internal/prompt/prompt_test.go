@@ -575,6 +575,25 @@ func TestRetrospectiveListsAlreadyFiledFindingsOnRerun(t *testing.T) {
 	}
 }
 
+// #65: the settled list spans every ticket's open findings, so the prompt must
+// not claim they were filed for THIS ticket, and must tell the session to reuse
+// a listed key verbatim when its finding is the same failure class — the only
+// way key dedup fires across tickets.
+func TestRetrospectiveTellsSessionToReuseAnOpenKey(t *testing.T) {
+	p := bRetro(t, sample, "beh-362", []FiledFinding{
+		{Key: "host-gate-missing-toolchain-reported-as-red-gate", Title: "Host gate exit 127 misreported"},
+	})
+	if strings.Contains(p, "This ticket has been through the pipeline before") {
+		t.Error("settled list is global now; the prompt must not attribute it to this ticket")
+	}
+	if !regexp.MustCompile(`(?i)across all tickets`).MatchString(p) {
+		t.Error("prompt does not say the settled list spans all tickets")
+	}
+	if !regexp.MustCompile(`(?i)reuse (its|that|the listed) key`).MatchString(p) {
+		t.Error("prompt does not tell the session to reuse an existing key for the same class")
+	}
+}
+
 // A title-only finding (no explicit key) must still appear in the settled list.
 func TestRetrospectiveListsTitleOnlyAlreadyFiledFinding(t *testing.T) {
 	p := bRetro(t, sample, "beh-362", []FiledFinding{
@@ -831,5 +850,36 @@ func TestRebaseFixDefangsPoisonedTicketBody(t *testing.T) {
 	p := For(RebaseFix, Context{Ticket: poisoned, Slug: "beh-381", BranchPrefix: testPrefix, WorktreePath: sampleWorktree})
 	if strings.Contains(p, bangBacktick) {
 		t.Errorf("rebase-fix prompt carries a live %q directive opener from the ticket body", bangBacktick)
+	}
+}
+
+// #44: a re-run whose branch carries no commit since the last review is told what
+// that review concluded and over which commits, and steered to re-emit the same
+// Disposition after the gate rather than manufacture a churn commit.
+func TestReviewOverAnUnchangedBranchCarriesThePriorVerdict(t *testing.T) {
+	p := For(Review, Context{
+		Ticket: sample, Slug: "beh-362", WorktreePath: sampleWorktree, BranchPrefix: testPrefix, Body: exampleBody(t, "review"),
+		PriorReview: &PriorReview{Head: "abc1234", Disposition: "Disposition: clear — all findings resolved"},
+	})
+	for _, want := range []string{"origin/main..abc1234", "Disposition: clear — all findings resolved"} {
+		if !strings.Contains(p, want) {
+			t.Errorf("prompt missing %q:\n%s", want, p)
+		}
+	}
+	if !regexp.MustCompile(`(?i)re-emit`).MatchString(p) {
+		t.Error("prompt does not steer the review to re-emit the prior Disposition")
+	}
+	if !regexp.MustCompile(`(?i)(do not|don't|never)[^.]{0,60}commit`).MatchString(p) {
+		t.Error("prompt does not steer the review off committing over an unchanged branch")
+	}
+	assertEnvelopeContract(t, p, "review over an unchanged branch", "feat/beh-362")
+}
+
+// A first review — or one whose branch moved since the last — gets no prior-review
+// section: it reviews cold, exactly as before.
+func TestReviewWithoutAPriorVerdictIsCold(t *testing.T) {
+	p := bReview(t, sample, "beh-362", sampleWorktree)
+	if strings.Contains(p, "re-emit") {
+		t.Errorf("a first review must carry no prior-review section:\n%s", p)
 	}
 }

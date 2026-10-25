@@ -104,6 +104,11 @@ type Outcome struct {
 	// reviewer could not resolve. The caller fails the push closed on it so the
 	// finding isn't shipped to a PR unaddressed. Only meaningful for review sessions.
 	ReviewBlocked bool
+	// ReviewDisposition is the verdict's last "Disposition: …" line, reason and all
+	// (#44); empty when the verdict carried none. The review stage records it so a
+	// re-run's review over the same commits is told what this one concluded. Only
+	// meaningful for review sessions.
+	ReviewDisposition string
 	// CapKilled is true iff the watchdog killed the container for crossing the hard
 	// session cap (BEH-668). A cap-kill is delivered via `docker kill` (SIGKILL), so
 	// it exits 137 — identical to a genuine OOM-kill (ExitOOMKill) — but its meaning
@@ -182,6 +187,7 @@ type streamFlags struct {
 	spendingCapResetTime time.Time
 	reviewVerdictEmitted bool
 	reviewBlocked        bool
+	reviewDisposition    string
 	turnZeroNoOp         bool
 	noRealTurns          bool
 }
@@ -463,7 +469,7 @@ func Run(dockerArgs []string, opts Options) Outcome {
 		opts.Log.Event(sessionSummary(time.Since(monoStart), realNow().Sub(start), opts.Timeout))
 	}
 
-	return Outcome{ExitCode: exitCode, CapKilled: capKilled.Load(), UsagePolicyRefusal: flags.usagePolicyRefusal, SpendingCapAbort: flags.spendingCapAbort, SpendingCapResetTime: flags.spendingCapResetTime, ReviewVerdictEmitted: flags.reviewVerdictEmitted, ReviewBlocked: flags.reviewBlocked, TurnZeroNoOp: flags.turnZeroNoOp, NoRealTurns: flags.noRealTurns, DockerReason: dockerReason, StderrTail: strings.Join(tail, "\n")}
+	return Outcome{ExitCode: exitCode, CapKilled: capKilled.Load(), UsagePolicyRefusal: flags.usagePolicyRefusal, SpendingCapAbort: flags.spendingCapAbort, SpendingCapResetTime: flags.spendingCapResetTime, ReviewVerdictEmitted: flags.reviewVerdictEmitted, ReviewBlocked: flags.reviewBlocked, ReviewDisposition: flags.reviewDisposition, TurnZeroNoOp: flags.turnZeroNoOp, NoRealTurns: flags.noRealTurns, DockerReason: dockerReason, StderrTail: strings.Join(tail, "\n")}
 }
 
 // pumpStdout scans claude's stream-json stdout: it tees every line raw to the
@@ -500,6 +506,9 @@ func pumpStdout(r io.Reader, transcriptFile string, verbose bool, log Logger, ec
 		}
 		if stream.IsReviewBlocked(line) {
 			flags.reviewBlocked = true
+		}
+		if d, ok := stream.ReviewDisposition(line); ok {
+			flags.reviewDisposition = d
 		}
 		if stream.IsTurnZeroNoOp(line) {
 			flags.turnZeroNoOp = true

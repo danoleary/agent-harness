@@ -54,3 +54,16 @@ public, maintainer-owned harness repo (the Upstream sink).**
   regardless of classification.
 - herd dogfoods through the same path: its Harness findings upstream like any other
   Consumer's, so the loop is exercised continuously.
+
+## Amendment (2026-10-24, #65): harness keys are shared across tickets
+
+Key dedup only works if every session picks the same `key` for the same class, and
+they didn't — one class was filed under five keys by five tickets' retrospectives.
+So the retrospective's settled list now includes every **open Harness finding
+across all tickets** (the Upstream sink's open issues when opted in, else the local
+artifact dir), and the envelope tells the session to reuse a listed key verbatim
+for the same class. As a backstop the host **flags, never skips**, a new finding
+whose key or title closely matches an open one by normalized token overlap: the
+local artifact records `probable_duplicate_of`, an issue body gets a note naming
+the open issue. The flag adds no content beyond the open finding's own key and
+title, so the sanitize rule is unaffected.

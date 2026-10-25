@@ -2,7 +2,9 @@ package github
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/url"
+	"strconv"
 
 	"github.com/danoleary/agent-harness/internal/ticket"
 )
@@ -11,7 +13,8 @@ import (
 // working set only — open, unassigned, carrying the ready label — ordered oldest
 // first. GitHub has no board sort order or numeric priority (the Linear ordering
 // signals), so created-ascending is the natural FIFO fallback (LCD: priority /
-// board order dropped, not leaked into the port).
+// board order dropped, not leaked into the port). Each listed issue carries its
+// issue_dependencies_summary, which eligible reads to screen native blockers.
 func (c *Client) selectQuery() string {
 	v := url.Values{}
 	v.Set("state", "open")
@@ -24,10 +27,12 @@ func (c *Client) selectQuery() string {
 }
 
 // SelectNextTicket resolves the top-of-queue eligible ticket: the first open,
-// unassigned, ready-labelled issue that is neither Blocked-labelled nor a pull
-// request (the issues API returns PRs too). It is a PURE READ — claim-on-select
-// (ADR-0003) is the caller composing it with MoveToInProgress — so dry-run can
-// resolve a ticket without mutating GitHub. ok=false means the queue is empty.
+// unassigned, ready-labelled issue that is not Blocked-labelled, not a pull
+// request (the issues API returns PRs too), and not blocked by a still-open issue.
+// A failed blocker read is an error, not an unblocked ticket (fail closed). It is
+// a PURE READ — claim-on-select (ADR-0003) is the caller composing it with
+// MoveToInProgress — so dry-run can resolve a ticket without mutating GitHub.
+// ok=false means the queue is empty.
 func (c *Client) SelectNextTicket() (ticket.Ticket, bool, error) {
 	data, err := c.transport("GET", c.selectQuery(), nil)
 	if err != nil {
@@ -38,7 +43,11 @@ func (c *Client) SelectNextTicket() (ticket.Ticket, bool, error) {
 		return ticket.Ticket{}, false, err
 	}
 	for _, iss := range issues {
-		if !c.eligible(iss) {
+		ok, err := c.eligible(iss)
+		if err != nil {
+			return ticket.Ticket{}, false, err
+		}
+		if !ok {
 			continue
 		}
 		return ticket.Ticket{
@@ -53,17 +62,50 @@ func (c *Client) SelectNextTicket() (ticket.Ticket, bool, error) {
 }
 
 // eligible reports whether a listed issue may be auto-worked: it is a real issue
-// (not a PR) and is not flagged Blocked. The ready label is already guaranteed by
-// the query; GitHub has no native blocks relation, so blocked-by is expressed by
-// the human-applied Blocked label alone (LCD: relation traversal dropped).
-func (c *Client) eligible(iss issue) bool {
+// (not a PR), is not flagged Blocked, and no still-open issue blocks it through
+// GitHub's native "blocked by" dependency. Closed blockers do not block, matching
+// the Linear adapter. The ready label is already guaranteed by the query. The
+// blockers are fetched only when the list's dependency summary reports any.
+func (c *Client) eligible(iss issue) (bool, error) {
 	if iss.PullRequest != nil {
-		return false
+		return false, nil
 	}
 	if c.hasLabel(iss, c.opts.Blocked) {
-		return false
+		return false, nil
 	}
-	return true
+	if iss.IssueDependenciesSummary.TotalBlockedBy == 0 {
+		return true, nil
+	}
+	blocker, err := c.openBlocker(iss.Number)
+	if err != nil {
+		return false, err
+	}
+	if blocker != 0 {
+		fmt.Fprintf(c.log, "%s skipped: blocked by open %s\n", numberToKey(iss.Number), numberToKey(blocker))
+		return false, nil
+	}
+	return true, nil
+}
+
+// openBlocker returns the number of the first still-open issue blocking issue n,
+// or 0 when every blocker is closed. per_page=100 reads every blocker in one page
+// (GitHub caps an issue's blocked-by list below that), so an open blocker past the
+// default page of 30 is never missed.
+func (c *Client) openBlocker(n int) (int, error) {
+	data, err := c.transport("GET", c.issuesPath(strconv.Itoa(n))+"/dependencies/blocked_by?per_page=100", nil)
+	if err != nil {
+		return 0, fmt.Errorf("read blockers of %s: %w", numberToKey(n), err)
+	}
+	var blockers []issue
+	if err := json.Unmarshal(data, &blockers); err != nil {
+		return 0, fmt.Errorf("read blockers of %s: %w", numberToKey(n), err)
+	}
+	for _, b := range blockers {
+		if b.State == "open" {
+			return b.Number, nil
+		}
+	}
+	return 0, nil
 }
 
 // addLabel adds one label to an issue via the labels REST endpoint.

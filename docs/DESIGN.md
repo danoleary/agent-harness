@@ -61,8 +61,11 @@ runnable by hand against a ticket id before the next is added:
    it); the `/tdd` prompt separately steers the in-session agent to verify the
    premise still holds and recommend close rather than fabricate a no-op change.
    To keep the "recommend close" verdict from firing on valid tickets (BEH-629),
-   extraction drops prose git-trailer keywords (`Fixes`/`Closes`/`Resolves`) and
-   known third-party package internals (e.g. `sentryFunctionMiddlewareHandler`),
+   extraction reads only inline-code spans outside fenced blocks, pairing
+   backtick runs by length so a fence can't shift the pairing onto prose (#66);
+   it keeps only identifiers with an inner capital or a digit, so a capitalised
+   English word (`Fixes`, `Notes`) is never a symbol; it drops known third-party
+   package internals (e.g. `sentryFunctionMiddlewareHandler`);
    and grades the verdict: a symbol named in an add/introduce context (`Add a
    `beforeSend``) is one the ticket exists to *create*, so its absence downgrades
    to a soft "verify premise" note — only a missing symbol the ticket implies
@@ -257,6 +260,10 @@ loop:
   --- review: /review-worktree (sandbox, 25 min cap) ---
   run: claude -p "/review-worktree <worktree-path>  <injected ticket context + 'do not touch the issue tracker; commit locally ONLY — do NOT push, do NOT run gh; do NOT emit findings (retrospective owns that)'>"
   # agent has no GH_TOKEN; it can only commit into the shared local .git
+  # re-run over an unchanged branch (#44): the stage records each verdict's Disposition line
+  # and the HEAD it covered in logs/<KEY>/review-verdict.json (re-recorded at the landed tip).
+  # When HEAD still matches and that verdict was clear (a blocked one waits on a human), the envelope tells the session the prior verdict and the range
+  # origin/main..<head>: run the gate, re-emit that Disposition, commit only for a real defect.
 
   --- review ground truth + push gate (harness, host-side) ---
   re-run each config-declared named gate (BEH-634) in its own throwaway container, in
@@ -648,6 +655,11 @@ A ticket is eligible iff **all** hold:
   a person decides *what* runs unattended; the harness decides *how*),
 - **not blocked**: no still-open issue has a `blocks` relation pointing at it, and
   it has no `Blocked` label.
+  The GitHub adapter applies the same rule through GitHub's native "blocked by"
+  issue dependencies: it fetches an issue's blockers only when the list response's
+  `issue_dependencies_summary.total_blocked_by` is non-zero, skips the issue while
+  any blocker is open (logging `#69 skipped: blocked by open #66`), and fails the
+  selection closed if that read errors.
 - **not gated on a telemetry re-measure**: a low-confidence perf *watch/confirm*
   ticket whose first acceptance criterion is to re-pull the metric over a wider
   Sentry window before any fix is excluded — the Implementation stage owns no
@@ -743,6 +755,20 @@ in this ticket's prior dropbox, read before it's cleared) and injects them into
 the retrospective prompt with an instruction to treat them as settled and look
 only for **new** friction. Best-effort: a Linear lookup failure degrades to the
 dropbox classes alone. A first run has nothing to inject and reads as before.
+
+**Global harness-finding keys (#65).** Harness findings don't go to the team's
+tracker, so the list above used to miss every harness class another ticket had
+filed — and each ticket's session coined its own slug for the same failure class
+(one class landed under five keys), so key dedup never fired across tickets. The
+settled list now also carries every **open harness finding across all tickets**:
+the upstream repo's open issues when `feedback.upstream = "github"`, else every
+record in the local artifact dir. The envelope tells the session to reuse a listed
+key verbatim when its finding is the same class. As a backstop, the host flags a
+new finding whose key or title closely matches an open one (Jaccard overlap of
+normalized tokens, filler words dropped, ≥ 0.6) as a **probable duplicate** before
+filing it: a local artifact gets `probable_duplicate_of: <slug>`, a tracker issue a
+note naming the open issue, and both narrate. It flags, never skips — token
+overlap is a heuristic, and a dropped finding costs more than a duplicate.
 
 **Filing dedup (BEH-573).** Before filing each finding, the harness dedups it
 against the team's open harness findings in two passes: first an exact `key`/
@@ -1109,6 +1135,11 @@ reader over a structured stream rather than a `--tui` flag on the daemon.
   so the daemon works `loop.WorkItem`s and never learns they are tickets.
   `loophost.Daemon`, `loophost.TicketSource` and `loophost.TicketPipeline` are the
   production adapters, so `cmd/loop` is a composition root and nothing else.
+- **A loop is a Source and a Pipeline** ([ADR-0019](adr/0019-a-loop-is-a-source-and-a-pipeline.md), proposed). The daemon chores
+  (stop, idle, cap backoff, breaker, disk reclaim) stay shared. Where the work
+  comes from (a tracker queue, or PRs that are conflicting or red) and what runs
+  on each item are pluggable. Consumers will declare loops in `[[loops]]`, using
+  a fixed set of Steps written in Go, each with its own ground-truth check.
 - **ship lands the branch** ([ADR-0017](adr/0017-ship-lands-the-branch.md)). The review stage, the daemon's committed-fix
   recovery and the CI watch's reactive rebase share one `internal/ship` sequence —
   refetch, replay, disjoint guard, conflict hook, collapse check, push

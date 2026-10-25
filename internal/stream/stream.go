@@ -244,6 +244,34 @@ func IsReviewBlocked(line string) bool {
 	return false
 }
 
+// reviewDispositionMarker leads the verdict's terminal disposition line —
+// "Disposition: clear — <reason>" or "Disposition: blocked — <reason>".
+const reviewDispositionMarker = "Disposition:"
+
+// ReviewDisposition returns the Disposition line of a /review-worktree verdict —
+// an assistant text block carrying the "## Review:" header — with its reason
+// verbatim (#44). The harness records it so a re-run's review over the same
+// commits is told what the prior review concluded instead of re-deriving it. The
+// last such line in the block wins; ok is false for any other line.
+func ReviewDisposition(line string) (string, bool) {
+	var e event
+	if err := json.Unmarshal([]byte(line), &e); err != nil || e.Type != "assistant" {
+		return "", false
+	}
+	disposition := ""
+	for _, block := range e.Message.Content {
+		if block.Type != "text" || !strings.Contains(block.Text, reviewVerdictMarker) {
+			continue
+		}
+		for _, l := range strings.Split(block.Text, "\n") {
+			if l = strings.TrimSpace(l); strings.HasPrefix(l, reviewDispositionMarker) {
+				disposition = l
+			}
+		}
+	}
+	return disposition, disposition != ""
+}
+
 // turnZeroNoOpMaxTurns is the num_turns ceiling below which a subtype="success",
 // non-error result that produced NO final output text is read as a degenerate
 // turn-0 no-op (BEH-709) rather than a real success. The crash the pinned CLI

@@ -120,7 +120,15 @@ func Review(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Res
 	log.Event(fmt.Sprintf("fetched %s — %s", t.Identifier, t.Title))
 
 	subject := NewSubject(h, args.Identifier, log.Dir, t)
-	reviewSessionRun := reviewRun(cfg, subject)
+	// A re-run whose branch gained no commit since the last review is handed that
+	// review's verdict and the range it covered, so the session re-emits it after the
+	// gate rather than re-derive it and stack a churn commit to show for it (#44).
+	headAtStart, _ := h.HeadSHA(slug)
+	prior := readPriorReview(log.Dir, headAtStart)
+	if prior != nil {
+		log.Event(fmt.Sprintf("review — branch unchanged since the last review at %s (%s); handing the session that verdict (#44)", prior.Head, prior.Disposition))
+	}
+	reviewSessionRun := reviewRun(cfg, subject, prior)
 	prep := prepRun(cfg, worktreePath)
 	prep.Retry = hostio.Retry{
 		MaxAttempts: oomMaxAttempts,
@@ -135,7 +143,7 @@ func Review(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Res
 
 	if args.DryRun {
 		log.Event("dry-run — not launching the install, review, or gate containers")
-		fmt.Print(ReviewPlan(cfg, subject).Render(h))
+		fmt.Print(ReviewPlan(cfg, subject, prior).Render(h))
 		return Result{OK: true}
 	}
 
@@ -307,6 +315,19 @@ func Review(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Res
 		result = verify.Review(h, slug, gateRes.Outcome, reviewOutcome)
 	}
 
+	// Record the verdict and the HEAD it covered for a re-run (#44). Only a clean
+	// tree is recorded: uncommitted edits are not part of any HEAD the verdict names.
+	rememberVerdict := func() {
+		head, err := h.HeadSHA(slug)
+		if err != nil || reviewOutcome.ReviewDisposition == "" || !h.WorktreeClean(slug) {
+			return
+		}
+		if err := recordReview(log.Dir, head, reviewOutcome.ReviewDisposition); err != nil {
+			log.Event("review … warning: could not record the review verdict for a re-run: " + err.Error())
+		}
+	}
+	rememberVerdict()
+
 	// Flag the final review completeness so the run log carries the signal rather than
 	// a green gate masquerading as a full review pass (BEH-525, from the BEH-499 OOM).
 	if !result.ReviewComplete {
@@ -436,6 +457,9 @@ func Review(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Res
 		return Result{OK: false}
 	}
 	log.Structured(loopstream.Record{Kind: loopstream.KindPROpened, Ticket: args.Identifier, Stage: "review", Message: "review ✓ PR opened: " + landing.URL})
+	// Landing replayed the reviewed commits onto the latest base, rewriting their
+	// SHAs: the verdict covers the landed tip, so re-record it there (#44).
+	rememberVerdict()
 
 	// The branch is pushed and the PR is open: from here on the ticket has "reached a
 	// pushed PR" regardless of how the CI watch turns out, so the loop's circuit
