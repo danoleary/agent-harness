@@ -37,7 +37,6 @@ kind = "github"
 repo = "danoleary/agent-harness"
 findings_label_id = "agent-harness"
 ready_label = "ready-for-agent"
-blocked_label = "blocked"
 in_progress_label = "in-progress"
 
 # Harness findings ARE this repo's findings, so file them here rather than
