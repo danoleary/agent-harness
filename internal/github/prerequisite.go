@@ -83,15 +83,6 @@ func (c *Client) openPRs(body string, self int) ([]issue, error) {
 	return out, nil
 }
 
-// pull is the subset of a pull request the adapter reads: its head branch.
-type pull struct {
-	Title   string `json:"title"`
-	HTMLURL string `json:"html_url"`
-	Head    struct {
-		Ref string `json:"ref"`
-	} `json:"head"`
-}
-
 // prerequisites resolves each open PR body names to the branch it lives on, for
 // the implementation envelope (#82).
 func (c *Client) prerequisites(body string, self int) ([]ticket.Prerequisite, error) {
@@ -105,7 +96,7 @@ func (c *Client) prerequisites(body string, self int) ([]ticket.Prerequisite, er
 		if err != nil {
 			return nil, fmt.Errorf("read prerequisite %s: %w", numberToKey(pr.Number), err)
 		}
-		var p pull
+		var p pull // pulls.go's shape; only its title, URL and head branch are read
 		if err := json.Unmarshal(data, &p); err != nil {
 			return nil, fmt.Errorf("read prerequisite %s: %w", numberToKey(pr.Number), err)
 		}

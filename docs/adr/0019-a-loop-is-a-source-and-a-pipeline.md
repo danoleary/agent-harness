@@ -142,3 +142,44 @@ Pipeline  : Run(WorkItem, Lease) stages.Result
 - Sequencing, tracked as issues: (a) split `loop.Host` into Source, Pipeline and
   daemon, with no behaviour change; (b) the `github_prs` Source and PR-fixer
   Pipeline, wired by hand; (c) `[[loops]]` config and `agent-harness loop <name>`.
+
+## Step (b), as built
+
+The PR loop shipped as `agent-harness loop --prs` (`internal/prloop`), with the
+review stage's fix machinery moved to `internal/fix`: the gate re-run, the CIFix
+callback and the RebaseFix resolution. Building it settled these points the
+decision above left open:
+
+- **What was tried is recorded in hidden marker comments on the PR.** Each attempt
+  posts one, naming the head SHA and the failure kind. An existing marker for the
+  same SHA and kind means the PR is skipped. The hand-off comment carries a marker
+  too, and only attempts after the latest hand-off count against the budget. So a
+  human who removes `blocked` grants a fresh budget.
+- **Red CI goes through `ci.WatchAndFix` from the start.** The watch already
+  fetches the failing logs, re-runs a flake once, and pushes only after `Fix`
+  succeeds. The PR loop's `Fix` runs the CIFix session and then every gate, and
+  refuses the fix when any gate is red. A flake that the re-run washes out
+  launches no session and pushes nothing.
+- **A human's branch is never rewritten, including by the CI watch.** Decision 4
+  applies to the watch's reactive rebase as well: `CIWatch.KeepHistory` turns a
+  green-but-conflicting human PR into a conflict outcome instead of a
+  force-pushed replay.
+- **Only PRs into `main` qualify.** The harness lands on one base everywhere else,
+  and the ground truth (`origin/main` an ancestor of the tip) assumes it.
+- **The ticket loop's hold on a branch** is read from the tracker's In Progress
+  claims, each mapped to `<branch_prefix>/<slug>`. A PR's own lease is the
+  `in-progress` label. With GitHub Issues as the tracker, the loop uses that
+  tracker's label names, and the issue reaper now skips PRs so it cannot release a
+  PR lease.
+- **The daemon's breadcrumbs are not posted on PRs.** They are worded for tickets
+  ("released back to Todo"), so `Source.Comment` is a no-op for PRs. The marker and
+  hand-off comments are the record.
+- **A PR lease left by a dead daemon is reaped** once it is older than the claim
+  TTL, timed by the PR's latest attempt marker. The reaper runs only between a
+  daemon's own items, so this is safe with one PR loop per checkout.
+- **Findings.** The retrospective runs over the run's transcripts when a session
+  ran. Project findings file only when the tracker is GitHub Issues, because a PR
+  names no tracker team. Harness findings are always routed.
+- **Knobs are environment variables until step (c):** `PR_LOOP_LABEL`,
+  `PR_LOOP_MAX_ATTEMPTS` and `PR_LOOP_STOP_FILE`. They become `[[loops]]` source
+  parameters there.

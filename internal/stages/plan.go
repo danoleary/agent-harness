@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/danoleary/agent-harness/internal/config"
+	"github.com/danoleary/agent-harness/internal/fix"
 	"github.com/danoleary/agent-harness/internal/hostio"
 	"github.com/danoleary/agent-harness/internal/prompt"
 	"github.com/danoleary/agent-harness/internal/runlog"
@@ -121,7 +122,7 @@ func ReviewPlan(cfg config.Config, s Subject, prior *prompt.PriorReview) StagePl
 	run := reviewRun(cfg, s, prior)
 	steps = append(steps, Step{Title: reviewSession, Agent: &run})
 	for _, g := range cfg.Gates {
-		run := gateRun(cfg, s.WorktreePath, gateStep, g)
+		run := fix.GateRun(cfg, s.WorktreePath, gateStep, g)
 		steps = append(steps, Step{Title: fmt.Sprintf("gate %q", g.Name), Shell: &run})
 	}
 	return StagePlan{Stage: reviewSession, Steps: steps}
@@ -177,12 +178,6 @@ func reviewRun(cfg config.Config, s Subject, prior *prompt.PriorReview) hostio.A
 		}),
 		Cap: cfg.ReviewTimeout,
 	}
-}
-
-// gateRun is the container one Gate runs in. labelPrefix distinguishes a re-gate
-// (after a review re-launch or a resolved conflict) from the first gate run.
-func gateRun(cfg config.Config, worktreePath, labelPrefix string, g config.Gate) hostio.ShellRun {
-	return hostio.ShellRun{Label: labelPrefix + "-" + g.Name, Command: g.Command, WorktreePath: worktreePath, Cap: cfg.ReviewTimeout}
 }
 
 // retrospectiveRun is the retrospective session, handed the finding classes a

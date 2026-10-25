@@ -79,6 +79,15 @@ touch .agent-harness/STOP   # finish the current ticket, then stop
 a foreground run, Ctrl-C once stops after the current ticket; twice kills the
 container now and keeps the worktree.
 
+A second daemon fixes harness PRs (and PRs you label `agent-maintained`) that
+went red on CI or conflict with `main` after review. `--dry-run` lists what it
+would do. See
+[CONSUMER.md](docs/CONSUMER.md#fixing-open-prs-agent-harness-loop---prs-optional):
+
+```bash
+agent-harness loop --prs --dry-run
+```
+
 `agent-harness --help` lists every command. Each one takes `--verbose` (stream
 the agent transcript) and `--dry-run`. A ticket's transcripts and event stream
 are in `.agent-harness/logs/<KEY>/`.

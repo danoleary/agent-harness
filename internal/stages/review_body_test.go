@@ -396,7 +396,7 @@ func TestReviewRunsOneContainerPerDeclaredGateInOrder(t *testing.T) {
 }
 
 // --- the CI auto-fix callback -----------------------------------------------
-// ciFixRunner is what the host hands the CI watch: a sandboxed diagnose-and-fix
+// fix.Env.CI is what the review hands the CI watch: a sandboxed diagnose-and-fix
 // session, followed by ground-truth enforcement. The watch itself is host-side
 // (ADR-0002), so the Fake drives the callback the way the real GhDriver would.
 

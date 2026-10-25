@@ -416,6 +416,31 @@ func TestLoadLoopDefaults(t *testing.T) {
 	}
 }
 
+// The PR loop (ADR-0019) has its own knobs: the opt-in label a human puts on a PR
+// to hand it over, the per-PR attempt budget, and a STOP sentinel of its own so it
+// can wind down independently of the ticket loop beside it.
+func TestLoadPRLoopDefaultsAndOverrides(t *testing.T) {
+	cfg, err := Load(fullEnv(t, nil))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.PRLoopLabel != "agent-maintained" || cfg.PRLoopMaxAttempts != 3 || cfg.PRLoopStopFile != ".agent-harness/STOP-prs" {
+		t.Errorf("PR loop defaults = %q / %d / %q, want agent-maintained / 3 / .agent-harness/STOP-prs", cfg.PRLoopLabel, cfg.PRLoopMaxAttempts, cfg.PRLoopStopFile)
+	}
+
+	cfg, err = Load(fullEnv(t, map[string]string{"PR_LOOP_LABEL": "bot-fix", "PR_LOOP_MAX_ATTEMPTS": "5", "PR_LOOP_STOP_FILE": "/tmp/stop-prs"}))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.PRLoopLabel != "bot-fix" || cfg.PRLoopMaxAttempts != 5 || cfg.PRLoopStopFile != "/tmp/stop-prs" {
+		t.Errorf("PR loop overrides = %q / %d / %q", cfg.PRLoopLabel, cfg.PRLoopMaxAttempts, cfg.PRLoopStopFile)
+	}
+
+	if _, err := Load(fullEnv(t, map[string]string{"PR_LOOP_MAX_ATTEMPTS": "0"})); err == nil || !strings.Contains(err.Error(), "PR_LOOP_MAX_ATTEMPTS") {
+		t.Errorf("a zero attempt budget must fail loud naming the var, got %v", err)
+	}
+}
+
 // The disk-reclaim threshold is env-overridable in bytes, and an explicit 0 disables
 // reclaim entirely (a documented value, not a nonsensical one).
 func TestLoadDiskReclaimThresholdOverrideAndDisable(t *testing.T) {

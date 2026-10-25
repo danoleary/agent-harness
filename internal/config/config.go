@@ -166,6 +166,17 @@ type Host struct {
 	// before the hard 5 GiB sandbox preflight floor would refuse a launch (ADR-0005).
 	// It defaults above that floor with headroom; 0 disables reclaim entirely.
 	LoopDiskReclaimThreshold uint64
+
+	// PRLoopLabel is the opt-in label that lets the PR loop (`loop --prs`) work a PR
+	// whose head branch is not on the harness's branch_prefix (ADR-0019). Defaults
+	// to "agent-maintained".
+	PRLoopLabel string
+	// PRLoopMaxAttempts is the PR loop's per-PR attempt budget: past it, the loop
+	// comments on the PR with what it tried and labels it blocked. Defaults to 3.
+	PRLoopMaxAttempts int
+	// PRLoopStopFile is the PR loop's own STOP sentinel, so it can be wound down
+	// independently of the ticket loop running beside it. Resolved like StopFile.
+	PRLoopStopFile string
 }
 
 // Project is the Consumer's declaration, resolved: the committed
@@ -262,6 +273,9 @@ const (
 	defaultLoopMaxRuntime             = time.Duration(0)
 	defaultLoopClaimTTL               = 30 * time.Minute
 	defaultStopFile                   = ProjectDirName + "/STOP"
+	defaultPRLoopLabel                = "agent-maintained"
+	defaultPRLoopMaxAttempts          = 3
+	defaultPRLoopStopFile             = ProjectDirName + "/STOP-prs"
 	// 8 GiB: the 5 GiB MinFreeDiskBytes sandbox floor plus headroom, so reclaim fires
 	// before a launch would ever be refused (ADR-0005).
 	defaultLoopDiskReclaimThreshold uint64 = 8 << 30
@@ -504,6 +518,10 @@ func (h *Host) knobs(get Getenv) []knob {
 		bind("LOOP_CLAIM_TTL_MS", &h.LoopClaimTTL, positiveMillis, defaultLoopClaimTTL, strict),
 		bind("LOOP_DISK_RECLAIM_THRESHOLD_BYTES", &h.LoopDiskReclaimThreshold, reclaimBytes, defaultLoopDiskReclaimThreshold, strict),
 		bind("STOP_FILE", &h.StopFile, text, defaultStopFile, strict),
+
+		bind("PR_LOOP_LABEL", &h.PRLoopLabel, text, defaultPRLoopLabel, strict),
+		bind("PR_LOOP_MAX_ATTEMPTS", &h.PRLoopMaxAttempts, positiveCount, defaultPRLoopMaxAttempts, strict),
+		bind("PR_LOOP_STOP_FILE", &h.PRLoopStopFile, text, defaultPRLoopStopFile, strict),
 	}
 }
 
