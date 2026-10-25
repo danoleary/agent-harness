@@ -84,7 +84,7 @@ runnable by hand against a ticket id before the next is added:
    which steers the agent to inspect the branch's existing commits (`git log
    origin/main..HEAD`) and prefer verify-and-handoff over re-implementing.
    A fourth advisory (`Ticket.OpenQuestions`, #90,
-   [ADR-0024](adr/0024-a-ready-ticket-with-open-questions-is-dispatched-with-a-warning.md)) fires when the
+   [ADR-0026](adr/0026-a-ready-ticket-with-open-questions-is-dispatched-with-a-warning.md)) fires when the
    ready-labelled ticket's body still has a section of questions for a human — a
    heading like "Open questions (for a human before this is agent-ready)", "Not
    yet agent-ready" or "Questions for a human", outside fenced blocks, not marked
@@ -232,7 +232,7 @@ startup:
 loop:
   if stop requested (Ctrl-C or STOP file)   -> exit cleanly
 
-  --- disk reclaim (host-side, between tickets, ADR-0005) ---
+  --- disk reclaim (host-side, between tickets, ADR-0027) ---
   if statfs(worktrees volume).free < DiskReclaimThreshold:   // cheap probe every iter; default ~8 GiB (> the 5 GiB sandbox floor)
     run: scripts/prune-merged-worktrees.sh --yes             // removes ONLY merged-PR + clean worktrees (gh-aware); never main/dirty/no-PR
     if still < threshold -> run: pnpm store prune            // cheap, non-destructive, network-free follow-up
@@ -749,7 +749,7 @@ shared        : STOP (every loop), STOP-tickets (every instance), locks/claim.lo
     The loop also reclaims *proactively* one tier above this floor: a between-ticket
     `statfs` runs `prune-merged-worktrees.sh` when free space dips below a soft
     `DiskReclaimThreshold` (~8 GiB), so the daemon self-heals merged-worktree creep
-    *before* the preflight ever has to refuse a launch ([ADR-0005](adr/0005-loop-reclaims-disk-by-pruning-merged-worktrees.md)).
+    *before* the preflight ever has to refuse a launch ([ADR-0027](adr/0027-loop-reclaims-disk-by-pruning-merged-worktrees.md)).
   - **Graceful-degrade (where prevention can't reach):** a findings-dir `mkdir` that
     still races to ENOSPC is recognised (`isDiskFull`) and logged as a clear,
     actionable warning rather than a hard pipeline error that masquerades as a stage
@@ -1369,7 +1369,7 @@ reader over a structured stream rather than a `--tui` flag on the daemon.
   | `LOOP_MAX_CONSECUTIVE_FAILURES` | `3` | circuit-breaker threshold (consecutive no-PR tickets → exit + report) |
   | `LOOP_MAX_TICKETS` | `0` (unlimited) | optional ceiling: stop after N *attempted* tickets |
   | `LOOP_MAX_RUNTIME_MS` | `0` (unlimited) | optional ceiling: stop after T wall-clock |
-  | `LOOP_DISK_RECLAIM_THRESHOLD_BYTES` | `8589934592` (8 GiB) | soft free-disk floor below which the loop prunes merged worktrees between tickets (ADR-0005); `0` disables reclaim |
+  | `LOOP_DISK_RECLAIM_THRESHOLD_BYTES` | `8589934592` (8 GiB) | soft free-disk floor below which the loop prunes merged worktrees between tickets (ADR-0027); `0` disables reclaim |
   | `LOOP_CLAIM_TTL_MS` | `1800000` (30 min) | grace period after which an In Progress claim with no branch/PR is reaped back to Todo (§Stale-claim reaper) |
   | `LOOP_KEEP_AWAKE` | `0` (off) | read by `scripts/loop-start.sh`, not the daemon: `1` attaches `caffeinate -is -w <loop pid>` so macOS idle sleep can't freeze a detached loop; released when the loop exits. `-s` needs AC power; a closed lid still sleeps outside clamshell mode; no `caffeinate` → warn and launch anyway |
   | `STOP_FILE` | `.agent-harness/STOP` | the sentinel that stops every loop; cleared at clean startup, `touch` to wind down. Each loop also has its own, `.agent-harness/STOP-<name>` |

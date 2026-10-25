@@ -176,6 +176,48 @@ invocation that lacks `-buildvcs=false`. Non-stamping go subcommands (`go vet`,
 ./scripts/test-check-buildvcs.sh
 ```
 
+## check-adr-numbers.sh
+
+Guard ADR numbering against parallel tickets (#92).
+
+### Purpose
+
+Two tickets in flight at once each take the next free ADR number on their base.
+The slugs differ, so the two files never conflict in git: a clean rebase lands
+both, and every `ADR-NNNN` cross-reference the second ticket wrote points at the
+wrong decision. This guard runs under `make check`, so the host-side Gate re-run
+and CI both catch the collision. It is bash-3.2-safe.
+
+### What it checks
+
+- Two files in `docs/adr/` with the same four-digit prefix.
+- An `ADR-NNNN` reference in a Go comment or a Markdown file whose number has no
+  file in `docs/adr/`.
+- A Markdown link to `adr/NNNN-<slug>.md` whose file doesn't exist (a renumber
+  that kept the old path, say).
+
+Go string literals are not scanned (they are test data), and `.git` and linked
+worktrees under `.claude/worktrees` are skipped.
+
+### Fix violations
+
+Renumber the ADR your branch added to the next number free on `origin/main`, add
+a `- Renumbered: from ADR-NNNN by #<ticket>` line under its header, and update
+the references that mean it.
+
+### Usage
+
+```bash
+./scripts/check-adr-numbers.sh              # the make check-adr default
+./scripts/check-adr-numbers.sh /path/to/repo
+```
+
+### Testing
+
+```bash
+./scripts/test-check-adr-numbers.sh
+```
+
 ## check-bash3-compat.sh
 
 Guard against bash-4-only syntax in bash scripts (BEH-457).
@@ -272,7 +314,9 @@ The guard is integrated into the Makefile's `check` target, which runs:
 4. `check-bash3` - The bash 3.2 compatibility guard
 5. `check-buildvcs` - The -buildvcs=false guard (BEH-459)
 6. `check-ci` - The CI-runs-check guard (BEH-462)
-7. `test` - Full test suite
+7. `check-adr` - The ADR-numbering guard (#92)
+8. `check-scripts` - The harness shell tests (BEH-591)
+9. `test` - Full test suite
 
 CI runs `make check` directly (then `make build`), so adding a guard to the
 `check` target above covers it in CI with no workflow edit. The `check-ci` guard

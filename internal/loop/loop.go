@@ -173,7 +173,7 @@ type Host interface {
 	// PruneMergedWorktrees removes the worktrees whose PR has merged and whose tree is
 	// clean, and returns how many it removed. The merged/clean classification lives in
 	// the Consumer-side prune script (single source of truth); the loop never
-	// reimplements it. A failure is non-fatal (ADR-0005).
+	// reimplements it. A failure is non-fatal (ADR-0027).
 	PruneMergedWorktrees() (removed int, err error)
 	// CachePrune runs the Consumer's declared cache-reclaim command (`cache.prune_command`
 	// — `pnpm store prune`, `go clean -modcache`, …): a cheap, non-destructive,
@@ -186,7 +186,7 @@ type Host interface {
 	// cache and dangling images accrete on the Docker volume) and the one the worktree
 	// / cache prunes never touch. Run as the LAST reclaim step, only when the cheaper
 	// prunes left free disk still below the threshold. A failure is non-fatal
-	// (ADR-0005). The removed image self-heals: Preflight rebuilds or pulls the
+	// (ADR-0027). The removed image self-heals: Preflight rebuilds or pulls the
 	// sandbox image on the next launch (resolve-on-miss).
 	DockerPrune() error
 }
@@ -224,7 +224,7 @@ type Limits struct {
 	ClaimTTL time.Duration
 	// DiskReclaimThreshold is the soft free-disk floor (bytes) below which the loop
 	// proactively reclaims host disk between items, BEFORE the hard 5 GiB sandbox
-	// preflight floor would refuse a launch (ADR-0005). Zero disables reclaim entirely
+	// preflight floor would refuse a launch (ADR-0027). Zero disables reclaim entirely
 	// — the loop then makes no statfs/prune calls at all.
 	DiskReclaimThreshold uint64
 	// MaxConsecutiveFailures is the circuit-breaker threshold: after this many
@@ -308,7 +308,7 @@ func Run(d Deps) int {
 		}
 
 		// Reclaim disk between items, before selecting the next one, when no sandbox
-		// is active (ADR-0005). Gated on a cheap statfs so a healthy disk costs nothing;
+		// is active (ADR-0027). Gated on a cheap statfs so a healthy disk costs nothing;
 		// a failed prune is narrated and swallowed — reclaim is never an item outcome
 		// and never touches the breaker.
 		d.reclaimDisk()
@@ -509,12 +509,12 @@ func (d Deps) close(claim *lease.Lease) bool {
 
 // reclaimDisk proactively frees host disk between items when free space has
 // fallen below the soft DiskReclaimThreshold, BEFORE the hard MinFreeDiskBytes
-// sandbox floor would refuse a launch (ADR-0005). The named goal is dead worktrees,
+// sandbox floor would refuse a launch (ADR-0027). The named goal is dead worktrees,
 // so the squash-merge-aware worktree prune runs first; if free space is still below
 // the threshold afterwards, the Consumer's cache prune is a cheap, non-destructive
 // follow-up.
 //
-// Three invariants, all from ADR-0005:
+// Three invariants, all from ADR-0027:
 //   - Gated on a cheap statfs: a healthy disk (or a zero threshold, or an
 //     unreadable statfs) makes no prune / gh / shell calls at all.
 //   - Never an item outcome: a failed statfs/prune is narrated and swallowed; the
@@ -526,7 +526,7 @@ func (d Deps) close(claim *lease.Lease) bool {
 // The reclaims escalate cheapest-first, each gated on free disk STILL being below the
 // threshold: merged worktrees, then the Consumer's cache prune, then the Docker
 // build-cache / image prune last (usually the biggest win but the heaviest step, and the one the
-// other two never touch — ADR-0005 / the DiskReclaimHint ordering).
+// other two never touch — ADR-0027 / the DiskReclaimHint ordering).
 func (d Deps) reclaimDisk() {
 	if d.Limits.DiskReclaimThreshold == 0 {
 		return // reclaim disabled
@@ -573,7 +573,7 @@ func (d Deps) reclaimDisk() {
 		}
 	}
 
-	// Narrate only when a reclaim actually acted (ADR-0005): a worktree was removed, or
+	// Narrate only when a reclaim actually acted (ADR-0027): a worktree was removed, or
 	// a cache/Docker prune moved free disk up. A no-op iteration stays silent.
 	if removed > 0 || after > before {
 		var msg string

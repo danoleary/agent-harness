@@ -134,7 +134,7 @@ Pipeline  : Run(WorkItem, Lease) stages.Result
   but does not block it.
 - A second loop doubles the number of daemons competing for Docker and disk. Disk
   reclaim stays per daemon. Two daemons pruning at once is safe because each prune
-  checks a worktree is clean and its PR merged before removing it (ADR-0005).
+  checks a worktree is clean and its PR merged before removing it (ADR-0027).
 - The stop sentinel and `loop.jsonl` become per loop (`.agent-harness/STOP` stays
   the ticket loop's for compatibility), so the viewer can follow either loop.
 - New glossary terms for CONTEXT.md once the code lands: **Source**, **Work

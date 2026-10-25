@@ -1,7 +1,8 @@
-# ADR-0005: The autonomous loop reclaims disk by pruning merged worktrees
+# ADR-0027: The autonomous loop reclaims disk by pruning merged worktrees
 
 - Status: Accepted
 - Date: 2026-06-28
+- Renumbered: from ADR-0005 by #92 — the loop viewer ADR took 0005 in parallel
 
 ## Context
 
