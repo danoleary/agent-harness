@@ -168,7 +168,10 @@ Each runs one Stage over one ticket: the same Stage `pipeline` would run.
 ## Common flags
 
 - `--help` (or `-h`) prints a command's usage without needing a credential
-  (every command but `watch`).
+  (every command but `start` and `watch`).
 - `--version` prints the harness version.
+- `--dry-run`, `--verbose` and `--force` are taken by `pipeline` and the stage
+  commands only; `loop` takes `--dry-run`. `start` rejects them, and `watch`
+  would read one as a stream path.
 - `--verbose` streams the agent transcript (`pipeline` and the stage commands).
 - A ticket's transcripts and event stream are in `.agent-harness/logs/<KEY>/`.

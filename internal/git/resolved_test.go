@@ -457,3 +457,57 @@ func TestResolvedAdvisoryDowngradesWhenTicketNamesDependency(t *testing.T) {
 		t.Fatalf("advisory should name the symbol and the dependency, got: %s", msg)
 	}
 }
+
+// --- Symbols that never existed (#116) ---
+
+// writeGitModule seeds a git repo whose `internal` source root holds a local
+// package `store`, committed as the only history, and returns that root.
+func writeGitModule(t *testing.T) (root string) {
+	t.Helper()
+	root = writeGoModule(t)
+	repo := filepath.Dir(root)
+	runGit(t, repo, "init", "-q", "-b", "main")
+	runGit(t, repo, "config", "user.email", "t@example.com")
+	runGit(t, repo, "config", "user.name", "Test")
+	runGit(t, repo, "add", "-A")
+	runGit(t, repo, "commit", "-q", "-m", "base")
+	return root
+}
+
+// #116: a refactoring ticket names the symbol it exists to create without an
+// add-verb right before it ("one composition root, `store.NewThing`, that both
+// callers use"). `store` is a local package and NewThing has never been in the
+// repo's history, so it was never removed and the ticket can't be "already
+// resolved". The advisory must not say "recommend close".
+func TestResolvedAdvisoryNoRecommendCloseForSymbolNeverInHistory(t *testing.T) {
+	root := writeGitModule(t)
+
+	msg := ResolvedAdvisory([]string{root}, "#116", "Give the pipeline one composition root, `store.NewThing`, that both callers use")
+	if strings.Contains(msg, "recommend close") || strings.Contains(msg, "already resolved") {
+		t.Fatalf("a symbol that never existed must not read as already resolved / recommend close, got: %s", msg)
+	}
+	if !strings.Contains(msg, "NewThing") {
+		t.Fatalf("the soft advisory should still name the symbol, got: %s", msg)
+	}
+}
+
+// The history check keeps the BEH-544 signal: a symbol that existed once and is
+// now gone from source still gets the strong "recommend close" verdict.
+func TestResolvedAdvisoryKeepsStrongVerdictForSymbolRemovedFromHistory(t *testing.T) {
+	root := writeGitModule(t)
+	repo := filepath.Dir(root)
+	file := filepath.Join(root, "store", "store.go")
+	if err := os.WriteFile(file, []byte("package store\n\nfunc LegacyCache() {}\n"), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	runGit(t, repo, "commit", "-q", "-am", "add LegacyCache")
+	if err := os.WriteFile(file, []byte("package store\n"), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	runGit(t, repo, "commit", "-q", "-am", "drop LegacyCache")
+
+	msg := ResolvedAdvisory([]string{root}, "#116", "the dead `store.LegacyCache` still needs deleting")
+	if !strings.Contains(msg, "recommend close") || !strings.Contains(msg, "LegacyCache") {
+		t.Fatalf("a symbol removed from history must keep the strong verdict, got: %s", msg)
+	}
+}

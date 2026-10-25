@@ -21,8 +21,8 @@ The same token pushes, runs `gh`, works GitHub Issues, and files
 
 **What `doctor` checks:** a `github_pat_…` token fails as fine-grained without a
 network call. Otherwise it calls `GET https://api.github.com/user` and reads the
-`X-OAuth-Scopes` header. No header means fine-grained, and no `repo` means fail.
-`doctor` doesn't check SSO or `workflow`. With `[tracker] kind = "github"` it
+`X-OAuth-Scopes` header. No header means fine-grained, no `repo` means fail, and
+no `workflow` means warn. `doctor` doesn't check SSO. With `[tracker] kind = "github"` it
 also reads the repo and every label the config names.
 
 ## Claude credential
