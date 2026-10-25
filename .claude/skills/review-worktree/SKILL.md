@@ -10,8 +10,11 @@ and the branch.
 
 ## 1. Reconstruct the intent
 
-From the ticket and `git log main..HEAD` / `git diff main...HEAD` only. Do not
-read the implementation transcript. Write one line: what should now be true.
+From the ticket and `git log <base>..HEAD` / `git diff <base>...HEAD` only,
+where `<base>` is the commit the prompt names as the branch's base (else
+`origin/main`). Never diff against local `main`: the harness does not update it,
+so it may be stale and pull in other tickets' commits. Do not read the
+implementation transcript. Write one line: what should now be true.
 
 ## 2. Read the diff through these lenses, in order
 

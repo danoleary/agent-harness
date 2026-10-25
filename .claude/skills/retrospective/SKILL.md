@@ -13,8 +13,9 @@ judged the code.
 - Every transcript the prompt points at, in order. They are JSON lines; use
   `jq` to pull out tool calls, tool errors and the assistant's reasoning rather
   than reading raw.
-- `git diff main...HEAD` in the worktree, only to understand what the sessions
-  were trying to do.
+- `git diff <base>...HEAD` in the worktree, where `<base>` is the commit the
+  prompt names as the branch's base (else `origin/main`; local `main` may be
+  stale), only to understand what the sessions were trying to do.
 
 ## 2. Look for friction
 

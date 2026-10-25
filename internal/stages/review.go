@@ -79,6 +79,7 @@ func Review(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Res
 	log.Event(fmt.Sprintf("fetched %s — %s", t.Identifier, t.Title))
 
 	subject := NewSubject(h, args.Identifier, log.Dir, t)
+	subject.Base, _ = h.BaseSHA(slug)
 	// A re-run whose branch gained no commit since the last review is handed that
 	// review's verdict and the range it covered, so the session re-emits it after the
 	// gate rather than re-derive it and stack a churn commit to show for it (#44).

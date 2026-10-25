@@ -157,3 +157,47 @@ func revParse(t *testing.T, repo, rev string) string {
 	}
 	return strings.TrimSpace(string(out))
 }
+
+// #86: BaseSHA is the commit the feature branch was cut from (or last rebased
+// onto) — its merge-base with origin/main — not local `main`, which the harness
+// never moves. Here local main stays at init while origin/main gains a sibling
+// ticket's merge, the branch is cut from that, and origin/main then advances again
+// mid-run: the base is still the sibling's merge.
+func TestBaseSHAIsTheForkPointFromOriginMainNotLocalMain(t *testing.T) {
+	repo := seedRepo(t)
+	commit := func(name string) string {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(repo, name), []byte(name), 0o644); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		runGit(t, repo, "add", "-A")
+		runGit(t, repo, "commit", "-q", "-m", name)
+		sha, err := realWorktree(repo, repo, "gh-86").HeadSHA()
+		if err != nil {
+			t.Fatalf("HeadSHA: %v", err)
+		}
+		return sha
+	}
+	runGit(t, repo, "checkout", "-q", "-b", "upstream")
+	sibling := commit("sibling")
+	runGit(t, repo, "checkout", "-q", "-b", branchName("gh-86"))
+	commit("feature")
+	runGit(t, repo, "checkout", "-q", "upstream")
+	commit("later-sibling")
+	runGit(t, repo, "update-ref", "refs/remotes/origin/main", "upstream")
+	runGit(t, repo, "checkout", "-q", "main")
+
+	got, err := realWorktree(repo, repo, "gh-86").BaseSHA()
+	if err != nil {
+		t.Fatalf("BaseSHA: %v", err)
+	}
+	if got != sibling {
+		t.Fatalf("BaseSHA = %s, want the fork point %s", got, sibling)
+	}
+}
+
+func TestBaseSHAErrorsWithoutOriginMain(t *testing.T) {
+	if _, err := realWorktree(seedRepo(t), t.TempDir(), "gh-86").BaseSHA(); err == nil {
+		t.Fatal("BaseSHA should error when the branch and origin/main do not resolve")
+	}
+}

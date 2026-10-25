@@ -166,6 +166,19 @@ func (w Worktree) HeadSHA() (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
+// BaseSHA returns the commit the feature branch was cut from or last rebased onto:
+// its merge-base with origin/main, which stays put when origin/main advances
+// underneath it. Local `main` is no stand-in — the harness never moves it, so once
+// a sibling ticket merges it lags and `main...HEAD` takes in that sibling's work
+// (#86). Read from the main checkout, like [Worktree.CommitSubjects].
+func (w Worktree) BaseSHA() (string, error) {
+	out, err := w.output("git", "-C", w.repo, "merge-base", "origin/main", w.branch)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
 // CommitSubjects returns the subject lines of the commits on the feature branch
 // ahead of origin/main, newest last — the raw material for the templated PR body.
 // Read from the main checkout (the shared `.git` holds the branch's objects); an
