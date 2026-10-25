@@ -77,7 +77,9 @@ type InProgressClaim struct {
 // In Progress set, so a claim stranded by a dead agent (no branch/PR past the TTL)
 // can be released back to Todo (BEH-677).
 type Queue interface {
-	SelectNextTicket() (ticket.Ticket, bool, error)
+	// SelectNextTicket passes over any Key in skip: a ticket selection deferred
+	// this poll (#97), so the next ready ticket gets its turn.
+	SelectNextTicket(skip ...Key) (ticket.Ticket, bool, error)
 	MoveToInProgress(key Key) error
 	// StillReady re-reads one selected ticket and reports whether it is still
 	// unclaimed. Selection reads a queue that can lag a claim another loop instance

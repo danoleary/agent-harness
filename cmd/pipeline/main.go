@@ -22,6 +22,7 @@ import (
 
 	"github.com/danoleary/agent-harness/internal/config"
 	"github.com/danoleary/agent-harness/internal/hostlock"
+	"github.com/danoleary/agent-harness/internal/loophost"
 	"github.com/danoleary/agent-harness/internal/loopstream"
 	"github.com/danoleary/agent-harness/internal/pipeline"
 	"github.com/danoleary/agent-harness/internal/runlog"
@@ -68,7 +69,9 @@ func main() {
 		console := runlog.NewConsole(loopstream.NewStream(loopstream.PathUnder(stages.LogsRoot(cfg))))
 		// The claim lock is the one every loop instance on this Consumer takes, so a
 		// single-shot run beside a running loop cannot claim the loop's ticket (#89).
-		sel := pipeline.ResolveNext(client, hostlock.File(config.ClaimLockFile(cfg.ProjectPath)), args.DryRun, cfg.Tracker.QueueHint(), console)
+		// Selection is screened against the open harness PRs as the loop's is (#97).
+		resolver := loophost.NewTicketSource(cfg, console, client).WatchPRs(loophost.RepoPRs(cfg)).Resolver()
+		sel := pipeline.ResolveNext(resolver, hostlock.File(config.ClaimLockFile(cfg.ProjectPath)), args.DryRun, cfg.Tracker.QueueHint(), console)
 		if !sel.Proceed {
 			// Dry-run resolved a real ticket: print its plan before exiting.
 			if args.DryRun && sel.Identifier != "" {

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"slices"
 
 	"github.com/danoleary/agent-harness/internal/ticket"
 )
@@ -29,9 +30,10 @@ type searchResult struct {
 // blocked-exclusion, and ordering, so there is no separate eligibility screen
 // (LCD: issue-link relations dropped). It is a PURE READ — claim-on-select
 // (ADR-0003) is the caller composing it with MoveToInProgress — so dry-run can
-// resolve a ticket without mutating Jira. ok=false means the queue is empty.
-func (c *Client) SelectNextTicket() (ticket.Ticket, bool, error) {
-	data, err := c.transport("GET", searchPath(c.opts.ReadyJQL, "summary,description"), nil)
+// resolve a ticket without mutating Jira. ok=false means the queue is empty. A
+// Key in skip is passed over (#97), so the next result wins.
+func (c *Client) SelectNextTicket(skip ...string) (ticket.Ticket, bool, error) {
+	data, err := c.transport("GET", searchPath(c.opts.ReadyJQL, "summary,description,labels"), nil)
 	if err != nil {
 		return ticket.Ticket{}, false, err
 	}
@@ -39,17 +41,20 @@ func (c *Client) SelectNextTicket() (ticket.Ticket, bool, error) {
 	if err := json.Unmarshal(data, &res); err != nil {
 		return ticket.Ticket{}, false, err
 	}
-	if len(res.Issues) == 0 {
-		return ticket.Ticket{}, false, nil
+	for _, iss := range res.Issues {
+		if slices.Contains(skip, iss.Key) {
+			continue
+		}
+		return ticket.Ticket{
+			Identifier:  iss.Key,
+			Title:       iss.Fields.Summary,
+			Description: iss.Fields.Description,
+			URL:         c.browseURL(iss.Key),
+			TeamID:      c.opts.ProjectKey,
+			Labels:      iss.Fields.Labels,
+		}, true, nil
 	}
-	iss := res.Issues[0]
-	return ticket.Ticket{
-		Identifier:  iss.Key,
-		Title:       iss.Fields.Summary,
-		Description: iss.Fields.Description,
-		URL:         c.browseURL(iss.Key),
-		TeamID:      c.opts.ProjectKey,
-	}, true, nil
+	return ticket.Ticket{}, false, nil
 }
 
 // availableTransition is one entry in an issue's available-transitions list.

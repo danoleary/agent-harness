@@ -469,6 +469,46 @@ func (w Worktree) DocsOnly(excludedRoots []string) bool {
 	return DocsOnlyPaths(paths, excludedRoots)
 }
 
+// ChangedFiles lists the paths the worktree has changed since it left origin/main,
+// committed or not: its work in flight, which the overlap check compares a
+// candidate ticket against (#97). The diff is against the merge-base, so what
+// main gained since the branch was cut is not the branch's work. A worktree that
+// does not exist has changed nothing. Untracked files are not listed: a session
+// commits before it hands off, and an edit to a file that exists is the case that
+// conflicts.
+func (w Worktree) ChangedFiles() ([]string, error) {
+	if !w.Exists() {
+		return nil, nil
+	}
+	out, err := w.output("git", "-C", w.path, "diff", "--name-only", "--merge-base", "origin/main")
+	if err != nil {
+		return nil, err
+	}
+	return pathLines(out), nil
+}
+
+// TrackedFiles lists the paths the main checkout tracks: the files a ticket's text
+// can name before any work exists, which the overlap check resolves a claimed
+// ticket's mentions against (#97).
+func (c Checkout) TrackedFiles() ([]string, error) {
+	out, err := c.output("git", "-C", c.path, "ls-files")
+	if err != nil {
+		return nil, err
+	}
+	return pathLines(out), nil
+}
+
+// pathLines is git's one-path-per-line output, blank lines dropped.
+func pathLines(out []byte) []string {
+	var paths []string
+	for _, line := range strings.Split(string(out), "\n") {
+		if p := strings.TrimSpace(line); p != "" {
+			paths = append(paths, p)
+		}
+	}
+	return paths
+}
+
 // Push pushes the feature branch to origin from the main checkout (ADR-0002: the
 // harness owns the push, host-side; the sandbox never reaches a remote). Run only
 // after the harness's own gate re-run is green.

@@ -441,6 +441,31 @@ func TestLoadPRLoopDefaultsAndOverrides(t *testing.T) {
 	}
 }
 
+// The overlap check (#97) defers a ticket that names one file an open harness PR
+// changes, unless it carries parallel-ok; 0 turns it off, and a junk value fails
+// loud.
+func TestLoadOverlapDefaultsAndOverrides(t *testing.T) {
+	cfg, err := Load(fullEnv(t, nil))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.OverlapThreshold != 1 || cfg.OverlapEscapeLabel != "parallel-ok" {
+		t.Errorf("overlap defaults = %d / %q, want 1 / parallel-ok", cfg.OverlapThreshold, cfg.OverlapEscapeLabel)
+	}
+
+	cfg, err = Load(fullEnv(t, map[string]string{"OVERLAP_THRESHOLD": "0", "OVERLAP_ESCAPE_LABEL": "independent"}))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.OverlapThreshold != 0 || cfg.OverlapEscapeLabel != "independent" {
+		t.Errorf("overlap overrides = %d / %q", cfg.OverlapThreshold, cfg.OverlapEscapeLabel)
+	}
+
+	if _, err := Load(fullEnv(t, map[string]string{"OVERLAP_THRESHOLD": "-1"})); err == nil || !strings.Contains(err.Error(), "OVERLAP_THRESHOLD") {
+		t.Errorf("a negative threshold must fail loud naming the var, got %v", err)
+	}
+}
+
 // The disk-reclaim threshold is env-overridable in bytes, and an explicit 0 disables
 // reclaim entirely (a documented value, not a nonsensical one).
 func TestLoadDiskReclaimThresholdOverrideAndDisable(t *testing.T) {

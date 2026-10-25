@@ -4,14 +4,17 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/danoleary/agent-harness/internal/config"
 	gitpkg "github.com/danoleary/agent-harness/internal/git"
+	"github.com/danoleary/agent-harness/internal/github"
 	"github.com/danoleary/agent-harness/internal/hostio"
 	"github.com/danoleary/agent-harness/internal/hostlock"
 	"github.com/danoleary/agent-harness/internal/lease"
 	"github.com/danoleary/agent-harness/internal/loop"
+	"github.com/danoleary/agent-harness/internal/overlap"
 	"github.com/danoleary/agent-harness/internal/pipeline"
 	"github.com/danoleary/agent-harness/internal/runlog"
 	"github.com/danoleary/agent-harness/internal/ship"
@@ -27,6 +30,16 @@ type TicketSource struct {
 	cfg    config.Config
 	log    loop.Narrator
 	client tracker.Tracker
+	// prs, when set, are the open PRs selection screens a ticket against: a ticket
+	// that names files the harness's own PRs already change waits (#97).
+	prs OpenPRs
+}
+
+// OpenPRs is the repository's open PRs and the files each changes: the GitHub
+// read the overlap check needs ([github.Pulls]).
+type OpenPRs interface {
+	OpenPRs() ([]github.PullRequest, error)
+	Files(number int) ([]string, error)
 }
 
 var _ loop.Source = (*TicketSource)(nil)
@@ -34,6 +47,20 @@ var _ loop.Source = (*TicketSource)(nil)
 // NewTicketSource builds the ticket Source over the Consumer's Tracker.
 func NewTicketSource(cfg config.Config, log loop.Narrator, client tracker.Tracker) *TicketSource {
 	return &TicketSource{cfg: cfg, log: log, client: client}
+}
+
+// RepoPRs reads the open PRs of the repository the Consumer's checkout pushes to,
+// through gh, which fills the owner and repo from the checkout.
+func RepoPRs(cfg config.Config) *github.Pulls {
+	return github.NewPulls(github.NewGhTransport(cfg.ProjectPath), "{owner}/{repo}")
+}
+
+// WatchPRs turns on the overlap check (#97, ADR-0032): selection defers a ticket
+// whose title or body names files an open harness PR, or a claimed ticket's
+// worktree, already changes. OVERLAP_THRESHOLD=0 leaves it off.
+func (s *TicketSource) WatchPRs(prs OpenPRs) *TicketSource {
+	s.prs = prs
+	return s
 }
 
 // checkout binds the Consumer's checkout and branch prefix to the git seam once,
@@ -60,7 +87,7 @@ func (s *TicketSource) CheckAccess() error {
 // daemon narrates as a failed read — not an empty queue — before re-polling. The
 // item's Branch is the slugged feature branch the Stages will create and push.
 func (s *TicketSource) Next() (loop.WorkItem, *lease.Lease, bool, error) {
-	sel := pipeline.ResolveNext(s.client, hostlock.File(config.ClaimLockFile(s.cfg.ProjectPath)), false, s.cfg.Tracker.QueueHint(), s.log)
+	sel := pipeline.ResolveNext(s.Resolver(), hostlock.File(config.ClaimLockFile(s.cfg.ProjectPath)), false, s.cfg.Tracker.QueueHint(), s.log)
 	if sel.Err != nil {
 		return loop.WorkItem{}, nil, false, sel.Err
 	}
@@ -70,6 +97,69 @@ func (s *TicketSource) Next() (loop.WorkItem, *lease.Lease, bool, error) {
 	key := sel.Lease.Key()
 	item := loop.WorkItem{Key: key, Branch: s.checkout().Worktree(ticket.Slug(key)).Branch()}
 	return item, sel.Lease, true, nil
+}
+
+// Resolver is the tracker selection Next claims through: screened against the
+// work in flight when the overlap check is on. `pipeline --next` selects through
+// it too, so a single-shot run defers what the loop would.
+func (s *TicketSource) Resolver() pipeline.NextResolver {
+	if s.prs == nil {
+		return s.client
+	}
+	policy := overlap.Policy{Threshold: s.cfg.OverlapThreshold, EscapeLabel: s.cfg.OverlapEscapeLabel}
+	branch := func(key string) string { return s.checkout().Worktree(ticket.Slug(key)).Branch() }
+	return pipeline.DeferOverlaps(s.client, s.inFlight, branch, policy, s.log)
+}
+
+// inFlight is the work a ready ticket may collide with (#97): each open PR on the
+// harness's branch prefix with the files it changes, then each claimed ticket's
+// worktree with what it has changed so far — a ticket mid-run has no PR yet — and
+// the tracked files its own title and body name. A ticket another loop instance
+// claimed a moment ago has changed nothing yet, and a sibling naming the same
+// module must still wait for it. A human's branch or a fork is not the harness's
+// work, and two PRs the harness did not open conflict no more often for it than
+// they did before. Any failed read fails the whole read, which the screen
+// narrates and dispatches through.
+func (s *TicketSource) inFlight() ([]overlap.Work, error) {
+	prs, err := s.prs.OpenPRs()
+	if err != nil {
+		return nil, fmt.Errorf("list open PRs: %w", err)
+	}
+	var work []overlap.Work
+	for _, pr := range prs {
+		if pr.Fork || !strings.HasPrefix(pr.HeadBranch, s.cfg.BranchPrefix+"/") {
+			continue
+		}
+		files, err := s.prs.Files(pr.Number)
+		if err != nil {
+			return nil, fmt.Errorf("list the files of PR #%d: %w", pr.Number, err)
+		}
+		work = append(work, overlap.Work{Label: fmt.Sprintf("PR #%d", pr.Number), Branch: pr.HeadBranch, Files: files})
+	}
+	claims, err := s.client.ListInProgressClaims()
+	if err != nil {
+		return nil, fmt.Errorf("list claimed tickets: %w", err)
+	}
+	var tracked []string
+	if len(claims) > 0 {
+		if tracked, err = s.checkout().TrackedFiles(); err != nil {
+			return nil, fmt.Errorf("list the checkout's files: %w", err)
+		}
+	}
+	for _, c := range claims {
+		wt := s.checkout().Worktree(ticket.Slug(c.Identifier))
+		files, err := wt.ChangedFiles()
+		if err != nil {
+			return nil, fmt.Errorf("read what %s has changed: %w", c.Identifier, err)
+		}
+		t, err := s.client.FetchTicket(c.Identifier)
+		if err != nil {
+			return nil, fmt.Errorf("read claimed %s: %w", c.Identifier, err)
+		}
+		files = append(files, overlap.Named(t, tracked)...)
+		work = append(work, overlap.Work{Label: c.Identifier + " (claimed)", Branch: wt.Branch(), Files: files})
+	}
+	return work, nil
 }
 
 // Release returns a stale claim to Todo.

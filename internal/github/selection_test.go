@@ -286,3 +286,27 @@ func TestSelectNextTicketDependencyFetchFailsClosed(t *testing.T) {
 		t.Error("expected ok=false alongside the error")
 	}
 }
+
+// A skipped Key is passed over before any eligibility read (the overlap check
+// deferred it, #97): the next eligible issue wins, with its labels.
+func TestSelectNextTicketPassesOverSkippedKeys(t *testing.T) {
+	tr, _ := fakeTransport(map[string]any{
+		selectPath: []any{
+			map[string]any{"number": 7, "title": "Deferred", "labels": []any{
+				map[string]any{"name": "ready-for-agent"},
+			}},
+			map[string]any{"number": 9, "title": "Next", "labels": []any{
+				map[string]any{"name": "ready-for-agent"}, map[string]any{"name": "parallel-ok"},
+			}},
+		},
+	})
+	c := NewClient(tr, "acme", "widgets", readyLabels)
+
+	got, ok, err := c.SelectNextTicket("#7")
+	if err != nil || !ok {
+		t.Fatalf("ok=%v err=%v", ok, err)
+	}
+	if got.Identifier != "#9" || !got.HasLabel("parallel-ok") {
+		t.Errorf("selected = %+v, want #9 labelled parallel-ok", got)
+	}
+}

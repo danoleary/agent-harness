@@ -69,6 +69,14 @@ The harness never picks an issue a still-open issue blocks, so it's picked up on
 the first poll after its last blocker closes. To hold a ticket for a human
 reason, leave the ready label off.
 
+The harness also holds a ticket, on every tracker, when its title or body names
+a file that an open harness PR or a claimed ticket's worktree already changes.
+The loop log shows `#97 deferred: overlaps PR #81 on <files>`, and the ticket is
+picked up on the first poll after that work merges or closes, so sibling tickets
+that edit one module run one after another. Label a ticket `parallel-ok`
+(`OVERLAP_ESCAPE_LABEL`) to run it anyway, or set `OVERLAP_THRESHOLD=0` to turn
+the check off (ADR-0032).
+
 ## See also
 
 - [`[tracker]` keys](../reference/config.md#tracker)

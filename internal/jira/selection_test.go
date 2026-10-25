@@ -24,8 +24,8 @@ func hasCall(calls []call, method, path string) bool {
 }
 
 // selectPath is the exact search/jql request SelectNextTicket issues (keyed with
-// the transport's "<METHOD> " prefix): the ready JQL, summary+description fields.
-const selectPath = "GET /rest/api/2/search/jql?fields=summary%2Cdescription&jql=status+%3D+Ready&maxResults=50"
+// the transport's "<METHOD> " prefix): the ready JQL, summary+description+labels fields.
+const selectPath = "GET /rest/api/2/search/jql?fields=summary%2Cdescription%2Clabels&jql=status+%3D+Ready&maxResults=50"
 
 // TestSelectNextTicketPicksFirst pins the queue read: the first issue the ready
 // JQL returns wins (the JQL itself encodes ready/blocked/ordering, so there is no
@@ -183,5 +183,27 @@ func TestTransitionUnknownNameErrors(t *testing.T) {
 
 	if err := c.MoveToInProgress("PROJ-9"); err == nil {
 		t.Fatal("expected an error for an unknown transition name")
+	}
+}
+
+// A skipped Key is passed over (the overlap check deferred it, #97): the next
+// issue the ready JQL returns wins, with its labels for the escape label.
+func TestSelectNextTicketPassesOverSkippedKeys(t *testing.T) {
+	tr, _ := fakeTransport(map[string]any{
+		selectPath: map[string]any{
+			"issues": []any{
+				map[string]any{"key": "PROJ-9", "fields": map[string]any{"summary": "Real work"}},
+				map[string]any{"key": "PROJ-10", "fields": map[string]any{"summary": "Next", "labels": []any{"parallel-ok"}}},
+			},
+		},
+	})
+	c := NewClient(tr, baseURL, selectOpts)
+
+	got, ok, err := c.SelectNextTicket("PROJ-9")
+	if err != nil || !ok {
+		t.Fatalf("ok=%v err=%v", ok, err)
+	}
+	if got.Identifier != "PROJ-10" || !got.HasLabel("parallel-ok") {
+		t.Errorf("selected = %+v, want PROJ-10 labelled parallel-ok", got)
 	}
 }

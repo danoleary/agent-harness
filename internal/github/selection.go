@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"slices"
 	"strconv"
 
 	"github.com/danoleary/agent-harness/internal/ticket"
@@ -29,12 +30,13 @@ func (c *Client) selectQuery() string {
 // SelectNextTicket resolves the top-of-queue eligible ticket: the first open,
 // unassigned, ready-labelled issue that is not Blocked-labelled, not a pull
 // request (the issues API returns PRs too), not blocked by a still-open issue, and
-// not building on a still-open PR its body names (#82).
+// not building on a still-open PR its body names (#82). A Key in skip is passed
+// over before any eligibility read (#97).
 // A failed blocker read is an error, not an unblocked ticket (fail closed). It is
 // a PURE READ — claim-on-select (ADR-0003) is the caller composing it with
 // MoveToInProgress — so dry-run can resolve a ticket without mutating GitHub.
 // ok=false means the queue is empty.
-func (c *Client) SelectNextTicket() (ticket.Ticket, bool, error) {
+func (c *Client) SelectNextTicket(skip ...string) (ticket.Ticket, bool, error) {
 	data, err := c.transport("GET", c.selectQuery(), nil)
 	if err != nil {
 		return ticket.Ticket{}, false, err
@@ -44,6 +46,9 @@ func (c *Client) SelectNextTicket() (ticket.Ticket, bool, error) {
 		return ticket.Ticket{}, false, err
 	}
 	for _, iss := range issues {
+		if slices.Contains(skip, numberToKey(iss.Number)) {
+			continue
+		}
 		ok, err := c.eligible(iss)
 		if err != nil {
 			return ticket.Ticket{}, false, err
@@ -57,6 +62,7 @@ func (c *Client) SelectNextTicket() (ticket.Ticket, bool, error) {
 			Description: iss.Body,
 			URL:         iss.HTMLURL,
 			TeamID:      c.slug(),
+			Labels:      labelNames(iss),
 		}, true, nil
 	}
 	return ticket.Ticket{}, false, nil
@@ -201,6 +207,15 @@ func (c *Client) MoveToCanceled(key string) error {
 		"state_reason": "not_planned",
 	})
 	return err
+}
+
+// labelNames is the issue's label names.
+func labelNames(iss issue) []string {
+	out := make([]string, 0, len(iss.Labels))
+	for _, l := range iss.Labels {
+		out = append(out, l.Name)
+	}
+	return out
 }
 
 // hasLabel reports whether an issue carries the named label (empty name never

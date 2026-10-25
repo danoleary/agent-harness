@@ -36,6 +36,7 @@ var (
 	ceilingMillis  = parser[time.Duration]{millis(0), "a non-negative integer (milliseconds; 0 = unlimited)"}
 	positiveCount  = parser[int]{count(1), "a positive integer"}
 	ceilingCount   = parser[int]{count(0), "a non-negative integer (0 = unlimited)"}
+	switchCount    = parser[int]{count(0), "a non-negative integer (0 = off)"}
 	// reclaimBytes accepts 0 as "disable reclaim", a documented value. ParseUint
 	// rejects a leading '-', so a negative fails here too.
 	reclaimBytes = parser[uint64]{

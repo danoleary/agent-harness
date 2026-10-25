@@ -108,7 +108,9 @@ type issue struct {
 	Fields struct {
 		Summary     string `json:"summary"`
 		Description string `json:"description"`
-		Subtasks    []struct {
+		// Labels are read by selection only (the overlap check's escape label, #97).
+		Labels   []string `json:"labels"`
+		Subtasks []struct {
 			Key    string `json:"key"`
 			Fields struct {
 				Summary string `json:"summary"`

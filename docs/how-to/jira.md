@@ -53,6 +53,14 @@ findings_label_id = "agent-harness"   # a label NAME, applied to filed Findings
 the ready label, any "blocked" screen and the order in the query. Jira issue
 links don't hold a ticket on their own; exclude blocked tickets in the JQL.
 
+The harness also holds a ticket, on every tracker, when its title or body names
+a file that an open harness PR or a claimed ticket's worktree already changes.
+The loop log shows `#97 deferred: overlaps PR #81 on <files>`, and the ticket is
+picked up on the first poll after that work merges or closes, so sibling tickets
+that edit one module run one after another. Label a ticket `parallel-ok`
+(`OVERLAP_ESCAPE_LABEL`) to run it anyway, or set `OVERLAP_THRESHOLD=0` to turn
+the check off (ADR-0032).
+
 `in_progress_jql` is what the stale-claim reaper sweeps. Keep it narrow enough
 to match only tickets the harness claimed.
 

@@ -22,7 +22,7 @@ type fakeResolver struct {
 	moved   []string
 }
 
-func (f *fakeResolver) SelectNextTicket() (ticket.Ticket, bool, error) {
+func (f *fakeResolver) SelectNextTicket(...string) (ticket.Ticket, bool, error) {
 	return f.ticket, f.ok, f.selErr
 }
 
@@ -196,7 +196,7 @@ func newSharedQueue(lag time.Duration, keys ...string) *sharedQueue {
 	return &sharedQueue{keys: keys, claimed: map[string]time.Time{}, moves: map[string]int{}, lag: lag}
 }
 
-func (q *sharedQueue) SelectNextTicket() (ticket.Ticket, bool, error) {
+func (q *sharedQueue) SelectNextTicket(...string) (ticket.Ticket, bool, error) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	stale := q.staleReads > 0

@@ -17,7 +17,7 @@ import (
 // stays side-effect-free so dry-run can resolve a ticket without mutating the
 // tracker.
 type NextResolver interface {
-	SelectNextTicket() (ticket.Ticket, bool, error)
+	SelectNextTicket(skip ...string) (ticket.Ticket, bool, error)
 	lease.Exclusive
 }
 

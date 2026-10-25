@@ -2,6 +2,7 @@ package linear
 
 import (
 	"encoding/json"
+	"slices"
 
 	"github.com/danoleary/agent-harness/internal/ticket"
 )
@@ -99,8 +100,8 @@ type selectedIssue struct {
 // not-blocked, ordered by priority then board sort order then createdAt. It is a
 // PURE READ — claim-on-select (ADR-0003) is the caller composing it with
 // MoveToInProgress, so dry-run can resolve a ticket without mutating Linear.
-// ok=false means the queue is empty.
-func (c *Client) SelectNextTicket() (ticket.Ticket, bool, error) {
+// ok=false means the queue is empty. A Key in skip is passed over (#97).
+func (c *Client) SelectNextTicket(skip ...string) (ticket.Ticket, bool, error) {
 	// ready-for-agent is filtered in GraphQL (not only in eligible) so the first:250
 	// page is the small human-gated working set, never the whole unassigned-Todo
 	// backlog — otherwise a higher-priority ready-for-agent ticket beyond the 250th
@@ -126,7 +127,7 @@ func (c *Client) SelectNextTicket() (ticket.Ticket, bool, error) {
 		return ticket.Ticket{}, false, err
 	}
 
-	best, ok := topEligible(resp.Issues.Nodes, c.opts)
+	best, ok := topEligible(resp.Issues.Nodes, c.opts, skip)
 	if !ok {
 		return ticket.Ticket{}, false, nil
 	}
@@ -148,16 +149,19 @@ func toTicket(s selectedIssue) ticket.Ticket {
 	if s.Team != nil {
 		t.TeamID = s.Team.ID
 	}
+	for _, l := range s.Labels.Nodes {
+		t.Labels = append(t.Labels, l.Name)
+	}
 	return t
 }
 
-// topEligible returns the highest-priority eligible issue, or ok=false when none
-// is eligible.
-func topEligible(issues []selectedIssue, opts Options) (selectedIssue, bool) {
+// topEligible returns the highest-priority eligible issue not in skip, or
+// ok=false when none is eligible.
+func topEligible(issues []selectedIssue, opts Options, skip []string) (selectedIssue, bool) {
 	var best selectedIssue
 	found := false
 	for _, iss := range issues {
-		if !eligible(iss, opts) {
+		if slices.Contains(skip, iss.Identifier) || !eligible(iss, opts) {
 			continue
 		}
 		if !found || less(iss, best) {

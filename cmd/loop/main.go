@@ -36,7 +36,6 @@ import (
 	"time"
 
 	"github.com/danoleary/agent-harness/internal/config"
-	"github.com/danoleary/agent-harness/internal/github"
 	"github.com/danoleary/agent-harness/internal/loop"
 	"github.com/danoleary/agent-harness/internal/loophost"
 	"github.com/danoleary/agent-harness/internal/loopstream"
@@ -233,7 +232,7 @@ func runTicketLoop(cfg config.Config, l config.Loop, dryRun bool) int {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		return 1
 	}
-	source := loophost.NewTicketSource(cfg, log, client)
+	source := loophost.NewTicketSource(cfg, log, client).WatchPRs(loophost.RepoPRs(cfg))
 	host := loophost.NewDaemon(cfg, l, source.CheckAccess)
 	installSignalHandler(host, log)
 	return loop.Run(loop.Deps{
@@ -258,7 +257,7 @@ func runPRLoop(cfg config.Config, l config.Loop, dryRun bool) int {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		return 1
 	}
-	pulls := github.NewPulls(github.NewGhTransport(cfg.ProjectPath), "{owner}/{repo}")
+	pulls := loophost.RepoPRs(cfg)
 	if dryRun {
 		quiet := runlog.NewConsole(loopstream.NewStream(os.DevNull))
 		tickets := loophost.NewTicketSource(cfg, quiet, client)
