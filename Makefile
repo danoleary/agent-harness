@@ -1,5 +1,5 @@
 # Agent harness — Go toolchain shortcuts. Requires Go 1.26+.
-.PHONY: build install uninstall base-image release test implementation review retrospective pipeline loop watch vet fmt fmt-check check-exec check-bash3 check-buildvcs check-ci check-adr check-scripts check tidy
+.PHONY: build install uninstall base-image release test implementation review retrospective pipeline loop watch vet fmt fmt-check check-exec check-bash3 check-buildvcs check-ci check-adr check-bundle-links check-scripts check tidy
 
 # Build the tool binaries into ./bin.
 #
@@ -30,6 +30,9 @@ build:
 # is the entrypoint; see cmd/agent-harness and ADR-0012.
 PREFIX ?= $(HOME)/.local
 STAGE_TOOLS = implementation review retrospective pipeline loop watch
+# The docs that travel with an install, by repo-relative path: install.sh's DOCS,
+# read from it so the two installs (and the release archive) ship the same set.
+BUNDLE_DOCS = $$(AGENT_HARNESS_SOURCE_ONLY=1 sh -c '. ./install.sh && echo "$$DOCS"')
 #
 # Binaries go in via copy-to-temp + mv, never a plain cp over the old file (same
 # as install.sh). macOS caches a binary's code signature per inode, so rewriting
@@ -43,8 +46,11 @@ install: build
 		mv -f "$(PREFIX)/libexec/agent-harness/$$tool.tmp" "$(PREFIX)/libexec/agent-harness/$$tool" || exit 1; \
 	done
 	@cp scripts/loop-start.sh "$(PREFIX)/libexec/agent-harness/loop-start.sh"
-	@cp README.md LICENSE .env.example "$(PREFIX)/share/agent-harness/"
-	@cp docs/CONSUMER.md "$(PREFIX)/share/agent-harness/CONSUMER.md"
+	@for doc in $(BUNDLE_DOCS); do \
+		mkdir -p "$$(dirname "$(PREFIX)/share/agent-harness/$$doc")" && \
+		cp "$$doc" "$(PREFIX)/share/agent-harness/$$doc" || exit 1; \
+	done
+	@rm -f "$(PREFIX)/share/agent-harness/CONSUMER.md"
 	@echo "installed $(PREFIX)/bin/agent-harness"
 	@case ":$$PATH:" in *":$(PREFIX)/bin:"*) ;; *) echo "note: $(PREFIX)/bin is not on your PATH" ;; esac
 
@@ -53,9 +59,8 @@ install: build
 uninstall:
 	@rm -f "$(PREFIX)/bin/agent-harness" "$(PREFIX)/libexec/agent-harness/loop-start.sh"
 	@for tool in $(STAGE_TOOLS); do rm -f "$(PREFIX)/libexec/agent-harness/$$tool"; done
-	@rm -f "$(PREFIX)/share/agent-harness/README.md" "$(PREFIX)/share/agent-harness/CONSUMER.md" \
-		"$(PREFIX)/share/agent-harness/LICENSE" "$(PREFIX)/share/agent-harness/.env.example"
-	@rmdir "$(PREFIX)/libexec/agent-harness" "$(PREFIX)/share/agent-harness" 2>/dev/null || true
+	@for doc in $(BUNDLE_DOCS) CONSUMER.md; do rm -f "$(PREFIX)/share/agent-harness/$$doc"; done
+	@rmdir "$(PREFIX)/libexec/agent-harness" "$(PREFIX)/share/agent-harness/docs/how-to" "$(PREFIX)/share/agent-harness/docs/reference" "$(PREFIX)/share/agent-harness/docs" "$(PREFIX)/share/agent-harness" 2>/dev/null || true
 	@echo "removed the agent harness from $(PREFIX)"
 
 # Build the sandbox BASE image — the harness<->sandbox contract every Consumer
@@ -153,6 +158,12 @@ check-buildvcs:
 check-ci:
 	@./scripts/check-ci-runs-check.sh
 
+# Fail if README.md links a file install.sh doesn't ship: the installed README
+# sits in share/agent-harness/ beside only the docs on install.sh's DOCS list, so
+# any other relative link is broken in every install (#96).
+check-bundle-links:
+	@./scripts/check-bundle-links.sh
+
 # Fail if two ADRs share a number, or an ADR-NNNN reference / adr/NNNN-<slug>.md
 # link names a file that doesn't exist. Parallel tickets each take the next free
 # number on their base, and a clean rebase lands both (#92).
@@ -170,7 +181,7 @@ check-scripts:
 	@./scripts/run-script-tests.sh
 
 # The pre-push gate: format check, vet, the script guards, and the full test suite.
-check: fmt-check vet check-exec check-bash3 check-buildvcs check-ci check-adr check-scripts test
+check: fmt-check vet check-exec check-bash3 check-buildvcs check-ci check-adr check-bundle-links check-scripts test
 
 tidy:
 	go mod tidy

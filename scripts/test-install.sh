@@ -35,6 +35,8 @@ trap 'rm -rf "$TEST_DIR"' EXIT
 
 FAKE_VERSION="v9.9.9"
 TOOLS="implementation review retrospective pipeline loop watch"
+# The bundle's docs, read from install.sh the way the release workflow reads them.
+DOCS="$(AGENT_HARNESS_SOURCE_ONLY=1 sh -c '. "$1" && echo "$DOCS"' sh "$INSTALL_SH")"
 
 fail() {
     echo -e "${RED}FAIL${NC} - $1"
@@ -72,9 +74,10 @@ sha256_of() {
 # release workflow's: the dispatcher at the archive root, the stage binaries under
 # libexec/agent-harness/, the launcher under scripts/, docs beside them. Each fake
 # stage binary echoes its own name and arguments, so a dispatch can be asserted on.
-# $2, when set, is a tool to OMIT — the partial-archive case.
+# $2, when set, is a tool to OMIT — the partial-archive case. $3=flat lays the
+# docs out the way v0.7.0 and earlier did, all at the archive root.
 make_release() {
-    local root="$1" omit="${2:-}"
+    local root="$1" omit="${2:-}" layout="${3:-}"
     local stage="$root/stage/agent-harness_${FAKE_VERSION}_${PLATFORM}"
     mkdir -p "$stage/libexec/agent-harness" "$stage/scripts"
 
@@ -105,8 +108,15 @@ EOF
     done
 
     cp "$REPO_DIR/scripts/loop-start.sh" "$stage/scripts/loop-start.sh"
-    cp "$REPO_DIR/README.md" "$REPO_DIR/LICENSE" "$REPO_DIR/.env.example" "$stage/"
-    cp "$REPO_DIR/docs/CONSUMER.md" "$stage/CONSUMER.md"
+    local doc
+    for doc in $DOCS; do
+        if [ "$layout" = "flat" ]; then
+            cp "$REPO_DIR/$doc" "$stage/"
+        else
+            mkdir -p "$(dirname "$stage/$doc")"
+            cp "$REPO_DIR/$doc" "$stage/$doc"
+        fi
+    done
 
     # Pack it and publish checksums the way the release workflow does — including
     # the `./` prefix `sha256sum ./*.tar.gz` writes, which the verifier must strip.
@@ -145,7 +155,36 @@ for t in $TOOLS; do
 done
 [ -x "$PREFIX/libexec/agent-harness/loop-start.sh" ] || fail "the loop launcher is not in libexec"
 [ -f "$PREFIX/share/agent-harness/.env.example" ] || fail ".env.example was not installed"
-[ -f "$PREFIX/share/agent-harness/CONSUMER.md" ] || fail "CONSUMER.md was not installed"
+[ -f "$PREFIX/share/agent-harness/docs/CONSUMER.md" ] || fail "docs/CONSUMER.md was not installed"
+echo -e "${GREEN}PASS${NC}"
+
+# --- the installed README's links resolve -----------------------------------
+#
+# The #96 bug: the README links docs/*.md, and a flattened share/ broke every one
+# of those links in every install. check-bundle-links.sh holds the README to the
+# DOCS list; this holds the install to the README.
+echo -n "every relative link in the installed README resolves beside it ... "
+SHARE="$PREFIX/share/agent-harness"
+for link in $(grep -oE '\]\([^)#]+' "$SHARE/README.md" | sed 's/^](//' | grep -vE '^[A-Za-z][A-Za-z0-9+.-]*:'); do
+    [ -f "$SHARE/$link" ] || fail "the installed README links $link, which is not in $SHARE"
+done
+echo -e "${GREEN}PASS${NC}"
+
+# --- an older release still installs the current layout ---------------------
+echo -n "install.sh lays a flat (v0.7.0) archive's docs out under docs/ ... "
+FLAT_REL="$TEST_DIR/flat"
+FLAT_PREFIX="$TEST_DIR/flat-prefix"
+make_release "$FLAT_REL" "" flat
+flat_out="$(run_install "$FLAT_REL" "$FLAT_PREFIX")" || fail "install of a flat archive failed: $flat_out"
+[ -f "$FLAT_PREFIX/share/agent-harness/docs/CONSUMER.md" ] || fail "a flat archive's CONSUMER.md did not land in docs/"
+[ ! -e "$FLAT_PREFIX/share/agent-harness/CONSUMER.md" ] || fail "a flat archive left CONSUMER.md at the share root"
+echo -e "${GREEN}PASS${NC}"
+
+# --- upgrading over a flattened install drops the stale copy ----------------
+echo -n "install.sh removes the root CONSUMER.md an older install left ... "
+echo "stale" >"$PREFIX/share/agent-harness/CONSUMER.md"
+run_install "$REL" "$PREFIX" >/dev/null || fail "the upgrade install failed"
+[ ! -e "$PREFIX/share/agent-harness/CONSUMER.md" ] || fail "the stale root CONSUMER.md survived an upgrade"
 echo -e "${GREEN}PASS${NC}"
 
 # --- the generic names stay OFF the PATH ------------------------------------
@@ -299,7 +338,10 @@ sh "$INSTALL_SH" --prefix "$PREFIX" --uninstall >/dev/null || fail "uninstall fa
 for t in $TOOLS; do
     [ ! -e "$PREFIX/libexec/agent-harness/$t" ] || fail "stage binary $t survived uninstall"
 done
-[ ! -e "$PREFIX/share/agent-harness/.env.example" ] || fail ".env.example survived uninstall"
+for doc in $DOCS; do
+    [ ! -e "$PREFIX/share/agent-harness/$doc" ] || fail "$doc survived uninstall"
+done
+[ ! -e "$PREFIX/share/agent-harness" ] || fail "share/agent-harness survived uninstall: $(ls -A "$PREFIX/share/agent-harness")"
 echo -e "${GREEN}PASS${NC}"
 
 # --- uninstall leaves the operator's own files alone ------------------------
