@@ -66,7 +66,7 @@ func LoadPrompts(checkoutPath string) (PromptBodies, error) {
 
 	if len(unusable) > 0 {
 		return PromptBodies{}, fmt.Errorf(
-			"missing or blank prompt body: %s — the harness declares no skill of its own, so each stage's body must name the skill it invokes (see docs/CONSUMER.md)",
+			"missing or blank prompt body: %s — the harness declares no skill of its own, so each stage's body must name the skill it invokes (see docs/CONSUMER.md); `agent-harness init` writes the missing ones with a placeholder skill to replace",
 			strings.Join(unusable, ", "),
 		)
 	}

@@ -136,7 +136,15 @@ also works.
 ### 2. The project's `.agent-harness/` directory
 
 The project needs an `.agent-harness/` directory — its gates, its sandbox image,
-its prompts, its tracker. See
+its prompts, its tracker. To scaffold one, run this in the project's checkout:
+
+```bash
+agent-harness init        # asks about the detected toolchain and GitHub repo; --yes takes the defaults
+```
+
+It writes a config, a Dockerfile, the three prompt bodies and a gitignored
+`.agent-harness/.env`, and never overwrites an existing file without `--force`.
+Then replace the `TODO(agent-harness init)` placeholders. See
 [`docs/CONSUMER.md`](docs/CONSUMER.md) (installed at
 `~/.local/share/agent-harness/CONSUMER.md`) for the config, the prompt bodies, and
 how to build a sandbox image `FROM` the published base. There is a complete

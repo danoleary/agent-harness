@@ -115,3 +115,8 @@ belongs to.
 - `install.sh --uninstall` removes the install file by named file, never
   `rm -rf` on a directory derived from an environment variable. A shared prefix like
   `~/.local` keeps everything the operator put there.
+- **Amended by ADR-0021:** a dispatch-table entry may be a `Builtin` the
+  dispatcher runs in-process instead of exec'ing a stage binary. `init` is the
+  only builtin. It has no TTY or signal behaviour for exec to preserve, and a new
+  Consumer should be able to scaffold even when the `libexec` dir is broken. The
+  rule that `PATH` is never searched still holds.

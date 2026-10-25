@@ -764,22 +764,23 @@ command = "c"
 }
 
 // A checkout with no .agent-harness/ directory at all is told that directly, with
-// a pointer at the example, rather than a raw "no such file" on config.toml.
+// the command that writes one, rather than a raw "no such file" on config.toml.
 func TestLoadProjectMissingHarnessDir(t *testing.T) {
 	dir := t.TempDir()
 	_, err := LoadProject(dir)
-	assertMentions(t, err, dir+" has no .agent-harness/ directory", "example/.agent-harness")
+	assertMentions(t, err, dir+" has no .agent-harness/ directory", "Fix: run `agent-harness init` in "+dir, "example/.agent-harness")
 	if strings.Contains(err.Error(), "no such file") {
 		t.Errorf("error should not be a raw os error, got: %v", err)
 	}
 }
 
-// The directory exists but config.toml is missing: name the file and the example.
+// The directory exists but config.toml is missing: name the file, and init, which
+// writes it without touching the files already there.
 func TestLoadProjectMissingConfigFile(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, ".agent-harness"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	_, err := LoadProject(dir)
-	assertMentions(t, err, "config.toml does not exist", "example/.agent-harness/config.toml")
+	assertMentions(t, err, "config.toml does not exist", "Fix: run `agent-harness init` in "+dir, "example/.agent-harness/config.toml")
 }

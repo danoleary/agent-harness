@@ -38,6 +38,33 @@ file under `~/.local/share/agent-harness/`. `agent-harness --help` lists every
 command, and `agent-harness doctor` checks your setup, with a fix for each problem it finds. A `go install` or a downloaded archive from [Releases](../../releases)
 work too.
 
+## Scaffold it: `agent-harness init`
+
+Run `agent-harness init` in your checkout to write a starting `.agent-harness/`:
+
+```bash
+cd ~/src/myproject
+agent-harness init            # interactive; --yes accepts every detected default
+```
+
+It detects your toolchain from the files at the root: `go.mod`,
+`pnpm-lock.yaml`, `*.sln`/`*.csproj`, or `pyproject.toml`/`requirements.txt`.
+From that it fills in `post_create`, the gates, `handoff_strip_paths`, a cache
+and a Dockerfile `FROM` the pinned base. It takes `tracker.repo` from your GitHub
+`origin` remote. `--toolchain` and `--repo` answer those questions up front.
+GitHub is the only tracker `init` writes today; for Linear or Jira, edit
+`[tracker]` as described below.
+
+It also writes the three prompt bodies, which name **placeholder** skills
+(`/TODO-implement-skill`, …). Finally it writes `.agent-harness/.env` from the
+credential template, and adds that file to your `.gitignore`.
+
+Every value `init` guesses is marked `TODO(agent-harness init)`. Replace the
+skill names and check the gates against your CI before the first run. `init`
+never overwrites a file that exists unless you pass `--force`, and it never
+overwrites `.env` at all. The defaults it writes for each toolchain are recorded
+in ADR-0021.
+
 ## The two surfaces you own
 
 ### 1. `.agent-harness/config.toml`
