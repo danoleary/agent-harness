@@ -664,6 +664,9 @@ A ticket is eligible iff **all** hold:
   `issue_dependencies_summary.total_blocked_by` is non-zero, skips the issue while
   any blocker is open (logging `#69 skipped: blocked by open #66`), and fails the
   selection closed if that read errors.
+  The native relation is the way to make a ticket wait on another: it unblocks
+  itself when the blocker closes. The `Blocked` label (`tracker.blocked_label`,
+  optional) never clears on its own, so it is only for a hold no issue models.
 - **not gated on a telemetry re-measure**: a low-confidence perf *watch/confirm*
   ticket whose first acceptance criterion is to re-pull the metric over a wider
   Sentry window before any fix is excluded — the Implementation stage owns no

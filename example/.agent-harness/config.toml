@@ -65,8 +65,10 @@ repo = "example-org/example-repo"
 findings_label_id = "agent-harness"
 # The human-applied blast-radius gate: only labelled tickets are worked unattended.
 ready_label = "ready-for-agent"
-# A human-flagged block; never auto-worked.
-blocked_label = "blocked"
+# Optional: a label that screens a ticket out until a human removes it. Usually
+# unneeded: link a dependency natively ("blocked by") and the ticket waits until
+# its blocker closes; leave the ready label off to hold it for any other reason.
+# blocked_label = "blocked"
 # GitHub issues have only open/closed, so the claim is modelled as a label.
 in_progress_label = "in-progress"
 

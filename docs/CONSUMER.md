@@ -107,8 +107,8 @@ kind = "github"
 repo = "myorg/myproject"
 findings_label_id = "agent-harness"
 ready_label = "ready-for-agent"
-blocked_label = "blocked"
 in_progress_label = "in-progress"
+# blocked_label = "blocked"   # optional; see "Holding a ticket" below
 
 # kind = "linear" instead reads:
 #
@@ -125,6 +125,14 @@ in_progress_label = "in-progress"
 # `ready_label` have no defensible default — an empty team key would query every
 # team your credential can see, and an empty ready label would drop the
 # blast-radius gate — so both are checked at startup.
+#
+# Holding a ticket. The harness never picks a ticket a still-open issue blocks,
+# so to make a ticket wait on another, link it natively ("blocked by" on GitHub,
+# a `blocks` relation on Linear) and leave it ready-labelled: it is picked up on
+# the first poll after its last blocker closes, with nobody having to touch it.
+# To hold a ticket for a human reason, leave the ready label off. `blocked_label`
+# is optional, and redundant beside those two: it names a label that screens a
+# ticket out until a human removes it, and nothing ever removes it for you.
 
 # Directory prefixes whose contents can feed a gate or a CI job whatever they look
 # like. The harness skips the review gate re-run and the CI poll when a branch's
