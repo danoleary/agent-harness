@@ -15,8 +15,10 @@ go mod download
 
 min_harness_version = "0.5"
 
-# Everything that feeds `make check` or CI. example/ and the skill tree are read
-# by the test suite; .agent-harness/ is this very config.
+# Everything that feeds `make check` or CI. example/ is read by the test suite;
+# .agent-harness/ is this very config. No test reads the .claude/ skill tree, but
+# it is the harness's own prompts, so it stays excluded: over-excluding only costs
+# a gate re-run.
 docs_only_excluded_roots = [
   "cmd/", "internal/", "scripts/", "example/", ".github/",
   ".claude/", ".agent-harness/",
