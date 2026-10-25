@@ -17,11 +17,16 @@
 
 set -euo pipefail
 
-# One optional argument: --instance <id> (or --instance=<id>) starts one of
-# several ticket-loop daemons against the same Consumer (#89). Each instance has
-# its own pidfile, log and STOP-<id> sentinel; the default instance (no id) keeps
-# loop.pid, loop.log and the loop's STOP-tickets. Claims, gate slots and the plain
-# STOP are shared by every instance.
+# Two optional arguments. A loop name (#106) starts that loop rather than the
+# ticket loop: `pr-doctor`, or a [[loops]] entry. It gets its own pidfile and
+# log, loop-<name>.pid and loop-<name>.log, so the viewer can probe the daemon it
+# follows; `tickets` is the default and keeps loop.pid and loop.log.
+#
+# --instance <id> (or --instance=<id>) starts one of several ticket-loop daemons
+# against the same Consumer (#89). Each instance has its own pidfile, log and
+# STOP-<id> sentinel; the default instance (no id) keeps the loop's files and its
+# STOP-<name>. Claims, gate slots and the plain STOP are shared by every daemon.
+LOOP_NAME=""
 LOOP_INSTANCE=""
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -41,15 +46,29 @@ while [ "$#" -gt 0 ]; do
             fi
             shift
             ;;
-        *)
-            echo "loop-start.sh: unknown argument '$1' (usage: loop-start.sh [--instance <id>])" >&2
+        -*)
+            echo "loop-start.sh: unknown argument '$1' (usage: loop-start.sh [<name>] [--instance <id>])" >&2
             exit 2
+            ;;
+        *)
+            if [ -n "$LOOP_NAME" ]; then
+                echo "loop-start.sh: one loop at a time — got '$LOOP_NAME' and '$1' (start each in its own daemon)" >&2
+                exit 2
+            fi
+            LOOP_NAME="$1"
+            shift
             ;;
     esac
 done
-# The id names files, so it is held to the loop-name rule: lowercase letters,
-# digits and dashes, not starting with a dash. The daemon re-checks it and also
-# refuses an id that names a loop.
+# The name and the id name files, so they are held to the loop-name rule:
+# lowercase letters, digits and dashes, not starting with a dash. The daemon
+# re-checks both, refuses a name no loop has, and refuses an id that names a loop.
+case "$LOOP_NAME" in
+    -*|*[!a-z0-9-]*)
+        echo "loop-start.sh: loop '$LOOP_NAME' must be lowercase letters, digits and dashes" >&2
+        exit 2
+        ;;
+esac
 case "$LOOP_INSTANCE" in
     -*|*[!a-z0-9-]*)
         echo "loop-start.sh: instance '$LOOP_INSTANCE' must be lowercase letters, digits and dashes" >&2
@@ -99,10 +118,10 @@ LOOP_BIN="${LOOP_BIN:-$HARNESS_DIR/bin/loop}"
 # beside that Consumer's logs, in its `.agent-harness/` directory — not beside the
 # harness binary, which one operator may point at several projects.
 #
-# The viewer depends on this placement: it derives the pidfile (and the STOP
-# sentinel) as the sibling of the `logs/` dir it is tailing, so that it can report
-# daemon liveness without re-reading the harness config. Writing the pidfile
-# anywhere else makes a running daemon look stopped.
+# The viewer depends on this placement: it looks for the pidfile (and the STOP
+# sentinels) in the `.agent-harness/` that holds the `logs/` dir it is tailing,
+# so that it can report daemon liveness without re-reading the harness config.
+# Writing the pidfile anywhere else makes a running daemon look stopped.
 #
 # PROJECT_PATH comes from the environment, else from the same env file the daemon
 # itself reads, looked up in the same order (config.ResolveEnvFile):
@@ -161,13 +180,28 @@ else
     RUNTIME_DIR="$HARNESS_DIR"
 fi
 
-# A named instance's files carry its id, so instances never share a pidfile, a
-# log or a sentinel (config.PidFile is the daemon's side of this naming).
+# A named instance's files carry its id, and another loop's carry its name, so
+# no two daemons share a pidfile, a log or a sentinel (config.Loop.PidFile is the
+# daemon's side of this naming). An id may not name a loop, so the two never
+# collide. WATCH_HINT is the `agent-harness watch` that follows this daemon.
+WATCH_HINT=""
+if [ "$LOOP_NAME" = "tickets" ]; then
+    LOOP_NAME=""
+fi
+if [ -n "$LOOP_NAME" ]; then
+    set -- "$LOOP_NAME"
+    WATCH_HINT="--loop $LOOP_NAME"
+fi
 if [ -n "$LOOP_INSTANCE" ]; then
     LOOP_PIDFILE="${LOOP_PIDFILE:-$RUNTIME_DIR/loop-$LOOP_INSTANCE.pid}"
     LOOP_LOGFILE="${LOOP_LOGFILE:-$RUNTIME_DIR/loop-$LOOP_INSTANCE.log}"
     STOP_HINT="${RUNTIME_DIR}/STOP-$LOOP_INSTANCE"
-    set -- --instance "$LOOP_INSTANCE"
+    set -- ${1+"$@"} --instance "$LOOP_INSTANCE"
+    WATCH_HINT="${WATCH_HINT:+$WATCH_HINT }--instance $LOOP_INSTANCE"
+elif [ -n "$LOOP_NAME" ]; then
+    LOOP_PIDFILE="${LOOP_PIDFILE:-$RUNTIME_DIR/loop-$LOOP_NAME.pid}"
+    LOOP_LOGFILE="${LOOP_LOGFILE:-$RUNTIME_DIR/loop-$LOOP_NAME.log}"
+    STOP_HINT="${RUNTIME_DIR}/STOP-$LOOP_NAME"
 else
     LOOP_PIDFILE="${LOOP_PIDFILE:-$RUNTIME_DIR/loop.pid}"
     LOOP_LOGFILE="${LOOP_LOGFILE:-$RUNTIME_DIR/loop.log}"
@@ -177,8 +211,8 @@ fi
 # The runtime dir must exist before nohup redirects into it.
 mkdir -p "$(dirname "$LOOP_LOGFILE")" "$(dirname "$LOOP_PIDFILE")"
 
-# Refuse to start a second daemon over a live one of the same instance: a running
-# pid in the pidfile means that instance is already up. Another instance is
+# Refuse to start a second daemon over a live one of the same loop or instance: a
+# running pid in the pidfile means it is already up. Another instance is
 # welcome — the claim lock stops two instances working one ticket (#89) — but two
 # daemons behind one pidfile could not be stopped or watched apart.
 # A STALE pidfile (its process is gone — a crashed or killed daemon) is cleared
@@ -216,9 +250,9 @@ echo "$loop_pid" > "$LOOP_PIDFILE"
 
 echo "loop started (pid $loop_pid); logging to $LOOP_LOGFILE"
 echo "  stop gracefully:  touch $STOP_HINT"
-if [ -n "$LOOP_INSTANCE" ]; then
+if [ -n "$WATCH_HINT" ]; then
     echo "  stop every loop:  touch ${RUNTIME_DIR}/STOP"
-    echo "  watch it:         agent-harness watch --instance $LOOP_INSTANCE"
+    echo "  watch it:         agent-harness watch $WATCH_HINT"
 fi
 echo "  hard kill:        kill $loop_pid"
 

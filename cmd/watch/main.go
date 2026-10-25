@@ -9,7 +9,7 @@
 // lines (one per event, no mascot), so piping or redirecting stays clean and no ANSI
 // escapes leak into a pipe.
 //
-// It NEVER controls the loop — `touch .agent-harness/STOP` remains the only control
+// It NEVER controls the loop — `touch`ing a STOP sentinel remains the only control
 // path, and quitting the viewer (Ctrl-C) does not touch the daemon. It holds no
 // credentials: it only reads a log file (and, for health, the daemon's pidfile via
 // a signal-0 liveness probe that cannot affect the process), so it does not load
@@ -17,10 +17,14 @@
 //
 // Path resolution, in order: a positional argument; else $PROJECT_PATH's
 // .agent-harness/logs/loop.jsonl; else logs/loop.jsonl relative to the cwd (the
-// harness dir, where `make watch` runs). `--instance <id>` follows one named loop
-// instance instead (its logs/instances/<id>/loop.jsonl, loop-<id>.pid and
-// STOP-<id>), and `--all` follows every instance at once in the plain view, each
-// line labeled with its instance (#89). When the file is absent it surfaces a
+// harness dir, where `make watch` runs). `--loop <name>` follows a named loop
+// instead (its logs/loops/<name>/loop.jsonl, loop-<name>.pid and STOP-<name>,
+// #106), `--instance <id>` one named loop instance (its
+// logs/instances/<id>/loop.jsonl, loop-<id>.pid and STOP-<id>), and `--all`
+// every instance at once in the plain view, each line labeled with its instance
+// (#89). The pidfile and the sentinels are always the ones the followed daemon
+// uses, the plain STOP among them; a stream named by path is matched to its
+// daemon by where it sits under logs/. When the file is absent it surfaces a
 // clear "loop not running" / daemon-down state and keeps polling, so starting the
 // daemon later just works without restarting the viewer.
 package main
@@ -60,32 +64,44 @@ func main() {
 		return
 	}
 	f := followFor(tgt, runtimeDir())
-	if tgt.instance == "" {
-		path := resolvePath(argv)
-		f = follow{stream: path, pid: resolvePidPath(path), stop: resolveStopPath(path)}
+	if tgt.path != "" {
+		f = followStream(tgt.path)
 	}
 
 	if useDashboard(isTTY(os.Stdout), os.Getenv) {
-		runDashboard(f.stream, f.pid, f.stopPaths(), animateFromFlag(noAnimation), bellEnabled(noBell, os.Getenv))
+		runDashboard(f.stream, f.pid, f.stops, animateFromFlag(noAnimation), bellEnabled(noBell, os.Getenv))
 		return
 	}
 	runPlain(f.stream, f.pid)
 }
 
-// target is which loop instance the viewer follows (#89): the default instance
-// (or a stream named by path), one named instance, or all of them.
+// target is which daemon the viewer follows: the default ticket loop (or a
+// stream named by path), a named loop (#106), one named instance (#89), or all
+// the instances.
 type target struct {
 	path     string
+	loop     string
 	instance string
 	all      bool
 }
 
-// parseTarget reads --instance <id> / --instance=<id> and --all from the
-// arguments parseArgs left, the first other argument being the stream path.
+// parseTarget reads --loop <name>, --instance <id> (each also as --flag=value)
+// and --all from the arguments parseArgs left, the first other argument being
+// the stream path.
 func parseTarget(argv []string) (target, error) {
 	var t target
 	for i := 0; i < len(argv); i++ {
 		switch a := argv[i]; {
+		case a == "--loop":
+			if i+1 >= len(argv) || argv[i+1] == "" {
+				return t, errors.New("--loop needs a loop name, e.g. `--loop pr-doctor`")
+			}
+			i++
+			t.loop = argv[i]
+		case strings.HasPrefix(a, "--loop="):
+			if t.loop = strings.TrimPrefix(a, "--loop="); t.loop == "" {
+				return t, errors.New("--loop needs a loop name, e.g. `--loop=pr-doctor`")
+			}
 		case a == "--instance":
 			if i+1 >= len(argv) || argv[i+1] == "" {
 				return t, errors.New("--instance needs an id, e.g. `--instance b`")
@@ -93,7 +109,9 @@ func parseTarget(argv []string) (target, error) {
 			i++
 			t.instance = argv[i]
 		case strings.HasPrefix(a, "--instance="):
-			t.instance = strings.TrimPrefix(a, "--instance=")
+			if t.instance = strings.TrimPrefix(a, "--instance="); t.instance == "" {
+				return t, errors.New("--instance needs an id, e.g. `--instance=b`")
+			}
 		case a == "--all":
 			t.all = true
 		case t.path == "":
@@ -103,6 +121,21 @@ func parseTarget(argv []string) (target, error) {
 	if t.all && t.instance != "" {
 		return t, errors.New("--all already follows every instance; drop --instance, or drop --all to follow one")
 	}
+	// A stream named by path is matched to its daemon by where it sits, so a flag
+	// naming another daemon would be silently ignored.
+	if t.path != "" && (t.loop != "" || t.instance != "" || t.all) {
+		return t, fmt.Errorf("%s names its stream already; drop it, or drop --loop/--instance/--all", t.path)
+	}
+	if t.all && t.loop != "" {
+		return t, errors.New("--all follows the ticket loop's instances; drop --loop, or drop --all to follow that loop")
+	}
+	// The name and the id name files, so they are held to the daemon's rule.
+	if t.loop != "" && !config.IsLoopName(t.loop) {
+		return t, fmt.Errorf("loop %q must be lowercase letters, digits and dashes", t.loop)
+	}
+	if t.instance != "" && !config.IsLoopName(t.instance) {
+		return t, fmt.Errorf("instance %q must be lowercase letters, digits and dashes", t.instance)
+	}
 	return t, nil
 }
 
@@ -110,20 +143,15 @@ func parseTarget(argv []string) (target, error) {
 // instance may take it (config.Project.LoopInstance).
 const defaultInstanceLabel = config.DefaultInstanceLabel
 
-// follow is one instance's files: the stream the viewer tails, the pidfile it
-// probes for liveness, and the sentinel that stops it alone.
+// follow is one daemon's files: the stream the viewer tails, the pidfile it
+// probes for liveness, and every sentinel whose presence means that daemon is
+// winding down — its own first, then the ones it shares with other daemons.
 type follow struct {
 	label  string
 	stream string
 	pid    string
-	stop   string
-	// shared are the sentinels that stop this instance among others: the plain
-	// STOP, for a named instance.
-	shared []string
+	stops  []string
 }
-
-// stopPaths is every sentinel whose presence means this instance is winding down.
-func (f follow) stopPaths() []string { return append([]string{f.stop}, f.shared...) }
 
 // runtimeDir is where the loop daemons keep their runtime files: the Consumer's
 // .agent-harness/ under $PROJECT_PATH, else the cwd (the harness dir, where
@@ -135,26 +163,57 @@ func runtimeDir() string {
 	return "."
 }
 
-// followFor names one instance's files under the runtime dir: the default
-// instance's loop.pid, STOP and logs/loop.jsonl, or a named instance's
-// loop-<id>.pid, STOP-<id> and logs/instances/<id>/loop.jsonl — the names
-// loop-start.sh and the daemon write (config.PidFile, config.Loop.LogsDir).
+// followFor names the files of the daemon t picks under the runtime dir, by the
+// names the daemon and loop-start.sh use (config.Loop's LogsDir, PidFile and
+// sentinels): the default ticket loop's logs/loop.jsonl and loop.pid, a named
+// loop's logs/loops/<name>/loop.jsonl and loop-<name>.pid, or an instance's
+// logs/instances/<id>/loop.jsonl and loop-<id>.pid. Each is winding down on its
+// instance's STOP-<id>, its loop's STOP-<name>, or the plain STOP. The viewer
+// reads no config, so the plain STOP is the default STOP_FILE.
 func followFor(t target, runtime string) follow {
-	if t.instance == "" {
-		return follow{
-			label:  defaultInstanceLabel,
-			stream: loopstream.PathUnder(filepath.Join(runtime, "logs")),
-			pid:    filepath.Join(runtime, "loop.pid"),
-			stop:   filepath.Join(runtime, "STOP"),
+	l := config.Loop{Name: t.loop, Instance: t.instance}
+	if l.Name == "" {
+		l.Name = config.DefaultLoopName
+	}
+	// The config names are relative to the checkout; runtime is its .agent-harness/.
+	under := func(rel string) string {
+		return filepath.Join(runtime, strings.TrimPrefix(filepath.ToSlash(rel), config.ProjectDirName+"/"))
+	}
+	f := follow{
+		label:  defaultInstanceLabel,
+		stream: loopstream.PathUnder(under(l.LogsDir())),
+		pid:    under(l.PidFile()),
+	}
+	if own := l.InstanceStopFile(); own != "" {
+		f.label = l.Instance
+		f.stops = append(f.stops, under(own))
+	} else if l.Name != config.DefaultLoopName {
+		f.label = l.Name
+	}
+	f.stops = append(f.stops, under(l.StopFile()), filepath.Join(runtime, "STOP"))
+	return f
+}
+
+// followStream follows a stream named by path with the files of the daemon that
+// writes it (#106), read off where the stream sits: logs/loops/<name>/ is loop
+// <name>'s, logs/instances/<id>/ is instance <id>'s, and any other stream is the
+// default ticket loop's, its runtime dir the one above its logs/.
+func followStream(path string) follow {
+	dir := filepath.Dir(path)
+	parent := filepath.Dir(dir)
+	runtime := parent
+	t := target{}
+	if logs := filepath.Dir(parent); filepath.Base(logs) == "logs" {
+		switch filepath.Base(parent) {
+		case "loops":
+			t.loop, runtime = filepath.Base(dir), filepath.Dir(logs)
+		case "instances":
+			t.instance, runtime = filepath.Base(dir), filepath.Dir(logs)
 		}
 	}
-	return follow{
-		label:  t.instance,
-		stream: loopstream.PathUnder(filepath.Join(runtime, "logs", "instances", t.instance)),
-		pid:    filepath.Join(runtime, "loop-"+t.instance+".pid"),
-		stop:   filepath.Join(runtime, "STOP-"+t.instance),
-		shared: []string{filepath.Join(runtime, "STOP")},
-	}
+	f := followFor(t, runtime)
+	f.stream = path
+	return f
 }
 
 // allInstances is the default instance and every named instance with a logs dir
@@ -350,33 +409,6 @@ func animateFromFlag(noAnimation bool) bool { return !noAnimation }
 func isTTY(f *os.File) bool {
 	fi, err := f.Stat()
 	return err == nil && fi.Mode()&os.ModeCharDevice != 0
-}
-
-// resolvePath picks the stream file to tail (see the package doc for the order).
-func resolvePath(argv []string) string {
-	if len(argv) > 0 && argv[0] != "" {
-		return argv[0]
-	}
-	if checkout := os.Getenv("PROJECT_PATH"); checkout != "" {
-		return loopstream.PathUnder(filepath.Join(config.ProjectDir(checkout), "logs"))
-	}
-	return loopstream.PathUnder("logs")
-}
-
-// resolvePidPath locates the daemon's pidfile (loop.pid, written by
-// scripts/loop-start.sh) for the liveness probe. It lives at the harness root,
-// beside the logs/ dir the stream is under — i.e. the grandparent of the stream
-// file — so it tracks the resolved stream path without a second env lookup.
-func resolvePidPath(streamPath string) string {
-	return filepath.Join(filepath.Dir(filepath.Dir(streamPath)), "loop.pid")
-}
-
-// resolveStopPath locates the STOP sentinel (.agent-harness/STOP, the loop's only
-// control path) for the stop-requested probe. Like the pidfile it lives at the
-// harness root — the grandparent of the stream file — so the viewer can surface
-// "winding down" without reading the harness config.
-func resolveStopPath(streamPath string) string {
-	return filepath.Join(filepath.Dir(filepath.Dir(streamPath)), "STOP")
 }
 
 // stopRequested reports whether the STOP sentinel is present — a pure existence

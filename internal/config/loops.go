@@ -189,14 +189,20 @@ func (l Loop) InstanceStopFile() string {
 	return ProjectDirName + "/STOP-" + l.Instance
 }
 
-// PidFile is where `agent-harness start` records an instance's daemon pid,
-// relative to the checkout: loop.pid for the default instance, loop-<id>.pid for
-// a named one. scripts/loop-start.sh writes the same names.
-func PidFile(instance string) string {
-	if instance == "" {
+// PidFile is where `agent-harness start` records this daemon's pid, relative to
+// the checkout: loop-<id>.pid for a named instance, loop.pid for the default
+// ticket loop, and loop-<name>.pid for any other loop (#106). An id may not name
+// a loop, so no two daemons share one. scripts/loop-start.sh writes the same
+// names, and the viewer probes them for liveness.
+func (l Loop) PidFile() string {
+	switch {
+	case l.Instance != "":
+		return ProjectDirName + "/loop-" + l.Instance + ".pid"
+	case l.Name == "" || l.Name == DefaultLoopName:
 		return ProjectDirName + "/loop.pid"
+	default:
+		return ProjectDirName + "/loop-" + l.Name + ".pid"
 	}
-	return ProjectDirName + "/loop-" + instance + ".pid"
 }
 
 // DefaultInstanceLabel is how `agent-harness watch --all` labels the instance
@@ -365,6 +371,11 @@ var requiredSteps = map[string][]string{
 }
 
 var loopNameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
+
+// IsLoopName reports whether s follows the rule every loop name and instance id
+// does: lowercase letters, digits and dashes, not starting with a dash. Such a
+// name is safe to put in a file name.
+func IsLoopName(s string) bool { return loopNameRE.MatchString(s) }
 
 // resolveLoops validates every [[loops]] entry against the fixed Source and Step
 // sets, reads the prompt bodies they name, and returns the resolved loops with

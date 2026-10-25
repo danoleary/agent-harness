@@ -227,3 +227,26 @@ replacement rather than ignored. Building it settled these points:
   parameters in force, its Steps with what each checks, its limits, sentinel and
   stream. A PR loop also prints the PR plan. A ticket loop does not plan a ticket,
   because selecting one claims it; `pipeline --next --dry-run` already plans one.
+
+## Amendment, 2026-10-25: each loop's daemon has its own pidfile, and the viewer follows a loop by name (#106)
+
+Step (c) gave each loop its own sentinel and stream, but not its own pidfile, and
+the viewer found the pidfile and `STOP` one directory above the `logs/` it
+tailed. That holds for the ticket loop's `logs/loop.jsonl`, but for a loop's
+`logs/loops/<name>/loop.jsonl` it pointed at `logs/loops/loop.pid` and
+`logs/loops/STOP`, which nothing writes. A viewer following `pr-doctor` showed
+the daemon down and never showed it winding down.
+
+- **`agent-harness start <name>` launches any loop**, and its daemon records its
+  pid in `loop-<name>.pid` beside `loop.pid` (`config.Loop.PidFile`). `tickets`
+  keeps `loop.pid`; an instance keeps `loop-<id>.pid`. An id may not be a loop's
+  name, so no two daemons share a pidfile. The daemon's startup check for another
+  live daemon already globs `loop-*.pid`, so a running `pr-doctor` keeps the
+  shared sentinels from being cleared under it.
+- **`agent-harness watch --loop <name>`** follows a loop by the names the daemon
+  uses (`config.Loop`'s `LogsDir`, `PidFile`, `StopFile`), and is winding down on
+  any sentinel that stops it: an instance's `STOP-<id>`, the loop's `STOP-<name>`,
+  and the plain `STOP`. A stream named by path is matched to its daemon by where
+  it sits under `logs/`, so the path form probes the same files.
+- A loop run in the foreground (`agent-harness loop <name>`) writes no pidfile,
+  so the viewer reads it as down, as it always has for the ticket loop.
