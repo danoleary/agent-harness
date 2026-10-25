@@ -64,7 +64,8 @@ The ticket left two questions open. They are answered here:
   checks, and the registry check for a prebuilt image. Those lines report
   *skip* with "not verified (--offline)", so an offline run never counts them as
   passed. A credential that is unset or the wrong shape still fails offline,
-  because that needs no network call.
+  and both Claude credentials being set still warns, because neither needs a
+  network call.
 - **`--json`: not now.** The checklist is meant for a person to read, and the
   exit code covers scripts. `Result` is already a plain struct, so adding
   `--json` later only needs a renderer.

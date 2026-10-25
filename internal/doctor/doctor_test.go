@@ -334,6 +334,30 @@ func ptr(s string) *string { return &s }
 
 // --offline is for a plane or a CI box: it must make no network call at all, and
 // say plainly which lines it did not verify rather than passing them.
+// Both credentials being set is visible without a network call, so --offline
+// must not hide it behind a skip.
+func TestWarnsWhenBothClaudeCredentialsAreSetOffline(t *testing.T) {
+	w := newWorld(t)
+	w.offline = true
+	w.env["CLAUDE_CODE_OAUTH_TOKEN"] = "sk-ant-oat01-sub"
+	r := find(t, w.run(), "Claude credential")
+	if r.Status != Warn || !strings.Contains(r.Detail, "--offline") {
+		t.Errorf("Claude credential offline: %s %q, want a warn that says the key was not verified", r.Status, r.Detail)
+	}
+}
+
+// A label lookup GitHub did not answer (a rate limit, an outage) is neither
+// present nor missing, so it must not pass.
+func TestGitHubTrackerLabelLookupErrorIsNotAPass(t *testing.T) {
+	w := newWorld(t)
+	w.routes["GET /repos/acme/widgets/labels/in-progress"] = func(rw http.ResponseWriter, _ *http.Request) {
+		rw.WriteHeader(http.StatusForbidden)
+	}
+	if r := find(t, w.run(), "tracker"); r.Status == OK {
+		t.Errorf("tracker: ok %q, want a non-pass when a label lookup errors", r.Detail)
+	}
+}
+
 func TestOfflineMakesNoNetworkCalls(t *testing.T) {
 	w := newWorld(t)
 	w.offline = true

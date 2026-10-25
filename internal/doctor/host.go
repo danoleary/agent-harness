@@ -138,7 +138,15 @@ func checkClaude(p Probes) Result {
 		return Result{Name: name, Status: OK, Detail: "CLAUDE_CODE_OAUTH_TOKEN set (a subscription token; its shape is checked, not its validity)"}
 	}
 
+	// Having both set needs no network call to spot, so --offline still warns.
+	bothSet := Result{Name: name, Status: Warn,
+		Detail: "both ANTHROPIC_API_KEY and CLAUDE_CODE_OAUTH_TOKEN are set; Claude Code uses ANTHROPIC_API_KEY, so sessions bill the API key, not the subscription",
+		Fix:    "unset the one you do not mean to use"}
 	if p.Offline {
+		if token != "" {
+			bothSet.Detail += "\nANTHROPIC_API_KEY not verified (--offline)"
+			return bothSet
+		}
 		return Result{Name: name, Status: Skip, Detail: "ANTHROPIC_API_KEY set; not verified (--offline)"}
 	}
 	res, err := get(p, p.AnthropicAPI+"/v1/models", map[string]string{
@@ -157,9 +165,7 @@ func checkClaude(p Probes) Result {
 	}
 
 	if token != "" {
-		return Result{Name: name, Status: Warn,
-			Detail: "both ANTHROPIC_API_KEY and CLAUDE_CODE_OAUTH_TOKEN are set; Claude Code uses ANTHROPIC_API_KEY, so sessions bill the API key, not the subscription",
-			Fix:    "unset the one you do not mean to use"}
+		return bothSet
 	}
 	return Result{Name: name, Status: OK, Detail: "ANTHROPIC_API_KEY valid"}
 }

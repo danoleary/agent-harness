@@ -19,6 +19,7 @@ func TestParseDoctorArgs(t *testing.T) {
 		{[]string{"--offline"}, true, false, false},
 		{[]string{"--help"}, false, true, false},
 		{[]string{"-h"}, false, true, false},
+		{[]string{"--verbose", "--dry-run"}, false, false, false},
 		{[]string{"--json"}, false, false, true},
 		{[]string{"extra"}, false, false, true},
 	} {

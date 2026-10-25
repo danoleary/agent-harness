@@ -131,8 +131,13 @@ func checkGitHubTracker(p Probes, tc config.TrackerConfig) Result {
 		if err != nil {
 			return unreachable(name, "GitHub", err)
 		}
-		if res.StatusCode == http.StatusNotFound {
+		switch {
+		case res.StatusCode == http.StatusNotFound:
 			missing = append(missing, l)
+		case res.StatusCode >= 300:
+			// Not a missing label, but not a present one either (a rate limit, an
+			// outage): an unanswered check must not read as a pass.
+			return Result{Name: name, Status: Warn, Detail: fmt.Sprintf("could not verify label %s: GitHub answered HTTP %d", l, res.StatusCode)}
 		}
 	}
 	if len(missing) > 0 {

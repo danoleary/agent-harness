@@ -44,6 +44,9 @@ func parseDoctorArgs(args []string) (offline, help bool, err error) {
 		switch a {
 		case "--offline":
 			offline = true
+		case "--verbose", "--dry-run":
+			// Every command takes these (see usage); doctor is read-only and
+			// already prints everything, so they change nothing.
 		case "--help", "-h":
 			return false, true, nil
 		default:
