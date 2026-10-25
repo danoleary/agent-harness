@@ -91,6 +91,22 @@ func (s *TicketSource) Claims() ([]loop.StaleClaim, error) {
 	return out, nil
 }
 
+// HeldBranches maps each branch the ticket loop holds right now — an agent-claimed
+// In Progress ticket's `<branch_prefix>/<slug>` — to the ticket's Key. The PR loop
+// skips those branches: the lease is keyed on the branch, and a ticket mid-run owns
+// its PR's branch (ADR-0019).
+func (s *TicketSource) HeldBranches() (map[string]string, error) {
+	claims, err := s.client.ListInProgressClaims()
+	if err != nil {
+		return nil, err
+	}
+	held := make(map[string]string, len(claims))
+	for _, c := range claims {
+		held[s.checkout().Worktree(ticket.Slug(c.Identifier)).Branch()] = c.Identifier
+	}
+	return held, nil
+}
+
 // HasRemoteBranch reads origin's heads for a branch naming the ticket. It fails
 // SAFE toward true (see gitpkg): a flaky read must never cost a live claim.
 func (s *TicketSource) HasRemoteBranch(key string) bool {

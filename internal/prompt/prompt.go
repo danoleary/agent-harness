@@ -102,6 +102,23 @@ type Context struct {
 	// says whether it is a usable log or only an error marker (BEH-558).
 	CILogs         string
 	CILogAvailable bool
+
+	// Branch, when set, names the branch CIFix and RebaseFix work on in place of
+	// `<BranchPrefix>/<Slug>`: the PR loop fixes a branch it did not name (ADR-0019).
+	Branch string
+	// Merge selects the RebaseFix variant that merges origin/main into the branch
+	// instead of replaying it, for a branch a human opted in: its history must not
+	// be rewritten (ADR-0019).
+	Merge bool
+}
+
+// branch is the branch CIFix and RebaseFix name: the override, else the
+// canonical `<BranchPrefix>/<Slug>`.
+func (c Context) branch() string {
+	if c.Branch != "" {
+		return c.Branch
+	}
+	return c.BranchPrefix + "/" + c.Slug
 }
 
 // For composes the `-p` prompt for Stage s: the envelope for that Stage wrapped
@@ -489,7 +506,7 @@ func priorReviewSection(p *PriorReview) string {
 // deterministic code defect — so the prompt warns the agent up front and gives it
 // an explicit flake early-exit, rather than letting it assume a real, reproducible
 // failure and exhaustively re-derive every PR gate to a dead end (BEH-558).
-func ciFixLogSteer(slug, branchPrefix, ciLogs string, logAvailable bool) (logFraming, job []string) {
+func ciFixLogSteer(branch, ciLogs string, logAvailable bool) (logFraming, job []string) {
 	if logAvailable {
 		return []string{
 				"Here are the failing CI job logs the harness fetched for you (host-side, via `gh run view --log-failed`):",
@@ -498,7 +515,7 @@ func ciFixLogSteer(slug, branchPrefix, ciLogs string, logAvailable bool) (logFra
 				ciLogs,
 				"```",
 			}, []string{
-				"Your job: read those logs, reproduce/diagnose the failure locally in the worktree where you can, and apply a fix as a NEW LOCAL commit on `" + branchPrefix + "/" + slug + "`. Re-run the relevant gate locally (the specific test/lint/typecheck/check that failed) to verify the fix before you stop. Keep the fix to its own commit — do NOT amend or force-push over the existing history.",
+				"Your job: read those logs, reproduce/diagnose the failure locally in the worktree where you can, and apply a fix as a NEW LOCAL commit on `" + branch + "`. Re-run the relevant gate locally (the specific test/lint/typecheck/check that failed) to verify the fix before you stop. Keep the fix to its own commit — do NOT amend or force-push over the existing history.",
 			}
 	}
 	return []string{
@@ -515,10 +532,10 @@ func ciFixLogSteer(slug, branchPrefix, ciLogs string, logAvailable bool) (logFra
 }
 
 func ciFix(c Context) string {
-	t, slug, branchPrefix, worktreePath := c.Ticket, c.Slug, c.BranchPrefix, c.WorktreePath
-	logFraming, job := ciFixLogSteer(slug, branchPrefix, defang(c.CILogs), c.CILogAvailable)
+	t, branch, worktreePath := c.Ticket, c.branch(), c.WorktreePath
+	logFraming, job := ciFixLogSteer(branch, defang(c.CILogs), c.CILogAvailable)
 	lines := []string{
-		"A GitHub CI check is failing on the open PR for " + t.Identifier + ". The worktree already exists at `" + worktreePath + "` on branch `" + branchPrefix + "/" + slug + "` — work in it; do NOT create a new worktree.",
+		"A GitHub CI check is failing on the open PR for " + t.Identifier + ". The worktree already exists at `" + worktreePath + "` on branch `" + branch + "` — work in it; do NOT create a new worktree.",
 		"",
 		"The branch already passed the harness's local gate re-run, but CI on GitHub went red. The cause is usually a CI-vs-local difference (a different toolchain/env, a lockfile or native-binding skew, or a flaky spec) rather than something the local gate could catch.",
 		"",
@@ -562,9 +579,12 @@ func ciFix(c Context) string {
 // session never pushes or touches the remote/tracker itself. This prompt invokes no
 // skill, so it stays harness-composed (no Consumer body).
 func rebaseFix(c Context) string {
-	t, slug, branchPrefix, worktreePath := c.Ticket, c.Slug, c.BranchPrefix, c.WorktreePath
+	if c.Merge {
+		return mergeFix(c)
+	}
+	t, branch, worktreePath := c.Ticket, c.branch(), c.WorktreePath
 	lines := []string{
-		"A pre-push rebase for " + t.Identifier + " hit a genuine content conflict. The branch already passed the cold review and the harness gate, but origin/main advanced underneath it (a sibling PR merged) and the changes overlap, so it cannot be replayed automatically. The worktree already exists at `" + worktreePath + "` on branch `" + branchPrefix + "/" + slug + "` — work in it; do NOT create a new worktree.",
+		"A pre-push rebase for " + t.Identifier + " hit a genuine content conflict. The branch already passed the cold review and the harness gate, but origin/main advanced underneath it (a sibling PR merged) and the changes overlap, so it cannot be replayed automatically. The worktree already exists at `" + worktreePath + "` on branch `" + branch + "` — work in it; do NOT create a new worktree.",
 		"",
 		"Do NOT use `git rebase` here. This is a LINKED worktree (`git worktree add`), and `git rebase`'s detach-to-onto checkout false-fails with `Your local changes to the following files would be overwritten by merge` / `could not detach HEAD` even when the tree is byte-clean (`git status` empty) — a worktree checkout-safety artifact, not a real conflict. Burning attempts on `git rebase`/`git rebase --merge` here is wasted effort (BEH-618).",
 		"",
@@ -596,6 +616,47 @@ func rebaseFix(c Context) string {
 		trackerOff(c.Tracker),
 		"",
 		"Do NOT emit or file any harness-improvement findings, and do NOT write `/findings/out.json`. The retrospective tool owns findings — your only output is the resolved, rebased worktree.",
+		"",
+		bashQuirkSteer,
+	}
+	return strings.Join(lines, "\n")
+}
+
+// mergeFix is the RebaseFix variant for a branch a human opted in to the PR loop
+// (ADR-0019): its history must survive, because a force-push would rewrite commits
+// someone else may have checked out. So the session merges origin/main INTO the
+// branch and commits the merge, rather than replaying the branch onto it. The
+// ground truth is the same as the rebase's — a clean tree with origin/main an
+// ancestor of the tip — and the harness pushes the result without force.
+func mergeFix(c Context) string {
+	t, branch, worktreePath := c.Ticket, c.branch(), c.WorktreePath
+	lines := []string{
+		"The open PR " + t.Identifier + " conflicts with `main`: origin/main advanced underneath it and the changes overlap. The worktree already exists at `" + worktreePath + "` on branch `" + branch + "` — work in it; do NOT create a new worktree.",
+		"",
+		"A human owns this branch, so its history must NOT be rewritten. Do NOT rebase, `reset --hard`, cherry-pick onto a new base, amend, or squash. The harness pushes your result WITHOUT force, so any rewrite will be rejected.",
+		"",
+		"Your job: merge origin/main into this branch. origin/main is already fetched locally (this sandbox has NO network), so it all works offline. In the worktree run, in order:",
+		"  1. `git merge --no-ff origin/main`.",
+		"  2. For each conflict: resolve it by hand and `git add` the resolved files.",
+		"  3. `git commit --no-edit` to record the merge. `git status` must be clean when you stop.",
+		"",
+		"Resolve conflicts to preserve the intent of BOTH sides: keep this PR's change AND the incoming change from main. Do NOT blindly take one side (`--ours`/`--theirs`) — read both hunks and merge them so neither feature is lost. When in doubt, the PR's intent is below.",
+		"",
+		"Do NOT run `git merge --abort` or otherwise give up — aborting leaves the PR conflicting, which is exactly the dead-end this session exists to fix. If a hunk is genuinely impossible to reconcile, make your best-effort merge and say so in the merge commit message; the harness re-runs the full gate host-side and watches CI, so a mistake surfaces there rather than silently shipping.",
+		"",
+		"PR context (the intent to preserve — already fetched for you):",
+		"",
+		"# " + t.Identifier + ": " + defang(t.Title),
+		"",
+		defang(t.Description),
+		"",
+		"---",
+		"",
+		"Leave the merge committed in the worktree and stop there. Do NOT push, do NOT run `gh`, do NOT open or comment on a PR. The harness owns all remote git I/O (ADR-0002): after you finish, it independently re-runs the quality gates host-side and, only if they pass, pushes the branch itself.",
+		"",
+		trackerOff(c.Tracker),
+		"",
+		"Do NOT emit or file any harness-improvement findings, and do NOT write `/findings/out.json`. The retrospective tool owns findings — your only output is the merged worktree.",
 		"",
 		bashQuirkSteer,
 	}

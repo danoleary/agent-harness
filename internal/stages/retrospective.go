@@ -77,7 +77,37 @@ func Retrospective(h hostio.Host, cfg config.Config, log *runlog.Logger, args Ar
 	}
 	log.Event(fmt.Sprintf("fetched %s — %s", t.Identifier, t.Title))
 
-	subject := NewSubject(h, args.Identifier, log.Dir, t)
+	res := RetrospectiveOver(h, cfg, log, NewSubject(h, args.Identifier, log.Dir, t), args.DryRun)
+	if !res.OK || args.DryRun {
+		return res
+	}
+
+	// Reap the worktree only once the work has escaped it — retrospective filed AND
+	// the branch has reached a PR (verify.WorktreeReap owns the rule and the why).
+	// The worktree tears down host-side; the real-path mount makes its .git pointer
+	// resolve from the main checkout.
+	// WorktreeReap checks the push first and returns, so an unpushed branch never
+	// spends the gh round-trip PRExists costs.
+	reap := verify.WorktreeReap(h, slug)
+	if !reap.OK {
+		log.Event("worktree kept — " + reap.Reason)
+	} else if err := h.RemoveWorktree(slug); err != nil {
+		log.Event("worktree kept — removal failed: " + err.Error())
+	} else {
+		log.Event("worktree removed — " + reap.Reason)
+	}
+
+	return Result{OK: true}
+}
+
+// RetrospectiveOver runs the retrospective session over subject's transcripts
+// (everything under its log dir) and routes the findings it drops by audience. It
+// is the part of the stage that needs no tracker ticket: the ticket pipeline runs
+// it over the ticket it fetched, and the PR loop over the PR it fixed (ADR-0019).
+// Ground truth is the *presence* of /findings/out.json (an empty `[]` is success;
+// absent means it never ran). A dry-run prints the plan and launches nothing.
+func RetrospectiveOver(h hostio.Host, cfg config.Config, log *runlog.Logger, subject Subject, dryRun bool) Result {
+	t := subject.Ticket
 	findingsDir := runlog.FindingsDir(subject.LogDir, retrospectiveSession)
 	if err := os.MkdirAll(findingsDir, 0o755); err != nil {
 		// A full host disk fails this mkdir with ENOSPC. The disk being full isn't the
@@ -109,7 +139,7 @@ func Retrospective(h hostio.Host, cfg config.Config, log *runlog.Logger, args Ar
 	}
 
 	filed := toPromptFindings(prior)
-	if args.DryRun {
+	if dryRun {
 		log.Event("dry-run — not launching the container")
 		fmt.Print(RetrospectivePlan(cfg, subject, filed).Render(h))
 		return Result{OK: true}
@@ -120,11 +150,11 @@ func Retrospective(h hostio.Host, cfg config.Config, log *runlog.Logger, args Ar
 		return Result{Err: err}
 	}
 
-	log.Structured(loopstream.Record{Kind: loopstream.KindSandboxLaunch, Ticket: args.Identifier, Stage: "retrospective", Message: fmt.Sprintf("launching sandbox (cap %d min active)", int(cfg.RetrospectiveTimeout.Minutes()))})
+	log.Structured(loopstream.Record{Kind: loopstream.KindSandboxLaunch, Ticket: t.Identifier, Stage: "retrospective", Message: fmt.Sprintf("launching sandbox (cap %d min active)", int(cfg.RetrospectiveTimeout.Minutes()))})
 	res := h.Agent(retrospectiveRun(cfg, subject, filed))
 	outcome := res.Outcome
 	log.Event(fmt.Sprintf(
-		"session exited (code %d) — transcript at logs/%s/%s", outcome.ExitCode, args.Identifier, res.Transcript,
+		"session exited (code %d) — transcript at logs/%s/%s", outcome.ExitCode, t.Identifier, res.Transcript,
 	))
 
 	// A spending-cap abort can fire after the skill wrote its up-front default `[]`
@@ -170,7 +200,7 @@ func Retrospective(h hostio.Host, cfg config.Config, log *runlog.Logger, args Ar
 	// failure — an absent dropbox routes nothing. Tracker dedup runs exact-match first,
 	// then a best-effort semantic pass; a match is recorded as a recurrence on the
 	// existing issue instead of re-filed (BEH-573).
-	h.RouteFindings(findingsDir, t.TeamID, args.Identifier)
+	h.RouteFindings(findingsDir, t.TeamID, t.Identifier)
 
 	if !result.OK {
 		// Keep the worktree as a recoverable breadcrumb (DESIGN.md failure matrix).
@@ -179,21 +209,5 @@ func Retrospective(h hostio.Host, cfg config.Config, log *runlog.Logger, args Ar
 		// the breaker keys off the run's Disposition (review's ship), not this OK.
 		return capFailure(outcome)
 	}
-
-	// Reap the worktree only once the work has escaped it — retrospective filed AND
-	// the branch has reached a PR (verify.WorktreeReap owns the rule and the why).
-	// The worktree tears down host-side; the real-path mount makes its .git pointer
-	// resolve from the main checkout.
-	// WorktreeReap checks the push first and returns, so an unpushed branch never
-	// spends the gh round-trip PRExists costs.
-	reap := verify.WorktreeReap(h, slug)
-	if !reap.OK {
-		log.Event("worktree kept — " + reap.Reason)
-	} else if err := h.RemoveWorktree(slug); err != nil {
-		log.Event("worktree kept — removal failed: " + err.Error())
-	} else {
-		log.Event("worktree removed — " + reap.Reason)
-	}
-
 	return Result{OK: true}
 }

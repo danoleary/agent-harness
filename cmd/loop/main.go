@@ -32,9 +32,11 @@ import (
 	"time"
 
 	"github.com/danoleary/agent-harness/internal/config"
+	"github.com/danoleary/agent-harness/internal/github"
 	"github.com/danoleary/agent-harness/internal/loop"
 	"github.com/danoleary/agent-harness/internal/loophost"
 	"github.com/danoleary/agent-harness/internal/loopstream"
+	"github.com/danoleary/agent-harness/internal/prloop"
 	"github.com/danoleary/agent-harness/internal/runlog"
 	"github.com/danoleary/agent-harness/internal/stages"
 	"github.com/danoleary/agent-harness/internal/trackers"
@@ -57,10 +59,15 @@ const capBackoffHeartbeat = time.Minute
 
 // usage is the daemon's own grammar. The loop takes no ticket — the queue is the
 // input — so it shares nothing with stages.Usage beyond the shape.
-const usage = `usage: loop [--help] [--version]
+const usage = `usage: loop [--prs [--dry-run]] [--help] [--version]
 
 Works the tracker's ready queue unattended, one ticket at a time: implementation,
-review and retrospective per ticket, then a PR. Takes no arguments.
+review and retrospective per ticket, then a PR.
+
+  --prs       work the open PRs instead: fix the ones that conflict with main or
+              have red CI (temporary; becomes ` + "`agent-harness loop <name>`" + `)
+  --dry-run   with --prs: list the PRs it would work and the plan for each, and
+              change nothing
 
 Configuration is read from the environment, filled in from the first of:
   $HARNESS_ENV_FILE
@@ -68,8 +75,37 @@ Configuration is read from the environment, filled in from the first of:
   $XDG_CONFIG_HOME/agent-harness/.env   (else ~/.config/agent-harness/.env)
 Never keep that file inside the project checkout: every sandbox bind-mounts it.
 
-Stop it gracefully with ` + "`touch $PROJECT_PATH/.agent-harness/STOP`" + ` or one SIGINT.
-See CONSUMER.md for the .agent-harness/ directory a project must commit.`
+Stop it gracefully with ` + "`touch $PROJECT_PATH/.agent-harness/STOP`" + ` (` + "`STOP-prs`" + ` for --prs)
+or one SIGINT. See CONSUMER.md for the .agent-harness/ directory a project must commit.`
+
+// flags is the daemon's parsed command line.
+type flags struct {
+	// prs runs the PR loop instead of the ticket loop (ADR-0019).
+	prs bool
+	// dryRun prints the PR loop's plan and exits without changing anything.
+	dryRun bool
+}
+
+// parseFlags reads the daemon's two run flags; anything else is ignored, as it
+// always was (--help and --version are answered before this, without a
+// credential). --dry-run only means something for the PR loop, and is refused
+// without it: ignoring it would start a real ticket loop when a dry run was asked
+// for. The ticket loop's dry-run is `pipeline --next --dry-run`.
+func parseFlags(argv []string) (flags, error) {
+	var f flags
+	for _, arg := range argv {
+		switch arg {
+		case "--prs":
+			f.prs = true
+		case "--dry-run":
+			f.dryRun = true
+		}
+	}
+	if f.dryRun && !f.prs {
+		return f, fmt.Errorf("loop: --dry-run needs --prs (for one ticket, use `agent-harness pipeline --next --dry-run`)")
+	}
+	return f, nil
+}
 
 func main() {
 	// Usage before config: an operator who has just unpacked a release archive must
@@ -89,6 +125,12 @@ func main() {
 		}
 	}
 
+	f, err := parseFlags(os.Args[1:])
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
+
 	// Config is loaded once for the whole daemon: PROJECT_PATH locates the STOP
 	// sentinel and the primary checkout to fast-forward, and the tracker secrets back
 	// selection. A bad config must fail loud before the loop starts.
@@ -96,6 +138,10 @@ func main() {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		os.Exit(1)
+	}
+
+	if f.prs {
+		os.Exit(runPRLoop(cfg, f.dryRun))
 	}
 
 	// The global loop.jsonl is the daemon→viewer contract (ADR-0005). Truncate it
@@ -127,6 +173,55 @@ func main() {
 		Clock:    loop.SystemClock{},
 		Log:      log,
 	}))
+}
+
+// runPRLoop is the composition root of the PR loop (ADR-0019): the github_prs
+// Source and the PR-fixer Pipeline, run by the same daemon as the ticket loop but
+// with their own STOP sentinel and their own loop.jsonl, so the two can run side
+// by side. The tracker is still read: a branch whose ticket the ticket loop holds
+// is skipped. --dry-run prints the Source's plan and changes nothing.
+func runPRLoop(cfg config.Config, dryRun bool) int {
+	client, err := trackers.New(cfg.Tracker, trackers.Secrets{LinearKey: cfg.LinearAPIKey, GitHubToken: cfg.GitHubToken, JiraBaseURL: cfg.JiraBaseURL, JiraEmail: cfg.JiraEmail, JiraToken: cfg.JiraAPIToken})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		return 1
+	}
+	stream := loopstream.NewStream(loopstream.PathUnder(prloop.LogsRoot(cfg)))
+	log := runlog.NewConsole(stream)
+	tickets := loophost.NewTicketSource(cfg, log, client)
+	pulls := github.NewPulls(github.NewGhTransport(cfg.ProjectPath), "{owner}/{repo}")
+	source := prloop.NewSource(pulls, prloop.OptionsFrom(cfg), tickets.HeldBranches, log)
+
+	if dryRun {
+		plan, err := source.Plan()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "loop --prs --dry-run: %v\n", err)
+			return 1
+		}
+		fmt.Print(prloop.RenderPlan(plan))
+		return 0
+	}
+
+	// logs/prs/ is new to an existing checkout, and the stream does not create its
+	// own directory.
+	if err := os.MkdirAll(prloop.LogsRoot(cfg), 0o755); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not create %s: %v\n", prloop.LogsRoot(cfg), err)
+	}
+	if err := stream.Truncate(); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not truncate the PR loop's loop.jsonl at startup: %v\n", err)
+	}
+	daemonCfg := cfg
+	daemonCfg.StopFile = cfg.PRLoopStopFile
+	host := loophost.NewDaemon(daemonCfg, source.CheckAccess)
+	installSignalHandler(host, log)
+	return loop.Run(loop.Deps{
+		Source:   source,
+		Pipeline: prloop.Pipeline{},
+		Host:     host,
+		Limits:   limitsFrom(cfg),
+		Clock:    loop.SystemClock{},
+		Log:      log,
+	})
 }
 
 // limitsFrom maps the Consumer's config onto the daemon's knobs. Every optional

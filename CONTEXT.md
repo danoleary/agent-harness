@@ -50,12 +50,22 @@ _Avoid_: queue, feed (a queue is one kind of Source).
 **Work item**:
 One unit of work a **Source** yields (`loop.WorkItem`): a **Key** and the branch
 the **Pipeline** will push. For a ticket, the Key is the tracker Key and the
-branch is `<branch_prefix>/<slug>`.
+branch is `<branch_prefix>/<slug>`. For an open PR (the **PR loop**), the Key is
+`PR-<number>` and the branch is the PR's head branch.
 _Avoid_: job, task, ticket (a ticket is one kind of Work item).
 
 **Pipeline** (of a loop):
 What a loop does to one **Work item** (`loop.Pipeline`): for a ticket, the three
-**Stages**. The daemon branches only on the **Disposition** it returns.
+**Stages**; for a PR, one fix (a conflict resolution or a CI fix), then the
+**Gates**, a push to the existing branch, and the CI watch. The daemon branches
+only on the **Disposition** it returns.
+
+**PR loop**:
+The second loop (`agent-harness loop --prs`, ADR-0019). Its **Source** is the open
+PRs that conflict with `main` or have red CI and that opted in: on the harness's
+`branch_prefix`, or carrying the opt-in label. Its **Lease** is the `in-progress`
+label on the PR, keyed on the branch.
+_Avoid_: PR doctor, babysitter.
 
 ### Prompts
 
