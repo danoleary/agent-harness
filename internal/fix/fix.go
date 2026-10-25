@@ -46,8 +46,9 @@ type Env struct {
 	Who  string
 }
 
-// Target is the branch a fix session works on: the worktree slug the Host keys it
-// by, and the ticket (or PR) whose intent the prompt carries.
+// Target is the branch a fix session works on: the slug the prompt names it by,
+// and the ticket (or PR) whose intent the prompt carries. The worktree itself is
+// the Host's, which is bound to the same ticket.
 type Target struct {
 	Slug   string
 	Ticket ticket.Ticket
@@ -60,7 +61,7 @@ type Target struct {
 func (e Env) promptContext(t Target) prompt.Context {
 	return prompt.Context{
 		Ticket: t.Ticket, Slug: t.Slug, BranchPrefix: e.Cfg.BranchPrefix, Branch: t.Branch,
-		Tracker: e.Cfg.Tracker.Kind, WorktreePath: e.Host.WorktreePath(t.Slug),
+		Tracker: e.Cfg.Tracker.Kind, WorktreePath: e.Host.Worktree().Path(),
 		Body: e.Cfg.Prompts.Fix,
 	}
 }
@@ -116,14 +117,15 @@ func GateRun(cfg config.Config, worktreePath, labelPrefix string, g config.Gate)
 // install (and even a typecheck) can be SIGKILLed under memory pressure, which
 // would flip a genuinely green branch red and push nothing. A real gate failure
 // returns a non-137 code and is final on the first attempt.
-func (e Env) Gates(slug, labelPrefix string) GateResult {
+func (e Env) Gates(labelPrefix string) GateResult {
 	// A docs-only diff (root markdown / docs/**) feeds none of the gates, so the heavy
 	// host re-run validates nothing a prose edit could break — skip it and treat the
 	// gate as green (BEH-687). Read fresh here, not once up front: an earlier
-	// session may have committed a code edit, and BranchDocsOnly over the current
-	// tree (which `git diff origin/main` reads including uncommitted work) reflects
-	// that — fail-safe to running the full gate on any doubt.
-	if e.Host.BranchDocsOnly(slug) {
+	// session may have committed a code edit, and DocsOnly over the current tree
+	// (which `git diff origin/main` reads including uncommitted work) reflects that —
+	// fail-safe to running the full gate on any doubt.
+	wt := e.Host.Worktree()
+	if wt.DocsOnly(e.Cfg.DocsOnlyExcludedRoots) {
 		e.Log.Event(e.Who + " · host gate skipped — diff touches only docs/prose paths no gate depends on (BEH-687)")
 		return GateResult{}
 	}
@@ -141,7 +143,7 @@ func (e Env) Gates(slug, labelPrefix string) GateResult {
 		release = func() {}
 	}
 	defer release()
-	worktreePath := e.Host.WorktreePath(slug)
+	worktreePath := wt.Path()
 	return RunGates(e.Cfg.Gates, func(g config.Gate) session.Outcome {
 		e.Log.Event(fmt.Sprintf("%s · gate %q: %s", e.Who, g.Name, g.Command))
 		run := GateRun(e.Cfg, worktreePath, labelPrefix, g)
@@ -175,7 +177,8 @@ func (e Env) CI(t Target) func(ciLogs string, logAvailable bool) error {
 		// agent actually committed a fix or correctly concluded there was nothing to
 		// fix (BEH-561). A read failure leaves headBefore empty, which degrades to
 		// "treat any HEAD as a real commit" — never a spurious empty commit.
-		headBefore, _ := e.Host.HeadSHA(t.Slug)
+		wt := e.Host.Worktree()
+		headBefore, _ := wt.HeadSHA()
 		e.Log.Event(fmt.Sprintf("CI red — launching auto-fix session %d (cap %d min active)", attempt, int(e.Cfg.ReviewTimeout.Minutes())))
 		pctx := e.promptContext(t)
 		pctx.CILogs, pctx.CILogAvailable = ciLogs, logAvailable
@@ -190,14 +193,14 @@ func (e Env) CI(t Target) func(ciLogs string, logAvailable bool) error {
 		}
 		// Ground truth, never the agent's say-so: the fix must be committed (clean
 		// worktree) or the harness has nothing trustworthy to push.
-		if !e.Host.WorktreeClean(t.Slug) {
+		if !wt.Clean() {
 			return fmt.Errorf("auto-fix session %d left uncommitted changes — not pushing", attempt)
 		}
 		// The agent may have correctly concluded the red is not a code defect (a
 		// cancelled/superseded/flaky run) and committed nothing. Don't force a
 		// speculative diff: add an empty commit so the re-push gives CI a fresh HEAD
 		// to re-run against; a no-op if a real fix moved HEAD (BEH-561).
-		if err := e.Host.EnsureCIRerunCommit(t.Slug, headBefore); err != nil {
+		if err := wt.EnsureCIRerunCommit(headBefore); err != nil {
 			return fmt.Errorf("auto-fix session %d: re-trigger commit failed: %w", attempt, err)
 		}
 		return nil
@@ -289,9 +292,10 @@ func (e Env) ResolveConflict(c Conflict) ConflictResult {
 	})
 	e.Log.Event(fmt.Sprintf("conflict-resolution session exited (code %d)", res.ExitCode))
 
-	verdict := verify.RebaseResolution(e.Host, c.Slug, res.Outcome)
+	wt := e.Host.Worktree()
+	verdict := verify.RebaseResolution(wt, res.Outcome)
 	if !verdict.OK {
-		e.Host.AbortRebase(c.Slug)
+		wt.AbortRebase()
 		if verdict.SpendingCapAbort {
 			e.Log.Event(e.Who + " ↻ conflict resolution deferred — spending cap reached, retry after reset (BEH-494) — keeping worktree")
 			return ConflictResult{SpendingCapAbort: true, Reason: verdict.Reason}
@@ -305,7 +309,7 @@ func (e Env) ResolveConflict(c Conflict) ConflictResult {
 	// the gates before trusting the push. Push only on a green gate over a
 	// still-clean worktree.
 	gate := c.Regate()
-	if !gate.Green() || !e.Host.WorktreeClean(c.Slug) {
+	if !gate.Green() || !wt.Clean() {
 		reason := fmt.Sprintf("post-resolution gate re-run failed (exit %d)", gate.Outcome.ExitCode)
 		e.Log.Event(e.Who + " ✗ " + reason + " — keeping worktree, nothing pushed")
 		return ConflictResult{Resolved: true, Reason: reason, Gate: gate}

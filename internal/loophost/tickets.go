@@ -168,7 +168,7 @@ func (p *TicketPipeline) Run(item loop.WorkItem, claim *lease.Lease) stages.Resu
 	args := stages.Args{Identifier: item.Key, Lease: claim}
 	// One Host for the whole slice: the three stages share the run id it stamps into
 	// every container name and transcript, and the tracker client it resolves once.
-	host := hostio.New(cfg, log, runID, args.Verbose)
+	host := hostio.New(cfg, log, runID, args.Verbose, ticket.Slug(item.Key))
 	return pipeline.Run(ticketDeps(p.loop, host, cfg, log, args))
 }
 
@@ -197,7 +197,7 @@ func (p *TicketPipeline) Recover(item loop.WorkItem) (stages.Result, bool) {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		return stages.Result{}, false
 	}
-	rec := ship.Recover(hostio.New(cfg, log, runID, false), p.log, item.Key)
+	rec := ship.Recover(hostio.New(cfg, log, runID, false, ticket.Slug(item.Key)), p.log, item.Key)
 	out := stages.Result{}
 	if rec.Shipped {
 		out = stages.Result{OK: true, Disposition: stages.Shipped}

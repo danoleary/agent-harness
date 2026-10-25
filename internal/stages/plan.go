@@ -27,10 +27,11 @@ type Subject struct {
 }
 
 // NewSubject resolves identifier's worktree and branch through p — the run's Host,
-// or a dry-run's hostio.NewPreview — so a plan never re-derives either.
+// or a dry-run's hostio.NewPreview, either bound to identifier's ticket — so a plan
+// never re-derives either.
 func NewSubject(p hostio.Planner, identifier, logDir string, t ticket.Ticket) Subject {
-	slug := ticket.Slug(identifier)
-	return Subject{Ticket: t, Slug: slug, WorktreePath: p.WorktreePath(slug), Branch: p.BranchName(slug), LogDir: logDir}
+	wt := p.Worktree()
+	return Subject{Ticket: t, Slug: ticket.Slug(identifier), WorktreePath: wt.Path(), Branch: wt.Branch(), LogDir: logDir}
 }
 
 // Step is one entry in a Stage's plan: a container the Stage launches (exactly one

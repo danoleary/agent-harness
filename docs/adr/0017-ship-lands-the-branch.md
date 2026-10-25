@@ -1,6 +1,6 @@
 # ADR-0017: ship lands the branch
 
-- Status: Accepted
+- Status: Accepted — its tests' scripted git (`CollapseOnRebase` and kin) replaced by a temp repo in [ADR-0025](0025-the-host-is-bound-to-one-ticket-and-git-is-not-faked.md)
 - Date: 2026-09-28
 - Extends: ADR-0014, ADR-0016
 

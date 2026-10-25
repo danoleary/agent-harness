@@ -1,6 +1,6 @@
 # ADR-0013: Stages talk to the host through one port
 
-- Status: Accepted
+- Status: Accepted — the Repo half amended by [ADR-0025](0025-the-host-is-bound-to-one-ticket-and-git-is-not-faked.md)
 - Date: 2026-09-20
 
 ## Context
@@ -83,6 +83,11 @@ the same label, and owns the transient-failure retry (a fresh name and transcrip
 per attempt, because a wedged container's `--rm` teardown may have failed). The
 name-matches-argv invariant is now structural: a caller cannot name a container at
 all.
+
+> **Amended by ADR-0025.** A Host is now bound to one ticket and hands out its
+> `git.Worktree` whole, and `hostio.Fake` runs over a real temp repository rather
+> than scripting git; only the sandbox, the remote and the tracker stay scripted.
+> The paragraph below records the original slug-keyed design.
 
 Every `Repo`/`Remote` method is keyed by the ticket slug, so the
 `(herdPath, branchPrefix, slug)` triple that `internal/git` threads through 19 call

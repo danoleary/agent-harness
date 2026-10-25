@@ -27,6 +27,7 @@ import (
 	"github.com/danoleary/agent-harness/internal/pipeline"
 	"github.com/danoleary/agent-harness/internal/runlog"
 	"github.com/danoleary/agent-harness/internal/stages"
+	"github.com/danoleary/agent-harness/internal/ticket"
 	"github.com/danoleary/agent-harness/internal/trackers"
 	"github.com/danoleary/agent-harness/internal/version"
 )
@@ -101,7 +102,7 @@ func main() {
 
 	// One Host for the whole slice: the three stages share the run id it stamps into
 	// every container name and transcript, and the tracker client it resolves once.
-	host := hostio.New(cfg, log, runID, args.Verbose)
+	host := hostio.New(cfg, log, runID, args.Verbose, ticket.Slug(args.Identifier))
 
 	// Bind each stage to the shared host/cfg/log/args (--verbose and the lease
 	// forward through args). The pipeline decides ordering; the stages do the work.

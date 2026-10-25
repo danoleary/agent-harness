@@ -17,6 +17,7 @@ import (
 
 	"github.com/danoleary/agent-harness/internal/hostio"
 	"github.com/danoleary/agent-harness/internal/stages"
+	"github.com/danoleary/agent-harness/internal/ticket"
 	"github.com/danoleary/agent-harness/internal/version"
 )
 
@@ -41,7 +42,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		os.Exit(1)
 	}
-	res := stages.Review(hostio.New(cfg, log, runID, args.Verbose), cfg, log, args)
+	res := stages.Review(hostio.New(cfg, log, runID, args.Verbose, ticket.Slug(args.Identifier)), cfg, log, args)
 	if res.Err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", res.Err)
 		os.Exit(1)

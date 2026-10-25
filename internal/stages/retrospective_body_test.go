@@ -25,10 +25,22 @@ func writesDropbox(body string) func(int, hostio.AgentRun) session.Outcome {
 	}
 }
 
+// shipped is a host for key whose handoff reached origin with its PR open: the
+// state a green review leaves the retrospective.
+func shipped(t *testing.T, key string) *hostio.Fake {
+	t.Helper()
+	h, _ := handedOff(t, key)
+	if err := h.PushForceWithLease(); err != nil {
+		t.Fatalf("push: %v", err)
+	}
+	h.Calls = nil
+	return h
+}
+
 // The happy path: the session writes its dropbox, the findings are routed by
 // audience, and — because the branch reached a PR — the worktree is reaped.
 func TestRetrospectiveRoutesFindingsAndReapsTheWorktree(t *testing.T) {
-	h := hostio.NewFake()
+	h := shipped(t, "PROJ-1")
 	h.AgentFn = writesDropbox("[]")
 
 	res := Retrospective(h, stageCfg(), stageLog(t, "PROJ-1"), Args{Identifier: "PROJ-1"})
@@ -39,15 +51,15 @@ func TestRetrospectiveRoutesFindingsAndReapsTheWorktree(t *testing.T) {
 	if got := h.Routed; len(got) != 1 || got[0] != "PROJ-1" {
 		t.Errorf("routed = %v, want the dropbox routed by audience (ADR-0011)", got)
 	}
-	if got := h.Removed; len(got) != 1 || got[0] != "proj-1" {
-		t.Errorf("removed = %v, want the worktree reaped once the work escaped it", got)
+	if h.Worktree().Exists() {
+		t.Error("the worktree must be reaped once the work escaped it")
 	}
 }
 
 // An empty `[]` is a valid "ran, found nothing" — an ABSENT file is what means the
 // step never ran (DESIGN.md "Success is ground-truth").
 func TestRetrospectiveAbsentDropboxIsNeverRan(t *testing.T) {
-	h := hostio.NewFake()
+	h := shipped(t, "PROJ-2")
 	log := stageLog(t, "PROJ-2")
 
 	res := Retrospective(h, stageCfg(), log, Args{Identifier: "PROJ-2"})
@@ -58,8 +70,8 @@ func TestRetrospectiveAbsentDropboxIsNeverRan(t *testing.T) {
 	if !strings.Contains(narration(t, log), "never ran") {
 		t.Errorf("run.jsonl = %s, want the never-ran verdict", narration(t, log))
 	}
-	if len(h.Removed) != 0 {
-		t.Errorf("a failed retrospective keeps the worktree as a breadcrumb, got %v", h.Removed)
+	if !h.Worktree().Exists() {
+		t.Error("a failed retrospective keeps the worktree as a breadcrumb")
 	}
 }
 
@@ -68,7 +80,7 @@ func TestRetrospectiveAbsentDropboxIsNeverRan(t *testing.T) {
 // default is dropped so the "absent file = never ran" contract holds and the stage
 // reports retry-after-reset.
 func TestRetrospectiveCapAbortClearsTheDefaultEmptyDropbox(t *testing.T) {
-	h := hostio.NewFake()
+	h := shipped(t, "PROJ-3")
 	h.AgentFn = func(_ int, run hostio.AgentRun) session.Outcome {
 		_ = os.WriteFile(filepath.Join(run.FindingsDir, "out.json"), []byte("[]"), 0o644)
 		return session.Outcome{ExitCode: 1, SpendingCapAbort: true}
@@ -88,7 +100,7 @@ func TestRetrospectiveCapAbortClearsTheDefaultEmptyDropbox(t *testing.T) {
 // BEH-536: a 137 kill that struck after the read-heavy analysis but before the
 // write gets the retry class (↻), not the misleading generic "never ran" (✗).
 func TestRetrospectiveOOMKillIsARetryClassNotANeverRan(t *testing.T) {
-	h := hostio.NewFake()
+	h := shipped(t, "PROJ-4")
 	h.AgentOutcome = session.Outcome{ExitCode: sandbox.ExitOOMKill}
 	log := stageLog(t, "PROJ-4")
 
@@ -103,19 +115,18 @@ func TestRetrospectiveOOMKillIsARetryClassNotANeverRan(t *testing.T) {
 // The worktree is reaped only once the work has escaped it: an unpushed branch
 // keeps it, and the gh round-trip is never spent (&& short-circuits).
 func TestRetrospectiveKeepsTheWorktreeWhenTheBranchNeverShipped(t *testing.T) {
-	h := hostio.NewFake()
+	h, _ := handedOff(t, "PROJ-5")
 	h.AgentFn = writesDropbox("[]")
-	h.Pushed = false
 
 	res := Retrospective(h, stageCfg(), stageLog(t, "PROJ-5"), Args{Identifier: "PROJ-5"})
 
 	if !res.OK {
 		t.Fatalf("the retrospective itself succeeded, got %+v", res)
 	}
-	if len(h.Removed) != 0 {
-		t.Errorf("an unpushed branch keeps its worktree, got %v", h.Removed)
+	if !h.Worktree().Exists() {
+		t.Error("an unpushed branch keeps its worktree")
 	}
-	if strings.Contains(strings.Join(h.Calls, "|"), "pr-exists") {
+	if called(h, "pr-exists") {
 		t.Error("an unpushed branch must never spend the gh round-trip")
 	}
 }
@@ -123,7 +134,7 @@ func TestRetrospectiveKeepsTheWorktreeWhenTheBranchNeverShipped(t *testing.T) {
 // BEH-539: the finding classes a prior run already filed are passed to the session
 // as settled context — gathered BEFORE ClearDropbox wipes that prior dropbox.
 func TestRetrospectivePassesAlreadyFiledFindingsAsSettledContext(t *testing.T) {
-	h := hostio.NewFake()
+	h := shipped(t, "PROJ-6")
 	h.AgentFn = writesDropbox("[]")
 	h.Prior = priorFindings()
 	log := stageLog(t, "PROJ-6")
@@ -140,7 +151,7 @@ func TestRetrospectivePassesAlreadyFiledFindingsAsSettledContext(t *testing.T) {
 
 // --dry-run launches nothing.
 func TestRetrospectiveDryRunLaunchesNothing(t *testing.T) {
-	h := hostio.NewFake()
+	h := shipped(t, "PROJ-7")
 
 	if res := Retrospective(h, stageCfg(), stageLog(t, "PROJ-7"), Args{Identifier: "PROJ-7", DryRun: true}); !res.OK {
 		t.Fatalf("a dry run is a success, got %+v", res)

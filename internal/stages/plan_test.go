@@ -36,15 +36,19 @@ func shellsWithoutRetry(runs []hostio.ShellRun) []hostio.ShellRun {
 // the very specs the Stages hand the Runner. Run all three over a healthy host and
 // the plan must name every container they launched, in order, field for field.
 func TestPlanIsWhatTheStagesLaunch(t *testing.T) {
-	h := hostio.NewFake()
-	// Every session does its job: the review emits its verdict, and each session
-	// with a findings dropbox writes it.
+	h, repo := fresh(t, "PROJ-1")
+	// Every session does its job: the /tdd session commits its handoff, the review
+	// emits its verdict, and each session with a findings dropbox writes it.
 	h.AgentFn = func(call int, run hostio.AgentRun) session.Outcome {
+		if run.Label == implementationSession {
+			commitsHandoff(h, repo)(call, run)
+		}
 		if run.FindingsDir != "" {
 			writesDropbox("[]")(call, run)
 		}
 		return session.Outcome{ReviewVerdictEmitted: true}
 	}
+	base := repo.Git(repo.Dir, "rev-parse", "origin/main")
 	cfg := stageCfg()
 	cfg.ImplementationModel, cfg.ReviewModel, cfg.RetrospectiveModel = "impl-model", "review-model", "retro-model"
 	log := stageLog(t, "PROJ-1")
@@ -61,12 +65,16 @@ func TestPlanIsWhatTheStagesLaunch(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := NewSubject(h, "PROJ-1", log.Dir, tk)
+	// Review and retrospective scope their diff to the branch's base, resolved when
+	// they run (#86); implementation has no branch to resolve one from yet.
+	based := s
+	based.Base = base
 	var agents []hostio.AgentRun
 	var shells []hostio.ShellRun
 	for _, p := range []StagePlan{
 		ImplementationPlan(cfg, s, prompt.Fresh),
-		ReviewPlan(cfg, s, nil),
-		RetrospectivePlan(cfg, s, nil),
+		ReviewPlan(cfg, based, nil),
+		RetrospectivePlan(cfg, based, nil),
 	} {
 		agents = append(agents, p.Agents()...)
 		shells = append(shells, p.Shells()...)
@@ -94,8 +102,9 @@ func TestPlanIsWhatTheStagesLaunch(t *testing.T) {
 // the Stage never spells a docker command, or a container name, itself.
 func TestStageDryRunRendersItsPlanThroughTheRunner(t *testing.T) {
 	cfg := stageCfg()
-	s := NewSubject(hostio.NewFake(), "PROJ-1", "/logs/PROJ-1", hostio.NewFakeTracker().Ticket)
-	out := ReviewPlan(cfg, s, nil).Render(hostio.NewFake())
+	h, _ := fresh(t, "PROJ-1")
+	s := NewSubject(h, "PROJ-1", "/logs/PROJ-1", hostio.NewFakeTracker().Ticket)
+	out := ReviewPlan(cfg, s, nil).Render(h)
 	for _, want := range []string{
 		"--- prep docker command ---\ndocker run --name fake-prep",
 		"--- review docker command ---\ndocker run --name fake-review",
@@ -112,13 +121,14 @@ func TestStageDryRunRendersItsPlanThroughTheRunner(t *testing.T) {
 func TestReviewPlanNotesASkippedPrep(t *testing.T) {
 	cfg := stageCfg()
 	cfg.PostCreate = ""
-	p := ReviewPlan(cfg, NewSubject(hostio.NewFake(), "PROJ-1", "/logs/PROJ-1", hostio.NewFakeTracker().Ticket), nil)
+	h, _ := fresh(t, "PROJ-1")
+	p := ReviewPlan(cfg, NewSubject(h, "PROJ-1", "/logs/PROJ-1", hostio.NewFakeTracker().Ticket), nil)
 	for _, sh := range p.Shells() {
 		if sh.Label == prepStep {
 			t.Errorf("plan launches a prep container with no post_create: %+v", sh)
 		}
 	}
-	if out := p.Render(hostio.NewFake()); !strings.Contains(out, "no post_create") {
+	if out := p.Render(h); !strings.Contains(out, "no post_create") {
 		t.Errorf("plan does not say the prep is skipped:\n%s", out)
 	}
 }

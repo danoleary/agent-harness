@@ -1252,8 +1252,10 @@ reader over a structured stream rather than a `--tui` flag on the daemon.
 - **One host port, two adapters** ([ADR-0013](adr/0013-stages-talk-to-the-host-through-one-port.md)). Everything a Stage does that leaves
   the process — `docker run`, git, `gh`, the tracker — goes through the
   `hostio.Host` it is handed, never through a package-level function. `hostio.Real`
-  is docker/git/gh/tracker; `hostio.Fake` is scripted outcomes, so the harness's
-  policy (which is nearly all of `internal/stages`) is testable without a daemon.
+  is docker/git/gh/tracker; `hostio.Fake` scripts the sandbox, the network and the
+  tracker over a real temp git repo (`internal/gittest`), so the harness's policy
+  (which is nearly all of `internal/stages`) is testable without a daemon, and the
+  git states it acts on are ones git really holds ([ADR-0025](adr/0025-the-host-is-bound-to-one-ticket-and-git-is-not-faked.md)).
   Behind it a `Runner` owns `{cfg, log, runID, prefix}` and is the only thing that
   names a container: it mints the `--name`, the argv that carries it, the
   `session.Options` the watchdog kills through, and the transcript filename, all
@@ -1292,6 +1294,9 @@ reader over a structured stream rather than a `--tui` flag on the daemon.
   unexported seam on that value replaced twelve exported/unexported twin pairs
   whose tested half was never the half the harness ran — the mutating remote
   operations, and with them the transient-retry budget, were the untested ones.
+  A Host is bound to one ticket and hands its `git.Worktree` out whole
+  (`h.Worktree()`), so adding a git operation touches `internal/git` alone
+  ([ADR-0025](adr/0025-the-host-is-bound-to-one-ticket-and-git-is-not-faked.md)).
 - **Go 1.26+**, standard library only — zero module dependencies: `net/http`
   (Linear GraphQL), `os/exec` (driving `docker`), `os`/`encoding/json` (logs +
   stop file). No dep tree on purpose — this process holds real credentials.

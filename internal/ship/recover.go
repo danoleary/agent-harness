@@ -1,7 +1,5 @@
 package ship
 
-import "github.com/danoleary/agent-harness/internal/ticket"
-
 // Recovery is what the committed-fix recovery learned about one ticket.
 // Attempted is the "was there anything to finish?" signal the daemon branches on:
 // false means this was a genuine no-PR run (an OOM, a crash, an empty diff) that
@@ -20,7 +18,8 @@ type Recovery struct {
 // review stage left a gate-green, clean commit yet never reached a PR (BEH-713,
 // the BEH-649 infinite Todo↔In-Progress bounce). Releasing such a ticket just
 // re-grabs it to the same no-verdict conclusion forever, so before the daemon
-// treats a no-PR run as a failure it tries to finish it here.
+// treats a no-PR run as a failure it tries to finish it here. h is bound to key's
+// ticket; key itself is for the PR body and the narration.
 //
 // It reports Attempted=true ONLY when there was such a state to finish: a worktree
 // on disk, clean, carrying commits against origin/main, with no open PR. Every
@@ -33,12 +32,12 @@ type Recovery struct {
 // worse than no attempt. Opening a PR is safe recovery, not a merge: CI and human
 // review still gate that.
 func Recover(h Port, log EventSink, key string) Recovery {
-	slug := ticket.Slug(key)
+	wt := h.Worktree()
 
 	// A committed fix means a worktree that is there and clean: uncommitted edits are
 	// an in-progress or crashed run, not a finished-but-unpushed one, so those are
 	// left to the normal release path.
-	if !h.WorktreeExists(slug) || !h.WorktreeClean(slug) {
+	if !wt.Exists() || !wt.Clean() {
 		return Recovery{}
 	}
 	// Refresh main so the empty-diff check is current.
@@ -47,12 +46,12 @@ func Recover(h Port, log EventSink, key string) Recovery {
 	}
 	// Nothing committed ahead of main (already merged, or an empty branch) → not a
 	// recoverable committed fix.
-	if h.BranchDiffEmpty(slug) {
+	if wt.DiffEmpty() {
 		return Recovery{}
 	}
 	// A branch that already has an OPEN PR isn't stranded (its run would already be
 	// Shipped — belt-and-braces), so there is nothing to finish.
-	if h.OpenPRExists(slug) {
+	if h.OpenPRExists() {
 		return Recovery{}
 	}
 
@@ -72,7 +71,7 @@ func Recover(h Port, log EventSink, key string) Recovery {
 		return Recovery{Attempted: true}
 	}
 
-	landing := Land(h, log, slug, t, nil)
+	landing := Land(h, log, t, nil)
 	switch landing.Verdict {
 	case Landed:
 		return Recovery{Attempted: true, Shipped: true}
