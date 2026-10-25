@@ -65,6 +65,12 @@ generated. Leave out push, PR and tracker instructions: the envelope already
 tells the session the host owns those, and a body that contradicts it only
 confuses the session.
 
+A review body does not need the session to run your heavy test suites after it
+commits a fix. The host re-runs every `[[gates]]` entry over the same commit, and
+when a gate goes red over a commit the review made, the harness re-launches the
+review once with the gate's name and the tail of its log. Tell the session to run
+the cheap gates and a test scoped to the files it edited.
+
 ## 5. Check it
 
 ```bash

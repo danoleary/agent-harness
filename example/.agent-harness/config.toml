@@ -95,11 +95,13 @@ command = "dotnet format --verify-no-changes"
 # that runs a shell command or an agent with nothing checking it. Every problem is
 # reported at load, with its line and column.
 #
-# The built-in ticket loop, written out (uncomment to change it):
+# The built-in ticket loop, written out (uncomment to change it). Drop watch_ci
+# when you run pr-doctor: the review stage then stops once the PR is open instead
+# of waiting on CI, and pr-doctor fixes a check that goes red later.
 # [[loops]]
 # name = "tickets"
 # source = { kind = "tracker" }
-# steps = [{ use = "implement" }, { use = "review" }, { use = "retro" }]
+# steps = [{ use = "implement" }, { use = "review" }, { use = "watch_ci" }, { use = "retro" }]
 #
 # The PR loop, with a project body for its fix sessions and its own limits. Each
 # limit overrides its LOOP_* env knob for this loop only; source.label and

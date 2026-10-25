@@ -29,8 +29,11 @@ func TestNoLoopsDeclaredLeavesTheBuiltIns(t *testing.T) {
 	if !ok || tickets.Name != DefaultLoopName || tickets.Source.Kind != SourceTracker {
 		t.Errorf("the unnamed loop is the ticket loop, got %+v", tickets)
 	}
-	if steps := tickets.StepNames(); !reflect.DeepEqual(steps, []string{StepImplement, StepReview, StepRetro}) {
+	if steps := tickets.StepNames(); !reflect.DeepEqual(steps, []string{StepImplement, StepReview, StepWatchCI, StepRetro}) {
 		t.Errorf("ticket loop steps = %v", steps)
+	}
+	if tickets.LeavesCIToPRLoop() {
+		t.Error("the built-in ticket loop watches its own PR's CI, as it always has (#110)")
 	}
 	pr, _ := p.LoopNamed(PRDoctorLoopName)
 	if pr.Source.Kind != SourceGitHubPRs || !reflect.DeepEqual(pr.StepNames(), []string{StepCheckoutPR, StepFix, StepGates, StepPushExisting, StepWatchCI, StepRetro}) {
@@ -41,12 +44,36 @@ func TestNoLoopsDeclaredLeavesTheBuiltIns(t *testing.T) {
 	}
 }
 
+// A ticket loop written without watch_ci leaves its PR's CI to a PR loop (#110):
+// it is a valid loop, and the review stage returns once the PR is open. A PR loop
+// never leaves CI to itself.
+func TestATicketLoopWithoutWatchCILeavesCIToThePRLoop(t *testing.T) {
+	pc, err := LoadProject(loopsCheckout(t, `
+[[loops]]
+name = "tickets"
+source = { kind = "tracker" }
+steps = [{ use = "implement" }, { use = "review" }, { use = "retro" }]
+`))
+	if err != nil {
+		t.Fatalf("LoadProject: %v", err)
+	}
+	p := Project{Loops: pc.ResolvedLoops}
+	tickets, _ := p.LoopNamed("")
+	if !tickets.LeavesCIToPRLoop() {
+		t.Error("a ticket loop without watch_ci leaves CI to the PR loop")
+	}
+	pr, _ := p.LoopNamed(PRDoctorLoopName)
+	if pr.LeavesCIToPRLoop() {
+		t.Error("only a ticket loop hands its CI on")
+	}
+}
+
 // builtInLoopsTOML writes the two built-in loops out as [[loops]] entries.
 const builtInLoopsTOML = `
 [[loops]]
 name = "tickets"
 source = { kind = "tracker" }
-steps = [{ use = "implement" }, { use = "review" }, { use = "retro" }]
+steps = [{ use = "implement" }, { use = "review" }, { use = "watch_ci" }, { use = "retro" }]
 
 [[loops]]
 name = "pr-doctor"
@@ -244,8 +271,14 @@ steps = [{ use = "implement" }, { use = "review" }]
 [[loops]]
 name = "a"
 source = { kind = "tracker" }
-steps = [{ use = "implement" }, { use = "review" }, { use = "watch_ci" }]
-`, "watch_ci does not run on a tracker source"},
+steps = [{ use = "implement" }, { use = "review" }, { use = "gates" }]
+`, "gates does not run on a tracker source"},
+		{"watch_ci before review on a tracker", `
+[[loops]]
+name = "a"
+source = { kind = "tracker" }
+steps = [{ use = "implement" }, { use = "watch_ci" }, { use = "review" }]
+`, "watch_ci needs review before it"},
 		{"missing required step", `
 [[loops]]
 name = "a"
@@ -349,6 +382,27 @@ func TestLoopInstanceRefusesWhatWouldCollide(t *testing.T) {
 		_, err := p.LoopInstance(tc.loop, tc.instance)
 		if err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("LoopInstance(%q, %q) = %v, want an error mentioning %q", tc.loop, tc.instance, err, tc.want)
+		}
+	}
+}
+
+// Every daemon `agent-harness start` launches has its own pidfile, so the viewer
+// can probe the one it follows (#106): the default ticket loop keeps loop.pid,
+// another loop has loop-<name>.pid, and an instance has loop-<id>.pid whichever
+// loop it runs. Ids may not be loop names, so the two never share a file.
+func TestEachDaemonHasItsOwnPidFile(t *testing.T) {
+	for _, tc := range []struct {
+		loop Loop
+		want string
+	}{
+		{Loop{Name: DefaultLoopName}, ".agent-harness/loop.pid"},
+		{Loop{}, ".agent-harness/loop.pid"},
+		{Loop{Name: PRDoctorLoopName}, ".agent-harness/loop-pr-doctor.pid"},
+		{Loop{Name: DefaultLoopName, Instance: "b"}, ".agent-harness/loop-b.pid"},
+		{Loop{Name: "triage", Instance: "b"}, ".agent-harness/loop-b.pid"},
+	} {
+		if got := tc.loop.PidFile(); got != tc.want {
+			t.Errorf("%+v.PidFile() = %q, want %q", tc.loop, got, tc.want)
 		}
 	}
 }

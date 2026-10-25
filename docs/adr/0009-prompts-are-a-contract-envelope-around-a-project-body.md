@@ -116,3 +116,29 @@ commit message must name the commit it amends by its subject line, not its SHA**
 the harness's own step: any Consumer's review skill could name a SHA and hit the
 same dangling reference. This repo's review skill now titles the commit by what it
 fixes instead.
+
+## Amendment, 2026-10-25: a red host gate returns to the review once
+
+A host gate that went red after the review session committed a fix failed the
+ticket with no retry. Consumer bodies therefore had the session run the heavy test
+suites itself before it stopped, and the host gate then ran them again on the same
+commit. On one Consumer that repeat was 72% of a review session's wall time. The
+session's run decided nothing, because only the host gate authorises a push
+(ADR-0002).
+
+**When the host gate goes red over a commit the review session made, the review
+stage re-launches the session once, and the envelope carries the failing gate's
+name and the tail of its step log. The stage then re-runs the gates** (#111).
+Every review envelope also says that a red host gate over the session's own
+commit returns to it once with its output. A Consumer body can then tell the
+session to run only the cheap gates. The promise sits in the envelope because the
+re-launch is the harness's own step: a body cannot rely on a retry it is not told
+about, and a body cannot promise one.
+
+The re-launch is bounded to one attempt. A gate still red after it fails the
+ticket as before. A red over the handoff the review did not change also fails as
+before, and so do a dirty tree, a blocked verdict, an OOM, a cap-kill or
+spending-cap abort, and a gate the shell could not run. None of those is a defect
+the session can fix in its own commit. Skipping the host gate when the session
+reports the same gates green at the same HEAD was rejected, because it trusts a
+self-report.

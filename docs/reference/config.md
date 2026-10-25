@@ -140,12 +140,14 @@ Each step is `{ use = "<step>" }`, plus `prompt = "<path>"` (relative to
 | `fix` | `github_prs` | `checkout_pr` | leads the RebaseFix and CIFix prompts | a clean tree with `origin/main` in its history |
 | `gates` | `github_prs` | `fix` | not accepted | every Gate green over the fixed tree |
 | `push_existing` | `github_prs` | `gates` | not accepted | pushes only a committed, gate-green tree |
-| `watch_ci` | `github_prs` | `push_existing` | not accepted | a CI fix must pass every Gate before it is pushed |
+| `watch_ci` | either | `review` on `tracker`; `push_existing` on `github_prs` | not accepted | a CI fix must pass every Gate before it is pushed |
 | `retro` | either | any step; must be last | replaces `prompts/retro.md` | files the run's Findings |
 
 A `tracker` loop needs `implement` and `review`. A `github_prs` loop needs
 `checkout_pr`, `fix`, `gates` and `push_existing`; `when = ["ci_failing"]` also
-needs `watch_ci`, because a red check is fixed inside the CI watch. Without
+needs `watch_ci`, because a red check is fixed inside the CI watch. A `tracker`
+loop without `watch_ci` stops its review stage once the PR is open and leaves red
+CI to a PR loop (ADR-0030); the built-in `tickets` loop has it. Without
 `retro`, nothing files Findings. Each Step may appear once.
 
 ## Prompt bodies

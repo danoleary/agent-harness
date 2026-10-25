@@ -10,6 +10,7 @@ import (
 	"github.com/danoleary/agent-harness/internal/config"
 	"github.com/danoleary/agent-harness/internal/loopstream"
 	"github.com/danoleary/agent-harness/internal/runlog"
+	"github.com/danoleary/agent-harness/internal/session"
 	"github.com/danoleary/agent-harness/internal/stages"
 )
 
@@ -398,5 +399,99 @@ func TestForTicketBindsEveryStageToOneSlice(t *testing.T) {
 	}
 	if d.Log != log {
 		t.Errorf("the pipeline narrates to the slice's own runlog, got %v", d.Log)
+	}
+}
+
+// interruptedBy143 is the Result of a Stage whose session a SIGTERM killed (exit
+// 143) — the run cut short from outside, not a broken slice (#99).
+func interruptedBy143(t *testing.T) stages.Result {
+	t.Helper()
+	res, ok := stages.InterruptedResult(session.Outcome{ExitCode: 143})
+	if !ok {
+		t.Fatal("exit 143 was not classified as interrupted")
+	}
+	return res
+}
+
+// A signal-killed implementation is not a failed one (#99): there is nothing to
+// review, and a retrospective would only mine a stub transcript inside a process
+// that is already going down. Neither runs, the implementation is not re-attempted,
+// and the slice reports Interrupted so the loop leaves the claim alone.
+func TestRunInterruptedImplementationLaunchesNeitherReviewNorRetrospective(t *testing.T) {
+	r := &recorder{}
+	out := Run(Deps{
+		FetchMain:      func() error { return nil },
+		Implementation: r.stage("impl", interruptedBy143(t)),
+		Review:         r.stage("review", stages.Result{OK: true}),
+		Retrospective:  r.stage("retro", stages.Result{OK: true}),
+		Log:            r,
+	})
+	if want := []string{"impl"}; !reflect.DeepEqual(r.order, want) {
+		t.Errorf("stage order = %v, want %v (no review, no retrospective after an interruption)", r.order, want)
+	}
+	if out.Disposition != stages.Interrupted {
+		t.Errorf("disposition = %v, want %v", out.Disposition, stages.Interrupted)
+	}
+	if out.ExitCode() == 0 {
+		t.Error("an interrupted slice exited 0; it did not do its job")
+	}
+	if !r.saw("implementation interrupted by signal 15") {
+		t.Errorf("no 'interrupted by signal 15' narration; events = %v", r.events)
+	}
+	if r.saw("skipping review (nothing to review)") {
+		t.Error("an interruption was narrated as an implementation failure")
+	}
+}
+
+// The same holds for a review the signal cut short: the retrospective is skipped.
+func TestRunInterruptedReviewSkipsRetrospective(t *testing.T) {
+	r := &recorder{}
+	out := Run(Deps{
+		FetchMain:      func() error { return nil },
+		Implementation: r.stage("impl", stages.Result{OK: true}),
+		Review:         r.stage("review", interruptedBy143(t)),
+		Retrospective:  r.stage("retro", stages.Result{OK: true}),
+		Log:            r,
+	})
+	if want := []string{"impl", "review"}; !reflect.DeepEqual(r.order, want) {
+		t.Errorf("stage order = %v, want %v", r.order, want)
+	}
+	if out.Disposition != stages.Interrupted {
+		t.Errorf("disposition = %v, want %v", out.Disposition, stages.Interrupted)
+	}
+}
+
+// A retrospective interrupted after the review shipped does not undo the ship.
+func TestRunInterruptedRetrospectiveKeepsTheShip(t *testing.T) {
+	r := &recorder{}
+	out := Run(Deps{
+		FetchMain:      func() error { return nil },
+		Implementation: r.stage("impl", stages.Result{OK: true}),
+		Review:         r.stage("review", stages.Result{OK: true, Disposition: stages.Shipped}),
+		Retrospective:  r.stage("retro", interruptedBy143(t)),
+		Log:            r,
+	})
+	if out.Disposition != stages.Shipped {
+		t.Errorf("disposition = %v, want %v", out.Disposition, stages.Shipped)
+	}
+}
+
+// A retrospective interrupted after a failed implementation does not turn the
+// failure into an interruption: the slice is still NoPR, so the loop releases the
+// claim and the breaker counts it.
+func TestRunInterruptedRetrospectiveKeepsTheFailure(t *testing.T) {
+	r := &recorder{}
+	out := Run(Deps{
+		FetchMain:      func() error { return nil },
+		Implementation: r.stage("impl", stages.Result{}),
+		Review:         r.stage("review", stages.Result{OK: true}),
+		Retrospective:  r.stage("retro", interruptedBy143(t)),
+		Log:            r,
+	})
+	if out.Disposition != stages.NoPR {
+		t.Errorf("disposition = %v, want %v", out.Disposition, stages.NoPR)
+	}
+	if !r.saw("retrospective interrupted by signal 15") {
+		t.Errorf("no retrospective interruption narration; events = %v", r.events)
 	}
 }

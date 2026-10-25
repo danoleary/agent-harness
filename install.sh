@@ -11,7 +11,7 @@
 #
 #   <prefix>/bin/agent-harness            the ONLY thing added to your PATH
 #   <prefix>/libexec/agent-harness/       the stage binaries + the loop launcher
-#   <prefix>/share/agent-harness/         .env.example, README, CONSUMER.md, LICENSE
+#   <prefix>/share/agent-harness/         .env.example, README.md, LICENSE, docs/*.md
 #
 # The stage binaries are named for their role — loop, watch, review, pipeline,
 # implementation, retrospective — which are far too generic to put on a shared
@@ -44,6 +44,19 @@ UNINSTALL=""
 # The stage binaries, in the order the pipeline runs them. Kept in one place so
 # the layout check, the install and the uninstall cannot drift apart.
 TOOLS="implementation review retrospective pipeline loop watch"
+
+# The docs and the credential template that travel with the install, by their
+# repo-relative paths, which the bundle keeps: the README links docs/CONSUMER.md,
+# and a flattened copy would break that link in every install. The release
+# workflow and `make install` copy this same list, and scripts/check-bundle-links.sh
+# fails `make check` when the README links a file that is not on it (#96).
+DOCS="README.md LICENSE .env.example
+	docs/README.md docs/tutorial.md docs/CONSUMER.md docs/DESIGN.md docs/troubleshooting.md
+	docs/how-to/claude-credential.md docs/how-to/declare-a-loop.md docs/how-to/fix-open-prs.md
+	docs/how-to/github-issues.md docs/how-to/jira.md docs/how-to/linear.md
+	docs/how-to/prompt-bodies.md docs/how-to/run-several-instances.md docs/how-to/sandbox-image.md
+	docs/reference/cli.md docs/reference/config.md docs/reference/env.md
+	docs/reference/errors.md docs/reference/tokens.md"
 
 info() { printf '%s\n' "$*"; }
 warn() { printf 'warning: %s\n' "$*" >&2; }
@@ -226,12 +239,25 @@ install_tree() {
 	# The docs and the credential template travel with the install: an operator
 	# who ran the one-liner has no checkout to copy .env.example out of, and that
 	# copy is the documented first step.
-	for doc in README.md CONSUMER.md LICENSE .env.example; do
-		if [ -f "$stage/$doc" ]; then
-			cp "$stage/$doc" "$prefix/share/agent-harness/$doc"
-			chmod 0644 "$prefix/share/agent-harness/$doc"
+	share="$prefix/share/agent-harness"
+	for doc in $DOCS; do
+		src="$stage/$doc"
+		# An archive from v0.7.0 or earlier flattened docs/CONSUMER.md into its
+		# root; take it from there so an older --version still installs this
+		# layout. Only that one: a basename fallback would put the root README.md
+		# at docs/README.md.
+		if [ ! -f "$src" ] && [ "$doc" = docs/CONSUMER.md ]; then
+			src="$stage/CONSUMER.md"
+		fi
+		if [ -f "$src" ]; then
+			mkdir -p "$(dirname "$share/$doc")"
+			cp "$src" "$share/$doc"
+			chmod 0644 "$share/$doc"
 		fi
 	done
+	# An install from before the bundle kept docs/ left CONSUMER.md at the root;
+	# an upgrade must not leave that stale copy beside the current one.
+	rm -f "$share/CONSUMER.md"
 }
 
 # uninstall removes exactly what install_tree writes — named file by named file,
@@ -243,12 +269,15 @@ uninstall() {
 	for path in \
 		"$prefix/bin/agent-harness" \
 		"$prefix/libexec/agent-harness/loop-start.sh" \
-		"$prefix/share/agent-harness/README.md" \
-		"$prefix/share/agent-harness/CONSUMER.md" \
-		"$prefix/share/agent-harness/LICENSE" \
-		"$prefix/share/agent-harness/.env.example"; do
+		"$prefix/share/agent-harness/CONSUMER.md"; do # the flattened pre-#96 copy
 		if [ -e "$path" ]; then
 			rm -f "$path"
+			removed=1
+		fi
+	done
+	for doc in $DOCS; do
+		if [ -e "$prefix/share/agent-harness/$doc" ]; then
+			rm -f "$prefix/share/agent-harness/$doc"
 			removed=1
 		fi
 	done
@@ -259,7 +288,7 @@ uninstall() {
 		fi
 	done
 	# Only if they are now empty — rmdir refuses otherwise, which is the point.
-	rmdir "$prefix/libexec/agent-harness" "$prefix/share/agent-harness" 2>/dev/null || true
+	rmdir "$prefix/libexec/agent-harness" "$prefix/share/agent-harness/docs/how-to" "$prefix/share/agent-harness/docs/reference" "$prefix/share/agent-harness/docs" "$prefix/share/agent-harness" 2>/dev/null || true
 
 	if [ -n "$removed" ]; then
 		info "Removed the agent harness from $prefix."
@@ -389,7 +418,7 @@ Next:
        cp $PREFIX/share/agent-harness/.env.example ~/.config/agent-harness/.env
 
   3. Give your project an .agent-harness/ directory (config, prompts, sandbox image):
-       $PREFIX/share/agent-harness/CONSUMER.md
+       $PREFIX/share/agent-harness/docs/CONSUMER.md
 
   4. Work one ticket end to end:
        agent-harness pipeline --next

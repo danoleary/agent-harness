@@ -98,6 +98,12 @@ func main() {
 		os.Exit(1)
 	}
 
+	// A single-shot run leaves CI to the PR loop exactly when the Consumer's ticket
+	// loop does (#110).
+	if tickets, ok := cfg.LoopNamed(""); ok {
+		args.LeaveCIToPRLoop = tickets.LeavesCIToPRLoop()
+	}
+
 	// One Host for the whole slice, bound to all three stages by the composition
 	// root the ticket loop shares (pipeline.ForTicket).
 	outcome := pipeline.Run(pipeline.ForTicket(cfg, log, runID, args))

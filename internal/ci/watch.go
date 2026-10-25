@@ -90,6 +90,11 @@ type Config struct {
 	// the soft budget) must not be abandoned mid-run. Zero (or ≤ PollBudget) disables it;
 	// PollBudget is then the only bound.
 	PollMaxBudget time.Duration
+	// NoChecksGrace bounds how long a poll waits on "no checks reported" before asking
+	// Actions whether any run exists for the head SHA. None means no workflow's `paths`
+	// filter matches the diff, so the poll passes (ErrNoCIApplies) instead of waiting out
+	// PollBudget and reporting a timeout (#101). Zero disables it.
+	NoChecksGrace time.Duration
 }
 
 // ErrSpendingCapActive is the sentinel a Fix callback returns when the auto-fix
@@ -252,13 +257,18 @@ const docsOnlyReason = "diff touches only docs/prose paths no gate or CI job rea
 // never move on the PR.
 const wedgedReadyReason = "CI green on all gates that run on the PR; the only pending check is a structurally-wedged required context (merge-queue/main-only) — ready for the merge queue"
 
-// handlePollErr routes a poll error to an outcome. The wedged-ready sentinel is a
-// SUCCESS — route it through greenOutcome so the mergeability gate still runs before
+// handlePollErr routes a poll error to an outcome. The wedged-ready and no-CI sentinels are a
+// SUCCESS — route them through greenOutcome so the mergeability gate still runs before
 // declaring the PR ready (BEH-614); every other error is the failure-shaped
 // pollErrOutcome (timeout, stall, unobservable, real gh failure).
 func handlePollErr(d Driver, err error, checks []Check) Outcome {
 	if errors.Is(err, ErrWedgedReadyForMergeQueue) {
 		return greenOutcome(d, wedgedReadyReason)
+	}
+	// No workflow applies to the diff (#101): the wrapped error already reads as the
+	// operator reason, SHA included, so pass it through the same mergeability gate.
+	if errors.Is(err, ErrNoCIApplies) {
+		return greenOutcome(d, err.Error())
 	}
 	return pollErrOutcome(err, checks)
 }
@@ -341,6 +351,8 @@ func greenOutcome(d Driver, reason string) Outcome {
 		case errors.Is(err, ErrWedgedReadyForMergeQueue):
 			// The rebased commit's real gates are green; only the merge-queue/main-only
 			// wedge remains. Treat it as passed and re-check mergeability (BEH-614).
+		case errors.Is(err, ErrNoCIApplies):
+			// No workflow applies to the rebased diff either: nothing to fail (#101).
 		case err != nil:
 			return pollErrOutcome(err, checks)
 		case v != Passed:

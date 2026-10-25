@@ -124,7 +124,7 @@ func ReviewPlan(cfg config.Config, s Subject, prior *prompt.PriorReview) StagePl
 	} else {
 		steps = append(steps, Step{Title: prepStep, Note: "(none — the Consumer declares no post_create)"})
 	}
-	run := reviewRun(cfg, s, prior)
+	run := reviewRun(cfg, s, prior, nil)
 	steps = append(steps, Step{Title: reviewSession, Agent: &run})
 	for _, g := range cfg.Gates {
 		run := fix.GateRun(cfg, s.WorktreePath, gateStep, g)
@@ -172,14 +172,15 @@ func prepRun(cfg config.Config, worktreePath string) hostio.ShellRun {
 }
 
 // reviewRun is the cold /review-worktree session. Review emits no findings
-// (retrospective owns them), so it mounts no dropbox.
-func reviewRun(cfg config.Config, s Subject, prior *prompt.PriorReview) hostio.AgentRun {
+// (retrospective owns them), so it mounts no dropbox. A non-nil redGate is the
+// re-launch over a host gate that went red on the session's own commit (#111).
+func reviewRun(cfg config.Config, s Subject, prior *prompt.PriorReview, redGate *prompt.RedGate) hostio.AgentRun {
 	return hostio.AgentRun{
 		Label: reviewSession,
 		Model: cfg.ReviewModel,
 		Prompt: prompt.For(prompt.Review, prompt.Context{
 			Ticket: s.Ticket, Slug: s.Slug, BranchPrefix: cfg.BranchPrefix, Tracker: cfg.Tracker.Kind, WorktreePath: s.WorktreePath, Body: cfg.Prompts.Review,
-			PriorReview: prior, Base: s.Base,
+			PriorReview: prior, RedGate: redGate, Base: s.Base,
 		}),
 		Cap: cfg.ReviewTimeout,
 	}

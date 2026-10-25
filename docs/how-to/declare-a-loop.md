@@ -5,7 +5,7 @@ runs over each **Work item** the Source yields (ADR-0019). Two loops are built i
 
 | Name | Source | Steps | Runs with |
 |---|---|---|---|
-| `tickets` | `tracker`: the ready queue | `implement`, `review`, `retro` | `agent-harness loop` (the default) |
+| `tickets` | `tracker`: the ready queue | `implement`, `review`, `watch_ci`, `retro` | `agent-harness loop` (the default) |
 | `pr-doctor` | `github_prs`: open PRs that conflict with `main` or have red CI | `checkout_pr`, `fix`, `gates`, `push_existing`, `watch_ci`, `retro` | `agent-harness loop pr-doctor` |
 
 ## See what a project can run
@@ -56,6 +56,23 @@ runs a shell command, or an agent with nothing checking what it did (ADR-0016).
 Every key, Source and Step, and the order Steps must come in, is listed under
 [`[[loops]]`](../reference/config.md#loops) in the config reference.
 
+## Stop the ticket loop waiting on CI
+
+The built-in `tickets` loop watches each PR's CI to a verdict before the
+retrospective runs and the next ticket starts, and fixes a red check itself. That
+watch is often most of the review stage. If you run `pr-doctor` beside it, leave
+`watch_ci` out of the ticket loop; the review stage then stops once the PR is
+open, and `pr-doctor` fixes a check that goes red later (ADR-0030):
+
+```toml
+[[loops]]
+name = "tickets"
+source = { kind = "tracker" }
+steps = [{ use = "implement" }, { use = "review" }, { use = "retro" }]
+```
+
+Without a running PR loop, red CI on those PRs then waits for a human.
+
 ## Stop and watch a loop
 
 Each loop has its own sentinel, `.agent-harness/STOP-<name>`; `touch` it to wind
@@ -66,11 +83,17 @@ for it.
 
 The `tickets` loop logs to `.agent-harness/logs/`. Every other loop logs to
 `.agent-harness/logs/loops/<name>/`, one dir per item plus its own `loop.jsonl`.
-Follow one with:
+Start one as a detached daemon, and follow it, with:
 
 ```bash
-agent-harness watch .agent-harness/logs/loops/<name>/loop.jsonl
+agent-harness start <name>        # pidfile .agent-harness/loop-<name>.pid, log loop-<name>.log
+agent-harness watch --loop <name>
 ```
+
+The viewer shows the daemon as down when `loop-<name>.pid` names no live
+process, so a loop run in the foreground with `agent-harness loop <name>` reads
+as down; and it shows "winding down" once `STOP-<name>` or the plain `STOP` is
+present.
 
 Run each loop in its own daemon. The ticket loop may run as
 [several instances](run-several-instances.md); every other loop runs as one

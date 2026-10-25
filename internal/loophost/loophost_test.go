@@ -420,18 +420,26 @@ func TestPruneMergedWorktreesSurfacesAMissingScript(t *testing.T) {
 }
 
 // The PR loop keys its lease on the branch (ADR-0019), so it asks the ticket loop
-// which branches it holds: every agent-claimed In Progress ticket's slugged branch.
-func TestHeldBranchesMapsEachClaimToItsBranch(t *testing.T) {
+// which branches it holds: the slugged branch of every agent-claimed In Progress
+// ticket the ticket loop still has checked out. A ticket stays In Progress once its
+// PR is open, but the retrospective reaps its worktree, and from then on its red CI
+// is the PR loop's (#110).
+func TestHeldBranchesMapsEachCheckedOutClaimToItsBranch(t *testing.T) {
 	trk := newQueueTracker()
-	trk.claims = []tracker.InProgressClaim{{Identifier: "#7"}, {Identifier: "PROJ-2"}}
+	trk.claims = []tracker.InProgressClaim{{Identifier: "#7"}, {Identifier: "PROJ-2"}, {Identifier: "PROJ-3", HasLinkedPR: true}}
 	h := sourceFor(t, config.Config{Project: config.Project{BranchPrefix: "feat"}}, trk)
+	for _, slug := range []string{"gh-7", "proj-2"} {
+		if err := os.MkdirAll(filepath.Join(h.cfg.ProjectPath, ".claude", "worktrees", slug), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	got, err := h.HeldBranches()
 	if err != nil {
 		t.Fatalf("HeldBranches() error = %v", err)
 	}
 	if len(got) != 2 || got["feat/gh-7"] != "#7" || got["feat/proj-2"] != "PROJ-2" {
-		t.Errorf("held = %v, want feat/gh-7 → #7 and feat/proj-2 → PROJ-2", got)
+		t.Errorf("held = %v, want feat/gh-7 → #7 and feat/proj-2 → PROJ-2, and not the shipped PROJ-3 whose worktree is gone", got)
 	}
 
 	trk.claimsErr = errors.New("tracker down")
@@ -451,6 +459,20 @@ func TestTicketDepsFollowTheLoopsSteps(t *testing.T) {
 	noRetro.Steps = noRetro.Steps[:2]
 	if d := ticketDeps(noRetro, config.Config{}, nil, "run", stages.Args{}); d.Retrospective != nil {
 		t.Error("a loop without retro must run no retrospective")
+	}
+}
+
+// #110: the stage args follow the loop's Steps. The built-in ticket loop watches
+// its PR's CI; one that leaves out watch_ci hands CI to the PR loop.
+func TestTicketArgsLeaveCIToThePRLoopWithoutWatchCI(t *testing.T) {
+	builtIn, _ := config.Project{}.LoopNamed("")
+	if a := ticketArgs(builtIn, "PROJ-1", nil); a.Identifier != "PROJ-1" || a.LeaveCIToPRLoop {
+		t.Errorf("the built-in ticket loop watches CI in its review stage, got %+v", a)
+	}
+	noWatch := builtIn
+	noWatch.Steps = []config.Step{{Use: config.StepImplement}, {Use: config.StepReview}, {Use: config.StepRetro}}
+	if a := ticketArgs(noWatch, "PROJ-1", nil); !a.LeaveCIToPRLoop {
+		t.Error("a ticket loop without watch_ci must leave CI to the PR loop")
 	}
 }
 

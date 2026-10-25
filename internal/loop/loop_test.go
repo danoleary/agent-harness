@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"regexp"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -2164,5 +2165,66 @@ func TestQueueReadFailureIsNotNarratedAsAnEmptyQueue(t *testing.T) {
 	}
 	if k, ok := r.kindFor("could not read the ticket queue (not an empty queue): GitHub HTTP 401"); !ok || k != loopstream.KindIdle {
 		t.Errorf("want an idle record carrying the read failure; events = %v", r.events)
+	}
+}
+
+// #99: a run whose session a stop signal killed is left where it stopped. The loop
+// neither releases the claim (the stale-claim reaper returns it to a later run)
+// nor finishes it host-side nor posts a "no PR" breadcrumb, and the breaker stays
+// blind to it. It backs off one poll before selecting again, so a host that keeps
+// killing sessions does not strand the whole queue In Progress at full speed.
+func TestInterruptedRunLeavesTheClaimAndBreakerAlone(t *testing.T) {
+	r := &recorder{}
+	var ran int
+	var slept []time.Duration
+	code := Run(Deps{
+		Host: &fakeHost{
+			clearStop:     func() error { return nil },
+			fetchMain:     func() error { return nil },
+			stopRequested: stopAfter(6),
+		},
+		Source: &fakeSource{
+			next: func() (string, bool) { return "BEH-7", true },
+			release: func(id string) error {
+				t.Fatalf("loop must not release %s after an interruption — the claim is left for the next run", id)
+				return nil
+			},
+			comment: func(id, body string) error {
+				t.Fatalf("loop must not comment on %s after an interruption: %q", id, body)
+				return nil
+			},
+		},
+		Pipeline: &fakePipeline{
+			run: func(string) stages.Result {
+				ran++
+				return stages.Result{Disposition: stages.Interrupted, Signal: syscall.SIGTERM}
+			},
+			recover: func(string) (stages.Result, bool) {
+				t.Fatal("an interrupted run must not be finished host-side")
+				return stages.Result{}, false
+			},
+		},
+		Limits: Limits{
+			PollInterval:           10 * time.Second,
+			TickInterval:           2 * time.Second,
+			MaxConsecutiveFailures: 1,
+		},
+		Clock: testClock{sleep: func(d time.Duration) { slept = append(slept, d) }},
+		Log:   r,
+	})
+	if code != 0 {
+		t.Errorf("exit code = %d, want 0", code)
+	}
+	if ran != 1 {
+		t.Errorf("pipeline ran %d times, want 1", ran)
+	}
+	if r.saw("circuit breaker") {
+		t.Errorf("an interruption must NOT trip the breaker (threshold 1); events = %v", r.events)
+	}
+	if !r.saw("BEH-7 interrupted by signal 15") {
+		t.Errorf("expected the interruption narrated; events = %v", r.events)
+	}
+	if len(slept) != 5 {
+		t.Errorf("backoff slept %d ticks, want 5 (PollInterval/TickInterval)", len(slept))
 	}
 }

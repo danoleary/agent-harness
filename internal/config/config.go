@@ -136,6 +136,11 @@ type Host struct {
 	// manual triage. Zero (or ≤ CIPollBudget) disables the extension; CIPollBudget is then
 	// the only bound (the pre-BEH-685 behaviour).
 	CIPollMaxBudget time.Duration
+	// CINoChecksGrace bounds the "no checks reported yet" state separately from
+	// CIPollBudget: once it is spent with no check registered and no workflow run for the
+	// head SHA, no workflow applies to the diff (a paths-filtered docs PR) and the watch
+	// passes rather than timing out (#101).
+	CINoChecksGrace time.Duration
 	// DedupModel is the cheap model used for the semantic dedup pass — a small model
 	// is plenty for a one-token same-class-or-NONE classification.
 	DedupModel string
@@ -277,6 +282,10 @@ const (
 	// manual triage. 25 min comfortably exceeds that job's wall-clock while staying under
 	// defaultCIFixBudget (30 min) so the extension can't outlive the whole watch+fix loop.
 	defaultCIPollMaxBudget = 25 * time.Minute
+	// defaultCINoChecksGrace covers the time Actions takes to register runs for a fresh
+	// push. It ends the wait on a PR no workflow applies to well before CIPollBudget, and
+	// a registered run found by the follow-up `gh run list` keeps the poll waiting (#101).
+	defaultCINoChecksGrace = 3 * time.Minute
 
 	defaultLoopPollInterval           = 60 * time.Second
 	defaultLoopCapBackoff             = 45 * time.Minute
@@ -521,6 +530,7 @@ func (h *Host) knobs(get Getenv) []knob {
 		bind("CI_POLL_BUDGET_MS", &h.CIPollBudget, positiveMillis, defaultCIPollBudget, lenient),
 		bind("CI_POLL_STALL_MS", &h.CIPollStall, positiveMillis, defaultCIPollStall, lenient),
 		bind("CI_POLL_MAX_BUDGET_MS", &h.CIPollMaxBudget, positiveMillis, defaultCIPollMaxBudget, lenient),
+		bind("CI_NO_CHECKS_GRACE_MS", &h.CINoChecksGrace, positiveMillis, defaultCINoChecksGrace, lenient),
 
 		bind("LOOP_POLL_INTERVAL_MS", &h.LoopPollInterval, positiveMillis, defaultLoopPollInterval, strict),
 		bind("LOOP_CAP_BACKOFF_MS", &h.LoopCapBackoff, positiveMillis, defaultLoopCapBackoff, strict),

@@ -93,6 +93,10 @@ type Args struct {
 	// lease (ADR-0003); nil on the hand-passed path, where the implementation stage
 	// claims after the Docker preflight (BEH-316).
 	Lease *lease.Lease
+	// LeaveCIToPRLoop ends the review stage once the PR is open, without watching
+	// its CI: a red check is left to a PR loop's CIRed candidate (#110). Set from a
+	// ticket loop that leaves out watch_ci (config.Loop.LeavesCIToPRLoop).
+	LeaveCIToPRLoop bool
 }
 
 // ParseArgs parses argv (excluding the program name) into Args. tool names the
@@ -168,10 +172,10 @@ func ParseArgs(tool string, argv []string, allowNext bool) (Args, error) {
 
 // Disposition is the terminal verdict of a stage, and — folded by the pipeline —
 // of a whole ticket run: the single signal the loop branches on and the circuit
-// breaker counts. The five values are exhaustive and mutually exclusive, which is
-// the point: they replaced four independent booleans that spelled 16 states of
-// which only these 5 were legal, with ~40 lines of prose forbidding the rest. The
-// compiler now forbids them.
+// breaker counts. The values are exhaustive and mutually exclusive, which is the
+// point: the first five replaced four independent booleans that spelled 16 states
+// of which only those 5 were legal, with ~40 lines of prose forbidding the rest.
+// The compiler now forbids them.
 //
 // NoPR is the zero value deliberately: every bare `Result{}` / `Result{Err: err}`
 // return is a run that shipped nothing, so a stage that never thinks about its
@@ -209,6 +213,13 @@ const (
 	// releasing it (releasing would re-run it to the same conclusion forever) and
 	// the breaker treats it as neutral.
 	RecommendClose
+	// Interrupted — a stop signal killed a Stage's session from outside (exit
+	// 128+N: an operator's Ctrl-C, a `docker stop`, a host going down) before it
+	// finished (#99). The run was cut short, not broken, so nothing it left is a
+	// verdict: the Stage skips its ground-truth check, the pipeline runs no further
+	// Stage (not even the retrospective), and the loop leaves the claim in place for
+	// a later run — the stale-claim reaper returns it — and the breaker stays blind.
+	Interrupted
 )
 
 func (d Disposition) String() string {
@@ -221,6 +232,8 @@ func (d Disposition) String() string {
 		return "preflight-aborted"
 	case RecommendClose:
 		return "recommend-close"
+	case Interrupted:
+		return "interrupted"
 	default:
 		return "no-pr"
 	}
@@ -253,6 +266,9 @@ type Result struct {
 	// reset time, in which case the loop backs off until then rather than a fixed
 	// guess.
 	CapResetAt time.Time
+	// Signal is the stop signal that killed the session when Disposition is
+	// Interrupted (#99); zero otherwise.
+	Signal syscall.Signal
 }
 
 // ExitCode is the process exit code this Result means: 0 iff the work it reports
@@ -274,6 +290,19 @@ func capFailure(o session.Outcome) Result {
 		return Result{OK: false}
 	}
 	return Result{OK: false, Disposition: CapAborted, CapResetAt: o.SpendingCapResetTime}
+}
+
+// InterruptedResult is the Result of a Stage whose session a stop signal killed
+// (session.Outcome.Interrupted, #99), and whether it was one. A Stage returns it
+// as soon as the session exits, before any ground-truth check: a session cut
+// short has not handed anything off, so "no handoff commit" would record a
+// failure that never happened.
+func InterruptedResult(o session.Outcome) (Result, bool) {
+	sig, ok := o.Interrupted()
+	if !ok {
+		return Result{}, false
+	}
+	return Result{OK: false, Disposition: Interrupted, Signal: sig}, true
 }
 
 // LoadConfig loads the harness config: .env first (best-effort), then the
