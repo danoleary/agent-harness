@@ -350,12 +350,13 @@ func DocsOnlyPaths(paths []string, excludedRoots []string) bool {
 // docsOnlyPath reports whether one repo-relative changed path is inert prose. A
 // path inside a module's source tree (web/, agent-harness/) is never inert even
 // when it looks like prose — a README fixture or a Storybook doc can feed a gate —
-// so it is excluded before the markdown/docs allowlist is consulted. The skill
-// trees (.agents/, and its .claude/ symlink) are excluded for the same reason:
-// their SKILL.md files are NOT inert, they are read by the agent-harness
-// internal/skills contract tests, so a skill markdown edit triggers the Agent
-// Harness CI job (agent-harness.yaml keys on `.agents/skills/**`) and can turn it
-// red — treating it as docs-only would short-circuit a watch that could fail.
+// so it is excluded before the markdown/docs allowlist is consulted. A skill tree
+// (`.claude/skills/`, or wherever a Consumer keeps its SKILL.md files) gets no
+// special case: it is excluded exactly when the Consumer declares its root, which
+// it must whenever a gate or CI job reads those files — a skill-contract test, or
+// a workflow triggered on the skill tree — since a skill markdown edit could then
+// turn that job red. The standalone harness repo has no such test today; it
+// declares `.claude/` anyway, because over-excluding only costs a gate re-run.
 //
 // A Consumer's excluded roots must stay a superset of every directory a workflow's
 // `on.pull_request.paths` triggers on, so a markdown edit UNDER such a root

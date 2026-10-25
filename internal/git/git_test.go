@@ -1843,18 +1843,29 @@ func TestDocsOnlyPathsFalseForMarkdownUnderSourceTree(t *testing.T) {
 	}
 }
 
-// A skill markdown edit is NOT inert: the agent-harness internal/skills contract
-// tests read the SKILL.md files, so `.agents/skills/**` (and its `.claude/` symlink
-// form) triggers the Agent Harness CI job (agent-harness.yaml) and can turn it red.
-// Classifying it docs-only would short-circuit a watch that could fail.
+// A skill markdown edit is NOT inert when the Consumer declares its skill tree
+// among the excluded roots, which it must do whenever a gate or CI job reads the
+// SKILL.md files (a skill-contract test, a workflow keyed on the skill tree). The
+// fixture Consumer declares both `.agents/` and `.claude/`, so a SKILL.md under
+// either must not short-circuit a watch that could fail.
 func TestDocsOnlyPathsFalseForSkillMarkdown(t *testing.T) {
 	for _, p := range []string{
 		".agents/skills/review-worktree/SKILL.md",
 		".claude/skills/retrospective/SKILL.md",
 	} {
 		if DocsOnlyPaths([]string{p}, consumerRoots) {
-			t.Fatalf("%q feeds the agent-harness skill-contract CI tests — must not classify as docs-only", p)
+			t.Fatalf("%q lives under a declared skill-tree root — must not classify as docs-only", p)
 		}
+	}
+}
+
+// The classifier has no built-in notion of a skill tree: a SKILL.md is excluded
+// only because a Consumer declared its root. A Consumer whose gates never read its
+// skill files and so leaves the tree undeclared gets a skill edit classified as
+// prose like any other markdown.
+func TestDocsOnlyPathsTrueForSkillMarkdownUnderUndeclaredRoot(t *testing.T) {
+	if !DocsOnlyPaths([]string{".claude/skills/tdd/SKILL.md"}, []string{"src/", ".github/"}) {
+		t.Fatal("a SKILL.md outside every declared root is prose — must classify as docs-only")
 	}
 }
 
