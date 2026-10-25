@@ -60,6 +60,7 @@ func (e Env) promptContext(t Target) prompt.Context {
 	return prompt.Context{
 		Ticket: t.Ticket, Slug: t.Slug, BranchPrefix: e.Cfg.BranchPrefix, Branch: t.Branch,
 		Tracker: e.Cfg.Tracker.Kind, WorktreePath: e.Host.WorktreePath(t.Slug),
+		Body: e.Cfg.Prompts.Fix,
 	}
 }
 

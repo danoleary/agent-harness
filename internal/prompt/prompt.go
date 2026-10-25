@@ -497,7 +497,7 @@ func priorReviewSection(p *PriorReview) string {
 // the agent to reproduce + fix over the SAME existing worktree. As with review,
 // the harness owns all remote I/O (ADR-0002): the agent commits the fix locally
 // and stops — the harness re-pushes and re-polls CI. This prompt invokes no skill,
-// so it stays harness-composed (no Consumer body).
+// so it is harness-composed; a loop's fix step may lead it with a body.
 //
 // ciFixLogSteer returns the log-framing block and the "your job" block for the
 // fix prompt, branched on whether the harness actually fetched a usable failing
@@ -565,7 +565,17 @@ func ciFix(c Context) string {
 		"",
 		bashQuirkSteer,
 	)
-	return strings.Join(lines, "\n")
+	return withFixBody(c, lines)
+}
+
+// withFixBody leads a fix session's prompt with the Project body a loop's `fix`
+// step supplies (ADR-0009), separated from the harness's own text. Without one the
+// prompt is the envelope alone, as it always was: these sessions invoke no skill.
+func withFixBody(c Context, lines []string) string {
+	if strings.TrimSpace(c.Body) == "" {
+		return strings.Join(lines, "\n")
+	}
+	return join(renderBody(c), "---", strings.Join(lines, "\n"))
 }
 
 // rebaseFix builds the `-p` prompt for the sandboxed conflict-resolution
@@ -577,7 +587,8 @@ func ciFix(c Context) string {
 // resolve in the worktree — mirroring ciFix's local-commit-only contract. The
 // harness then independently re-runs the gate host-side before pushing, so the
 // session never pushes or touches the remote/tracker itself. This prompt invokes no
-// skill, so it stays harness-composed (no Consumer body).
+// skill, so it is harness-composed; a loop's fix step may lead it with a body
+// (withFixBody).
 func rebaseFix(c Context) string {
 	if c.Merge {
 		return mergeFix(c)
@@ -619,7 +630,7 @@ func rebaseFix(c Context) string {
 		"",
 		bashQuirkSteer,
 	}
-	return strings.Join(lines, "\n")
+	return withFixBody(c, lines)
 }
 
 // mergeFix is the RebaseFix variant for a branch a human opted in to the PR loop
@@ -660,5 +671,5 @@ func mergeFix(c Context) string {
 		"",
 		bashQuirkSteer,
 	}
-	return strings.Join(lines, "\n")
+	return withFixBody(c, lines)
 }

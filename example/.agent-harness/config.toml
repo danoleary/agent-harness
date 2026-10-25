@@ -81,3 +81,40 @@ command = "dotnet test"
 [[gates]]
 name = "format"
 command = "dotnet format --verify-no-changes"
+
+# Optional: the loops `agent-harness loop <name>` runs (ADR-0019). Without any
+# [[loops]], two built-in loops stand: "tickets", which a bare `agent-harness
+# loop` runs, and "pr-doctor", which fixes open PRs that conflict with main or
+# have red CI. An entry of the same name replaces a built-in; any other name adds
+# a loop. `agent-harness loop --list` prints them, and `agent-harness loop <name>
+# --dry-run` prints one as it resolved.
+#
+# A loop is a Source and an ordered list of Steps, both from fixed sets the
+# harness implements, so each Step keeps its own host-side check: you can choose,
+# order and parameterise Steps and give a Step a prompt body, but not add a Step
+# that runs a shell command or an agent with nothing checking it. Every problem is
+# reported at load, with its line and column.
+#
+# The built-in ticket loop, written out (uncomment to change it):
+# [[loops]]
+# name = "tickets"
+# source = { kind = "tracker" }
+# steps = [{ use = "implement" }, { use = "review" }, { use = "retro" }]
+#
+# The PR loop, with a project body for its fix sessions and its own limits. Each
+# limit overrides its LOOP_* env knob for this loop only; source.label and
+# source.max_attempts override PR_LOOP_LABEL and PR_LOOP_MAX_ATTEMPTS. Stop it
+# alone with `touch .agent-harness/STOP-pr-doctor`; a plain STOP stops every loop.
+[[loops]]
+name = "pr-doctor"
+poll_interval = "10m"
+max_consecutive_failures = 3
+source = { kind = "github_prs", label = "agent-maintained", when = ["conflicting", "ci_failing"] }
+steps = [
+  { use = "checkout_pr" },
+  { use = "fix", prompt = "prompts/fix-pr.md" },
+  { use = "gates" },
+  { use = "push_existing" },
+  { use = "watch_ci" },
+  { use = "retro" },
+]

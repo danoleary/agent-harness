@@ -22,21 +22,26 @@ import (
 // who is the name the PR loop's narration speaks in.
 const who = "pr-fix"
 
-// LogsRoot is where the PR loop keeps its per-PR log dirs and its own loop.jsonl,
-// beside (not inside) the ticket loop's, so the two daemons can run side by side
-// and the viewer can follow either.
-func LogsRoot(cfg config.Config) string { return filepath.Join(stages.LogsRoot(cfg), "prs") }
+// LogsRoot is where a PR loop keeps its per-PR log dirs and its own loop.jsonl
+// (config.Loop.LogsDir), beside (not inside) the ticket loop's, so the daemons can
+// run side by side and the viewer can follow either.
+func LogsRoot(cfg config.Config, l config.Loop) string {
+	return filepath.Join(cfg.ProjectPath, l.LogsDir())
+}
 
-// Pipeline is the PR loop's [loop.Pipeline]: [Fix] over one PR, on a Host bound to
-// the PR's head branch, with its own per-PR log dir and run id.
-type Pipeline struct{}
+// Pipeline is a PR loop's [loop.Pipeline]: [Fix] over one PR with the loop's
+// Steps, on a Host bound to the PR's head branch, with its own per-PR log dir and
+// run id.
+type Pipeline struct {
+	Loop config.Loop
+}
 
 var _ loop.Pipeline = Pipeline{}
 
 // Run fixes one held PR. It always gives the lease back when it is done — unlike a
 // ticket, a PR is never kept: the label is the lease for this run only, and the
 // next poll judges the PR afresh.
-func (Pipeline) Run(item loop.WorkItem, claim *lease.Lease) stages.Result {
+func (p Pipeline) Run(item loop.WorkItem, claim *lease.Lease) stages.Result {
 	defer func() { _ = claim.Release() }()
 	it, ok := item.Context.(Item)
 	if !ok {
@@ -48,34 +53,41 @@ func (Pipeline) Run(item loop.WorkItem, claim *lease.Lease) stages.Result {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		return stages.Result{}
 	}
-	log, err := runlog.New(LogsRoot(cfg), item.Key)
+	log, err := runlog.New(LogsRoot(cfg, p.Loop), item.Key)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		return stages.Result{}
 	}
 	h := hostio.NewOnBranch(cfg, log, runlog.MakeRunID(time.Now()), false, ticket.Slug(item.Key), item.Branch)
-	return Fix(h, cfg, log, it)
+	return Fix(h, cfg, log, it, p.Loop)
 }
 
 // Recover finds nothing to recover: a PR run either pushed or left the branch as
 // it found it, and the next poll judges the PR afresh.
 func (Pipeline) Recover(loop.WorkItem) (stages.Result, bool) { return stages.Result{}, false }
 
-// Fix is the PR-fixer pipeline over one PR, through h (ADR-0019):
+// Fix is the PR-fixer pipeline over one PR, through h, running the loop's Steps
+// (ADR-0019):
 //
-//  1. check the PR's head branch out at the polled head, and run post_create;
-//  2. a conflict runs the RebaseFix session (rebase on a harness branch, merge on a
-//     human's), checked by verify.RebaseResolution and then every gate, and pushes
-//     to the existing branch — force-with-lease after a rebase, plain after a merge;
-//  3. both kinds then watch CI to a verdict, and a red check gets a CIFix session
-//     over the failing logs whose committed fix must pass every gate before the
-//     watch may push it;
-//  4. the retrospective mines the run's transcripts and files findings.
+//  1. checkout_pr: check the PR's head branch out at the polled head, and run
+//     post_create;
+//  2. fix, gates, push_existing: a conflict runs the RebaseFix session (rebase on a
+//     harness branch, merge on a human's), checked by verify.RebaseResolution and
+//     then every gate, and pushes to the existing branch — force-with-lease after a
+//     rebase, plain after a merge;
+//  3. watch_ci: watch CI to a verdict, and a red check gets a CIFix session over
+//     the failing logs whose committed fix must pass every gate before the watch
+//     may push it. A loop without it stops at the push, and works no red CI
+//     (config validation sees to that);
+//  4. retro: the retrospective mines the run's transcripts and files findings.
+//
+// The loop's fix and retro prompt bodies replace the defaults.
 //
 // Nothing is pushed unless the ground truth and the gates agree, and no PR is
 // opened: the PR exists. A push counts as Shipped for the breaker, as a ticket's
 // does, even when CI is still red after the fix budget.
-func Fix(h hostio.Host, cfg config.Config, log *runlog.Logger, it Item) stages.Result {
+func Fix(h hostio.Host, cfg config.Config, log *runlog.Logger, it Item, l config.Loop) stages.Result {
+	l.ApplyPrompts(&cfg.Prompts)
 	key := Key(it.PR.Number)
 	slug := ticket.Slug(key)
 	fixes := fix.Env{Host: h, Cfg: cfg, Log: log, Who: who}
@@ -92,7 +104,7 @@ func Fix(h hostio.Host, cfg config.Config, log *runlog.Logger, it Item) stages.R
 		log.Event(fmt.Sprintf("%s ✗ could not check out %s: %v — nothing pushed", who, it.PR.HeadBranch, err))
 		return stages.Result{}
 	}
-	r := run{h: h, cfg: cfg, log: log, fixes: fixes, target: target, it: it}
+	r := run{h: h, cfg: cfg, log: log, fixes: fixes, target: target, it: it, watchCI: l.Has(config.StepWatchCI)}
 	defer r.cleanup()
 
 	// Work the head that was polled or nothing: a push that landed since is a newer
@@ -106,7 +118,7 @@ func Fix(h hostio.Host, cfg config.Config, log *runlog.Logger, it Item) stages.R
 	}
 
 	out := r.repair()
-	if r.sessions {
+	if r.sessions && l.Has(config.StepRetro) {
 		stages.RetrospectiveOver(h, cfg, log, stages.Subject{
 			Ticket: target.Ticket, Slug: slug, WorktreePath: h.WorktreePath(slug), Branch: h.BranchName(slug), LogDir: log.Dir,
 		}, false)
@@ -122,6 +134,8 @@ type run struct {
 	fixes  fix.Env
 	target fix.Target
 	it     Item
+	// watchCI is the loop's watch_ci step.
+	watchCI bool
 
 	// sessions marks a run that launched an agent session, which leaves the
 	// transcripts a retrospective mines.
@@ -175,6 +189,12 @@ func (r *run) repair() stages.Result {
 		}
 		r.pushed = true
 		r.log.Event(fmt.Sprintf("%s ✓ pushed the resolved %s (%s)", who, r.it.PR.HeadBranch, r.it.Strategy()))
+	}
+	if !r.watchCI {
+		if r.pushed {
+			return stages.Result{OK: true, Disposition: stages.Shipped}
+		}
+		return stages.Result{}
 	}
 	return r.watch()
 }

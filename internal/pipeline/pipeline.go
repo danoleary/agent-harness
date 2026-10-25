@@ -28,7 +28,8 @@ type Narrator interface {
 type Stage func() stages.Result
 
 // Deps are the orchestration's injectable dependencies: the once-at-the-top
-// origin/main fast-forward, the three stages, and the narrator.
+// origin/main fast-forward, the three stages, and the narrator. Retrospective may
+// be nil: a loop that leaves out the retro step runs none.
 type Deps struct {
 	FetchMain      func() error
 	Implementation Stage
@@ -88,8 +89,12 @@ func Run(d Deps) stages.Result {
 	}
 
 	// Retrospective runs unconditionally: its value is highest on a failed slice.
-	retro := d.Retrospective()
-	narrateErr(d.Log, "retrospective", retro)
+	// A loop without the retro step (config.StepRetro) leaves it nil.
+	retro := stages.Result{OK: true}
+	if d.Retrospective != nil {
+		retro = d.Retrospective()
+		narrateErr(d.Log, "retrospective", retro)
+	}
 
 	// One folded Result for the whole slice: OK iff every stage that *ran* did its
 	// job, and one Disposition for the loop to act on.

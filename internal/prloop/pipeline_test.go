@@ -25,6 +25,25 @@ func pipelineCfg() config.Config {
 	}
 }
 
+// prDoctor is the built-in PR loop, whose steps are the hard-coded PR pipeline.
+func prDoctor() config.Loop {
+	l, _ := config.Project{}.LoopNamed(config.PRDoctorLoopName)
+	return l
+}
+
+// withoutSteps is the built-in PR loop with some of its optional steps left out.
+func withoutSteps(drop ...string) config.Loop {
+	l := prDoctor()
+	var kept []config.Step
+	for _, s := range l.Steps {
+		if !strings.Contains(strings.Join(drop, ","), s.Use) {
+			kept = append(kept, s)
+		}
+	}
+	l.Steps = kept
+	return l
+}
+
 func pipelineLog(t *testing.T) *runlog.Logger {
 	t.Helper()
 	log, err := runlog.New(t.TempDir(), "PR-12")
@@ -64,7 +83,7 @@ func calls(h *hostio.Fake) string { return strings.Join(h.Calls, "|") + "|" }
 func TestFixRebasesAHarnessBranchAndPushesForceWithLease(t *testing.T) {
 	h := fakeHost()
 
-	res := Fix(h, pipelineCfg(), pipelineLog(t), harnessItem(Conflict))
+	res := Fix(h, pipelineCfg(), pipelineLog(t), harnessItem(Conflict), prDoctor())
 
 	if !res.OK || res.Disposition != stages.Shipped {
 		t.Fatalf("a resolved, gate-green, CI-green conflict ships, got %+v", res)
@@ -94,7 +113,7 @@ func TestFixRebasesAHarnessBranchAndPushesForceWithLease(t *testing.T) {
 func TestFixMergesIntoAHumanBranchAndPushesWithoutForce(t *testing.T) {
 	h := fakeHost()
 
-	res := Fix(h, pipelineCfg(), pipelineLog(t), humanItem(Conflict))
+	res := Fix(h, pipelineCfg(), pipelineLog(t), humanItem(Conflict), prDoctor())
 
 	if !res.OK {
 		t.Fatalf("a resolved, gate-green merge ships, got %+v", res)
@@ -122,7 +141,7 @@ func TestFixRunsTheCIFixSessionAndGatesItsCommit(t *testing.T) {
 		return ci.Outcome{OK: true, Reason: "green after the fix"}
 	}
 
-	res := Fix(h, pipelineCfg(), pipelineLog(t), harnessItem(CIRed))
+	res := Fix(h, pipelineCfg(), pipelineLog(t), harnessItem(CIRed), prDoctor())
 
 	if fixErr != nil {
 		t.Fatalf("a committed, gate-green fix is accepted, got %v", fixErr)
@@ -146,7 +165,7 @@ func TestFixRunsTheCIFixSessionAndGatesItsCommit(t *testing.T) {
 func TestFixLaunchesNothingWhenTheRerunGoesGreen(t *testing.T) {
 	h := fakeHost()
 
-	res := Fix(h, pipelineCfg(), pipelineLog(t), harnessItem(CIRed))
+	res := Fix(h, pipelineCfg(), pipelineLog(t), harnessItem(CIRed), prDoctor())
 
 	if !res.OK || len(h.Agents) != 0 {
 		t.Fatalf("a green re-run ships with no session, got %+v agents %v", res, agentLabels(h))
@@ -159,7 +178,7 @@ func TestFixPushesNothingWhenTheResolutionFailsGroundTruth(t *testing.T) {
 	h := fakeHost()
 	h.Rebased = false
 
-	res := Fix(h, pipelineCfg(), pipelineLog(t), harnessItem(Conflict))
+	res := Fix(h, pipelineCfg(), pipelineLog(t), harnessItem(Conflict), prDoctor())
 
 	if res.OK || res.Disposition != stages.NoPR {
 		t.Fatalf("an unverified resolution is a no-PR run, got %+v", res)
@@ -178,7 +197,7 @@ func TestFixPushesNothingWhenTheGatesFail(t *testing.T) {
 			return session.Outcome{}
 		}
 
-		res := Fix(h, pipelineCfg(), pipelineLog(t), it)
+		res := Fix(h, pipelineCfg(), pipelineLog(t), it, prDoctor())
 
 		if res.OK || res.Disposition != stages.NoPR {
 			t.Fatalf("a red gate is a no-PR run, got %+v", res)
@@ -202,7 +221,7 @@ func TestFixRefusesACIFixWhoseGatesFail(t *testing.T) {
 		return ci.Outcome{OK: false, Reason: "auto-fix session failed"}
 	}
 
-	res := Fix(h, pipelineCfg(), pipelineLog(t), harnessItem(CIRed))
+	res := Fix(h, pipelineCfg(), pipelineLog(t), harnessItem(CIRed), prDoctor())
 
 	if fixErr == nil || !strings.Contains(fixErr.Error(), `gate "check"`) {
 		t.Fatalf("a fix over a red gate must be refused naming the gate, got %v", fixErr)
@@ -218,7 +237,7 @@ func TestFixWorksOnlyThePolledHead(t *testing.T) {
 	h := fakeHost()
 	h.Head = "fff9999"
 
-	res := Fix(h, pipelineCfg(), pipelineLog(t), harnessItem(Conflict))
+	res := Fix(h, pipelineCfg(), pipelineLog(t), harnessItem(Conflict), prDoctor())
 
 	if res.OK || len(h.Agents) != 0 {
 		t.Fatalf("a moved head is not worked, got %+v agents %v", res, agentLabels(h))
@@ -234,7 +253,7 @@ func TestFixSurfacesASpendingCap(t *testing.T) {
 		return session.Outcome{ExitCode: 1, SpendingCapAbort: true}
 	}
 
-	if res := Fix(h, pipelineCfg(), pipelineLog(t), harnessItem(Conflict)); res.Disposition != stages.CapAborted {
+	if res := Fix(h, pipelineCfg(), pipelineLog(t), harnessItem(Conflict), prDoctor()); res.Disposition != stages.CapAborted {
 		t.Fatalf("a cap-aborted resolution is CapAborted, got %+v", res)
 	}
 }
@@ -244,10 +263,52 @@ func TestFixStopsAtAFailedPreflight(t *testing.T) {
 	h := fakeHost()
 	h.PreflightErr = errFake
 
-	res := Fix(h, pipelineCfg(), pipelineLog(t), harnessItem(Conflict))
+	res := Fix(h, pipelineCfg(), pipelineLog(t), harnessItem(Conflict), prDoctor())
 
 	if res.Disposition != stages.PreflightAborted || strings.Contains(calls(h), "checkout-branch") {
 		t.Fatalf("a failed preflight aborts before the checkout, got %+v calls %v", res, h.Calls)
+	}
+}
+
+// A loop without watch_ci stops at the push: the resolved branch ships, and CI is
+// left to report on its own.
+func TestFixWithoutWatchCIStopsAtThePush(t *testing.T) {
+	h := fakeHost()
+
+	res := Fix(h, pipelineCfg(), pipelineLog(t), harnessItem(Conflict), withoutSteps(config.StepWatchCI))
+
+	if !res.OK || res.Disposition != stages.Shipped {
+		t.Fatalf("a pushed resolution ships, got %+v", res)
+	}
+	got := calls(h)
+	if !strings.Contains(got, "push-force pr-12|") || strings.Contains(got, "watch-ci") {
+		t.Errorf("want a push and no CI watch; calls = %v", h.Calls)
+	}
+}
+
+// A loop without retro files no findings: no retrospective session runs.
+func TestFixWithoutRetroRunsNoRetrospective(t *testing.T) {
+	h := fakeHost()
+
+	Fix(h, pipelineCfg(), pipelineLog(t), harnessItem(Conflict), withoutSteps(config.StepRetro))
+
+	if got := agentLabels(h); strings.Contains(strings.Join(got, ","), "retrospective") {
+		t.Errorf("agents = %v, want no retrospective", got)
+	}
+}
+
+// A fix step's prompt body is the Consumer's half of the RebaseFix and CIFix
+// prompts, inside the same envelope.
+func TestFixCarriesTheFixStepsPromptBody(t *testing.T) {
+	h := fakeHost()
+	cfg := pipelineCfg()
+	cfg.Prompts.Fix = "Run `make lint` before you commit."
+
+	Fix(h, cfg, pipelineLog(t), harnessItem(Conflict), prDoctor())
+
+	p := h.Agents[0].Prompt
+	if !strings.Contains(p, "Run `make lint` before you commit.") || !strings.Contains(p, "git reset --hard origin/main") {
+		t.Errorf("the RebaseFix prompt must carry the body inside its envelope:\n%s", p)
 	}
 }
 
