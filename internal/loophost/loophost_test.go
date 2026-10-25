@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -450,5 +451,65 @@ func TestTicketDepsFollowTheLoopsSteps(t *testing.T) {
 	noRetro.Steps = noRetro.Steps[:2]
 	if d := ticketDeps(noRetro, hostio.NewFake(), config.Config{}, nil, stages.Args{}); d.Retrospective != nil {
 		t.Error("a loop without retro must run no retrospective")
+	}
+}
+
+// Instances of one loop (#89): STOP-<id> stops that instance alone, the loop's
+// STOP-<name> and the plain STOP stop every instance.
+func TestAnInstanceStopsOnItsOwnSentinelAndOnEveryShared(t *testing.T) {
+	project := t.TempDir()
+	cfg := withProject(t, config.Config{Host: config.Host{ProjectPath: project, StopFile: ".agent-harness/STOP"}})
+	a := NewDaemon(cfg, config.Loop{Name: "tickets", Instance: "a"}, nil)
+	b := NewDaemon(cfg, config.Loop{Name: "tickets", Instance: "b"}, nil)
+	dir := filepath.Join(project, ".agent-harness")
+
+	touch(t, filepath.Join(dir, "STOP-b"))
+	if !b.StopRequested() || a.StopRequested() {
+		t.Errorf("STOP-b must stop b alone: a %v, b %v", a.StopRequested(), b.StopRequested())
+	}
+	os.Remove(filepath.Join(dir, "STOP-b"))
+	for _, shared := range []string{"STOP-tickets", "STOP"} {
+		touch(t, filepath.Join(dir, shared))
+		if !a.StopRequested() || !b.StopRequested() {
+			t.Errorf("%s must stop every instance: a %v, b %v", shared, a.StopRequested(), b.StopRequested())
+		}
+		os.Remove(filepath.Join(dir, shared))
+	}
+}
+
+// A starting instance clears its own stale sentinel. It leaves the shared ones
+// alone while another instance is running, or it would swallow a STOP that
+// instance has not reached its next checkpoint to see.
+func TestStartupLeavesASharedStopForARunningInstance(t *testing.T) {
+	project := t.TempDir()
+	cfg := withProject(t, config.Config{Host: config.Host{ProjectPath: project, StopFile: ".agent-harness/STOP"}})
+	dir := filepath.Join(project, ".agent-harness")
+	b := NewDaemon(cfg, config.Loop{Name: "tickets", Instance: "b"}, nil)
+
+	touch(t, filepath.Join(dir, "STOP"))
+	touch(t, filepath.Join(dir, "STOP-b"))
+	// Instance a is running: its pidfile names a live process that is not this one.
+	if err := os.WriteFile(filepath.Join(dir, "loop-a.pid"), []byte(strconv.Itoa(os.Getppid())), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.ClearStopFile(); err != nil {
+		t.Fatalf("ClearStopFile: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "STOP-b")); !os.IsNotExist(err) {
+		t.Error("an instance must clear its own stale sentinel at startup")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "STOP")); err != nil {
+		t.Error("the plain STOP is instance a's to act on; b's startup must not clear it")
+	}
+
+	// With no other daemon alive, a leftover shared sentinel is stale: cleared.
+	if err := os.WriteFile(filepath.Join(dir, "loop-a.pid"), []byte("999999999"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.ClearStopFile(); err != nil {
+		t.Fatalf("ClearStopFile: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "STOP")); !os.IsNotExist(err) {
+		t.Error("a shared sentinel no running daemon can act on must be cleared, or it stops the fresh one")
 	}
 }

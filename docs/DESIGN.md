@@ -547,13 +547,51 @@ Each loop has its own sentinel (`.agent-harness/STOP-<name>`; the plain `STOP`
 stops them all, and a starting loop clears both) and its own logs dir: `logs/`
 for `tickets`, as before, and `logs/loops/<name>/` for every other loop.
 
+## Loop instances
+
+The ticket loop can run as several daemons against one checkout
+([ADR-0024](adr/0024-several-instances-of-the-ticket-loop-share-a-claim-lock-and-gate-slots.md)):
+`agent-harness start --instance <id>` (or `loop --instance <id>` in the
+foreground). An **instance** is one of them; the one with no id is the default.
+
+```
+instance <id> : loop-<id>.pid, loop-<id>.log, STOP-<id>, logs/instances/<id>/
+default       : loop.pid,      loop.log,      STOP-tickets, logs/
+shared        : STOP (every loop), STOP-tickets (every instance), locks/claim.lock, locks/gate-N.lock
+```
+
+- **The claim is exclusive.** `pipeline.ResolveNext` claims through
+  `lease.Claim`: under `locks/claim.lock` (a `flock`, so a dead daemon's lock dies
+  with it) the selected ticket is re-read with the Tracker port's `StillReady`
+  and moved In Progress only if it is still unclaimed. Linear reads the issue's
+  state type, GitHub the issue's ready/in-progress labels, Jira whether the claim
+  transition still leads somewhere new. A lost claim claims nothing, releases
+  nothing, and selects again; a queue that keeps offering only lost tickets (an
+  index that has not caught up) is an empty poll. Two instances therefore never
+  hold one Key, and so never one branch.
+- **Gates are bounded.** `fix.Env.Gates`, the one place every gate set runs,
+  takes one of `GATE_CONCURRENCY` slots (`hostlock.Slots`, lock files under
+  `locks/` or `GATE_LOCK_DIR`) for the whole set and narrates a wait. Default 1;
+  `0` is unbounded. Only the gate step waits: an instance implements and reviews
+  while another gates.
+- **Stop control.** An instance stops on its own `STOP-<id>`, on `STOP-tickets`
+  and on `STOP`. At startup it clears its own sentinel always, and the shared ones
+  only when no other daemon's pidfile names a live process: a running instance
+  may not have reached the checkpoint where it sees a STOP meant for it.
+- **The reaper is safe across instances.** It reaps only a claim past the TTL with
+  no pushed branch and no linked PR, and a working instance's claim has one or the
+  other once it is that old.
+- **The viewer.** `watch --instance <id>` follows one instance (its stream,
+  pidfile and sentinel); `watch --all` follows every instance in the plain view,
+  each line labeled `[<id>]`.
+
 ## Key invariants & decisions
 
-- **Sequential only (v1).** One ticket in flight at a time. Worktrees give
+- **One ticket per daemon.** A daemon works one ticket at a time. Worktrees give
   *workspace* isolation (each ticket on its own branch/dir, `main` stays clean),
-  but the shared `.git` object/ref store and Linear ticket-selection would race
-  under concurrency. Parallelism would need per-ticket *clones*, not worktrees —
-  out of scope.
+  and several loop instances may run against one checkout (§Loop instances): the
+  claim lock makes selection exclusive, and the gate slots bound the host load.
+  Parallelism *inside* one daemon is out of scope.
 - **Real-path bind mount — see [ADR-0002](adr/0002-harness-owns-remote-io.md).**
   The whole herd checkout (incl. `.git` and `.claude/worktrees/`) is bind-mounted
   into every container at **its own real host path** (`$PROJECT_PATH:$PROJECT_PATH`,
@@ -997,7 +1035,9 @@ own namespace with no edit to the workflow.
   honoured within a few seconds rather than after a full poll interval.
 - **The sentinel is cleared at clean startup.** The loop deletes a pre-existing
   `.agent-harness/STOP` when it starts, so a stale sentinel from a prior run can't
-  instantly kill a fresh launch; thereafter only a *new* `touch` stops it.
+  instantly kill a fresh launch; thereafter only a *new* `touch` stops it. With
+  several instances (§Loop instances) a starting one leaves the shared sentinels
+  alone while another daemon is alive, and clears only its own `STOP-<id>`.
 - **Double Ctrl-C = hard abort** — kills the running container and exits now,
   leaving the worktree behind (harmless; `review-worktree` can pick it up later).
 - The active session is a `docker run` child. To keep "graceful" from actually
@@ -1313,6 +1353,8 @@ reader over a structured stream rather than a `--tui` flag on the daemon.
   | `LOOP_CLAIM_TTL_MS` | `1800000` (30 min) | grace period after which an In Progress claim with no branch/PR is reaped back to Todo (§Stale-claim reaper) |
   | `LOOP_KEEP_AWAKE` | `0` (off) | read by `scripts/loop-start.sh`, not the daemon: `1` attaches `caffeinate -is -w <loop pid>` so macOS idle sleep can't freeze a detached loop; released when the loop exits. `-s` needs AC power; a closed lid still sleeps outside clamshell mode; no `caffeinate` → warn and launch anyway |
   | `STOP_FILE` | `.agent-harness/STOP` | the sentinel that stops every loop; cleared at clean startup, `touch` to wind down. Each loop also has its own, `.agent-harness/STOP-<name>` |
+  | `GATE_CONCURRENCY` | `1` | how many runs may execute their gates at once across every instance sharing the lock dir (§Loop instances); `0` = no limit |
+  | `GATE_LOCK_DIR` | `.agent-harness/locks/` | where the gate slots' lock files live; one dir shared by several projects bounds the whole host |
   | `PR_LOOP_LABEL` | `agent-maintained` | PR loops: the label that opts a PR whose head is off `branch_prefix` in, unless the loop's `source.label` sets one (ADR-0019) |
   | `PR_LOOP_MAX_ATTEMPTS` | `3` | PR loops: attempts per PR, unless `source.max_attempts` sets one; past it the loop comments what it tried and labels the PR `blocked` |
 

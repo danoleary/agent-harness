@@ -53,7 +53,11 @@ func describeLoop(cfg config.Config, l config.Loop, limits loop.Limits) string {
 	if l.BuiltIn {
 		origin = "built in"
 	}
-	fmt.Fprintf(&b, "loop %s (%s) — dry run, nothing below was changed.\n\n", l.Name, origin)
+	name := l.Name
+	if l.Instance != "" {
+		name += ", instance " + l.Instance
+	}
+	fmt.Fprintf(&b, "loop %s (%s) — dry run, nothing below was changed.\n\n", name, origin)
 	fmt.Fprintf(&b, "source: %s\n", describeSource(cfg, l))
 	b.WriteString("steps:\n")
 	for i, s := range l.Steps {
@@ -66,8 +70,13 @@ func describeLoop(cfg config.Config, l config.Loop, limits loop.Limits) string {
 	fmt.Fprintf(&b, "limits: poll every %s, cap backoff %s, breaker after %d consecutive failures, %s, %s, claim TTL %s\n",
 		limits.PollInterval, limits.CapBackoff, limits.MaxConsecutiveFailures,
 		ceiling("items", limits.MaxTickets), runtime(limits.MaxRuntime), limits.ClaimTTL)
-	fmt.Fprintf(&b, "stop:   touch %s (or %s for every loop)\n",
-		filepath.Join(cfg.ProjectPath, l.StopFile()), underCheckout(cfg, cfg.StopFile))
+	if own := l.InstanceStopFile(); own != "" {
+		fmt.Fprintf(&b, "stop:   touch %s (or %s for every instance of the loop, %s for every loop)\n",
+			filepath.Join(cfg.ProjectPath, own), filepath.Join(cfg.ProjectPath, l.StopFile()), underCheckout(cfg, cfg.StopFile))
+	} else {
+		fmt.Fprintf(&b, "stop:   touch %s (or %s for every loop)\n",
+			filepath.Join(cfg.ProjectPath, l.StopFile()), underCheckout(cfg, cfg.StopFile))
+	}
 	fmt.Fprintf(&b, "stream: %s\n", loopstream.PathUnder(filepath.Join(cfg.ProjectPath, l.LogsDir())))
 	return b.String()
 }

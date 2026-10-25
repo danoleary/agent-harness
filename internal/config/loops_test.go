@@ -304,3 +304,50 @@ steps = [{ use = "implement", prompt = "../secrets.md" }, { use = "review" }]
 		})
 	}
 }
+
+// A loop instance (#89) keeps its own sentinel and its own logs, beside the
+// loop's: STOP-<id> stops it alone, and its stream never mixes with another's.
+// The default instance keeps the loop's paths unchanged.
+func TestALoopInstanceHasItsOwnSentinelAndLogs(t *testing.T) {
+	p := Project{}
+	b, err := p.LoopInstance("", "b")
+	if err != nil {
+		t.Fatalf("LoopInstance: %v", err)
+	}
+	if b.Name != DefaultLoopName || b.Instance != "b" {
+		t.Errorf("instance = %+v, want instance b of the ticket loop", b)
+	}
+	if b.StopFile() != ".agent-harness/STOP-tickets" || b.InstanceStopFile() != ".agent-harness/STOP-b" {
+		t.Errorf("sentinels = %q, %q; want the loop's and the instance's own", b.StopFile(), b.InstanceStopFile())
+	}
+	if b.LogsDir() != ".agent-harness/logs/instances/b" {
+		t.Errorf("logs = %q, want .agent-harness/logs/instances/b", b.LogsDir())
+	}
+
+	plain, err := p.LoopInstance("", "")
+	if err != nil {
+		t.Fatalf("LoopInstance: %v", err)
+	}
+	if plain.InstanceStopFile() != "" || plain.LogsDir() != ".agent-harness/logs" {
+		t.Errorf("the default instance moved: sentinel %q, logs %q", plain.InstanceStopFile(), plain.LogsDir())
+	}
+}
+
+// An instance id names files, so it is held to the loop-name rule, and it may
+// not be a loop's name, or STOP-<id> would stop that loop too. Only a ticket
+// loop runs as several instances: the PR loop's reaper assumes it is alone.
+func TestLoopInstanceRefusesWhatWouldCollide(t *testing.T) {
+	p := Project{}
+	for _, tc := range []struct{ loop, instance, want string }{
+		{"", "B/../x", "lowercase"},
+		{"", "pr-doctor", "names a loop"},
+		{"", "tickets", "names a loop"},
+		{"pr-doctor", "b", "ticket loop"},
+		{"nope", "b", "no loop named"},
+	} {
+		_, err := p.LoopInstance(tc.loop, tc.instance)
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("LoopInstance(%q, %q) = %v, want an error mentioning %q", tc.loop, tc.instance, err, tc.want)
+		}
+	}
+}

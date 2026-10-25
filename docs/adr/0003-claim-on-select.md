@@ -1,6 +1,6 @@
 # ADR-0003: `--next` claims the ticket during selection, before Docker preflight
 
-- Status: Accepted; mechanism amended by #25
+- Status: Accepted; mechanism amended by #25; claim made exclusive by ADR-0024
 - Date: 2026-06-27
 
 > **Amendment (#25).** The `PreClaimed` flag this ADR threads from selection to the
@@ -11,6 +11,13 @@
 > once at selection. The flag went stale when a stage released the ticket and the
 > pipeline retried, so the retry skipped its claim and worked a ticket sitting in
 > Todo. The lease re-claims on that retry, and makes a second release a no-op.
+
+> **Amendment (#89, ADR-0024).** "A concurrent selection skips it and takes the
+> next one" held only if the queue read saw the claim. Two loop instances that
+> select at the same moment both see the ticket unclaimed, and a second
+> `MoveToInProgress` succeeds as a no-op. Selection now claims through
+> `lease.Claim`: under a host lock it re-reads the ticket (`StillReady`) and claims
+> only if it is still unclaimed. A lost claim selects again.
 
 ## Context
 

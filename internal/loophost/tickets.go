@@ -9,6 +9,7 @@ import (
 	"github.com/danoleary/agent-harness/internal/config"
 	gitpkg "github.com/danoleary/agent-harness/internal/git"
 	"github.com/danoleary/agent-harness/internal/hostio"
+	"github.com/danoleary/agent-harness/internal/hostlock"
 	"github.com/danoleary/agent-harness/internal/lease"
 	"github.com/danoleary/agent-harness/internal/loop"
 	"github.com/danoleary/agent-harness/internal/pipeline"
@@ -53,12 +54,13 @@ func (s *TicketSource) CheckAccess() error {
 }
 
 // Next selects and claims the top-of-queue ticket. It is always a real run, never
-// a dry-run: the loop claims-on-select (ADR-0003) so a concurrent selection can't
-// grab the same ticket. A selection/claim failure comes back as err, which the
+// a dry-run: the loop claims-on-select (ADR-0003), and the claim is exclusive
+// under the Consumer's claim lock, so another loop instance selecting at the same
+// moment can't grab the same ticket (#89). A selection/claim failure comes back as err, which the
 // daemon narrates as a failed read — not an empty queue — before re-polling. The
 // item's Branch is the slugged feature branch the Stages will create and push.
 func (s *TicketSource) Next() (loop.WorkItem, *lease.Lease, bool, error) {
-	sel := pipeline.ResolveNext(s.client, false, s.cfg.Tracker.QueueHint(), s.log)
+	sel := pipeline.ResolveNext(s.client, hostlock.File(config.ClaimLockFile(s.cfg.ProjectPath)), false, s.cfg.Tracker.QueueHint(), s.log)
 	if sel.Err != nil {
 		return loop.WorkItem{}, nil, false, sel.Err
 	}

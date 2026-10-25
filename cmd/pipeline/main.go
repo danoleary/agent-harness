@@ -20,7 +20,9 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/danoleary/agent-harness/internal/config"
 	"github.com/danoleary/agent-harness/internal/hostio"
+	"github.com/danoleary/agent-harness/internal/hostlock"
 	"github.com/danoleary/agent-harness/internal/loopstream"
 	"github.com/danoleary/agent-harness/internal/pipeline"
 	"github.com/danoleary/agent-harness/internal/runlog"
@@ -65,7 +67,9 @@ func main() {
 		// the per-ticket logger feeds, so a single-shot `pipeline --next` is viewable by
 		// cmd/watch too (ADR-0005). A single-shot run does not truncate — only the daemon does.
 		console := runlog.NewConsole(loopstream.NewStream(loopstream.PathUnder(stages.LogsRoot(cfg))))
-		sel := pipeline.ResolveNext(client, args.DryRun, cfg.Tracker.QueueHint(), console)
+		// The claim lock is the one every loop instance on this Consumer takes, so a
+		// single-shot run beside a running loop cannot claim the loop's ticket (#89).
+		sel := pipeline.ResolveNext(client, hostlock.File(config.ClaimLockFile(cfg.ProjectPath)), args.DryRun, cfg.Tracker.QueueHint(), console)
 		if !sel.Proceed {
 			// Dry-run resolved a real ticket: print its plan before exiting.
 			if args.DryRun && sel.Identifier != "" {

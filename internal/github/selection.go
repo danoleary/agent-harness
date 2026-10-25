@@ -161,6 +161,22 @@ func (c *Client) MoveToInProgress(key string) error {
 	return c.setAssignee(n, "POST")
 }
 
+// StillReady reports whether a selected issue is still unclaimed: open, still
+// carrying the ready label, and not yet the in-progress one (#89). It reads the
+// one issue, so it sees a claim another instance made a moment ago, and a claim
+// half-made (both labels) reads as taken.
+func (c *Client) StillReady(key string) (bool, error) {
+	data, err := c.transport("GET", c.issuesPath(keyToNumber(key)), nil)
+	if err != nil {
+		return false, err
+	}
+	var iss issue
+	if err := json.Unmarshal(data, &iss); err != nil {
+		return false, err
+	}
+	return iss.State == "open" && c.hasLabel(iss, c.opts.Ready) && !c.hasLabel(iss, c.opts.InProgress), nil
+}
+
 // ReleaseToTodo undoes a claim that yielded nothing: it transitions the label
 // column back in-progress→ready and unassigns the bot, returning the ticket to the
 // select queue for a later run (BEH-543).

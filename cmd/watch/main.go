@@ -17,7 +17,10 @@
 //
 // Path resolution, in order: a positional argument; else $PROJECT_PATH's
 // .agent-harness/logs/loop.jsonl; else logs/loop.jsonl relative to the cwd (the
-// harness dir, where `make watch` runs). When the file is absent it surfaces a
+// harness dir, where `make watch` runs). `--instance <id>` follows one named loop
+// instance instead (its logs/instances/<id>/loop.jsonl, loop-<id>.pid and
+// STOP-<id>), and `--all` follows every instance at once in the plain view, each
+// line labeled with its instance (#89). When the file is absent it surfaces a
 // clear "loop not running" / daemon-down state and keeps polling, so starting the
 // daemon later just works without restarting the viewer.
 package main
@@ -27,6 +30,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -44,13 +48,154 @@ const pollInterval = 500 * time.Millisecond
 
 func main() {
 	argv, noAnimation, noBell := parseArgs(os.Args[1:])
-	path := resolvePath(argv)
-
-	if useDashboard(isTTY(os.Stdout), os.Getenv) {
-		runDashboard(path, resolvePidPath(path), resolveStopPath(path), animateFromFlag(noAnimation), bellEnabled(noBell, os.Getenv))
+	tgt, err := parseTarget(argv)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "watch: %v\n", err)
+		os.Exit(2)
+	}
+	if tgt.all {
+		// Several streams interleave, so --all is always the plain view, each line
+		// labeled with its instance.
+		runAll(runtimeDir())
 		return
 	}
-	runPlain(path, resolvePidPath(path))
+	f := followFor(tgt, runtimeDir())
+	if tgt.instance == "" {
+		path := resolvePath(argv)
+		f = follow{stream: path, pid: resolvePidPath(path), stop: resolveStopPath(path)}
+	}
+
+	if useDashboard(isTTY(os.Stdout), os.Getenv) {
+		runDashboard(f.stream, f.pid, f.stopPaths(), animateFromFlag(noAnimation), bellEnabled(noBell, os.Getenv))
+		return
+	}
+	runPlain(f.stream, f.pid)
+}
+
+// target is which loop instance the viewer follows (#89): the default instance
+// (or a stream named by path), one named instance, or all of them.
+type target struct {
+	path     string
+	instance string
+	all      bool
+}
+
+// parseTarget reads --instance <id> / --instance=<id> and --all from the
+// arguments parseArgs left, the first other argument being the stream path.
+func parseTarget(argv []string) (target, error) {
+	var t target
+	for i := 0; i < len(argv); i++ {
+		switch a := argv[i]; {
+		case a == "--instance":
+			if i+1 >= len(argv) || argv[i+1] == "" {
+				return t, errors.New("--instance needs an id, e.g. `--instance b`")
+			}
+			i++
+			t.instance = argv[i]
+		case strings.HasPrefix(a, "--instance="):
+			t.instance = strings.TrimPrefix(a, "--instance=")
+		case a == "--all":
+			t.all = true
+		case t.path == "":
+			t.path = a
+		}
+	}
+	if t.all && t.instance != "" {
+		return t, errors.New("--all already follows every instance; drop --instance, or drop --all to follow one")
+	}
+	return t, nil
+}
+
+// defaultInstanceLabel names the default instance's lines under --all.
+const defaultInstanceLabel = "default"
+
+// follow is one instance's files: the stream the viewer tails, the pidfile it
+// probes for liveness, and the sentinel that stops it alone.
+type follow struct {
+	label  string
+	stream string
+	pid    string
+	stop   string
+	// shared are the sentinels that stop this instance among others: the plain
+	// STOP, for a named instance.
+	shared []string
+}
+
+// stopPaths is every sentinel whose presence means this instance is winding down.
+func (f follow) stopPaths() []string { return append([]string{f.stop}, f.shared...) }
+
+// runtimeDir is where the loop daemons keep their runtime files: the Consumer's
+// .agent-harness/ under $PROJECT_PATH, else the cwd (the harness dir, where
+// `make watch` runs and loop-start.sh falls back to).
+func runtimeDir() string {
+	if checkout := os.Getenv("PROJECT_PATH"); checkout != "" {
+		return config.ProjectDir(checkout)
+	}
+	return "."
+}
+
+// followFor names one instance's files under the runtime dir: the default
+// instance's loop.pid, STOP and logs/loop.jsonl, or a named instance's
+// loop-<id>.pid, STOP-<id> and logs/instances/<id>/loop.jsonl — the names
+// loop-start.sh and the daemon write (config.PidFile, config.Loop.LogsDir).
+func followFor(t target, runtime string) follow {
+	if t.instance == "" {
+		return follow{
+			label:  defaultInstanceLabel,
+			stream: loopstream.PathUnder(filepath.Join(runtime, "logs")),
+			pid:    filepath.Join(runtime, "loop.pid"),
+			stop:   filepath.Join(runtime, "STOP"),
+		}
+	}
+	return follow{
+		label:  t.instance,
+		stream: loopstream.PathUnder(filepath.Join(runtime, "logs", "instances", t.instance)),
+		pid:    filepath.Join(runtime, "loop-"+t.instance+".pid"),
+		stop:   filepath.Join(runtime, "STOP-"+t.instance),
+		shared: []string{filepath.Join(runtime, "STOP")},
+	}
+}
+
+// allInstances is the default instance and every named instance with a logs dir
+// under the runtime dir, in name order.
+func allInstances(runtime string) []follow {
+	out := []follow{followFor(target{}, runtime)}
+	dirs, _ := filepath.Glob(filepath.Join(runtime, "logs", "instances", "*"))
+	sort.Strings(dirs)
+	for _, dir := range dirs {
+		if info, err := os.Stat(dir); err == nil && info.IsDir() {
+			out = append(out, followFor(target{instance: filepath.Base(dir)}, runtime))
+		}
+	}
+	return out
+}
+
+// runAll follows every instance at once in the plain view (#89): each event line
+// labeled with its instance, a stopped notice when an instance's daemon goes
+// away, and instances that start later picked up on the next poll.
+func runAll(runtime string) {
+	fmt.Printf("watching every loop instance under %s — Ctrl-C to quit (this does not stop any loop)\n", runtime)
+	tailers := map[string]*viewer.Tailer{}
+	alive := map[string]bool{}
+	for {
+		for _, f := range allInstances(runtime) {
+			tl, seen := tailers[f.label]
+			if !seen {
+				tl = viewer.NewLabeledTailer(f.stream, f.label)
+				tailers[f.label] = tl
+				alive[f.label] = daemonAlive(f.pid)
+			}
+			if _, err := tl.Poll(os.Stdout); err != nil {
+				fmt.Fprintf(os.Stderr, "watch: [%s] %v\n", f.label, err)
+			}
+			now := daemonAlive(f.pid)
+			if notice, ok := plainStoppedNotice(alive[f.label], now); ok {
+				fmt.Printf("[%s] %s\n", f.label, notice)
+			}
+			alive[f.label] = now
+		}
+		time.Sleep(pollInterval)
+	}
 }
 
 // daemonStoppedNotice is the plain-text marker the non-TTY fallback prints when the
@@ -82,7 +227,7 @@ const bellMark = "\a"
 // rest of the dashboard keeps updating; tick advances the mascot's animation frame.
 // When bell is set, a single BEL is emitted on each transition INTO a stopped/stalled
 // state (not every tick) so an away-from-keyboard operator is alerted once.
-func runDashboard(path, pidPath, stopPath string, animate, bell bool) {
+func runDashboard(path, pidPath string, stopPaths []string, animate, bell bool) {
 	dt := viewer.NewDashboardTailer(path)
 	if after, ok := stallThresholdFrom(os.Getenv); ok {
 		dt.Dashboard().SetStallThreshold(after)
@@ -95,7 +240,7 @@ func runDashboard(path, pidPath, stopPath string, animate, bell bool) {
 		}
 		status := viewer.DaemonStatus{
 			Alive:         daemonAlive(pidPath),
-			StopRequested: stopRequested(stopPath),
+			StopRequested: anyStopRequested(stopPaths),
 			StreamPresent: running,
 		}
 		now := time.Now()
@@ -241,6 +386,16 @@ func resolveStopPath(streamPath string) string {
 func stopRequested(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
+}
+
+// anyStopRequested reports whether any of the sentinels is present.
+func anyStopRequested(paths []string) bool {
+	for _, p := range paths {
+		if stopRequested(p) {
+			return true
+		}
+	}
+	return false
 }
 
 // daemonAlive reports whether the loop daemon named in pidPath is running, via a

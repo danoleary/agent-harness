@@ -64,7 +64,7 @@ const capBackoffHeartbeat = time.Minute
 
 // usage is the daemon's own grammar. The loop takes no ticket — its Source is the
 // input — so it shares nothing with stages.Usage beyond the shape.
-const usage = `usage: loop [<name>] [--dry-run] [--list] [--help] [--version]
+const usage = `usage: loop [<name>] [--instance <id>] [--dry-run] [--list] [--help] [--version]
 
 Runs one loop unattended until stopped: a Source polled for work, and the Steps
 run over each item it yields (ADR-0019). With no name it runs the ticket loop
@@ -74,6 +74,9 @@ declares its own loops, or re-parameterises these two, as [[loops]] in
 .agent-harness/config.toml.
 
   <name>      the loop to run (default: tickets)
+  --instance  run as instance <id>, one of several ticket-loop daemons against
+              this project: its own STOP-<id>, pidfile and logs; claims, gate
+              slots and the plain STOP are shared with every other instance
   --list      print every loop this project can run, and exit
   --dry-run   print the named loop's resolved Source, Steps and limits, and for a
               PR loop the PRs it would work and how; change nothing
@@ -85,7 +88,8 @@ Configuration is read from the environment, filled in from the first of:
 Never keep that file inside the project checkout: every sandbox bind-mounts it.
 
 Stop a loop gracefully with ` + "`touch $PROJECT_PATH/.agent-harness/STOP-<name>`" + `,
-every loop with ` + "`touch $PROJECT_PATH/.agent-harness/STOP`" + `, or with one SIGINT.
+one instance with ` + "`touch $PROJECT_PATH/.agent-harness/STOP-<id>`" + `, every loop
+with ` + "`touch $PROJECT_PATH/.agent-harness/STOP`" + `, or with one SIGINT.
 See CONSUMER.md for the .agent-harness/ directory a project must commit.`
 
 // flags is the daemon's parsed command line.
@@ -96,6 +100,9 @@ type flags struct {
 	list bool
 	// dryRun prints the loop's plan and exits without changing anything.
 	dryRun bool
+	// instance names one of several daemons running the loop (#89); "" is the
+	// default instance.
+	instance string
 }
 
 // parseFlags reads the loop name and the two run flags. Other flags are ignored,
@@ -104,8 +111,20 @@ type flags struct {
 // its replacement rather than ignored: ignoring it would start the ticket loop.
 func parseFlags(argv []string) (flags, error) {
 	var f flags
-	for _, arg := range argv {
+	for i := 0; i < len(argv); i++ {
+		arg := argv[i]
 		switch {
+		case arg == "--instance":
+			if i+1 >= len(argv) || strings.HasPrefix(argv[i+1], "-") {
+				return f, fmt.Errorf("loop: --instance needs an id, e.g. `--instance b`")
+			}
+			i++
+			f.instance = argv[i]
+		case strings.HasPrefix(arg, "--instance="):
+			f.instance = strings.TrimPrefix(arg, "--instance=")
+			if f.instance == "" {
+				return f, fmt.Errorf("loop: --instance needs an id, e.g. `--instance b`")
+			}
 		case arg == "--prs":
 			return f, fmt.Errorf("loop: --prs is gone; the PR loop is a named loop now: run `agent-harness loop %s`", config.PRDoctorLoopName)
 		case arg == "--list":
@@ -160,9 +179,13 @@ func main() {
 		fmt.Print(renderList(cfg.AllLoops()))
 		os.Exit(0)
 	}
-	l, ok := cfg.LoopNamed(f.name)
-	if !ok {
+	if _, ok := cfg.LoopNamed(f.name); !ok {
 		fmt.Fprintf(os.Stderr, "loop: no loop named %q in this project.\n%sDeclare it as [[loops]] in %s/config.toml.\n", f.name, renderList(cfg.AllLoops()), config.ProjectDirName)
+		os.Exit(2)
+	}
+	l, err := cfg.LoopInstance(f.name, f.instance)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "loop: %v\n", err)
 		os.Exit(2)
 	}
 	if f.dryRun {

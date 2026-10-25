@@ -67,11 +67,22 @@ func (f *follower) next() (data []byte, running, reset bool, err error) {
 type Tailer struct {
 	follow follower
 	view   *View
+	// label, when set, starts every rendered line as "[label] ".
+	label string
 }
 
 // NewTailer returns a Tailer over the stream file at path.
 func NewTailer(path string) *Tailer {
 	return &Tailer{follow: follower{path: path}, view: New()}
+}
+
+// NewLabeledTailer returns a Tailer that starts every line it renders with
+// "[label] ", so the streams of several loop instances can share one terminal
+// and each line still says whose it is (#89).
+func NewLabeledTailer(path, label string) *Tailer {
+	t := NewTailer(path)
+	t.label = label
+	return t
 }
 
 // Poll renders any complete lines appended since the last Poll. running=false means
@@ -86,5 +97,33 @@ func (t *Tailer) Poll(out io.Writer) (running bool, err error) {
 	if err != nil || !running || len(data) == 0 {
 		return running, err
 	}
+	if t.label != "" {
+		out = &labelWriter{w: out, prefix: []byte("[" + t.label + "] "), atStart: true}
+	}
 	return true, t.view.Replay(bytes.NewReader(data), out)
+}
+
+// labelWriter writes prefix at the start of every line passed through it.
+type labelWriter struct {
+	w       io.Writer
+	prefix  []byte
+	atStart bool
+}
+
+func (l *labelWriter) Write(p []byte) (int, error) {
+	var buf bytes.Buffer
+	for _, b := range p {
+		if l.atStart {
+			buf.Write(l.prefix)
+			l.atStart = false
+		}
+		buf.WriteByte(b)
+		if b == '\n' {
+			l.atStart = true
+		}
+	}
+	if _, err := l.w.Write(buf.Bytes()); err != nil {
+		return 0, err
+	}
+	return len(p), nil
 }

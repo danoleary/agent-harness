@@ -310,6 +310,7 @@ type FakeTracker struct {
 	ReleErr   error
 	CancelErr error
 	CommentEr error
+	ReadyErr  error
 
 	Fetched  []string
 	Claimed  []string
@@ -344,6 +345,23 @@ func (t *FakeTracker) SelectNextTicket() (ticket.Ticket, bool, error) {
 func (t *FakeTracker) MoveToInProgress(key tracker.Key) error {
 	t.Claimed = append(t.Claimed, key)
 	return t.ClaimErr
+}
+
+// StillReady reports a ticket claimed and not since released as taken, so a
+// test that claims twice sees the second claim lost.
+func (t *FakeTracker) StillReady(key tracker.Key) (bool, error) {
+	held := 0
+	for _, k := range t.Claimed {
+		if k == key {
+			held++
+		}
+	}
+	for _, k := range t.Released {
+		if k == key {
+			held--
+		}
+	}
+	return held <= 0, t.ReadyErr
 }
 
 func (t *FakeTracker) ReleaseToTodo(key tracker.Key) error {

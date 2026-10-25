@@ -17,6 +17,7 @@ import (
 	"github.com/danoleary/agent-harness/internal/ci"
 	"github.com/danoleary/agent-harness/internal/config"
 	"github.com/danoleary/agent-harness/internal/hostio"
+	"github.com/danoleary/agent-harness/internal/hostlock"
 	"github.com/danoleary/agent-harness/internal/prompt"
 	"github.com/danoleary/agent-harness/internal/runlog"
 	"github.com/danoleary/agent-harness/internal/session"
@@ -126,6 +127,20 @@ func (e Env) Gates(slug, labelPrefix string) GateResult {
 		e.Log.Event(e.Who + " · host gate skipped — diff touches only docs/prose paths no gate depends on (BEH-687)")
 		return GateResult{}
 	}
+	// Only so many runs gate at once across the loop instances sharing the lock
+	// dir (#89). The wait is for the gate step alone: a run implements and reviews
+	// while another gates, and queues here.
+	slots := hostlock.Slots{Dir: e.Cfg.GateSlotsDir(), Limit: e.Cfg.GateConcurrency}
+	release, err := slots.Acquire(func() {
+		e.Log.Event(fmt.Sprintf("%s · waiting for a gate slot — %d run(s) may gate at once (GATE_CONCURRENCY) and another run is gating", e.Who, e.Cfg.GateConcurrency))
+	})
+	if err != nil {
+		// A lock dir the harness cannot write is a broken host, not a reason to gate
+		// unbounded or to fail the branch: say so, and gate.
+		e.Log.Event(fmt.Sprintf("%s · gate slot unavailable (%v) — gating without the concurrency limit", e.Who, err))
+		release = func() {}
+	}
+	defer release()
 	worktreePath := e.Host.WorktreePath(slug)
 	return RunGates(e.Cfg.Gates, func(g config.Gate) session.Outcome {
 		e.Log.Event(fmt.Sprintf("%s · gate %q: %s", e.Who, g.Name, g.Command))

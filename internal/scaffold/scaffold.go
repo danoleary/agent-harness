@@ -258,8 +258,12 @@ var runtimeIgnores = []string{
 	config.ProjectDirName + "/logs/",
 	config.ProjectDirName + "/harness-findings/",
 	config.ProjectDirName + "/STOP",
+	config.ProjectDirName + "/STOP-*",
 	config.ProjectDirName + "/loop.log",
 	config.ProjectDirName + "/loop.pid",
+	config.ProjectDirName + "/loop-*.log",
+	config.ProjectDirName + "/loop-*.pid",
+	config.ProjectDirName + "/locks/",
 }
 
 // ignoreRuntimeFiles appends whichever runtimeIgnores lines the .gitignore lacks,

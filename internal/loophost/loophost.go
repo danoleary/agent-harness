@@ -14,12 +14,14 @@
 package loophost
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/danoleary/agent-harness/internal/config"
@@ -65,6 +67,12 @@ type Daemon struct {
 	// another shell.
 	stopFile     string
 	loopStopFile string
+	// instanceStopFile is a named instance's own sentinel (STOP-<instance>, #89);
+	// empty for the default instance.
+	instanceStopFile string
+	// projectDir is the Consumer's .agent-harness/, where the other instances'
+	// pidfiles are.
+	projectDir string
 	// sigStop is the other: flipped by the first SIGINT. An atomic.Bool is the seam
 	// between the async signal goroutine and the synchronous StopRequested check.
 	sigStop atomic.Bool
@@ -84,27 +92,74 @@ func NewDaemon(cfg config.Config, l config.Loop, checkSource func() error) *Daem
 		}
 		return filepath.Join(cfg.ProjectPath, path)
 	}
-	return &Daemon{
+	d := &Daemon{
 		cfg:          cfg,
 		checkToken:   func() error { return github.CheckToken(github.NewTransport(cfg.GitHubToken)) },
 		checkSource:  checkSource,
 		stopFile:     resolve(cfg.StopFile),
 		loopStopFile: resolve(l.StopFile()),
+		projectDir:   config.ProjectDir(cfg.ProjectPath),
 	}
+	if own := l.InstanceStopFile(); own != "" {
+		d.instanceStopFile = resolve(own)
+	}
+	return d
 }
 
 // --- stop control -----------------------------------------------------------
 
-// ClearStopFile deletes both sentinels, treating an already-absent file as
-// success — the startup clear must not fail merely because there was nothing to
-// clear.
+// ClearStopFile deletes the sentinels left by a prior run, treating an
+// already-absent file as success — the startup clear must not fail merely
+// because there was nothing to clear. A named instance's own STOP-<instance> is
+// always cleared. The shared ones (the plain STOP and the loop's STOP-<name>,
+// which stop every instance) are cleared only when no other daemon is running
+// (#89): one that is mid-item has not yet seen a STOP meant for it, and clearing
+// it would leave that daemon running.
 func (h *Daemon) ClearStopFile() error {
-	for _, path := range []string{h.stopFile, h.loopStopFile} {
+	var paths []string
+	if h.instanceStopFile != "" {
+		paths = append(paths, h.instanceStopFile)
+	}
+	if !h.anotherDaemonAlive() {
+		paths = append(paths, h.stopFile, h.loopStopFile)
+	}
+	for _, path := range paths {
 		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 			return err
 		}
 	}
 	return nil
+}
+
+// sentinels is every file whose presence stops this daemon.
+func (h *Daemon) sentinels() []string {
+	out := []string{h.stopFile, h.loopStopFile}
+	if h.instanceStopFile != "" {
+		out = append(out, h.instanceStopFile)
+	}
+	return out
+}
+
+// anotherDaemonAlive reports whether a pidfile `agent-harness start` wrote for
+// any instance names a live process other than this one. A daemon started
+// another way writes no pidfile and is not seen.
+func (h *Daemon) anotherDaemonAlive() bool {
+	pidfiles, _ := filepath.Glob(filepath.Join(h.projectDir, "loop-*.pid"))
+	pidfiles = append(pidfiles, filepath.Join(h.projectDir, "loop.pid"))
+	for _, path := range pidfiles {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+		if err != nil || pid <= 0 || pid == os.Getpid() {
+			continue
+		}
+		if err := syscall.Kill(pid, 0); err == nil || errors.Is(err, syscall.EPERM) {
+			return true
+		}
+	}
+	return false
 }
 
 // StopRequested folds the two stop signals into one predicate (DESIGN.md "Two
@@ -115,7 +170,7 @@ func (h *Daemon) StopRequested() bool {
 	if h.sigStop.Load() {
 		return true
 	}
-	for _, path := range []string{h.stopFile, h.loopStopFile} {
+	for _, path := range h.sentinels() {
 		if _, err := os.Stat(path); err == nil || !os.IsNotExist(err) {
 			return true
 		}
@@ -132,6 +187,10 @@ func (h *Daemon) StopFile() string { return h.stopFile }
 
 // LoopStopFile is where this loop's own sentinel lives.
 func (h *Daemon) LoopStopFile() string { return h.loopStopFile }
+
+// InstanceStopFile is where a named instance's own sentinel lives, or "" for the
+// default instance.
+func (h *Daemon) InstanceStopFile() string { return h.instanceStopFile }
 
 // --- startup -----------------------------------------------------------------
 

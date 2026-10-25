@@ -2,7 +2,10 @@ package lease
 
 import (
 	"errors"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/danoleary/agent-harness/internal/hostio"
 )
@@ -88,5 +91,116 @@ func TestAFailedReleaseKeepsTheHold(t *testing.T) {
 	}
 	if l.Held() {
 		t.Error("Held() = true after the retried release succeeded")
+	}
+}
+
+// board is a tracker's In Progress column shared by every instance: a claim
+// moves a ready ticket there, and StillReady reads it. The read sleeps so two
+// claims that did not exclude each other would both see the ticket ready.
+type board struct {
+	mu      sync.Mutex
+	claimed map[string]int
+	readErr error
+}
+
+func newBoard() *board { return &board{claimed: map[string]int{}} }
+
+func (b *board) StillReady(key string) (bool, error) {
+	time.Sleep(5 * time.Millisecond)
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.claimed[key] == 0, b.readErr
+}
+
+func (b *board) MoveToInProgress(key string) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.claimed[key]++
+	return nil
+}
+
+func (b *board) ReleaseToTodo(key string) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.claimed[key] = 0
+	return nil
+}
+
+func (b *board) MoveToCanceled(string) error { return nil }
+
+// mutexLock is the host's claim lock, in memory.
+type mutexLock struct{ sync.Mutex }
+
+func (m *mutexLock) Lock() (func(), error) {
+	m.Mutex.Lock()
+	return m.Mutex.Unlock, nil
+}
+
+// Two instances that selected the same ticket at the same moment both try to
+// claim it (#89). Exactly one wins and holds it; the other holds nothing and
+// issued no claim of its own.
+func TestClaimGivesASelectedTicketToExactlyOneInstance(t *testing.T) {
+	b := newBoard()
+	lock := &mutexLock{}
+	var wg sync.WaitGroup
+	var winners atomic.Int32
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			l, won, err := Claim(b, lock, "PROJ-1")
+			if err != nil {
+				t.Errorf("Claim() = %v", err)
+				return
+			}
+			if won != (l != nil) {
+				t.Errorf("won = %v but lease = %v: a lease is handed back exactly when the claim is won", won, l)
+			}
+			if won {
+				winners.Add(1)
+				if !l.Held() {
+					t.Error("the winner's lease must be held")
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	if winners.Load() != 1 {
+		t.Errorf("%d instances won PROJ-1, want exactly 1", winners.Load())
+	}
+	if b.claimed["PROJ-1"] != 1 {
+		t.Errorf("PROJ-1 was moved In Progress %d times, want once: the loser must not claim", b.claimed["PROJ-1"])
+	}
+}
+
+// A ticket another run already holds is lost, not an error: nothing is claimed,
+// so nothing will be released either.
+func TestClaimOfATicketAnotherRunHoldsIsLost(t *testing.T) {
+	b := newBoard()
+	b.claimed["PROJ-1"] = 1
+
+	l, won, err := Claim(b, &mutexLock{}, "PROJ-1")
+
+	if err != nil || won || l != nil {
+		t.Errorf("Claim() = %v, %v, %v; want nil, false, nil", l, won, err)
+	}
+	if b.claimed["PROJ-1"] != 1 {
+		t.Errorf("a lost claim moved the ticket again (%d moves)", b.claimed["PROJ-1"])
+	}
+}
+
+// A failed confirmation read is an error, and claims nothing: guessing either
+// way would risk a ticket worked twice or one never worked.
+func TestClaimFailsClosedOnAFailedRead(t *testing.T) {
+	b := newBoard()
+	b.readErr = errors.New("tracker down")
+
+	l, won, err := Claim(b, &mutexLock{}, "PROJ-1")
+
+	if err == nil || won || l != nil {
+		t.Errorf("Claim() = %v, %v, %v; want an error and no lease", l, won, err)
+	}
+	if b.claimed["PROJ-1"] != 0 {
+		t.Error("a failed read must claim nothing")
 	}
 }
