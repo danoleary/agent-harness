@@ -295,8 +295,8 @@ loop:
     a green session into a red gate on `command not found` (#38).
   docs-only short-circuit (BEH-687): if the branch's net diff against origin/main touches ONLY
     documentation/prose paths no gate reads (root markdown, `docs/**` — NOT anything under a module
-    source tree like `web/`, NOT the skill trees `.agents/`/`.claude/` whose SKILL.md files feed the
-    agent-harness skill-contract CI job, and NOT scripts/workflows/migrations/manifests), SKIP the heavy host gate
+    source tree like `web/`, NOT a skill tree such as `.claude/` when the Consumer declares it because a
+    gate or CI job reads its SKILL.md files, and NOT scripts/workflows/migrations/manifests), SKIP the heavy host gate
     re-run entirely (oxlint + oxfmt over ~1200 files + tsgo validate nothing a prose edit could break —
     the PR #743 waste). Treated as a green gate. Read fresh at each gate call so a code edit committed by
     an earlier session flips it off; fail-safe to running the full gate on any git doubt. The qualitative
@@ -367,7 +367,7 @@ loop:
     review. Fail-safe: any git doubt reads NON-empty, so a flaky read falls through to the normal watch.
   docs-only short-circuit (BEH-687): BEFORE the first poll, if the pushed branch's net diff against
     origin/main touches ONLY documentation/prose paths no gate or CI job reads (root markdown, `docs/**`;
-    NOT the `.agents/`/`.claude/` skill trees, whose SKILL.md files feed the agent-harness skill-contract CI job;
+    NOT a declared skill tree such as `.claude/`, whose SKILL.md files a gate or CI job may read;
     `gitpkg.BranchDocsOnly`) -> the change cannot break CI, so polling the full job just burns the whole
     poll budget on something that can never fail it (the PR #743 waste: a one-line AGENTS.md edit died to
     the ~12-min poll timeout). PASS immediately as a trivially-mergeable green ship — still routed through
