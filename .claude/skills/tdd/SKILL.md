@@ -35,6 +35,10 @@ prompt around this skill tells you the ticket, the worktree and the branch.
   macOS bash 3.2** — `check-bash3` (`scripts/check-bash3-compat.sh`): no
   `declare -A`, namerefs (`declare -n`), `${var,,}`/`${var^^}` or
   `mapfile`/`readarray`.
+- **awk in `scripts/*.sh` and `install.sh` must run under mawk (the sandbox),
+  BWK awk (macOS) and gawk (CI)** — `check-awk` (`scripts/check-awk-portability.sh`):
+  no regex interval expressions (`{n}`, `{n,m}`; mawk silently never matches them,
+  so repeat the atom or use `?`) and no `gensub`, `asort`/`asorti` or `strftime`.
 - **Every `go build`/`test`/`run`/`install` in a Makefile keeps
   `-buildvcs=false`**, on one line — `check-buildvcs` (`scripts/check-buildvcs.sh`).
   Without it go aborts inside a linked worktree.
