@@ -71,6 +71,13 @@ and a command, and the Runner still owns the whole argv (ADR-0013).
 - The agent sessions (implementation, review, retrospective) still run in the
   checkout's image. The host gate is the ground truth that authorises a push, so
   it is the run that must see the branch's environment.
+- The host now runs `docker build` over a Dockerfile an agent session wrote.
+  That does not widen ADR-0002: `sandbox.BuildImage` passes no `--secret`,
+  `--ssh` or `--build-arg`, a build step does not inherit the host's environment
+  (so it never sees `GH_TOKEN` or a tracker credential), and the build context is
+  the worktree's Dockerfile directory, so nothing outside the worktree can be
+  `COPY`d in. Any future change that hands the build a credential must revisit
+  this.
 - Branch images are left unreferenced like the main image, so the daemon's
   `docker image prune -af` reclaims them. A merged Dockerfile change makes the
   checkout's own image stale, and `Preflight` rebuilds it on the next run.
