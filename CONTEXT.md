@@ -115,6 +115,14 @@ host checks before it pushes and opens the PR. Language-agnostic (`go test ./...
 `dotnet test`, `pnpm check`).
 _Avoid_: check, test (those name specific gates, not the concept).
 
+**Repo guard**:
+A `scripts/check-*.sh` lint this repo's own `make check` runs before its tests:
+daemon/remote exec only through `internal/proc` with a timeout (`check-exec`),
+bash-3.2-safe scripts (`check-bash3`), `-buildvcs=false` on Makefile go commands
+(`check-buildvcs`), unique ADR numbers (`check-adr`). Listed, with what each one
+rejects, in `.claude/skills/tdd/SKILL.md` — read it before writing code, not after
+the gate reds.
+
 **Ground truth**:
 A host-side, tracker-agnostic git assertion (worktree exists, commits ahead of
 base, clean tree) the harness verifies independently of what the sandbox reported.
