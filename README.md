@@ -1,48 +1,106 @@
 # Agent Harness
 
-Works a backlog autonomously, one ticket at a time. For each ticket it runs three
-Claude Code sessions — implementation → review → retrospective — each in its own
-Docker sandbox, then opens a PR.
+Point it at a ticket backlog and it opens tested pull requests, one ticket at a
+time, with Claude Code in a Docker sandbox.
 
-It is **project-agnostic**. A project adopts it by committing an
-`.agent-harness/` directory: its gates, its sandbox image, its prompts, its
-tracker. Go, .NET, Node — the harness never learns the difference.
+For each ticket it runs three Claude Code sessions (implementation → review →
+retrospective), each in its own sandbox. It re-runs your gates on the host and
+opens a PR only when they are green. It works with any language: your project
+declares its gates, sandbox image and prompts in an `.agent-harness/` directory.
+The tracker can be GitHub Issues, Linear or Jira.
 
-A Go program on the host, which owns every remote operation (tracker, git,
-GitHub). The sandbox only ever runs `claude`.
+## Prerequisites
 
-> **Adopting it in your project? Read [`docs/CONSUMER.md`](docs/CONSUMER.md).**
-> Full design, invariants and failure matrix are in
-> [`docs/DESIGN.md`](docs/DESIGN.md); decisions in [`docs/adr/`](docs/adr/).
+On the machine that runs the harness:
 
-## Install
+| Tool | Version | Why |
+|---|---|---|
+| `docker` | a running daemon | every session and gate runs in a container |
+| `git` | 2.45+ | the pre-push rebase uses `git cherry-pick --empty=drop` |
+| `gh` | any | push, open the PR, watch CI |
+| a Claude credential | — | `CLAUDE_CODE_OAUTH_TOKEN` (`claude setup-token`) or `ANTHROPIC_API_KEY` |
+| `GH_TOKEN` | classic PAT, `repo` scope | a fine-grained token cannot read check runs |
+| Go | 1.26+ | only to build from source |
 
-One command. It needs no Go toolchain, no checkout, and no `sudo`:
+Linear and Jira need their own API credential as well; see
+[`docs/CONSUMER.md`](docs/CONSUMER.md).
+
+## Quickstart
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/danoleary/agent-harness/main/install.sh | sh
+agent-harness init                    # in your project's checkout
+agent-harness doctor
+agent-harness pipeline --next --dry-run
+agent-harness pipeline --next
 ```
 
-That downloads the release built for your machine, checks it against the
-published sha256, and installs it under `~/.local`. One name lands on your
-`PATH` — `agent-harness` — and everything else lives beside it:
+**1. Install.** The installer needs no Go toolchain and no `sudo`. It checks the
+release against its published sha256 and puts one command, `agent-harness`, in
+`~/.local/bin`. It warns about any missing prerequisite but does not install it.
+
+**2. `init`** scaffolds `.agent-harness/` in your project: a `config.toml`, a
+sandbox Dockerfile, the three prompt bodies, and a gitignored `.env` with
+`PROJECT_PATH` already filled in. It asks about the toolchain and GitHub repo it
+detected (`--yes` takes the defaults) and never overwrites a file without
+`--force`. Before going on:
+
+- put your credentials in `.agent-harness/.env`;
+- replace each `TODO(agent-harness init)` placeholder, including the skill each
+  prompt body invokes.
+
+**3. `doctor`** checks the whole setup in one pass and prints a fix under every
+line that fails: the tools, the `.env` it read, each credential (with a live,
+read-only API call), the config and prompts, the tracker labels they name, and
+the sandbox image. It exits non-zero on any failure. `--offline` skips the
+network calls.
+
+**4. `pipeline --next --dry-run`** shows the ticket the harness would pick and
+the plan for it, then exits. It claims nothing and starts no container. A ticket
+is eligible when it is unstarted, unassigned, unblocked and has your ready label
+(`tracker.ready_label`). Applying that label is how a person decides what runs
+unattended.
+
+**5. `pipeline --next`** does it for real: it claims the ticket, runs the three
+sessions, re-runs the gates, opens the PR, and exits. The first run builds the
+sandbox image, which takes a few minutes.
+
+## Next steps
+
+Once a single ticket goes through cleanly, let it work the whole queue:
+
+```bash
+agent-harness start      # detached daemon; logs to .agent-harness/loop.log
+agent-harness watch      # read-only live view of the current ticket and stage
+touch .agent-harness/STOP   # finish the current ticket, then stop
+```
+
+`agent-harness pipeline <KEY>` runs one named ticket instead of the next one. In
+a foreground run, Ctrl-C once stops after the current ticket; twice kills the
+container now and keeps the worktree.
+
+`agent-harness --help` lists every command. Each one takes `--verbose` (stream
+the agent transcript) and `--dry-run`. A ticket's transcripts and event stream
+are in `.agent-harness/logs/<KEY>/`.
+
+- [`docs/CONSUMER.md`](docs/CONSUMER.md): set up a project — config, prompt
+  bodies, sandbox image, trackers, credentials.
+- [`docs/troubleshooting.md`](docs/troubleshooting.md): when something goes
+  wrong that `doctor` can't see.
+- [`docs/DESIGN.md`](docs/DESIGN.md): how it works, its invariants and its
+  failure handling. Decisions are recorded in [`docs/adr/`](docs/adr/).
+- [`example/`](example/): a complete, working `.agent-harness/`.
+
+## More about install
 
 ```
 ~/.local/bin/agent-harness         the command you run
-~/.local/libexec/agent-harness/    the six stage binaries, kept off your PATH
+~/.local/libexec/agent-harness/    the stage binaries, kept off your PATH
 ~/.local/share/agent-harness/      .env.example, CONSUMER.md, README, LICENSE
 ```
 
-The stage binaries are named for their role — `loop`, `watch`, `review`,
-`pipeline`, … — which are far too generic to put in a shared `bin` dir (`watch`
-alone would shadow `watch(1)`). `agent-harness <command>` dispatches to them, so
-the install adds exactly one name to your shell and shadows nothing (ADR-0012).
-
-```bash
-agent-harness --help       # every command, and what it does
-agent-harness --version
-agent-harness doctor       # check the whole setup; prints a fix for every problem
-```
+The stage binaries have generic names (`loop`, `watch`, `review`, …), so they stay
+out of your `PATH`. `agent-harness <command>` runs them.
 
 <details>
 <summary>Other ways to install</summary>
@@ -66,210 +124,10 @@ go install github.com/danoleary/agent-harness/cmd/loop@latest   # and pipeline, 
 ```
 
 Or download an archive from [Releases](../../releases) and run `./agent-harness`
-straight out of the unpacked directory — the archive layout is the installed
+straight out of the unpacked directory. The archive layout is the installed
 layout, so it works in place.
 
 </details>
-
-### Prerequisites
-
-On the host that runs the harness:
-
-- A working local `docker` daemon
-- `git` **2.45+** — the pre-push rebase replays with `git cherry-pick --empty=drop`, which auto-drops a now-redundant feature commit (the flag landed in git 2.45, May 2024)
-- `gh`
-- Go **1.26+** — only if you build from source
-
-The installer warns about any of these that are missing; it does not install them
-for you.
-
-## Set it up
-
-Two things stand between a fresh install and a first run: credentials on the
-host, and an `.agent-harness/` directory in the project you point it at.
-
-### 1. Credentials
-
-```bash
-mkdir -p ~/.config/agent-harness
-cp ~/.local/share/agent-harness/.env.example ~/.config/agent-harness/.env
-# then fill it in
-```
-
-| Var | Purpose |
-|---|---|
-| `PROJECT_PATH` | absolute path to the Consumer checkout to bind-mount |
-| `CLAUDE_CODE_OAUTH_TOKEN` *or* `ANTHROPIC_API_KEY` | the Claude credential passed into the sandbox (set exactly one) |
-| `GH_TOKEN` | host-only: `git push`, `gh pr create`, and the post-PR CI watch |
-| `LINEAR_API_KEY` | host-only, Linear tracker: select, claim and move tickets; file findings |
-
-The tracker credential and `GH_TOKEN` never enter the sandbox (ADR-0002), so a
-compromised session cannot move your backlog or touch your remote.
-
-> `GH_TOKEN` **must be a classic PAT with `repo` scope** (SSO-authorized for the
-> org, if it uses SSO). A fine-grained PAT can push and open the PR but **cannot
-> read check runs**, so the post-PR CI watch can't observe CI.
-> See `.env.example` for every optional knob (timeouts, models, loop ceilings).
-
-The harness reads its credentials from the first of these that exists, so an
-operator with no checkout has a home for them:
-
-| Order | Path | Who it is for |
-|---|---|---|
-| 1 | `$HARNESS_ENV_FILE` | driving several projects, one credential set each |
-| 2 | `./.env` | running from a harness checkout (local beats global) |
-| 3 | `<project>/.agent-harness/.env` | **keeping credentials with the project** |
-| 4 | `${XDG_CONFIG_HOME:-~/.config}/agent-harness/.env` | **one install, several projects** |
-
-`<project>/.agent-harness/.env` sits **inside** the checkout that every stage
-bind-mounts into its sandbox, which would normally make it readable by the agent
-session — handing over the tracker and GitHub tokens the harness keeps host-side
-(ADR-0002). So the harness masks that exact path in every container it launches:
-the session, the gate and the `post_create` container each mount an
-empty file over it. That mask is what makes the in-repo location safe, and it
-covers only that path — a credential file anywhere else in the checkout is
-readable, and the harness warns when it loads one. Gitignore whichever you pick.
-
-Exported variables win over the file, so `LINEAR_API_KEY=… agent-harness loop`
-also works.
-
-### 2. The project's `.agent-harness/` directory
-
-The project needs an `.agent-harness/` directory — its gates, its sandbox image,
-its prompts, its tracker. To scaffold one, run this in the project's checkout:
-
-```bash
-agent-harness init        # asks about the detected toolchain and GitHub repo; --yes takes the defaults
-```
-
-It writes a config, a Dockerfile, the three prompt bodies and a gitignored
-`.agent-harness/.env`, and never overwrites an existing file without `--force`.
-Then replace the `TODO(agent-harness init)` placeholders. See
-[`docs/CONSUMER.md`](docs/CONSUMER.md) (installed at
-`~/.local/share/agent-harness/CONSUMER.md`) for the config, the prompt bodies, and
-how to build a sandbox image `FROM` the published base. There is a complete
-worked example in [`example/`](example/).
-
-The harness declares no skill of its own. Each of the three prompt bodies names
-the skill its stage invokes, and all three are required: a missing or blank body
-fails at config load rather than running a stage with nothing to invoke.
-
-The sandbox image builds (or pulls) itself on first run, and a built image is
-rebuilt automatically when its Dockerfile changes — say, after an upgrade bumps the
-base pin — so you never need to `docker rmi` it. To control when that
-~minutes-long build happens, pre-build it:
-`docker build -t <image> -f .agent-harness/Dockerfile .agent-harness`.
-
-When the daemon starts it checks `GH_TOKEN` and the tracker credential, and exits
-straight away with the reason if either is rejected.
-
-### 3. Check it
-
-```bash
-agent-harness doctor
-```
-
-`doctor` checks everything above in one pass and prints a fix under each line
-that fails: `docker`, `git` 2.45+ and `gh`; which `.env` it read and which it
-skipped; each credential, with a live, read-only API call (`GH_TOKEN` must be a
-classic token with `repo` scope); the config, the prompt bodies, and the tracker
-repo/team/project and labels they name; and whether the sandbox image is
-present, buildable or pullable. It warns when both Claude credentials are set,
-because Claude Code then uses `ANTHROPIC_API_KEY`. It exits non-zero on any
-failure, so a script can gate on it. `--offline` skips the network calls.
-
-## Run it
-
-Start with one ticket, watch it the whole way through:
-
-```bash
-agent-harness pipeline --next      # the next eligible ticket
-agent-harness pipeline BEH-362     # a specific one
-```
-
-That runs implementation → review → retrospective over a single ticket and
-exits. When you trust it, hand it the queue:
-
-**Autonomous daemon** — works the whole backlog and walks away. Detaches with
-`nohup`, logs to `loop.log`, writes its PID to `loop.pid`:
-
-```bash
-agent-harness start
-```
-
-On a Mac, idle sleep freezes the daemon mid-run. Set `LOOP_KEEP_AWAKE=1` (in the
-environment or your `.env`) and `start` holds a `caffeinate -is -w <loop pid>`
-assertion that is released when the loop exits, however it exits. `-s` only
-blocks system sleep on AC power, and closing the lid still sleeps the Mac unless
-it is in clamshell mode. Where there is no `caffeinate` (Linux), `start` warns and
-launches anyway.
-
-**Watch it run** — a read-only live view of the current ticket and stage, tailing
-the global event stream (`logs/loop.jsonl`) the daemon and the pipeline write. It
-never controls the loop (Ctrl-C quits the viewer, not the daemon), and works
-against `agent-harness start`, a foreground `agent-harness loop`, **or** a
-single-shot `agent-harness pipeline`:
-
-```bash
-agent-harness watch
-```
-
-If no daemon/pipeline is running it prints a clear "loop not running" line and
-keeps polling, so it picks up once one starts. See ADR-0005.
-
-**One stage at a time** — the three tools the pipeline chains, runnable by hand
-in this order. Each requires the previous one's worktree:
-
-```bash
-agent-harness implementation BEH-362    # /tdd → leaves a worktree + commit (no push)
-agent-harness review BEH-362            # cold review, host re-runs gates, green → push + PR
-agent-harness retrospective BEH-362     # /retrospective over the transcripts, files findings
-```
-
-Every command takes the same flags:
-
-- `--verbose` — also stream the raw agent transcript to the console
-- `--dry-run` — print the prompt + docker command and exit (still reads `.env`
-  and makes one read-only Linear call; claims nothing, launches no container)
-- `--help` and `--version` — both answer without needing a credential
-
-From a checkout, the `make` targets do the same thing:
-`make pipeline ARGS="BEH-362"`, `make loop`, `make watch`, and so on.
-
-### How a ticket is picked
-
-The next **unstarted**, **unassigned**, **ready-labelled**, **unblocked** ticket,
-ordered by priority then board rank. The ready label (`tracker.ready_label` in the
-Consumer's config) is the human gate: a person decides *what* runs unattended; the
-harness decides *how*.
-
-## Stopping the loop
-
-- **`touch $PROJECT_PATH/.agent-harness/STOP`** — graceful: finishes the current
-  ticket, then exits. The way to wind down a detached `agent-harness start` daemon.
-- **Ctrl-C** once — same graceful stop for a foreground run; twice — hard abort
-  (kills the container now, keeps the worktree for review).
-- **`kill $(cat loop.pid)`** — hard kill of a detached daemon (escape hatch;
-  prefer the STOP file).
-
-There is no supervisor and no auto-restart: a crash, circuit-breaker trip, or
-`LOOP_MAX_*` ceiling stays down until you relaunch — by design, so a human looks
-before more tickets are consumed. The loop's exit code is `0` for a deliberate
-stop and non-zero for a crash (see DESIGN.md §Exit-code contract).
-
-## Logs
-
-Logs are keyed by **ticket id**, so one ticket's whole arc lives in one dir:
-
-```
-logs/BEH-NNN/
-  <session>-<run-id>.jsonl     full agent transcript per session (tdd, review, retrospective)
-  <step>-<run-id>.log          raw stdout for review's non-agent steps (install, gate)
-  run.jsonl                    structured event stream shared across the ticket's sessions
-  findings/<session>/out.json  the findings dropbox
-```
-
-The console prints one concise line per harness event.
 
 ## Develop
 
@@ -279,69 +137,21 @@ make test      # go test ./...
 make install   # build and install into PREFIX (default ~/.local), like install.sh does
 ```
 
-Harness `scripts/*.sh` must run under macOS **bash 3.2** — no `declare -A`,
-namerefs, `${var,,}`, or `mapfile`. `make check` enforces this (BEH-457).
-
-## Layout
+`scripts/*.sh` must run under macOS bash 3.2: no `declare -A`, namerefs,
+`${var,,}` or `mapfile`. `make check` enforces this.
 
 ```
-install.sh         the one-command install (ADR-0012)
+install.sh         the one-command install
 cmd/
-  agent-harness/   the entrypoint on your PATH; dispatches to the tools below
+  agent-harness/   the entrypoint on your PATH: init, doctor, and dispatch to the tools below
   implementation/  /tdd → worktree + commit
   review/          cold review + host-side gate re-run + push/PR
   retrospective/   /retrospective, files findings, tears down a clean worktree
   pipeline/        chains the three over one ticket, then exits
-  loop/            autonomous daemon over the agent-ready queue
+  loop/            autonomous daemon over the ready queue
   watch/           read-only live viewer over the event stream
 internal/          config, tracker adapters, prompt, sandbox, session, verify, filing, git, …
 scripts/           loop-start.sh (the `start` launcher) + the make check guards
-Dockerfile.base    the published sandbox base image — the harness<->sandbox contract
-docs/CONSUMER.md   how a project adopts the harness
+Dockerfile.base    the published sandbox base image: the harness↔sandbox contract
+docs/              CONSUMER.md, DESIGN.md, troubleshooting.md, adr/
 ```
-
-## Known gotcha: opaque bash errors in the sandbox (BEH-401, BEH-598, BEH-601, BEH-645)
-
-The pinned `claude` CLI's Bash tool surfaces opaque errors that look like the
-agent's own bug but are an environment artifact, in four ways:
-
-1. **Mangled multi-arg bash (BEH-401).** It intermittently mis-parses a single
-   Bash call that both pipes into `head`/`tail` and uses a command substitution
-   like `cd "$(...)"`, surfacing as `head: invalid number of bytes` /
-   `cd: too many arguments`.
-2. **Bare `Error` on a plain non-zero exit (BEH-598).** When a plain command
-   exits non-zero _by design_, the tool can collapse that into a bare `Error`
-   string with the real exit code and stderr stripped — e.g. `git merge-base`
-   exits 1 on disjoint histories (an expected signal), but the agent can't tell
-   that from a real break.
-3. **Dropped intra-call variable assignment (BEH-601).** A `VAR=value; cmd
-   "$VAR"` assignment-then-use within _one_ Bash call can expand `$VAR` to the
-   empty string. The failure is silent (empty output) or surfaces as a path with
-   the prefix missing — e.g. `DP=/abs; ls "$DP/dist"` becomes `ls: cannot access
-   '/dist'`. `&&`-chaining the assignment to its use (`VAR=value && cmd "$VAR"`)
-   expands fine; `;`-separating it is what drops the variable. This bites the
-   common `DP=...; rg ... "$DP"` pattern for spelunking a transitive dep's
-   `.pnpm` types path.
-4. **Spurious gate false-red (BEH-645).** _The worst, because it makes a GREEN
-   gate look RED._ Chaining trailing statements onto a **gate** command in one
-   Bash call — e.g. `pnpm run check > /tmp/check.log 2>&1; echo exit=$?; grep -i
-   error /tmp/check.log | head` — can concatenate those statements as _arguments_
-   onto the gate's own command (the `oxfmt --check` inside `pnpm run check`
-   receives `echo exit=$? grep …` as file args), so the gate fails with
-   `Expected at least one target file. All matched files may have been excluded by
-   ignore rules.` and pnpm emits `[ELIFECYCLE] Command failed with exit code 2`.
-   That is a spurious failure on a gate that actually _passed_ — do not chase it
-   as a real lint/format error or use it to block the diff. Run each verification
-   gate (`pnpm run check`/`lint`/`build`/`test…`) as its **own** Bash call with
-   nothing appended, and if one reds with `ELIFECYCLE`/`Expected at least one
-   target file`, re-run it **alone** before believing it.
-
-Retrying verbatim doesn't help in any case. The bug is in the bundled CLI's
-bash wrapper, so the harness can't patch it; instead every prompt carries a steer
-(`internal/prompt`) telling the agent to run one command per Bash call, avoid
-`cd "$(...)"`, re-run a bare-`Error` command capturing the exit code explicitly
-(`; echo exit=$?`) to tell an expected non-zero exit from a failure, avoid
-intra-call shell variables (inline the absolute path, `&&`-chain instead of `;`,
-or use the Grep/Glob tools with literal absolute paths), and run each verification
-gate as its own Bash call with nothing appended. Bump the pinned
-`CLAUDE_VERSION` (`Dockerfile.base`) if a newer release fixes it upstream.
