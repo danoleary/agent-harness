@@ -76,6 +76,10 @@ func (e Env) promptContext(t Target) prompt.Context {
 type GateResult struct {
 	Outcome    session.Outcome
 	FailedGate string
+	// Log is the failing gate's step log, a filename under the ticket's log dir
+	// (`gate-<name>-<run>.log`); empty when every gate passed. The review hands its
+	// tail to the session it re-launches over a red gate (#111).
+	Log string
 }
 
 // Green reports whether every gate passed.
@@ -144,7 +148,9 @@ func (e Env) Gates(labelPrefix string) GateResult {
 	}
 	defer release()
 	worktreePath := wt.Path()
-	return RunGates(e.Cfg.Gates, func(g config.Gate) session.Outcome {
+	// RunGates stops at the first red, so the last gate run is the failing one.
+	var lastLog string
+	res := RunGates(e.Cfg.Gates, func(g config.Gate) session.Outcome {
 		e.Log.Event(fmt.Sprintf("%s · gate %q: %s", e.Who, g.Name, g.Command))
 		run := GateRun(e.Cfg, worktreePath, labelPrefix, g)
 		run.Retry = hostio.Retry{
@@ -157,8 +163,14 @@ func (e Env) Gates(labelPrefix string) GateResult {
 				))
 			},
 		}
-		return e.Host.Shell(run).Outcome
+		r := e.Host.Shell(run)
+		lastLog = r.Transcript
+		return r.Outcome
 	})
+	if !res.Green() {
+		res.Log = lastLog
+	}
+	return res
 }
 
 // --- CI ----------------------------------------------------------------------

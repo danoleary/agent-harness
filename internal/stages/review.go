@@ -3,6 +3,8 @@ package stages
 import (
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/danoleary/agent-harness/internal/ci"
@@ -10,6 +12,7 @@ import (
 	"github.com/danoleary/agent-harness/internal/fix"
 	"github.com/danoleary/agent-harness/internal/hostio"
 	"github.com/danoleary/agent-harness/internal/loopstream"
+	"github.com/danoleary/agent-harness/internal/prompt"
 	"github.com/danoleary/agent-harness/internal/runlog"
 	"github.com/danoleary/agent-harness/internal/session"
 	"github.com/danoleary/agent-harness/internal/ship"
@@ -47,6 +50,10 @@ const (
 // no-verdict still falls through to fail-closed (the worktree is kept either way).
 const reviewVerdictMaxAttempts = 2
 
+// gateLogTailLines bounds how much of a red gate's step log the re-launched review
+// is handed (#111): enough for a test runner's failure report, not the whole run.
+const gateLogTailLines = 80
+
 // Review runs the second stage: over the worktree implementation left behind, run
 // a *cold* /review-worktree session (fixes committed locally only), then —
 // host-side, holding GH_TOKEN — independently re-run the quality gates in a
@@ -77,7 +84,7 @@ func Review(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Res
 	if prior != nil {
 		log.Event(fmt.Sprintf("review — branch unchanged since the last review at %s (%s); handing the session that verdict (#44)", prior.Head, prior.Disposition))
 	}
-	reviewSessionRun := reviewRun(cfg, subject, prior)
+	reviewSessionRun := reviewRun(cfg, subject, prior, nil)
 	prep := prepRun(cfg, worktreePath)
 	prep.Retry = hostio.Retry{
 		MaxAttempts: oomMaxAttempts,
@@ -158,12 +165,8 @@ func Review(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Res
 	// runReviewSession launches one cold /review-worktree session over the worktree.
 	// The BEH-624 in-stage re-launch below gets its own label, so the Runner mints it
 	// a distinct --name + transcript and it cannot collide with the first attempt.
-	runReviewSession := func(attempt int) session.Outcome {
-		run := reviewSessionRun
-		if attempt > 1 {
-			run.Label = fmt.Sprintf("%s-retry%d", reviewSession, attempt)
-		}
-		res := f.launch(run, fmt.Sprintf("attempt %d/%d", attempt, reviewVerdictMaxAttempts))
+	launchReview := func(run hostio.AgentRun, note string) session.Outcome {
+		res := f.launch(run, note)
 		// A spending-cap abort (BEH-494) killed the review session before it could
 		// review anything — name that distinct retry-after-reset class so a log reader
 		// isn't misled by the host-side gate result below (which still runs against the
@@ -173,15 +176,23 @@ func Review(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Res
 		}
 		return res.Outcome
 	}
+	runReviewSession := func(attempt int) session.Outcome {
+		run := reviewSessionRun
+		if attempt > 1 {
+			run.Label = fmt.Sprintf("%s-retry%d", reviewSession, attempt)
+		}
+		return launchReview(run, fmt.Sprintf("attempt %d/%d", attempt, reviewVerdictMaxAttempts))
+	}
 
 	// The host gate re-runs the config-declared Gates in throwaway containers and is
 	// the ONLY thing that authorises a push (internal/fix). It is keyed by a label
 	// prefix so it can run more than once per stage: the pre-push conflict path
-	// re-gates the resolved tree (BEH-581) and the BEH-624 review re-launch re-gates
-	// the possibly-rewritten tree.
+	// re-gates the resolved tree (BEH-581), and the red-gate (#111) and BEH-624
+	// review re-launches re-gate the possibly-rewritten tree.
 	fixes := fix.Env{Host: h, Cfg: cfg, Log: log, Who: reviewSession}
 	target := fix.Target{Slug: subject.Slug, Ticket: t}
 
+	headBeforeReview, _ := wt.HeadSHA()
 	reviewOutcome := runReviewSession(1)
 
 	// --- ground truth + push gate (harness, host-side) ---
@@ -202,6 +213,26 @@ func Review(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Res
 	// push decision — whether the qualitative review completed, and whether the one
 	// recoverable incompleteness class is worth another turn.
 	result := verify.Review(wt, gateRes.Outcome, reviewOutcome)
+
+	// #111: a host gate red over the commit the review session itself made is
+	// recoverable once. The session is re-launched with the failing gate's name and
+	// the tail of its log, and the gate re-runs over whatever it commits — so a
+	// Consumer prompt need not have the session run the heavy suites the host gate
+	// repeats on the same commit. The host gate stays the only push authority: the
+	// re-launch's own report decides nothing. verify.ReviewGateRetry keeps the
+	// handoff's own red, a dirty tree, an OOM, a cap and an unrunnable gate on the
+	// fail-closed path they always took.
+	headAfterReview, _ := wt.HeadSHA()
+	committed := headBeforeReview != "" && headAfterReview != headBeforeReview
+	if verify.ReviewGateRetry(gateRes.Outcome, reviewOutcome, committed, wt.Clean()) {
+		log.Event(fmt.Sprintf("review ↻ host gate %q is red (exit %d) over the review's own commit — re-launching the review once with its log tail (#111)", gateRes.FailedGate, gateExit))
+		run := reviewRun(cfg, subject, nil, &prompt.RedGate{Name: gateRes.FailedGate, Log: gateLogTail(log.Dir, gateRes)})
+		run.Label = reviewSession + "-gatefix"
+		reviewOutcome = launchReview(run, "red-gate re-launch 1/1")
+		gateRes = fixes.Gates(gateStep + "-gatefix")
+		gateExit = gateRes.Outcome.ExitCode
+		result = verify.Review(wt, gateRes.Outcome, reviewOutcome)
+	}
 
 	// BEH-624: the cheapest incompleteness class to recover. A review that exits
 	// cleanly (code 0) one turn short of its verdict — over a clean worktree whose
@@ -427,6 +458,24 @@ func Review(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Res
 	log.Event("review ✓ " + ciResult.Reason)
 
 	return Result{OK: true, Disposition: Shipped}
+}
+
+// gateLogTail is the last gateLogTailLines lines of a red gate's step log under
+// logDir, for the review re-launched over it (#111). A log the harness cannot read
+// falls back to the stderr tail the gate's outcome carries.
+func gateLogTail(logDir string, g fix.GateResult) string {
+	raw, err := os.ReadFile(filepath.Join(logDir, g.Log))
+	if g.Log == "" || err != nil || strings.TrimSpace(string(raw)) == "" {
+		if g.Outcome.StderrTail != "" {
+			return g.Outcome.StderrTail
+		}
+		return "(the gate's log could not be read)"
+	}
+	lines := strings.Split(strings.TrimRight(string(raw), "\n"), "\n")
+	if len(lines) > gateLogTailLines {
+		lines = lines[len(lines)-gateLogTailLines:]
+	}
+	return strings.Join(lines, "\n")
 }
 
 // mergedPrerequisiteResolver is the CI watch's Resolve (#82): when the reactive

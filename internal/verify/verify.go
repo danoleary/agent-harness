@@ -378,6 +378,37 @@ func reviewVerdictRetry(out session.Outcome, clean, gatesGreen bool) bool {
 		gatesGreen
 }
 
+// ReviewGateRetry decides whether a red host gate is worth one in-stage re-launch
+// of the review session, handed the failing gate's output (#111). Without it a red
+// gate failed the ticket outright, so Consumer prompts had the session run the
+// heavy suites itself first — on the same commit the host gate then re-ran.
+//
+// The bar is a red gate over a commit the session itself made (committed): that
+// commit is the session's to repair. Every other red routes to fail-closed as
+// before:
+//
+//   - A gate over a commit the review did not make (the implementation handoff)
+//     is not the review's regression to fix.
+//   - A dirty worktree means the gate validated a different tree than would ship.
+//   - A blocked verdict will not push however the gate turns out.
+//   - An OOM, a watchdog cap-kill or a spending-cap abort — of the session or the
+//     gate — is the environment, not the diff: a re-launch would hit it again.
+//   - A gate the shell could not run (exit 127/126, or make reporting it) is a
+//     toolchain missing in the gate container, which no session can install (#46).
+func ReviewGateRetry(gate session.Outcome, out session.Outcome, committed, clean bool) bool {
+	if gate.ExitCode == 0 || !committed || !clean || out.ReviewBlocked {
+		return false
+	}
+	if out.ExitCode == oomExitCode || out.CapKilled || out.SpendingCapAbort {
+		return false
+	}
+	if gate.ExitCode == oomExitCode || gate.CapKilled {
+		return false
+	}
+	_, unrunnable := gateUnrunnable(gate)
+	return !unrunnable
+}
+
 // PostRebasePush is the second empty-diff gate, checked AFTER the pre-push rebase
 // replays the branch onto the latest origin/main and BEFORE the push + `gh pr create`
 // (BEH-680). The BEH-603 empty-diff check in [Review] runs on the pre-rebase tree, so
