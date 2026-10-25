@@ -15,23 +15,16 @@ RUN curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${TARGETARCH}.tar.gz" \
 # The module and build caches live on the `[cache]` volume, or every session
 # pays a cold `go mod download` and a cold compile: HOME is ephemeral in a `--rm`
 # container. GOTOOLCHAIN=local stops go from fetching a different toolchain.
+#
+# ENV PATH is the whole story: post_create and every Gate run as a non-login
+# `bash -c` (#38), which sources no profile script, so they see this PATH exactly
+# as the session does. scripts/check-sandbox-image.sh, run by CI, probes this.
 ENV PATH=/usr/local/go/bin:/go/bin:$PATH \
 	GOPATH=/go \
 	GOMODCACHE=/go/pkg/mod \
 	GOCACHE=/go/cache \
 	GOTOOLCHAIN=local \
 	GOFLAGS=-buildvcs=false
-
-# ENV alone is not enough: post_create and every Gate run as `bash -lc`, and a
-# login shell's /etc/profile RESETS PATH, so go and gofmt vanished there and
-# `make check` exited 127 host-side on a branch that passed it in-session (#40).
-# /etc/profile sources profile.d after its reset, so put the toolchain back on
-# PATH there. The other GO* vars survive a login shell untouched.
-# scripts/check-sandbox-image.sh, run by CI, probes exactly this.
-RUN printf '%s\n' \
-	'case ":$PATH:" in *:/usr/local/go/bin:*) ;; *) PATH="/usr/local/go/bin:/go/bin:$PATH" ;; esac' \
-	'export PATH' \
-	>/etc/profile.d/go.sh
 
 # /go is the cache path, which the harness chowns itself (HARNESS_CACHE_PATH).
 ENV HARNESS_CHOWN_PATHS=""

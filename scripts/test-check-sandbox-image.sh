@@ -2,7 +2,8 @@
 # Unit tests for check-sandbox-image.sh (#40).
 #
 # The probe runs a sandbox image the way a Gate does — through the entrypoint, in
-# a LOGIN shell — and fails if a toolchain binary is not on that shell's PATH. A
+# a non-login `bash -c` (#38) — and fails if a toolchain binary is not on that
+# shell's PATH. A
 # fake `docker` (DOCKER=...) stands in for the daemon: it records its argv and
 # answers `command -v` from a list of "installed" tools, so the cases run with no
 # docker and no image. Like the other harness guards, this must run under macOS's
@@ -26,9 +27,9 @@ trap "rm -rf $TEST_DIR" EXIT
 SCRIPT_PATH="$(dirname "$0")/check-sandbox-image.sh"
 
 # The fake docker logs its argv one arg per line to $FAKE_LOG, then plays the
-# container: it evaluates the bash -lc script it was handed with `command -v`
+# container: it evaluates the bash -c script it was handed with `command -v`
 # answered from $FAKE_TOOLS (space-separated), so a tool absent from the list is
-# "not on the login shell's PATH".
+# "not on the Gate's PATH".
 FAKE_DOCKER="$TEST_DIR/docker"
 cat > "$FAKE_DOCKER" <<'EOF'
 #!/bin/bash
@@ -49,9 +50,9 @@ chmod +x "$FAKE_DOCKER"
 echo "Testing check-sandbox-image.sh..."
 echo
 
-# Test 1: the #40 bug — go is in the image but not on a login shell's PATH. The
+# Test 1: the #40 bug — go is in the image but not on the Gate shell's PATH. The
 # report must name the missing tool, so a broken probe can't fake a RED.
-echo -n "Test 1: a tool missing from the login shell is flagged by name... "
+echo -n "Test 1: a tool missing from the Gate's shell is flagged by name... "
 report=$(DOCKER="$FAKE_DOCKER" FAKE_LOG="$TEST_DIR/log1" FAKE_TOOLS="gofmt" \
     "$SCRIPT_PATH" img:test 2>&1) && status=0 || status=$?
 if [ "$status" -eq 0 ]; then
@@ -65,24 +66,25 @@ else
 fi
 
 # Test 2: every tool resolves — the probe passes.
-echo -n "Test 2: go and gofmt both on the login shell's PATH passes... "
+echo -n "Test 2: go and gofmt both on the Gate shell's PATH passes... "
 if DOCKER="$FAKE_DOCKER" FAKE_LOG="$TEST_DIR/log2" FAKE_TOOLS="go gofmt" \
     "$SCRIPT_PATH" img:test > /dev/null 2>&1; then
     echo -e "${GREEN}PASS${NC}"
 else
-    echo -e "${RED}FAIL${NC} - a login shell with go and gofmt should pass"
+    echo -e "${RED}FAIL${NC} - a Gate shell with go and gofmt should pass"
     exit 1
 fi
 
 # Test 3: the probe runs the image the way a Gate does — a throwaway container,
-# through the entrypoint (which needs PROJECT_PATH), in `bash -lc`. Asserting the
-# argv is the point: probing with plain `bash -c` is what let #40 ship.
-echo -n "Test 3: probes via docker run --rm, PROJECT_PATH, bash -lc... "
+# through the entrypoint (which needs PROJECT_PATH), in the non-login `bash -c`
+# the harness uses since #38. Asserting the argv is the point: a probe in a
+# different shell than the Gate's checks a PATH the Gate never sees (#40, #83).
+echo -n "Test 3: probes via docker run --rm, PROJECT_PATH, bash -c... "
 DOCKER="$FAKE_DOCKER" FAKE_LOG="$TEST_DIR/log3" FAKE_TOOLS="go gofmt" \
     "$SCRIPT_PATH" img:test > /dev/null 2>&1
 argv="$(tr '\n' ' ' < "$TEST_DIR/log3")"
 case "$argv" in
-"run --rm -e PROJECT_PATH="*" img:test bash -lc "*)
+"run --rm -e PROJECT_PATH="*" img:test bash -c "*)
     echo -e "${GREEN}PASS${NC}"
     ;;
 *)

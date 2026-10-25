@@ -103,13 +103,14 @@ Probe a built sandbox image for its toolchain the way a Gate sees it (#40).
 
 ### Purpose
 
-The harness runs `post_create` and every Gate as `bash -lc <command>` through the
-base image's entrypoint. A login shell sources `/etc/profile`, which **resets
-`PATH`**, so a toolchain put on `PATH` only by a Dockerfile `ENV PATH=...` is
-there in the session and gone in the Gate: `make check` exited 127 host-side on a
-branch that had passed it in-session. This probe runs the image the same way
-(`docker run --rm -e PROJECT_PATH=/tmp <image> bash -lc ...`) and fails, naming
-each tool, if one does not resolve.
+The harness runs `post_create` and every Gate as a non-login `bash -c <command>`
+through the base image's entrypoint (#38), so a Gate sees exactly the image's
+`ENV PATH` — `/etc/profile` and `/etc/profile.d/*.sh` are **not** sourced. A tool
+the Gate cannot resolve makes `make check` exit 127 host-side, and the run stops
+as an environment failure. This probe runs the image the same way
+(`docker run --rm -e PROJECT_PATH=/tmp <image> bash -c ...`) and fails, naming
+each tool, if one does not resolve. It must use the Gate's shell: a probe in a
+login shell checks a `PATH` the Gate never sees (#83).
 
 It needs a docker daemon and a built image, so it is **not** part of `make check`
 (which stays offline-runnable). CI's `self-image` job builds the base and this
