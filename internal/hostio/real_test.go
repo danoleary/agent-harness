@@ -1,11 +1,14 @@
 package hostio
 
 import (
+	"errors"
 	"path/filepath"
 	"testing"
 
 	"github.com/danoleary/agent-harness/internal/config"
+	"github.com/danoleary/agent-harness/internal/gittest"
 	"github.com/danoleary/agent-harness/internal/runlog"
+	"github.com/danoleary/agent-harness/internal/session"
 )
 
 func testReal(t *testing.T, cfg config.Config) *Real {
@@ -14,20 +17,21 @@ func testReal(t *testing.T, cfg config.Config) *Real {
 	if err != nil {
 		t.Fatalf("runlog.New: %v", err)
 	}
-	return New(cfg, log, "20260920-101500", false)
+	return New(cfg, log, "20260920-101500", false, "proj-7")
 }
 
-// The adapter binds the checkout path and the branch prefix once and mints one
-// [git.Worktree] per slug, so a Stage names the ticket and nothing else — the
-// checkout, the branch and the worktree path never travel as three loose strings.
-func TestRealBindsTheCheckoutAndBranchPrefix(t *testing.T) {
+// The adapter is bound to one ticket: the checkout path, the branch prefix and the
+// slug are fixed when it is built, and it hands out that ticket's [git.Worktree]
+// whole, so a Stage never names the ticket again.
+func TestRealIsBoundToOneTicketsWorktree(t *testing.T) {
 	h := testReal(t, config.Config{Host: config.Host{ProjectPath: "/Users/dan/my-project"}, Project: config.Project{BranchPrefix: "feat"}})
 
-	if got, want := h.BranchName("proj-7"), "feat/proj-7"; got != want {
-		t.Errorf("BranchName = %q, want %q", got, want)
+	wt := h.Worktree()
+	if got, want := wt.Branch(), "feat/proj-7"; got != want {
+		t.Errorf("Branch = %q, want %q", got, want)
 	}
-	if got := h.WorktreePath("proj-7"); !filepath.IsAbs(got) || filepath.Base(got) != "proj-7" {
-		t.Errorf("WorktreePath = %q, want an absolute path ending in the slug", got)
+	if got := wt.Path(); !filepath.IsAbs(got) || filepath.Base(got) != "proj-7" {
+		t.Errorf("Path = %q, want an absolute path ending in the slug", got)
 	}
 }
 
@@ -128,15 +132,16 @@ func TestTrackerIsResolvedOnceAndCached(t *testing.T) {
 }
 
 // NewFake is a healthy host on the happy path, so a test overrides only the one
-// signal it is about.
+// signal it is about. Its git is not scripted: a fresh repo has no worktree for the
+// ticket, and the Fake says so.
 func TestNewFakeIsAHealthyHost(t *testing.T) {
-	f := NewFake()
+	f := NewFake(gittest.New(t).Checkout(), "proj-1")
 
 	if err := f.Preflight(); err != nil {
 		t.Errorf("Preflight = %v, want a launchable host", err)
 	}
-	if !f.WorktreeExists("x") || !f.WorktreeClean("x") || f.BranchDiffEmpty("x") {
-		t.Error("the default worktree is present, clean, and carries a diff")
+	if f.Worktree().Exists() {
+		t.Error("nothing created the ticket's worktree, so it does not exist")
 	}
 	if got := f.Agent(AgentRun{Label: "review"}); got.ExitCode != 0 || !got.ReviewVerdictEmitted {
 		t.Errorf("default agent outcome = %+v, want a clean session that reached its verdict", got)
@@ -146,9 +151,53 @@ func TestNewFakeIsAHealthyHost(t *testing.T) {
 	}
 }
 
-// ADR-0019: the PR loop's Host binds one slug to the PR's head branch, which the
-// harness did not name; the worktree path stays slug-keyed and every other slug
-// keeps the prefix-derived branch.
+// #28: the Fake's git state is git's. A session that commits inside AgentFn moves
+// the branch the Stage reads next, and a push the Fake lets through reaches origin
+// — state changes the boolean flags could only fake with a per-test subclass.
+func TestFakeGitStateChangesWithTheRepository(t *testing.T) {
+	repo := gittest.New(t)
+	f := NewFake(repo.Checkout(), "proj-1")
+	wt := repo.Handoff("proj-1")
+	f.AgentFn = func(int, AgentRun) session.Outcome {
+		repo.Commit(wt, "more.txt", "more\n", "feat: and more")
+		return session.Outcome{}
+	}
+
+	if got := f.Worktree().CommitsAhead(); got != 1 {
+		t.Fatalf("CommitsAhead = %d, want the one handoff commit", got)
+	}
+	f.Agent(AgentRun{Label: "implementation"})
+	if got := f.Worktree().CommitsAhead(); got != 2 {
+		t.Errorf("CommitsAhead = %d after a session committed, want 2", got)
+	}
+	if f.Worktree().BranchPushed() {
+		t.Fatal("nothing pushed the branch yet")
+	}
+	if err := f.PushForceWithLease(); err != nil {
+		t.Fatalf("PushForceWithLease: %v", err)
+	}
+	if !f.Worktree().BranchPushed() || repo.OnOrigin("feat/proj-1") == "" {
+		t.Error("a push the Fake lets through must reach origin")
+	}
+}
+
+// The remote half stays scripted: a push the test fails never reaches origin.
+func TestFakeScriptedPushFailureReachesNothing(t *testing.T) {
+	repo := gittest.New(t)
+	repo.Handoff("proj-1")
+	f := NewFake(repo.Checkout(), "proj-1")
+	f.ForcePushErr = errors.New("remote rejected")
+
+	if err := f.PushForceWithLease(); err == nil {
+		t.Fatal("the scripted failure must surface")
+	}
+	if repo.OnOrigin("feat/proj-1") != "" {
+		t.Error("a failed push must leave origin untouched")
+	}
+}
+
+// ADR-0019: the PR loop's Host binds its slug to the PR's head branch, which the
+// harness did not name; the worktree path stays slug-keyed.
 func TestNewOnBranchBindsOneSlugToTheNamedBranch(t *testing.T) {
 	log, err := runlog.New(t.TempDir(), "PR-12")
 	if err != nil {
@@ -157,13 +206,10 @@ func TestNewOnBranchBindsOneSlugToTheNamedBranch(t *testing.T) {
 	cfg := config.Config{Host: config.Host{ProjectPath: "/p"}, Project: config.Project{BranchPrefix: "feat"}}
 	h := NewOnBranch(cfg, log, "20260920-101500", false, "pr-12", "alice/widget")
 
-	if got := h.BranchName("pr-12"); got != "alice/widget" {
-		t.Errorf("BranchName(pr-12) = %q, want the PR's head branch", got)
+	if got := h.Worktree().Branch(); got != "alice/widget" {
+		t.Errorf("Branch = %q, want the PR's head branch", got)
 	}
-	if got := filepath.Base(h.WorktreePath("pr-12")); got != "pr-12" {
-		t.Errorf("WorktreePath(pr-12) ends in %q, want the slug", got)
-	}
-	if got := h.BranchName("proj-7"); got != "feat/proj-7" {
-		t.Errorf("BranchName(proj-7) = %q, want an unbound slug to keep its prefix", got)
+	if got := filepath.Base(h.Worktree().Path()); got != "pr-12" {
+		t.Errorf("Path ends in %q, want the slug", got)
 	}
 }

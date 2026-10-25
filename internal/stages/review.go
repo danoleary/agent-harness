@@ -53,10 +53,10 @@ const reviewVerdictMaxAttempts = 2
 // throwaway container and, only if they pass, push the branch and open the PR.
 // Ground truth is the harness's own gate run, never the agent's self-report.
 // Every host-side effect goes through h, so the whole body is reachable from a
-// test with hostio.NewFake().
+// test with hostio.NewFake over a temp repo.
 func Review(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Result {
-	slug := ticket.Slug(args.Identifier)
-	worktreePath := h.WorktreePath(slug)
+	wt := h.Worktree()
+	worktreePath := wt.Path()
 
 	dry := ""
 	if args.DryRun {
@@ -79,11 +79,11 @@ func Review(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Res
 	log.Event(fmt.Sprintf("fetched %s — %s", t.Identifier, t.Title))
 
 	subject := NewSubject(h, args.Identifier, log.Dir, t)
-	subject.Base, _ = h.BaseSHA(slug)
+	subject.Base, _ = wt.BaseSHA()
 	// A re-run whose branch gained no commit since the last review is handed that
 	// review's verdict and the range it covered, so the session re-emits it after the
 	// gate rather than re-derive it and stack a churn commit to show for it (#44).
-	headAtStart, _ := h.HeadSHA(slug)
+	headAtStart, _ := wt.HeadSHA()
 	prior := readPriorReview(log.Dir, headAtStart)
 	if prior != nil {
 		log.Event(fmt.Sprintf("review — branch unchanged since the last review at %s (%s); handing the session that verdict (#44)", prior.Head, prior.Disposition))
@@ -109,7 +109,7 @@ func Review(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Res
 
 	// Precondition: the implementation slice must have left a worktree. Without it
 	// there is nothing to review (run `implementation <ticket>` first).
-	if !h.WorktreeExists(slug) {
+	if !wt.Exists() {
 		log.Event(fmt.Sprintf("review ✗ no worktree at %s — run `implementation %s` first", worktreePath, args.Identifier))
 		return Result{OK: false}
 	}
@@ -195,7 +195,7 @@ func Review(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Res
 	// re-gates the resolved tree (BEH-581) and the BEH-624 review re-launch re-gates
 	// the possibly-rewritten tree.
 	fixes := fix.Env{Host: h, Cfg: cfg, Log: log, Who: reviewSession}
-	target := fix.Target{Slug: slug, Ticket: t}
+	target := fix.Target{Slug: subject.Slug, Ticket: t}
 
 	reviewOutcome := runReviewSession(1)
 
@@ -206,7 +206,7 @@ func Review(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Res
 	}
 
 	log.Event(fmt.Sprintf("re-running gates host-side (cap %d min)", int(cfg.ReviewTimeout.Minutes())))
-	gateRes := fixes.Gates(slug, gateStep)
+	gateRes := fixes.Gates(gateStep)
 	gateExit := gateRes.Outcome.ExitCode
 
 	// verify.Review is the whole push gate: it re-reads the worktree's git state for
@@ -216,7 +216,7 @@ func Review(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Res
 	// table they feed. It also carries the two verdicts that ride along with the
 	// push decision — whether the qualitative review completed, and whether the one
 	// recoverable incompleteness class is worth another turn.
-	result := verify.Review(h, slug, gateRes.Outcome, reviewOutcome)
+	result := verify.Review(wt, gateRes.Outcome, reviewOutcome)
 
 	// BEH-624: the cheapest incompleteness class to recover. A review that exits
 	// cleanly (code 0) one turn short of its verdict — over a clean worktree whose
@@ -236,16 +236,16 @@ func Review(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Res
 			attempt-1, reviewVerdictMaxAttempts-1,
 		))
 		reviewOutcome = runReviewSession(attempt)
-		gateRes = fixes.Gates(slug, fmt.Sprintf("%s-retry%d", gateStep, attempt))
+		gateRes = fixes.Gates(fmt.Sprintf("%s-retry%d", gateStep, attempt))
 		gateExit = gateRes.Outcome.ExitCode
-		result = verify.Review(h, slug, gateRes.Outcome, reviewOutcome)
+		result = verify.Review(wt, gateRes.Outcome, reviewOutcome)
 	}
 
 	// Record the verdict and the HEAD it covered for a re-run (#44). Only a clean
 	// tree is recorded: uncommitted edits are not part of any HEAD the verdict names.
 	rememberVerdict := func() {
-		head, err := h.HeadSHA(slug)
-		if err != nil || reviewOutcome.ReviewDisposition == "" || !h.WorktreeClean(slug) {
+		head, err := wt.HeadSHA()
+		if err != nil || reviewOutcome.ReviewDisposition == "" || !wt.Clean() {
 			return
 		}
 		if err := recordReview(log.Dir, head, reviewOutcome.ReviewDisposition); err != nil {
@@ -304,11 +304,11 @@ func Review(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Res
 		// unverified, half-applied fix is never pushed — only preserved. A no-op when
 		// the worktree is already clean (a red-but-clean gate has nothing uncommitted
 		// to recover).
-		if !h.WorktreeClean(slug) {
-			if cErr := h.Checkpoint(slug, args.Identifier, reviewSession); cErr != nil {
+		if !wt.Clean() {
+			if cErr := wt.Checkpoint(args.Identifier, reviewSession); cErr != nil {
 				log.Event("⚠ review session left uncommitted edits and the recovery checkpoint commit failed (" + cErr.Error() + ") — recover them manually at " + worktreePath)
 			} else {
-				log.Event("✓ harness recovery checkpoint committed on " + h.BranchName(slug) + " — the review session's in-progress edits are preserved (unverified: a resumed review will see them, finish or re-run before opening a PR)")
+				log.Event("✓ harness recovery checkpoint committed on " + wt.Branch() + " — the review session's in-progress edits are preserved (unverified: a resumed review will see them, finish or re-run before opening a PR)")
 			}
 		}
 		// Red/crash/dirty → keep the worktree (recoverable artifact), do not push.
@@ -346,7 +346,7 @@ func Review(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Res
 	// beside the post-PR CI fix) and re-runs the host gate on the resolved tree
 	// before ship pushes. The hook returns false when it could not land a clean, re-gated rebase,
 	// having already left a tracker breadcrumb so the work surfaces autonomously.
-	landing := ship.Land(h, log, slug, t, func() bool {
+	landing := ship.Land(h, log, t, func() bool {
 		return resolveRebaseConflict(fixes, target, comment, "pre-push rebase", gateStep+"-postrebase")
 	})
 	switch landing.Verdict {
@@ -361,7 +361,7 @@ func Review(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Res
 		log.Event("review ✗ disjoint branch history — no common ancestor with origin/main; not a content conflict, needs manual recovery (BEH-597) — keeping worktree, nothing pushed")
 		comment(fmt.Sprintf(
 			"Branch `%s` has a disjoint history from `main` (no common ancestor / empty merge-base), so it cannot be rebased or merged as-is. This is not a content conflict — the handoff commits need to be re-applied onto current `main` (e.g. `git reset --hard origin/main` then cherry-pick them). The branch passed cold review and the harness gate; it is waiting in a worktree. (BEH-597)",
-			h.BranchName(slug),
+			wt.Branch(),
 		))
 		return Result{OK: false}
 	case ship.Conflict:
@@ -398,10 +398,9 @@ func Review(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Res
 	// wall-clock. The gh polling/log-fetch is host-side (ADR-0002); only the
 	// diagnose+fix happens in the sandbox, which is why Fix is the only thing the
 	// stage supplies.
-	log.Event("watching CI for " + h.BranchName(slug) + " …")
+	log.Event("watching CI for " + wt.Branch() + " …")
 	ciResult := h.WatchCI(hostio.CIWatch{
-		Slug: slug,
-		Fix:  fixes.CI(target),
+		Fix: fixes.CI(target),
 		Resolve: mergedPrerequisiteResolver(log, t,
 			func() (ticket.Ticket, error) { return client.FetchTicket(args.Identifier) },
 			func(trigger string) bool {
@@ -434,7 +433,7 @@ func Review(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Res
 	if !ciResult.OK {
 		log.Event("review ✗ CI did not go green: " + ciResult.Reason + " — keeping PR + worktree")
 		if s := ci.Summarize(ciResult.Failing); s != "" {
-			fmt.Fprintf(os.Stderr, "\nFailing CI checks for %s:\n%s", h.BranchName(slug), s)
+			fmt.Fprintf(os.Stderr, "\nFailing CI checks for %s:\n%s", wt.Branch(), s)
 		}
 		// CI red after the auto-fix budget still leaves a reviewable PR for a human to
 		// take over — NOT a ship failure, so the breaker must not count it.
@@ -501,9 +500,9 @@ func resolveRebaseConflict(fixes fix.Env, target fix.Target, comment func(string
 	res := fixes.ResolveConflict(fix.Conflict{
 		Target:   target,
 		Strategy: fix.Rebase,
-		Regate:   func() fix.GateResult { return fixes.Gates(target.Slug, gateLabel) },
+		Regate:   func() fix.GateResult { return fixes.Gates(gateLabel) },
 	})
-	branch := fixes.Host.BranchName(target.Slug)
+	branch := fixes.Host.Worktree().Branch()
 	switch {
 	case res.OK, res.SpendingCapAbort:
 	case res.Resolved:

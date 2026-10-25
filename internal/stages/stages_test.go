@@ -41,36 +41,44 @@ func newProvisionLog(t *testing.T, identifier string) *runlog.Logger {
 // first failed test. Re-running post_create is safe because a Consumer's toolchain hook
 // is required to be idempotent.
 func TestProvisionWorktreeReprovisionsExistingWorktree(t *testing.T) {
-	h := hostio.NewFake()
-	h.Exists = true
+	h, repo := handedOff(t, "BEH-796")
+	before, _ := h.Worktree().HeadSHA()
+	repo.Dirty(h.Worktree())
 	cfg := config.Config{Project: config.Project{BranchPrefix: "feat", PostCreate: "cd web && pnpm install"}}
 
-	if err := provisionWorktree(h, cfg, "beh-796-x", newProvisionLog(t, "BEH-796")); err != nil {
+	if err := provisionWorktree(h, cfg, newProvisionLog(t, "BEH-796")); err != nil {
 		t.Fatalf("provisionWorktree on an existing worktree: %v", err)
 	}
 	if len(h.Shells) != 1 || h.Shells[0].Label != postCreateStep {
 		t.Errorf("post_create must re-run on an existing worktree — a resumed tree can be stripped of its deps (BEH-796); shells = %+v", h.Shells)
 	}
-	for _, c := range h.Calls {
-		if strings.HasPrefix(c, "create-worktree") {
-			t.Error("an existing worktree must not be re-created")
-		}
+	if after, _ := h.Worktree().HeadSHA(); after != before || h.Worktree().Clean() {
+		t.Error("an existing worktree must not be re-created: its commits and its uncommitted work stay")
 	}
 }
 
 // The fresh-ticket path is unchanged by BEH-796: an absent worktree is created
 // host-side and then provisioned, in that order.
 func TestProvisionWorktreeCreatesThenProvisionsFreshWorktree(t *testing.T) {
-	h := hostio.NewFake()
-	h.Exists = false
+	h, _ := fresh(t, "BEH-796")
+	var existed bool
+	h.ShellFn = func(int, hostio.ShellRun) session.Outcome {
+		existed = h.Worktree().Exists()
+		return session.Outcome{}
+	}
 	cfg := config.Config{Project: config.Project{BranchPrefix: "feat", PostCreate: "cd web && pnpm install"}}
 
-	if err := provisionWorktree(h, cfg, "beh-796-fresh", newProvisionLog(t, "BEH-796")); err != nil {
+	if err := provisionWorktree(h, cfg, newProvisionLog(t, "BEH-796")); err != nil {
 		t.Fatalf("provisionWorktree on a fresh worktree: %v", err)
 	}
-	want := []string{"create-worktree beh-796-fresh", "shell " + postCreateStep}
-	if !reflect.DeepEqual(h.Calls, want) {
-		t.Errorf("calls = %v, want the worktree created host-side and then provisioned, in that order (%v)", h.Calls, want)
+	if want := []string{"shell " + postCreateStep}; !reflect.DeepEqual(h.Calls, want) {
+		t.Errorf("calls = %v, want one post_create run (%v)", h.Calls, want)
+	}
+	if !existed {
+		t.Error("the worktree must be created host-side before post_create provisions it")
+	}
+	if got := h.Worktree().Branch(); h.Worktree().CommitsAhead() != 0 || !h.Worktree().BranchExists() {
+		t.Errorf("a fresh worktree is a new %s cut from origin/main", got)
 	}
 }
 
@@ -79,17 +87,16 @@ func TestProvisionWorktreeCreatesThenProvisionsFreshWorktree(t *testing.T) {
 // error under a container failure. This is the edge the BEH-796 restructure could
 // regress — post_create is no longer nested under the creation branch.
 func TestProvisionWorktreeSkipsPostCreateWhenCreationFails(t *testing.T) {
-	h := hostio.NewFake()
-	h.Exists = false
-	h.CreateErr = errors.New("git worktree add: boom")
+	h, repo := fresh(t, "BEH-796")
+	repo.BlockWorktrees()
 	cfg := config.Config{Project: config.Project{BranchPrefix: "feat", PostCreate: "cd web && pnpm install"}}
 
-	err := provisionWorktree(h, cfg, "beh-796-broken", newProvisionLog(t, "BEH-796"))
+	err := provisionWorktree(h, cfg, newProvisionLog(t, "BEH-796"))
 	if err == nil {
 		t.Fatal("a failed worktree creation must be fatal")
 	}
-	if !strings.Contains(err.Error(), "git worktree add: boom") {
-		t.Errorf("err = %v, want it to wrap the underlying creation failure", err)
+	if !strings.Contains(err.Error(), "creating worktree "+h.Worktree().Path()) || !strings.Contains(err.Error(), "exit status") {
+		t.Errorf("err = %v, want it to wrap the underlying git failure", err)
 	}
 	if len(h.Shells) != 0 {
 		t.Errorf("post_create must not run when there is no worktree to provision, got %+v", h.Shells)
@@ -100,15 +107,14 @@ func TestProvisionWorktreeSkipsPostCreateWhenCreationFails(t *testing.T) {
 // BEH-796 restructure lifted that guard out from under the creation branch — so pin
 // it: an unconfigured hook must still be skipped on both provisioning paths.
 func TestProvisionWorktreeSkipsUnconfiguredPostCreate(t *testing.T) {
-	h := hostio.NewFake()
-	h.Exists = false
+	h, _ := fresh(t, "BEH-796")
 	cfg := config.Config{Project: config.Project{BranchPrefix: "feat"}}
 
-	if err := provisionWorktree(h, cfg, "beh-796-nohook", newProvisionLog(t, "BEH-796")); err != nil {
+	if err := provisionWorktree(h, cfg, newProvisionLog(t, "BEH-796")); err != nil {
 		t.Fatalf("provisionWorktree with no post_create: %v", err)
 	}
-	if len(h.Calls) != 1 || h.Calls[0] != "create-worktree beh-796-nohook" {
-		t.Errorf("an absent worktree must still be created when there is no post_create hook; calls = %v", h.Calls)
+	if !h.Worktree().Exists() {
+		t.Error("an absent worktree must still be created when there is no post_create hook")
 	}
 	if len(h.Shells) != 0 {
 		t.Errorf("an empty post_create must not be run, got %+v", h.Shells)
@@ -420,8 +426,7 @@ func TestRetrospectiveSkipsWhenNoPipelineInputs(t *testing.T) {
 	}
 	log := &runlog.Logger{Dir: logDir}
 
-	h := hostio.NewFake()
-	h.BranchThere = false // no feat/ branch: the /tdd step produced nothing
+	h, _ := fresh(t, "BEH-318") // no feat/ branch: the /tdd step produced nothing
 
 	res := Retrospective(h, config.Config{Host: config.Host{ProjectPath: herd}}, log, Args{Identifier: "BEH-318"})
 

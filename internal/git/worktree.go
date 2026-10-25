@@ -11,6 +11,10 @@ import (
 	"github.com/danoleary/agent-harness/internal/proc"
 )
 
+// BaseRef is the base every ticket branch is cut from, measured against and
+// replayed onto: the integration branch as the checkout last fetched it.
+const BaseRef = "origin/main"
+
 // Checkout is the Consumer's primary checkout on the host: the directory the
 // harness clones nothing into and mutates nothing in, but reads history from,
 // fetches origin/main into, pushes branches out of, and hangs every ticket's

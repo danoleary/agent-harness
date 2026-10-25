@@ -68,11 +68,12 @@ const (
 
 // NewPreview is the host a dry-run plan renders through when no run exists: the
 // same Runner naming and argv building, stamped with placeholders instead of a
-// run id and pid. It is a [Planner], not a [Host], so nothing can launch through it.
-func NewPreview(cfg config.Config) Planner {
+// run id and pid, for the ticket whose slug it is given. It is a [Planner], not a
+// [Host], so nothing can launch through it.
+func NewPreview(cfg config.Config, slug string) Planner {
 	r := NewRunner(cfg, nil, previewRunID, false)
 	r.pid = previewPID
-	return &Real{Runner: r, cfg: cfg}
+	return &Real{Runner: r, cfg: cfg, slug: slug}
 }
 
 // RunID is the run this Runner stamps into every name it mints.

@@ -98,7 +98,7 @@ func TestPlanRendersEachStagesOwnRuns(t *testing.T) {
 	cfg.Gates = []config.Gate{{Name: "test", Command: "dotnet test"}, {Name: "lint", Command: "dotnet format --verify-no-changes"}}
 	plan := Plan(cfg, "proj-1")
 
-	preview := hostio.NewPreview(cfg)
+	preview := hostio.NewPreview(cfg, "proj-1")
 	s := stages.NewSubject(preview, "PROJ-1", runlog.TicketDir(stages.LogsRoot(cfg), "PROJ-1"), ticket.Ticket{Identifier: "PROJ-1"})
 	var sessions, containers []string
 	for _, p := range []stages.StagePlan{

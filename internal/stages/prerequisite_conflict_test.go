@@ -17,7 +17,7 @@ var designPR = ticket.Prerequisite{Identifier: "#81", Title: "Design record", Br
 // cold-reviewed, gate-green PR for a manual rebase, the watch is offered one
 // conflict-resolution session plus a host gate.
 func TestReviewCIWatchResolvesAConflictFromAMergedPrerequisiteOnce(t *testing.T) {
-	h := hostio.NewFake()
+	h, _ := handedOff(t, "PROJ-82")
 	h.Trk.Ticket.Prerequisites = []ticket.Prerequisite{designPR}
 	var first, second bool
 	h.CIFn = func(w hostio.CIWatch) ci.Outcome {
@@ -47,7 +47,7 @@ func TestReviewCIWatchResolvesAConflictFromAMergedPrerequisiteOnce(t *testing.T)
 // open, or there never was one — keeps today's behaviour: park for a human.
 func TestReviewCIWatchLeavesOtherConflictsForAHuman(t *testing.T) {
 	for name, prereqs := range map[string][]ticket.Prerequisite{"still open": {designPR}, "none": nil} {
-		h := hostio.NewFake()
+		h, _ := handedOff(t, "PROJ-83")
 		h.Trk.Ticket.Prerequisites = prereqs
 		resolved := true
 		h.CIFn = func(w hostio.CIWatch) ci.Outcome {

@@ -33,8 +33,9 @@ const ciGhTimeout = 5 * time.Minute
 
 // Real is the production [Host]: docker through the embedded [Runner], git
 // through internal/git, GitHub through `gh`, and the tracker the Consumer
-// declared (ADR-0010). It binds the checkout path and the branch prefix once, so
-// the (herdPath, branchPrefix, slug) triple never has to be threaded again.
+// declared (ADR-0010). It is bound to one ticket: the checkout path, the branch
+// prefix and the slug are fixed when it is built, so the (herdPath, branchPrefix,
+// slug) triple never has to be threaded again.
 type Real struct {
 	*Runner
 	cfg config.Config
@@ -46,22 +47,23 @@ type Real struct {
 	clientErr error
 	resolved  bool
 
-	// onSlug / onBranch bind one slug to a branch the harness did not name (an open
-	// PR's head branch, ADR-0019); every other slug keeps `<branch_prefix>/<slug>`.
-	onSlug, onBranch string
+	// slug is the ticket this Host is bound to; branch, when set, is a branch the
+	// harness did not name (an open PR's head branch, ADR-0019), in place of
+	// `<branch_prefix>/<slug>`.
+	slug, branch string
 }
 
-// New builds the production Host for one run of one ticket.
-func New(cfg config.Config, log *runlog.Logger, runID string, verbose bool) *Real {
-	return &Real{Runner: NewRunner(cfg, log, runID, verbose), cfg: cfg, log: log}
+// New builds the production Host for one run of the ticket whose slug it is given.
+func New(cfg config.Config, log *runlog.Logger, runID string, verbose bool, slug string) *Real {
+	return &Real{Runner: NewRunner(cfg, log, runID, verbose), cfg: cfg, log: log, slug: slug}
 }
 
 // NewOnBranch builds the production Host for one run over a branch the harness did
 // not name: the PR loop fixes an open PR's head branch in place, so slug's
 // worktree carries that branch rather than `<branch_prefix>/<slug>` (ADR-0019).
 func NewOnBranch(cfg config.Config, log *runlog.Logger, runID string, verbose bool, slug, branch string) *Real {
-	h := New(cfg, log, runID, verbose)
-	h.onSlug, h.onBranch = slug, branch
+	h := New(cfg, log, runID, verbose, slug)
+	h.branch = branch
 	return h
 }
 
@@ -185,82 +187,19 @@ func (h *Real) upstream() *filing.Upstream {
 
 // --- repo -------------------------------------------------------------------
 
-// checkout binds the Consumer's checkout path and branch prefix to internal/git
-// once. Every Repo/Remote method below names a ticket slug and nothing else — the
-// (herdPath, branchPrefix, slug) triple that used to travel to every git call is
-// now the [git.Worktree] value wt returns.
+// checkout binds the Consumer's checkout path and branch prefix to internal/git.
 func (h *Real) checkout() gitpkg.Checkout {
 	return gitpkg.Open(h.cfg.ProjectPath, h.cfg.BranchPrefix)
 }
 
-// wt is the ticket's worktree: the harness's central noun, minted on demand.
-func (h *Real) wt(slug string) gitpkg.Worktree {
-	if h.onBranch != "" && slug == h.onSlug {
-		return h.checkout().WorktreeOn(slug, h.onBranch)
+// Worktree is the ticket's worktree: the harness's central noun (ADR-0015), minted
+// on demand from the checkout and the slug this Host is bound to.
+func (h *Real) Worktree() gitpkg.Worktree {
+	if h.branch != "" {
+		return h.checkout().WorktreeOn(h.slug, h.branch)
 	}
-	return h.checkout().Worktree(slug)
+	return h.checkout().Worktree(h.slug)
 }
-
-func (h *Real) WorktreePath(slug string) string { return h.wt(slug).Path() }
-func (h *Real) BranchName(slug string) string   { return h.wt(slug).Branch() }
-
-// WorktreeExists reports whether the ticket's worktree is on disk — the
-// implementation stage's "already provisioned?" check and the review stage's
-// precondition ("run `implementation <ticket>` first").
-func (h *Real) WorktreeExists(slug string) bool { return h.wt(slug).Exists() }
-
-func (h *Real) CreateWorktree(slug string) error { return h.wt(slug).Create() }
-
-func (h *Real) CheckoutBranch(slug string) error { return h.wt(slug).CheckoutRemote() }
-
-func (h *Real) RemoveWorktree(slug string) error { return h.wt(slug).Remove() }
-
-func (h *Real) WorktreeClean(slug string) bool { return h.wt(slug).Clean() }
-
-// StripHandoffPaths removes the Consumer-declared build artifacts the sandbox
-// produced before the worktree goes to a (possibly non-Linux) reviewer, so their
-// platform-specific contents don't crash the reviewer's gates (BEH-412/641).
-func (h *Real) StripHandoffPaths(slug string) error {
-	return h.wt(slug).StripPaths(h.cfg.HandoffStripPaths)
-}
-
-func (h *Real) Checkpoint(slug, key, stage string) error {
-	return h.wt(slug).Checkpoint(key, stage)
-}
-
-func (h *Real) HeadSHA(slug string) (string, error) { return h.wt(slug).HeadSHA() }
-
-func (h *Real) BaseSHA(slug string) (string, error) { return h.wt(slug).BaseSHA() }
-
-func (h *Real) EnsureCIRerunCommit(slug, headBefore string) error {
-	return h.wt(slug).EnsureCIRerunCommit(headBefore)
-}
-
-func (h *Real) CommitsAhead(slug string) int { return h.wt(slug).CommitsAhead() }
-
-func (h *Real) BranchDisjoint(slug string) bool { return h.wt(slug).DisjointHistory() }
-
-func (h *Real) BranchDiffEmpty(slug string) bool { return h.wt(slug).DiffEmpty() }
-
-func (h *Real) BranchDocsOnly(slug string) bool {
-	return h.wt(slug).DocsOnly(h.cfg.DocsOnlyExcludedRoots)
-}
-
-func (h *Real) BranchExists(slug string) bool { return h.wt(slug).BranchExists() }
-
-func (h *Real) BranchPushed(slug string) bool { return h.wt(slug).BranchPushed() }
-
-func (h *Real) CommitSubjects(slug string) []string { return h.wt(slug).CommitSubjects() }
-
-func (h *Real) Rebase(slug string) RebaseResult { return h.wt(slug).Rebase() }
-
-func (h *Real) AbortRebase(slug string) { h.wt(slug).AbortRebase() }
-
-func (h *Real) IsDisjoint(slug string) bool { return h.wt(slug).IsDisjointFrom(baseRef) }
-
-func (h *Real) IsRebased(slug string) bool { return h.wt(slug).IsRebasedOnto(baseRef) }
-
-func (h *Real) Regraft(slug string) error { return h.wt(slug).RegraftOntoBase(baseRef) }
 
 func (h *Real) TicketAlreadyOnMain(key string) bool {
 	return h.checkout().TicketAlreadyOnMain(key)
@@ -272,10 +211,6 @@ func (h *Real) TicketAlreadyOnMain(key string) bool {
 // (BEH-641).
 func (h *Real) ResolvedAdvisory(key, description string) string {
 	return gitpkg.ResolvedAdvisory(h.sourceRoots(), key, description)
-}
-
-func (h *Real) ResumedBranchAdvisory(slug, key string) string {
-	return h.wt(slug).ResumedBranchAdvisory(key)
 }
 
 // sourceRoots resolves the Consumer's declared source roots (checkout-relative,
@@ -298,19 +233,19 @@ func (h *Real) sourceRoots() []string {
 
 func (h *Real) FetchMain() error { return h.checkout().FetchMain() }
 
-func (h *Real) Push(slug string) error { return h.wt(slug).Push() }
+func (h *Real) Push() error { return h.Worktree().Push() }
 
-func (h *Real) PushForceWithLease(slug string) error { return h.wt(slug).PushForceWithLease() }
+func (h *Real) PushForceWithLease() error { return h.Worktree().PushForceWithLease() }
 
 // CreatePR opens the pull request from the main checkout with `gh`, which infers
 // the origin repo from the checkout. GH_TOKEN stays host-only (ADR-0002) — gh
 // reads it from the harness env. Returns the created PR URL (gh prints it to
 // stdout).
-func (h *Real) CreatePR(slug, title, body string) (string, error) {
+func (h *Real) CreatePR(title, body string) (string, error) {
 	out, err := proc.CombinedOutputInDir(
 		prCreateTimeout, h.cfg.ProjectPath,
 		"gh", "pr", "create",
-		"--head", h.BranchName(slug),
+		"--head", h.Worktree().Branch(),
 		"--base", baseBranch,
 		"--title", title,
 		"--body", body,
@@ -321,14 +256,14 @@ func (h *Real) CreatePR(slug, title, body string) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
-func (h *Real) PRExists(slug string) bool { return pr.Exists(h.cfg.ProjectPath, h.BranchName(slug)) }
+func (h *Real) PRExists() bool { return pr.Exists(h.cfg.ProjectPath, h.Worktree().Branch()) }
 
 // OpenPRExists narrows PRExists to a PR still in flight. The committed-fix
 // recovery asks it rather than PRExists: a branch whose PR was merged or closed
 // and then re-opened as new work is still strandable, so only an OPEN PR means
 // "this branch already escaped the worktree".
-func (h *Real) OpenPRExists(slug string) bool {
-	return pr.OpenExists(h.cfg.ProjectPath, h.BranchName(slug))
+func (h *Real) OpenPRExists() bool {
+	return pr.OpenExists(h.cfg.ProjectPath, h.Worktree().Branch())
 }
 
 // ChecksReadable reports whether GH_TOKEN can read check runs — the post-PR
@@ -355,18 +290,19 @@ func (h *Real) WatchCI(w CIWatch) ci.Outcome {
 		PollStall:      h.cfg.CIPollStall,
 		PollMaxBudget:  h.cfg.CIPollMaxBudget,
 	}
+	wt := h.Worktree()
 	driver := ci.NewGhDriver(
-		h.cfg.ProjectPath, h.BranchName(w.Slug), cfg, ciGhTimeout,
+		h.cfg.ProjectPath, wt.Branch(), cfg, ciGhTimeout,
 		w.Fix,
-		func() error { return h.Push(w.Slug) },
+		h.Push,
 		func() (ci.RebaseVerdict, error) {
 			if w.KeepHistory {
 				return ci.RebaseConflict, nil
 			}
-			return h.rebaseOntoBase(w.Slug, w.Resolve)
+			return h.rebaseOntoBase(w.Resolve)
 		},
-		func() bool { return h.BranchDiffEmpty(w.Slug) },
-		func() bool { return h.BranchDocsOnly(w.Slug) },
+		wt.DiffEmpty,
+		func() bool { return wt.DocsOnly(h.cfg.DocsOnlyExcludedRoots) },
 	)
 	return ci.WatchAndFix(driver, cfg, time.Now)
 }
@@ -384,11 +320,11 @@ func (h *Real) WatchCI(w CIWatch) ci.Outcome {
 // surfaced as an error the watch reports. Unlike a landing, a failed fetch stops here: a
 // branch replayed onto a base we could not refresh would still read CONFLICTING.
 // Keeping it here is what lets internal/ci stay free of internal/git (BEH-570).
-func (h *Real) rebaseOntoBase(slug string, resolve func() bool) (ci.RebaseVerdict, error) {
+func (h *Real) rebaseOntoBase(resolve func() bool) (ci.RebaseVerdict, error) {
 	if err := h.FetchMain(); err != nil {
 		return ci.RebaseConflict, fmt.Errorf("fetch %s before rebase: %w", baseRef, err)
 	}
-	switch ship.Replay(h, slug) {
+	switch ship.Replay(h) {
 	case ship.ReplayClean:
 	case ship.ReplayConflict:
 		if resolve == nil || !resolve() {
@@ -397,7 +333,7 @@ func (h *Real) rebaseOntoBase(slug string, resolve func() bool) (ci.RebaseVerdic
 	default:
 		return ci.RebaseConflict, nil
 	}
-	if err := h.PushForceWithLease(slug); err != nil {
+	if err := h.PushForceWithLease(); err != nil {
 		return ci.RebaseClean, fmt.Errorf("force-with-lease re-push after rebase: %w", err)
 	}
 	return ci.RebaseClean, nil

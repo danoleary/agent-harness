@@ -12,7 +12,13 @@
 // hypothetical one:
 //
 //   - [Real] — docker / git / gh / the configured tracker.
-//   - [Fake] — scripted outcomes and recorded calls, for tests.
+//   - [Fake] — scripted sandbox and remote outcomes and recorded calls, for tests,
+//     over a real git worktree (a temp repo in a test).
+//
+// A Host is bound to one ticket. Its git half is that ticket's [git.Worktree]
+// (ADR-0015), handed out as the value it is rather than forwarded method by
+// method, so a Stage names the ticket once — when its Host is built — and never
+// threads a slug again.
 //
 // The sandbox half is fronted by a [Runner], which owns {cfg, log, runID, prefix}
 // and mints a container's `--name` together with the argv that carries it. That
@@ -107,7 +113,6 @@ type Result struct {
 // the PR for a human as before. The Stage owns when a resolution is worth a
 // session; the host owns the push.
 type CIWatch struct {
-	Slug    string
 	Fix     func(ciLogs string, logAvailable bool) error
 	Resolve func() bool
 	// KeepHistory forbids the watch's reactive rebase: a branch a human opted in to
@@ -115,16 +120,6 @@ type CIWatch struct {
 	// conflicts with base is handed back as a conflict instead of replayed.
 	KeepHistory bool
 }
-
-// RebaseResult, RebaseClean and RebaseConflict re-export git's rebase verdict so
-// a Stage can branch on a pre-push conflict without importing internal/git for a
-// single constant.
-type RebaseResult = gitpkg.RebaseResult
-
-const (
-	RebaseClean    = gitpkg.RebaseClean
-	RebaseConflict = gitpkg.RebaseConflict
-)
 
 // Sandbox is the Docker-facing half of [Host]: the launch preflight, the two
 // kinds of container the harness runs, and the argv previews `--dry-run` prints.
@@ -138,63 +133,40 @@ type Sandbox interface {
 	ShellPreview(ShellRun) []string
 }
 
-// Planner is the slice of [Host] a dry-run plan reads: where a ticket's worktree
+// Planner is the slice of [Host] a dry-run plan reads: where the ticket's worktree
 // and branch live, and the argv each run would launch with.
 type Planner interface {
-	WorktreePath(slug string) string
-	BranchName(slug string) string
+	Worktree() gitpkg.Worktree
 	AgentPreview(AgentRun) []string
 	ShellPreview(ShellRun) []string
 }
 
-// Repo is the git-facing half: everything that reads or mutates the Consumer
-// checkout and one ticket's worktree. Every method is keyed by the ticket slug —
-// the adapter holds the checkout path and the branch prefix, so a Stage names the
-// ticket and nothing else. Below the adapter the slug becomes a [git.Worktree],
-// the value that carries the checkout, the branch and the worktree path together.
+// Repo is the git-facing half: the ticket's worktree, and the two reads of the
+// Consumer checkout that are not about one worktree. A Stage acts on the worktree
+// directly — its reads, its replay, its checkpoint — so adding a git operation
+// touches internal/git and nothing here.
+//
+// Git is local, so it needs no scripted double: [Fake] backs Worktree with a real
+// repository and every state change a test drives comes from git itself (#28,
+// ADR-0025). Only the network is faked, in [Remote].
 type Repo interface {
-	WorktreePath(slug string) string
-	BranchName(slug string) string
-	WorktreeExists(slug string) bool
-	CreateWorktree(slug string) error
-	// CheckoutBranch puts the worktree on its branch's tip as origin has it — for a
-	// branch that already exists on the remote, which the PR loop fixes in place.
-	CheckoutBranch(slug string) error
-	RemoveWorktree(slug string) error
-	WorktreeClean(slug string) bool
-	StripHandoffPaths(slug string) error
-	Checkpoint(slug, key, stage string) error
-	HeadSHA(slug string) (string, error)
-	// BaseSHA is the commit the branch was cut from or last rebased onto — the
-	// range the review and retrospective sessions diff (#86).
-	BaseSHA(slug string) (string, error)
-	EnsureCIRerunCommit(slug, headBefore string) error
-	CommitsAhead(slug string) int
-	BranchDisjoint(slug string) bool
-	BranchDiffEmpty(slug string) bool
-	BranchDocsOnly(slug string) bool
-	BranchExists(slug string) bool
-	BranchPushed(slug string) bool
-	CommitSubjects(slug string) []string
-	Rebase(slug string) RebaseResult
-	AbortRebase(slug string)
-	IsDisjoint(slug string) bool
-	IsRebased(slug string) bool
-	Regraft(slug string) error
+	// Worktree is the ticket this Host is bound to, as git sees it.
+	Worktree() gitpkg.Worktree
 	TicketAlreadyOnMain(key string) bool
 	ResolvedAdvisory(key, description string) string
-	ResumedBranchAdvisory(slug, key string) string
 }
 
 // Remote is the network-facing half: the origin fetch, the two push shapes, and
-// everything that speaks to GitHub through `gh`.
+// everything that speaks to GitHub through `gh`. The pushes are the worktree's
+// own (ADR-0015) but go through here, so a test can fail one without a remote that
+// really refuses it.
 type Remote interface {
 	FetchMain() error
-	Push(slug string) error
-	PushForceWithLease(slug string) error
-	CreatePR(slug, title, body string) (string, error)
-	PRExists(slug string) bool
-	OpenPRExists(slug string) bool
+	Push() error
+	PushForceWithLease() error
+	CreatePR(title, body string) (string, error)
+	PRExists() bool
+	OpenPRExists() bool
 	ChecksReadable() (bool, string)
 	WatchCI(CIWatch) ci.Outcome
 }
@@ -214,12 +186,11 @@ type Findings interface {
 // Host is the whole host-side surface one Stage needs. [Real] and [Fake]
 // implement it.
 //
-// It also satisfies [verify.GroundTruth] — the git-read subset the harness's
-// "did this Stage do its job?" decisions gather for themselves — and [ship.Port],
-// the slice that lands a branch, so a Stage hands either module the Host it already
-// holds instead of re-packing the calls into a parameter struct. The assertions
-// below keep them in step: adding a method to either port without adding it here
-// stops compiling.
+// It also satisfies [ship.Port], the slice that lands a branch, so a Stage hands
+// ship the Host it already holds; and its Worktree satisfies [verify.GroundTruth],
+// the reads the harness's "did this Stage do its job?" decisions gather for
+// themselves. The assertions below keep them in step: adding a method to either
+// port that the Host cannot answer stops compiling.
 type Host interface {
 	Sandbox
 	Repo
@@ -231,6 +202,6 @@ type Host interface {
 }
 
 var (
-	_ verify.GroundTruth = (Host)(nil)
+	_ verify.GroundTruth = gitpkg.Worktree{}
 	_ ship.Port          = (Host)(nil)
 )
