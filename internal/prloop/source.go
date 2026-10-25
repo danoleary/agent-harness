@@ -248,12 +248,17 @@ func (s *Source) judge(pr github.PullRequest, held map[string]string) Candidate 
 		return skip("could not read its comments: %v", err)
 	}
 	c.Tried, c.Attempts = attempts(comments)
+	// The budget is judged before the already-tried skip: a last attempt that pushed
+	// nothing leaves the PR failing at the head it tried, and must still be handed to
+	// a human rather than wait silently for a push that may never come.
+	if c.Exhausted = c.Attempts >= s.opts.MaxAttempts; c.Exhausted {
+		return c
+	}
 	for _, a := range c.Tried {
 		if a.SHA == pr.HeadSHA && a.Kind == c.Kind {
 			return skip("%s at %s already tried — waiting for a new push", c.Kind.describe(), short(pr.HeadSHA))
 		}
 	}
-	c.Exhausted = c.Attempts >= s.opts.MaxAttempts
 	return c
 }
 

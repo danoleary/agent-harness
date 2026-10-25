@@ -243,6 +243,26 @@ func TestNextHandsAnExhaustedPRToAHuman(t *testing.T) {
 	}
 }
 
+// A last attempt that pushed nothing leaves the PR failing at the head it tried.
+// The budget is still spent, so the PR is handed off rather than skipped as
+// already tried until a push that may never come.
+func TestNextHandsOffWhenTheLastAttemptLeftTheHeadUnchanged(t *testing.T) {
+	gh := newFakeGitHub(harnessPR(12, "c3"))
+	gh.merge[12] = ci.MergeConflicting
+	gh.comments[12] = []github.PRComment{
+		{Body: attemptMarker("a1", Conflict)},
+		{Body: attemptMarker("b2", Conflict)},
+		{Body: attemptMarker("c3", Conflict)},
+	}
+
+	if _, _, ok, _ := newTestSource(gh, nil).Next(); ok {
+		t.Fatal("nothing may be worked past the budget")
+	}
+	if strings.Join(gh.added[12], ",") != "blocked" || len(gh.posted[12]) != 1 {
+		t.Errorf("added %v posted %v, want one hand-off comment and the blocked label", gh.added[12], gh.posted[12])
+	}
+}
+
 // A human who removes `blocked` grants a fresh budget: attempts before the hand-off
 // no longer count against it.
 func TestABudgetHandOffResetsTheCount(t *testing.T) {
