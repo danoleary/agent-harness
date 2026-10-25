@@ -45,7 +45,8 @@ const (
 	// StepPushExisting pushes the fixed branch to its existing PR.
 	StepPushExisting = "push_existing"
 	// StepWatchCI watches CI to a verdict, running a CIFix session over red checks
-	// whose committed fix must pass every Gate before it is pushed.
+	// whose committed fix must pass every Gate before it is pushed. On a ticket
+	// loop the review stage runs it over the PR it just opened.
 	StepWatchCI = "watch_ci"
 )
 
@@ -156,6 +157,14 @@ func (l Loop) Has(use string) bool {
 	return false
 }
 
+// LeavesCIToPRLoop reports whether a ticket loop's review stage returns as soon
+// as the PR is open, leaving red CI to a PR loop (#110): it is a ticket loop that
+// leaves out watch_ci. The built-in ticket loop keeps it, so a Consumer that runs
+// no PR loop still has its red CI fixed.
+func (l Loop) LeavesCIToPRLoop() bool {
+	return l.Source.Kind == SourceTracker && !l.Has(StepWatchCI)
+}
+
 // Prompt is the body the loop supplies for a step, or "" for the default.
 func (l Loop) Prompt(use string) string {
 	for _, s := range l.Steps {
@@ -255,7 +264,7 @@ func BuiltInLoops() []Loop {
 		{
 			Name: DefaultLoopName, BuiltIn: true,
 			Source: LoopSource{Kind: SourceTracker},
-			Steps:  steps(StepImplement, StepReview, StepRetro),
+			Steps:  steps(StepImplement, StepReview, StepWatchCI, StepRetro),
 		},
 		{
 			Name: PRDoctorLoopName, BuiltIn: true,
@@ -332,26 +341,38 @@ func (p Project) LoopInstance(name, id string) (Loop, error) {
 	return l, nil
 }
 
-// stepSpec is what the loader knows about one Step: the Source it runs on, the
-// steps that must come before it (and why), and whether it takes a prompt body.
+// stepSpec is what the loader knows about one Step: the Sources it runs on, the
+// step that must come before it on each (and why), and whether it takes a prompt
+// body.
 type stepSpec struct {
-	source string
-	needs  string
-	why    string
+	// on maps each Source the step runs on to what it needs there; nil runs on
+	// every Source with nothing before it.
+	on     map[string]prereq
 	prompt bool
 	// last marks a step nothing may follow.
 	last bool
 }
 
+// prereq is the step that must come before another on one Source, and why.
+type prereq struct {
+	needs string
+	why   string
+}
+
 var stepSpecs = map[string]stepSpec{
-	StepImplement:    {source: SourceTracker, prompt: true},
-	StepReview:       {source: SourceTracker, needs: StepImplement, why: "it reviews the branch implement committed", prompt: true},
-	StepCheckoutPR:   {source: SourceGitHubPRs},
-	StepFix:          {source: SourceGitHubPRs, needs: StepCheckoutPR, why: "it fixes the worktree checkout_pr makes", prompt: true},
-	StepGates:        {source: SourceGitHubPRs, needs: StepFix, why: "it checks the tree fix committed"},
-	StepPushExisting: {source: SourceGitHubPRs, needs: StepGates, why: "it pushes only a committed, gate-green tree"},
-	StepWatchCI:      {source: SourceGitHubPRs, needs: StepPushExisting, why: "it watches the CI of a pushed head"},
-	StepRetro:        {prompt: true, last: true},
+	StepImplement:    {on: map[string]prereq{SourceTracker: {}}, prompt: true},
+	StepReview:       {on: map[string]prereq{SourceTracker: {StepImplement, "it reviews the branch implement committed"}}, prompt: true},
+	StepCheckoutPR:   {on: map[string]prereq{SourceGitHubPRs: {}}},
+	StepFix:          {on: map[string]prereq{SourceGitHubPRs: {StepCheckoutPR, "it fixes the worktree checkout_pr makes"}}, prompt: true},
+	StepGates:        {on: map[string]prereq{SourceGitHubPRs: {StepFix, "it checks the tree fix committed"}}},
+	StepPushExisting: {on: map[string]prereq{SourceGitHubPRs: {StepGates, "it pushes only a committed, gate-green tree"}}},
+	// On a ticket loop, watch_ci keeps the review stage on its PR's CI to a verdict;
+	// a ticket loop without it leaves red CI to a PR loop (#110).
+	StepWatchCI: {on: map[string]prereq{
+		SourceTracker:   {StepReview, "it watches the CI of the PR review opens"},
+		SourceGitHubPRs: {StepPushExisting, "it watches the CI of a pushed head"},
+	}},
+	StepRetro: {prompt: true, last: true},
 }
 
 // stepOrder lists the steps in the order the loader names them in an error.
@@ -503,13 +524,14 @@ func resolveSteps(lc LoopConfig, src LoopSource, path, dir string, add func(key,
 			}
 		}
 		if known {
+			pre, runsHere := spec.on[src.Kind]
 			switch {
-			case spec.source != "" && spec.source != src.Kind:
+			case spec.on != nil && !runsHere:
 				stepAdd("%s does not run on a %s source", sc.Use, src.Kind)
 			case before[sc.Use]:
 				stepAdd("%s appears twice", sc.Use)
-			case spec.needs != "" && !before[spec.needs]:
-				stepAdd("%s needs %s before it: %s", sc.Use, spec.needs, spec.why)
+			case pre.needs != "" && !before[pre.needs]:
+				stepAdd("%s needs %s before it: %s", sc.Use, pre.needs, pre.why)
 			case spec.last && j != len(lc.Steps)-1:
 				stepAdd("%s must be the last step: it mines the transcripts every step before it left", sc.Use)
 			case sc.Use == StepRetro && j == 0:

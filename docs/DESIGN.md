@@ -339,6 +339,8 @@ loop:
                #   finding it couldn't self-resolve → fail closed, keep worktree for a human decision
 
   --- review CI watch + auto-fix (harness, host-side, BEH-414) ---
+  only on a ticket loop with the watch_ci step (the built-in default); without it the stage
+    returns Shipped here and leaves red CI to the PR loop (ADR-0030, #110)
   zero-net-diff short-circuit (BEH-602): BEFORE the first poll, if `git diff origin/main` for the
     pushed branch is EMPTY -> there is nothing for CI to validate that main hasn't already validated,
     so do NOT watch (a no-op PR can never meaningfully go green — the PR #642 ~20-min poll-budget
@@ -496,7 +498,9 @@ poll (Source github_prs, read-only judgement — also what --dry-run prints):
   for each open PR:
     skip fork | base != main | labelled blocked | held (in-progress label)
     skip unless head on <branch_prefix>/  OR  labelled source.label | PR_LOOP_LABEL  // opt-in
-    skip if the ticket loop holds the branch (an In Progress ticket's slug)  // lease keyed on the branch
+    skip if the ticket loop holds the branch (an In Progress ticket's slug  // lease keyed on the branch
+      whose worktree is still checked out: a shipped ticket's is reaped
+      by its retrospective, so its later red CI is this loop's, #110)
     kind = conflict if mergeable=CONFLICTING/DIRTY, else ci if a check is red, else skip
     skip if source.when leaves the kind out
     skip if a marker comment already records (head sha, kind)               // a new push = a new item
@@ -536,7 +540,7 @@ another:
 ```
 loop     = name + source{kind, params} + steps[] + limits
 source   : tracker | github_prs{label, when[conflicting, ci_failing], max_attempts}
-steps    : tracker    -> implement, review, [retro]
+steps    : tracker    -> implement, review, [watch_ci], [retro]
            github_prs -> checkout_pr, fix, gates, push_existing, [watch_ci], [retro]
 limits   : poll_interval cap_backoff claim_ttl max_runtime max_consecutive_failures max_items
            (each overrides its LOOP_* knob for this loop; unset keeps the knob)
@@ -549,8 +553,15 @@ agent. `config.LoadProject` validates the lot with every problem at once, each a
 its `config.toml:line:column` (`config/positions.go` re-walks the file with
 go-toml's own parser to place them): unknown source or step, a step on the wrong
 Source, a step before what it needs (`push_existing` after `gates`, `watch_ci`
-after `push_existing`, `retro` last), a missing required step, `ci_failing`
+after `review` or `push_existing`, `retro` last), a missing required step, `ci_failing`
 without `watch_ci`, and an unreadable or blank prompt file.
+
+On a `tracker` loop `watch_ci` is the review stage's post-PR CI watch below. The
+built-in `tickets` loop keeps it, so a Consumer that runs no PR loop still gets its
+red CI auto-fixed. A Consumer that runs `pr-doctor` can leave it out: the review
+stage then returns **Shipped** as soon as the PR is open, the retrospective and the
+worktree reap run at once, and a check that goes red later is `pr-doctor`'s
+(ADR-0030, #110).
 
 Each loop has its own sentinel (`.agent-harness/STOP-<name>`; the plain `STOP`
 stops them all, and a starting loop clears both) and its own logs dir: `logs/`

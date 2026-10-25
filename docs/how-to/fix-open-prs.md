@@ -19,6 +19,9 @@ host. Run one PR loop per checkout. It logs to
 follow it with
 `agent-harness watch .agent-harness/logs/loops/pr-doctor/loop.jsonl`.
 
+With `pr-doctor` running, you can stop the ticket loop waiting on each PR's CI:
+leave `watch_ci` out of its steps ([declare a loop](declare-a-loop.md#stop-the-ticket-loop-waiting-on-ci)).
+
 ## Choose which PRs it touches
 
 A PR qualifies if its head branch is on your `branch_prefix` (the harness opened
@@ -31,7 +34,8 @@ default; set the loop's `source.label` ([declare a loop](declare-a-loop.md)) or
 - a PR labelled `blocked`;
 - a PR whose branch is already being worked, either because the PR has the
   `in-progress` label or because the ticket loop holds that branch's ticket In
-  Progress;
+  Progress with its worktree still checked out (a shipped ticket's worktree is
+  removed by its retrospective, which frees the branch);
 - a PR failing in a way its `source.when` leaves out.
 
 When your tracker is GitHub Issues, the loop uses your `in_progress_label` and

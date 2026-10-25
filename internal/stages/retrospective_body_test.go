@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/danoleary/agent-harness/internal/ci"
 	"github.com/danoleary/agent-harness/internal/filing"
 	"github.com/danoleary/agent-harness/internal/hostio"
 	"github.com/danoleary/agent-harness/internal/sandbox"
@@ -164,4 +165,34 @@ func TestRetrospectiveDryRunLaunchesNothing(t *testing.T) {
 // priorFindings is one already-filed finding class, as a prior run would have left it.
 func priorFindings() []filing.PriorFinding {
 	return []filing.PriorFinding{{Key: "sandbox-playwright-missing-deps", Title: "Playwright deps missing in the sandbox"}}
+}
+
+// #110: after a review that left CI to the PR loop, the retrospective runs over the
+// open PR straight away and reaps the worktree. No CI result is read on the way —
+// the PR loop checks the head branch out itself if the PR goes red.
+func TestRetrospectiveAfterCIIsLeftToThePRLoopNeedsNoCIResult(t *testing.T) {
+	h, _ := handedOff(t, "PROJ-4")
+	h.CIFn = func(hostio.CIWatch) ci.Outcome {
+		t.Error("no stage may wait on CI the PR loop owns")
+		return ci.Outcome{}
+	}
+	retro := writesDropbox("[]")
+	h.AgentFn = func(i int, run hostio.AgentRun) session.Outcome {
+		if run.Label == retrospectiveSession {
+			return retro(i, run)
+		}
+		return session.Outcome{ReviewVerdictEmitted: true}
+	}
+	log := stageLog(t, "PROJ-4")
+	args := Args{Identifier: "PROJ-4", LeaveCIToPRLoop: true}
+
+	if res := Review(h, stageCfg(), log, args); !res.OK || res.Disposition != Shipped {
+		t.Fatalf("review: %+v", res)
+	}
+	if res := Retrospective(h, stageCfg(), log, args); !res.OK {
+		t.Fatalf("retrospective: %+v", res)
+	}
+	if h.Worktree().Exists() {
+		t.Error("the worktree is reaped once the PR is open; the PR loop does not need it")
+	}
 }

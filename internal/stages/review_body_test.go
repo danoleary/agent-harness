@@ -344,6 +344,31 @@ func TestReviewRedCIStillReportsShipped(t *testing.T) {
 	}
 }
 
+// #110: a ticket loop that leaves CI to the PR loop does not wait on CI. The stage
+// ships the moment the PR is open and never watches, so the retrospective, the
+// worktree reap and the next ticket start at once; a check that goes red later is
+// the PR loop's CIRed candidate.
+func TestReviewLeavingCIToThePRLoopShipsOnceThePRIsOpen(t *testing.T) {
+	h, _ := handedOff(t, "PROJ-16")
+	h.CIFn = func(hostio.CIWatch) ci.Outcome {
+		t.Error("the review stage must not watch CI it leaves to the PR loop")
+		return ci.Outcome{OK: false, Reason: "red"}
+	}
+
+	res := Review(h, stageCfg(), stageLog(t, "PROJ-16"), Args{Identifier: "PROJ-16", LeaveCIToPRLoop: true})
+
+	if !res.OK || res.Disposition != Shipped {
+		t.Fatalf("an open PR is the stage's job done, got %+v", res)
+	}
+	opened := false
+	for _, c := range h.Calls {
+		opened = opened || strings.HasPrefix(c, "create-pr ")
+	}
+	if !opened || called(h, "watch-ci") {
+		t.Errorf("calls = %v, want the PR opened and no CI watch", h.Calls)
+	}
+}
+
 // BEH-602: the branch became a no-op against the latest origin/main only after the
 // pre-push rebase, so the PR is open with nothing for CI to validate. Honour the
 // recommend-close disposition rather than burn the poll budget — and report it as the
