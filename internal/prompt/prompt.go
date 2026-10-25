@@ -279,9 +279,12 @@ const findingsDropboxProtocol = "If you hit problems with the harness or environ
 // branchHandoffContract is the envelope's branch/handoff contract: the whole
 // pipeline (verify, push, PR, CI, review, rebase) keys off the canonical
 // `<prefix>/<slug>` branch, so a handoff committed anywhere else is silently
-// stranded (BEH-615). It is appended structurally, so a body cannot drop it.
+// stranded (BEH-615). It also keeps origin/main read-only: the harness rebases
+// the branch before push and runs its own conflict-resolution session, so a
+// session that syncs onto a moved main itself only adds turns and a hand-rebuilt
+// commit (#133). It is appended structurally, so a body cannot drop it.
 func branchHandoffContract(branchPrefix, slug string) string {
-	return "The harness keys its handoff check, push, PR, and review off the canonical `" + branchPrefix + "/" + slug + "` branch, so committing to any other branch (e.g. `fix/" + slug + "`) silently strands your work where the harness never sees it."
+	return "The harness keys its handoff check, push, PR, and review off the canonical `" + branchPrefix + "/" + slug + "` branch, so committing to any other branch (e.g. `fix/" + slug + "`) silently strands your work where the harness never sees it. Do not rebase or merge `origin/main` into the branch; the harness rebases it before push and resolves conflicts in its own session. Fetch `origin/main` only to read it (e.g. the next free ADR number)."
 }
 
 // freshWorktreeInstr is the implementation stage's worktree instruction for a
