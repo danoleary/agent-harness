@@ -484,13 +484,29 @@ func (w Worktree) ChangedFiles() ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	return pathLines(out), nil
+}
+
+// TrackedFiles lists the paths the main checkout tracks: the files a ticket's text
+// can name before any work exists, which the overlap check resolves a claimed
+// ticket's mentions against (#97).
+func (c Checkout) TrackedFiles() ([]string, error) {
+	out, err := c.output("git", "-C", c.path, "ls-files")
+	if err != nil {
+		return nil, err
+	}
+	return pathLines(out), nil
+}
+
+// pathLines is git's one-path-per-line output, blank lines dropped.
+func pathLines(out []byte) []string {
 	var paths []string
 	for _, line := range strings.Split(string(out), "\n") {
 		if p := strings.TrimSpace(line); p != "" {
 			paths = append(paths, p)
 		}
 	}
-	return paths, nil
+	return paths
 }
 
 // Push pushes the feature branch to origin from the main checkout (ADR-0002: the

@@ -91,6 +91,26 @@ func TestNextDefersATicketOverlappingAClaimedWorktree(t *testing.T) {
 	}
 }
 
+// A ticket another instance claimed a moment ago has no worktree edits yet, but
+// what its own text names is the work it is about to do: a sibling naming the same
+// file waits for it rather than running beside it.
+func TestNextDefersASiblingOfAJustClaimedTicket(t *testing.T) {
+	repo := gittest.New(t)
+	trk := newQueueTracker()
+	trk.Ticket = ticket.Ticket{Identifier: "#5", Description: "Reword README.md."}
+	trk.claims = []tracker.InProgressClaim{{Identifier: "#5"}}
+	trk.next, trk.nextOK = ticket.Ticket{Identifier: "#97", Description: "Add a section to README.md."}, true
+	log := &narrator{}
+	s := NewTicketSource(overlapConfig(repo.Dir), log, trk).WatchPRs(&fakePRs{})
+
+	if _, _, ok, err := s.Next(); ok || err != nil {
+		t.Fatalf("Next() = (%v, %v), want an empty poll", ok, err)
+	}
+	if !saw(log, "#97 deferred: overlaps #5 (claimed) on README.md") {
+		t.Errorf("events = %v, want the deferral named", log.events)
+	}
+}
+
 // The PR list failing is narrated and the ticket dispatches: the check fails open.
 func TestNextDispatchesWhenThePRsCannotBeRead(t *testing.T) {
 	trk := newQueueTracker()

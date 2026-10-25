@@ -799,7 +799,9 @@ A ticket is eligible iff **all** hold:
   [ADR-0029](adr/0029-a-ticket-that-names-files-in-flight-waits-for-them.md)), on
   every tracker. Selection reads the files changed by each open PR on
   `branch_prefix` (`/pulls/N/files`) and by each claimed ticket's worktree
-  (`git diff --merge-base origin/main`, uncommitted edits included). It predicts the
+  (`git diff --merge-base origin/main`, uncommitted edits included), plus the
+  tracked files that claimed ticket's own text names, so a ticket another
+  instance claimed a moment ago holds its siblings before its first edit. It predicts the
   candidate's files from the paths, file names and backticked module names in
   its title and body (`overlap.Predict`). If one piece of work shares
   `OVERLAP_THRESHOLD` (default 1) of those files, the ticket is passed over for this

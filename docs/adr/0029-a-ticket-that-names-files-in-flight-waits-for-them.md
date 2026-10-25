@@ -26,9 +26,11 @@ It does this on every tracker, and re-checks on every poll.**
 - **Work in flight** (`TicketSource.inFlight`): each open PR whose head is on
   `branch_prefix` (not a fork), with the files GitHub lists for it, both sides of a
   rename included. Then each claimed ticket's worktree, with what it has changed
-  since it left `origin/main`, committed or not (`git diff --merge-base`). A
-  ticket mid-run has no PR yet, and a second loop instance must still see its
-  work. A human's branch is not the harness's work and is not read.
+  since it left `origin/main`, committed or not (`git diff --merge-base`), plus
+  the tracked files (`git ls-files`) its own title and body name. A ticket
+  mid-run has no PR yet, and a second loop instance must still see its work, even
+  in the minutes before the claimed run has edited anything. A human's branch is
+  not the harness's work and is not read.
 - **Prediction** (`overlap.Predict`): the paths, bare file names and backticked
   module names in the ticket's title and body. A path names itself, every file
   under it, and any file it is the tail of. A file name names every file with its
@@ -73,7 +75,8 @@ It does this on every tracker, and re-checks on every poll.**
 ## Consequences
 
 - Each poll costs one PR list, one files read per open harness PR, one claims
-  read and one `git diff` per claimed worktree. These happen only while the check
+  read, one `git ls-files`, and one ticket read and one `git diff` per claimed
+  ticket. These happen only while the check
   is on and a ticket is ready.
 - The prediction is literal. A ticket that describes a change without naming a
   file or module is not deferred, and dispatches as it did before.

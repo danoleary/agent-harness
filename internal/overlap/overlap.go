@@ -68,7 +68,7 @@ func Check(t ticket.Ticket, branch string, work []Work, p Policy) (Deferral, boo
 	if p.Threshold <= 0 || t.HasLabel(p.EscapeLabel) {
 		return Deferral{}, false
 	}
-	predicted := Predict(t.Title + "\n" + t.Description)
+	predicted := Predict(text(t))
 	if len(predicted) == 0 {
 		return Deferral{}, false
 	}
@@ -82,6 +82,15 @@ func Check(t ticket.Ticket, branch string, work []Work, p Policy) (Deferral, boo
 	}
 	return Deferral{}, false
 }
+
+// Named is the files out of files that t's title and body name: a claimed
+// ticket's work before it has changed anything, resolved against the repo's files.
+func Named(t ticket.Ticket, files []string) []string {
+	return Match(Predict(text(t)), files)
+}
+
+// text is the part of a ticket a prediction reads.
+func text(t ticket.Ticket) string { return t.Title + "\n" + t.Description }
 
 // mentionKind is how a mention names files.
 type mentionKind int

@@ -113,10 +113,13 @@ func (s *TicketSource) Resolver() pipeline.NextResolver {
 
 // inFlight is the work a ready ticket may collide with (#97): each open PR on the
 // harness's branch prefix with the files it changes, then each claimed ticket's
-// worktree with what it has changed so far — a ticket mid-run has no PR yet. A
-// human's branch or a fork is not the harness's work, and two PRs the harness did
-// not open conflict no more often for it than they did before. Any failed read
-// fails the whole read, which the screen narrates and dispatches through.
+// worktree with what it has changed so far — a ticket mid-run has no PR yet — and
+// the tracked files its own title and body name. A ticket another loop instance
+// claimed a moment ago has changed nothing yet, and a sibling naming the same
+// module must still wait for it. A human's branch or a fork is not the harness's
+// work, and two PRs the harness did not open conflict no more often for it than
+// they did before. Any failed read fails the whole read, which the screen
+// narrates and dispatches through.
 func (s *TicketSource) inFlight() ([]overlap.Work, error) {
 	prs, err := s.prs.OpenPRs()
 	if err != nil {
@@ -137,12 +140,23 @@ func (s *TicketSource) inFlight() ([]overlap.Work, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list claimed tickets: %w", err)
 	}
+	var tracked []string
+	if len(claims) > 0 {
+		if tracked, err = s.checkout().TrackedFiles(); err != nil {
+			return nil, fmt.Errorf("list the checkout's files: %w", err)
+		}
+	}
 	for _, c := range claims {
 		wt := s.checkout().Worktree(ticket.Slug(c.Identifier))
 		files, err := wt.ChangedFiles()
 		if err != nil {
 			return nil, fmt.Errorf("read what %s has changed: %w", c.Identifier, err)
 		}
+		t, err := s.client.FetchTicket(c.Identifier)
+		if err != nil {
+			return nil, fmt.Errorf("read claimed %s: %w", c.Identifier, err)
+		}
+		files = append(files, overlap.Named(t, tracked)...)
 		work = append(work, overlap.Work{Label: c.Identifier + " (claimed)", Branch: wt.Branch(), Files: files})
 	}
 	return work, nil
