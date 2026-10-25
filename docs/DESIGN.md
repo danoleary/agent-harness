@@ -1131,7 +1131,10 @@ own namespace with no edit to the workflow.
   Progress work is never a candidate) and **releases a claim back to Todo** — with a
   breadcrumb comment — when **all three** hold: (1) it is older than
   `LOOP_CLAIM_TTL_MS` (default 30 min), (2) it has no linked PR (a Linear `.../pull/`
-  attachment), and (3) it has no remote branch (`git ls-remote` word-boundary-matched
+  attachment; on GitHub, an unmerged PR's `cross-referenced` event dated no earlier
+  than the latest `in-progress` label — an older or merged PR that merely mentioned
+  the issue is not this claim's work and never shields it, #87; the harness's own
+  PR says "Resolves #n", so its merge closes the issue instead), and (3) it has no remote branch (`git ls-remote` word-boundary-matched
   on the key). The **grace TTL is load-bearing**: between claim and first push a
   *healthy* agent looks identical to a dead one (no branch/PR yet — the observed
   mid-flight case was ~18 min), so reaping on the no-branch signal alone would kill
