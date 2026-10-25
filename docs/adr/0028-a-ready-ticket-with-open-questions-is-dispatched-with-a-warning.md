@@ -1,8 +1,8 @@
-# ADR-0026: A ready ticket with open questions is dispatched with a warning
+# ADR-0028: A ready ticket with open questions is dispatched with a warning
 
 - Status: Accepted
 - Date: 2026-10-25
-- Renumbered: from ADR-0024 by #92 — #89 took 0024 in parallel
+- Renumbered: from ADR-0024 by #92 — #89 took 0024 in parallel; then from ADR-0026 by #96 — #29 took 0026 in parallel
 - Extends: ADR-0009
 
 ## Context
