@@ -45,7 +45,7 @@ it can write **without sudo** (`~/.local` by default):
 ```
 <prefix>/bin/agent-harness            the dispatcher — the only thing added to PATH
 <prefix>/libexec/agent-harness/       the six stage binaries + loop-start.sh
-<prefix>/share/agent-harness/         .env.example, README.md, CONSUMER.md, LICENSE
+<prefix>/share/agent-harness/         .env.example, README.md, LICENSE, docs/*.md
 ```
 
 `cmd/agent-harness` is a dispatcher: `agent-harness pipeline BEH-362` resolves the
@@ -120,3 +120,13 @@ belongs to.
   only builtin. It has no TTY or signal behaviour for exec to preserve, and a new
   Consumer should be able to scaffold even when the `libexec` dir is broken. The
   rule that `PATH` is never searched still holds.
+- **Amended by #96:** the docs in `share/agent-harness/` keep their repo-relative
+  paths (`docs/CONSUMER.md`, not a flattened `CONSUMER.md`), because the installed
+  README links them by those paths and a flattened copy broke every such link.
+  The set is one list, `DOCS` in `install.sh`. The release workflow and
+  `make install` read it from there instead of keeping their own copies, and
+  `scripts/check-bundle-links.sh` fails `make check` when the README links a
+  relative path that is not on it. A link to something the bundle does not carry,
+  like `example/` or the ADRs, uses its github.com URL. `install.sh` still
+  installs an archive from v0.7.0 or earlier, whose docs sit flat at the root,
+  into the new layout, and an upgrade removes the old root `CONSUMER.md`.

@@ -57,7 +57,7 @@ jobs:
         #   agent-harness                  the dispatcher — the one name that goes on PATH
         #   libexec/agent-harness/<tool>   the six stage binaries, kept OFF the PATH
         #   scripts/loop-start.sh          the detached-daemon launcher
-        #   README.md CONSUMER.md LICENSE .env.example
+        #   README.md LICENSE .env.example docs/*.md   install.sh's DOCS, paths kept
         #
         # The stage binaries are named for their role (loop, watch, review, …) and
         # those words are far too generic for a shared bin dir — `watch` alone
@@ -96,7 +96,14 @@ jobs:
             # detached launcher — and a download-only operator has no checkout to
             # find either in. Omitting them made the documented quickstart
             # impossible to follow from a release archive.
-            cp README.md docs/CONSUMER.md LICENSE .env.example "$stage/"
+            #
+            # The list is install.sh's DOCS, so the archive, the installer and the
+            # README's links (scripts/check-bundle-links.sh) agree on what ships.
+            # Each doc keeps its repo-relative path: the README links docs/*.md.
+            for doc in $(AGENT_HARNESS_SOURCE_ONLY=1 sh -c '. ./install.sh && echo "$DOCS"'); do
+              mkdir -p "$stage/$(dirname "$doc")"
+              cp "$doc" "$stage/$doc"
+            done
             cp scripts/loop-start.sh "$stage/scripts/"
             tar -czf "${stage}.tar.gz" -C dist "$(basename "$stage")"
             rm -rf "$stage"
@@ -122,8 +129,9 @@ jobs:
             test ! -e "$root/$tool" || { echo "$tool is at the archive root — it would land on operators' PATH"; exit 1; }
           done
           test -f "$root/scripts/loop-start.sh" || { echo "missing scripts/loop-start.sh"; exit 1; }
-          test -f "$root/.env.example" || { echo "missing .env.example"; exit 1; }
-          test -f "$root/CONSUMER.md" || { echo "missing CONSUMER.md"; exit 1; }
+          for doc in $(AGENT_HARNESS_SOURCE_ONLY=1 sh -c '. ./install.sh && echo "$DOCS"'); do
+            test -f "$root/$doc" || { echo "missing $doc"; exit 1; }
+          done
           echo "archive layout OK"
 
       - name: Publish to GitHub Releases

@@ -121,15 +121,15 @@ The [documentation](docs/README.md) is split by what you need:
   and [error messages](docs/reference/errors.md).
 - **Understand:** [`docs/DESIGN.md`](docs/DESIGN.md) explains how it works, its
   invariants and its failure handling. Decisions are recorded in
-  [`docs/adr/`](docs/adr/).
-- [`example/`](example/) is a complete, working `.agent-harness/`.
+  [`docs/adr/`](https://github.com/danoleary/agent-harness/tree/main/docs/adr).
+- [`example/`](https://github.com/danoleary/agent-harness/tree/main/example) is a complete, working `.agent-harness/`.
 
 ## More about install
 
 ```
 ~/.local/bin/agent-harness         the command you run
 ~/.local/libexec/agent-harness/    the stage binaries, kept off your PATH
-~/.local/share/agent-harness/      .env.example, CONSUMER.md, README, LICENSE
+~/.local/share/agent-harness/      .env.example, README.md, LICENSE, docs/*.md
 ```
 
 The stage binaries have generic names (`loop`, `watch`, `review`, …), so they stay
@@ -156,7 +156,7 @@ go install github.com/danoleary/agent-harness/cmd/agent-harness@latest
 go install github.com/danoleary/agent-harness/cmd/loop@latest   # and pipeline, watch, …
 ```
 
-Or download an archive from [Releases](../../releases) and run `./agent-harness`
+Or download an archive from [Releases](https://github.com/danoleary/agent-harness/releases) and run `./agent-harness`
 straight out of the unpacked directory. The archive layout is the installed
 layout, so it works in place.
 

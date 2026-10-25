@@ -1322,7 +1322,9 @@ reader over a structured stream rather than a `--tui` flag on the daemon.
   `checksums.txt`, and lays it out under a sudo-free prefix (`~/.local` by
   default): `bin/agent-harness` alone on the `PATH`, the six stage binaries and
   `loop-start.sh` in `libexec/agent-harness/`, the docs and `.env.example` in
-  `share/agent-harness/`. `cmd/agent-harness` is a dispatcher that resolves a
+  `share/agent-harness/`, with `docs/` kept as a subdirectory so the README's
+  links resolve there (`DOCS` in `install.sh`, checked by
+  `scripts/check-bundle-links.sh`). `cmd/agent-harness` is a dispatcher that resolves a
   subcommand out of that private dir and `syscall.Exec`s it, so the stage
   binaries keep their signal, TTY and exit-code behaviour exactly — and their
   generic names (`watch`, `review`, `loop`, …) never reach a shared `bin` dir.
