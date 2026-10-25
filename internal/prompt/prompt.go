@@ -326,6 +326,7 @@ func implement(c Context) string {
 		worktreeState,
 		ticketContext(c.Ticket),
 		prerequisitesSection(c.Ticket.Prerequisites),
+		openQuestionsSection(c.Ticket.OpenQuestions()),
 		"---",
 		tddFooter(c.Ticket.Identifier, c.Tracker, c.BranchPrefix, c.Slug),
 	)
@@ -350,6 +351,22 @@ func prerequisitesSection(prs []ticket.Prerequisite) string {
 	}
 	b.WriteString("\n\nDo not assume your PR and that one are disjoint. For any shared file — a design doc, an ADR, `CONTEXT.md`, a README — either base your edit on that branch's version of the file, or leave the shared file alone and say so in your handoff. If the branch ref is not in your checkout, leave shared docs alone.")
 	return b.String()
+}
+
+// openQuestionsSection names each section of the ticket body that still lists
+// questions for a human (#90). The ticket carries a ready label anyway, so this
+// is a dispatched-anyway case like a prerequisite. The #55 session met "Open
+// questions (for a human before this is agent-ready)" and had to choose, unaided,
+// between stopping and deciding them. Empty when the body has no such section.
+func openQuestionsSection(headings []string) string {
+	if len(headings) == 0 {
+		return ""
+	}
+	quoted := make([]string, len(headings))
+	for i, h := range headings {
+		quoted[i] = `"` + h + `"`
+	}
+	return defang("The ticket body still has a section of questions meant for a human to settle before an agent picked it up: " + strings.Join(quoted, ", ") + ". It was labelled ready anyway, so do not answer them silently. If the ticket can be implemented without settling a question, leave it open and say so in your handoff. If it cannot, make the smallest decision you can defend, record it and why (in an ADR when it is a design choice), and list every decision you made in your handoff and commit body so a human reviews it.")
 }
 
 // subIssuesSection renders the inlined child sub-issue specs for an umbrella/batch

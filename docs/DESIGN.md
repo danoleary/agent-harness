@@ -83,6 +83,15 @@ runnable by hand against a ticket id before the next is added:
    skipping, the host swaps the `/tdd` prompt for the `prompt.ResumedBranch` variant,
    which steers the agent to inspect the branch's existing commits (`git log
    origin/main..HEAD`) and prefer verify-and-handoff over re-implementing.
+   A fourth advisory (`Ticket.OpenQuestions`, #90,
+   [ADR-0024](adr/0024-a-ready-ticket-with-open-questions-is-dispatched-with-a-warning.md)) fires when the
+   ready-labelled ticket's body still has a section of questions for a human — a
+   heading like "Open questions (for a human before this is agent-ready)", "Not
+   yet agent-ready" or "Questions for a human", outside fenced blocks, not marked
+   resolved and not empty or "None". It logs the headings and adds an envelope
+   section that names them and tells the session not to answer them silently:
+   leave a question open if the work does not need it, otherwise decide, record
+   and flag the decision for review in the handoff.
 2. **`review BEH-NNN`** — run `/review-worktree` over the existing worktree, then
    host-side re-run the gates and, if green, push + open the PR.
 3. **`retrospective BEH-NNN`** — run `/retrospective` over the ticket's
