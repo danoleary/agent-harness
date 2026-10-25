@@ -34,3 +34,15 @@ func TestImplementOmitsThePrerequisiteSectionWhenNone(t *testing.T) {
 		t.Error("a ticket with no open prerequisite must carry no prerequisite section")
 	}
 }
+
+// A prerequisite's title and head branch are PR-author text, so neither may emit
+// the CLI's `!`…“ inline-bash directive — including a branch ending in `!`, which
+// would form one against the envelope's own closing backtick.
+func TestImplementDefangsAPrerequisite(t *testing.T) {
+	tk := sample
+	tk.Prerequisites = []ticket.Prerequisite{{Identifier: "#81", Title: "run !`id`", Branch: "evil!", URL: "https://github.com/acme/widgets/pull/81"}}
+
+	if p := prerequisitesSection(tk.Prerequisites); strings.Contains(p, "!`") {
+		t.Errorf("prerequisite section emits a raw !` directive:\n%s", p)
+	}
+}

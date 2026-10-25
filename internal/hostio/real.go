@@ -337,26 +337,11 @@ func (h *Real) WatchCI(w CIWatch) ci.Outcome {
 		h.cfg.ProjectPath, h.BranchName(w.Slug), cfg, ciGhTimeout,
 		w.Fix,
 		func() error { return h.Push(w.Slug) },
-		func() (ci.RebaseVerdict, error) { return h.rebaseOrResolve(w) },
+		func() (ci.RebaseVerdict, error) { return h.rebaseOntoBase(w.Slug, w.Resolve) },
 		func() bool { return h.BranchDiffEmpty(w.Slug) },
 		func() bool { return h.BranchDocsOnly(w.Slug) },
 	)
 	return ci.WatchAndFix(driver, cfg, time.Now)
-}
-
-// rebaseOrResolve is the CI watch's rebase effect: the reactive rebase, and when
-// that hits a content conflict, the Stage's Resolve (#82). A resolution is
-// re-pushed like a clean replay, so the watch re-polls CI on it and re-reads the
-// merge state exactly as it does after a clean rebase.
-func (h *Real) rebaseOrResolve(w CIWatch) (ci.RebaseVerdict, error) {
-	v, err := h.rebaseOntoBase(w.Slug)
-	if err != nil || v == ci.RebaseClean || w.Resolve == nil || !w.Resolve() {
-		return v, err
-	}
-	if err := h.PushForceWithLease(w.Slug); err != nil {
-		return ci.RebaseClean, fmt.Errorf("force-with-lease re-push after resolving the conflict: %w", err)
-	}
-	return ci.RebaseClean, nil
 }
 
 // rebaseOntoBase is the reactive auto-rebase the CI watch invokes when a green PR
@@ -365,16 +350,24 @@ func (h *Real) rebaseOrResolve(w CIWatch) (ci.RebaseVerdict, error) {
 // rebase, so we must replay onto the truly-latest base — replays the worktree
 // through the same [ship.Replay] the pre-push landing uses (so the disjoint-history
 // guard is shared), and on a clean replay force-with-lease re-pushes the rewritten
-// branch. A content conflict or a disjoint history returns RebaseConflict with the
-// branch left on its original tip, for a human; any fetch/push failure is surfaced
-// as an error the watch reports. Unlike a landing, a failed fetch stops here: a
+// branch. A content conflict is offered to resolve (CIWatch.Resolve, #82; nil
+// declines): a resolution it reports committed and gate-green is re-pushed like a
+// clean replay. A declined resolution, or a disjoint history (never offered, as in
+// a landing), returns RebaseConflict for a human; any fetch/push failure is
+// surfaced as an error the watch reports. Unlike a landing, a failed fetch stops here: a
 // branch replayed onto a base we could not refresh would still read CONFLICTING.
 // Keeping it here is what lets internal/ci stay free of internal/git (BEH-570).
-func (h *Real) rebaseOntoBase(slug string) (ci.RebaseVerdict, error) {
+func (h *Real) rebaseOntoBase(slug string, resolve func() bool) (ci.RebaseVerdict, error) {
 	if err := h.FetchMain(); err != nil {
 		return ci.RebaseConflict, fmt.Errorf("fetch %s before rebase: %w", baseRef, err)
 	}
-	if ship.Replay(h, slug) != ship.ReplayClean {
+	switch ship.Replay(h, slug) {
+	case ship.ReplayClean:
+	case ship.ReplayConflict:
+		if resolve == nil || !resolve() {
+			return ci.RebaseConflict, nil
+		}
+	default:
 		return ci.RebaseConflict, nil
 	}
 	if err := h.PushForceWithLease(slug); err != nil {

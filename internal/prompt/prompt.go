@@ -322,7 +322,9 @@ func prerequisitesSection(prs []ticket.Prerequisite) string {
 	var b strings.Builder
 	b.WriteString("This ticket builds on work that is not yet merged — `main` does not have it, and will change underneath you when it merges:")
 	for _, p := range prs {
-		b.WriteString("\n\n- " + p.Identifier + " " + defang(p.Title) + " (" + p.URL + ") on branch `" + p.Branch + "` (`origin/" + p.Branch + "`); read its version of a file with `git show origin/" + p.Branch + ":<path>`.")
+		// Defang the whole line, not just the title: a head branch is PR-author text
+		// too, and one ending in `!` would form `!`` against the backtick after it.
+		b.WriteString(defang("\n\n- " + p.Identifier + " " + p.Title + " (" + p.URL + ") on branch `" + p.Branch + "` (`origin/" + p.Branch + "`); read its version of a file with `git show origin/" + p.Branch + ":<path>`."))
 	}
 	b.WriteString("\n\nDo not assume your PR and that one are disjoint. For any shared file — a design doc, an ADR, `CONTEXT.md`, a README — either base your edit on that branch's version of the file, or leave the shared file alone and say so in your handoff. If the branch ref is not in your checkout, leave shared docs alone.")
 	return b.String()
