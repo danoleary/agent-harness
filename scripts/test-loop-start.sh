@@ -20,7 +20,7 @@ else
     NC=''
 fi
 
-SCRIPT_PATH="$(dirname "$0")/loop-start.sh"
+SCRIPT_PATH="$(cd "$(dirname "$0")" && pwd)/loop-start.sh"
 TEST_DIR=$(mktemp -d)
 
 # Track every fake daemon we launch so the trap can tear them down — a detached
@@ -512,9 +512,11 @@ wait_for_exit() {
 
 echo -n "loop-start.sh starts no caffeinate and prints nothing extra when LOOP_KEEP_AWAKE is unset or 0 ... "
 rm -f "$CAFF_RECORD"
-off_out="$(PATH="$CAFF_BIN:$PATH" env -u LOOP_KEEP_AWAKE LOOP_BIN="$FAKE_BIN" LOOP_PIDFILE="$TEST_DIR/off.pid" LOOP_LOGFILE="$TEST_DIR/off.log" "$SCRIPT_PATH" 2>&1)"
+# Run from $TEST_DIR with an empty config dir so the operator's own .env (which
+# may set LOOP_KEEP_AWAKE=1) cannot stand in for the unset variable.
+off_out="$(cd "$TEST_DIR" && PATH="$CAFF_BIN:$PATH" env -u LOOP_KEEP_AWAKE XDG_CONFIG_HOME="$TEST_DIR/empty-xdg" PROJECT_PATH="$TEST_DIR" LOOP_BIN="$FAKE_BIN" LOOP_PIDFILE="$TEST_DIR/off.pid" LOOP_LOGFILE="$TEST_DIR/off.log" "$SCRIPT_PATH" 2>&1)"
 STARTED_PIDS="$STARTED_PIDS $(cat "$TEST_DIR/off.pid" 2>/dev/null || true)"
-zero_out="$(PATH="$CAFF_BIN:$PATH" LOOP_KEEP_AWAKE=0 LOOP_BIN="$FAKE_BIN" LOOP_PIDFILE="$TEST_DIR/zero.pid" LOOP_LOGFILE="$TEST_DIR/zero.log" "$SCRIPT_PATH" 2>&1)"
+zero_out="$(cd "$TEST_DIR" && PATH="$CAFF_BIN:$PATH" LOOP_KEEP_AWAKE=0 XDG_CONFIG_HOME="$TEST_DIR/empty-xdg" PROJECT_PATH="$TEST_DIR" LOOP_BIN="$FAKE_BIN" LOOP_PIDFILE="$TEST_DIR/zero.pid" LOOP_LOGFILE="$TEST_DIR/zero.log" "$SCRIPT_PATH" 2>&1)"
 STARTED_PIDS="$STARTED_PIDS $(cat "$TEST_DIR/zero.pid" 2>/dev/null || true)"
 sleep 0.3
 if [ -f "$CAFF_RECORD" ]; then
@@ -529,7 +531,7 @@ fi
 
 echo -n "loop-start.sh holds caffeinate -is -w <loop pid> with LOOP_KEEP_AWAKE=1, released when the loop exits ... "
 rm -f "$CAFF_RECORD"
-on_out="$(PATH="$CAFF_BIN:$PATH" LOOP_KEEP_AWAKE=1 LOOP_BIN="$FAKE_BIN" LOOP_PIDFILE="$TEST_DIR/on.pid" LOOP_LOGFILE="$TEST_DIR/on.log" "$SCRIPT_PATH" 2>&1)"
+on_out="$(cd "$TEST_DIR" && PATH="$CAFF_BIN:$PATH" LOOP_KEEP_AWAKE=1 XDG_CONFIG_HOME="$TEST_DIR/empty-xdg" PROJECT_PATH="$TEST_DIR" LOOP_BIN="$FAKE_BIN" LOOP_PIDFILE="$TEST_DIR/on.pid" LOOP_LOGFILE="$TEST_DIR/on.log" "$SCRIPT_PATH" 2>&1)"
 on_pid="$(cat "$TEST_DIR/on.pid" 2>/dev/null || true)"
 caff_pid="$(printf '%s\n' "$on_out" | sed -n 's/.*keeping system awake while loop runs (caffeinate pid \([0-9]*\)).*/\1/p')"
 STARTED_PIDS="$STARTED_PIDS $on_pid $caff_pid"
