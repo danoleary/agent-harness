@@ -63,14 +63,17 @@ done
 # The name and the id name files, so they are held to the loop-name rule:
 # lowercase letters, digits and dashes, not starting with a dash. The daemon
 # re-checks both, refuses a name no loop has, and refuses an id that names a loop.
+# The letters are spelled out: under a non-C locale bash 3.2's [a-z] collates as
+# aAbB…, so it would let uppercase through.
+safe_name_chars='abcdefghijklmnopqrstuvwxyz0123456789-'
 case "$LOOP_NAME" in
-    -*|*[!a-z0-9-]*)
+    -*|*[!$safe_name_chars]*)
         echo "loop-start.sh: loop '$LOOP_NAME' must be lowercase letters, digits and dashes" >&2
         exit 2
         ;;
 esac
 case "$LOOP_INSTANCE" in
-    -*|*[!a-z0-9-]*)
+    -*|*[!$safe_name_chars]*)
         echo "loop-start.sh: instance '$LOOP_INSTANCE' must be lowercase letters, digits and dashes" >&2
         exit 2
         ;;
