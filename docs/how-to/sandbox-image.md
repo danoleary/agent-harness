@@ -12,7 +12,7 @@ your own.
 Save it as `.agent-harness/Dockerfile`:
 
 ```dockerfile
-FROM ghcr.io/danoleary/agent-harness-base:0.7.0
+FROM ghcr.io/danoleary/agent-harness-base:0.8.0
 
 # Your toolchain. Everything here is yours; the base carries only the
 # harness<->sandbox contract (claude CLI, git, gosu, the uid-re-exec entrypoint).
