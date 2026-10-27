@@ -147,3 +147,22 @@ func TestParseSkipsIncompleteEntries(t *testing.T) {
 		t.Errorf("findings = %+v, want [{ok valid}]", r.Findings)
 	}
 }
+
+// needs_human marks a finding an agent cannot act on alone (a decision, a
+// credential, a dashboard step); absent or non-bool reads as false, so a legacy
+// dropbox stays agent-ready (ADR-0033).
+func TestParseReadsNeedsHuman(t *testing.T) {
+	json := mustJSON(t, []any{
+		map[string]any{"title": "pick a merge strategy", "body": "x", "needs_human": true},
+		map[string]any{"title": "fix the guard", "body": "y"},
+		map[string]any{"title": "stringly", "body": "z", "needs_human": "yes"},
+	})
+
+	r := Parse(json)
+	if !r.Findings[0].NeedsHuman {
+		t.Error("findings[0].NeedsHuman = false, want true")
+	}
+	if r.Findings[1].NeedsHuman || r.Findings[2].NeedsHuman {
+		t.Error("a missing or non-bool needs_human must read as false")
+	}
+}

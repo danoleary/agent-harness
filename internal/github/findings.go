@@ -17,7 +17,8 @@ type createdIssue struct {
 }
 
 // FileFinding files a harness-improvement finding as a new repo issue tagged with
-// the findings label (so SearchFindings can dedup it later) and carrying the
+// the findings label (so SearchFindings can dedup it later), plus the ready label
+// when opts.Ready, and carrying the
 // `<!-- finding-key: … -->` marker when the finding has an explicit dedup key. The
 // Key of the created issue is its #number.
 func (c *Client) FileFinding(f findings.Finding, opts tracker.FileFindingOptions) (tracker.CreatedIssue, error) {
@@ -33,10 +34,17 @@ func (c *Client) FileFinding(f findings.Finding, opts tracker.FileFindingOptions
 		body += "\n\n" + findings.KeyMarker(key)
 	}
 
+	// A Ready finding also carries the ready label so the loop picks it up
+	// without a human relabelling it (ADR-0033). The upstream sink has no ready
+	// label configured, so findings filed into the public repo stay human-gated.
+	labels := []string{c.opts.Findings}
+	if opts.Ready && c.opts.Ready != "" {
+		labels = append(labels, c.opts.Ready)
+	}
 	data, err := c.transport("POST", c.issuesPath(""), map[string]any{
 		"title":  f.Title,
 		"body":   body,
-		"labels": []string{c.opts.Findings},
+		"labels": labels,
 	})
 	if err != nil {
 		return tracker.CreatedIssue{}, err

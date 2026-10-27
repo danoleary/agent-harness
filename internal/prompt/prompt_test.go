@@ -950,3 +950,15 @@ func TestImplementForbidsRebasingOntoOriginMain(t *testing.T) {
 		}
 	}
 }
+
+// The retrospective envelope must ask for needs_human, so the harness can file
+// every other finding agent-ready (ADR-0033).
+func TestRetrospectiveAsksForNeedsHuman(t *testing.T) {
+	p := bRetro(t, sample, "beh-362", nil)
+	if !strings.Contains(p, "needs_human") {
+		t.Error("prompt missing needs_human in the finding shape")
+	}
+	if !regexp.MustCompile(`(?i)decision.*credential`).MatchString(p) {
+		t.Error("prompt must say what counts as needing a human")
+	}
+}

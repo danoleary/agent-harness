@@ -275,12 +275,14 @@ func (r Router) fileTo(sink tracker.FindingsSink, fs []findings.Finding, teamID,
 		// 3. No match — file a new issue, flagged in its body when it closely
 		// matches an open one by token overlap: the same class under a drifted key
 		// (#65). A flag, not a skip — the heuristic may be wrong.
+		ready := !f.NeedsHuman
 		if dup, ok := probableDuplicateIssue(f, open); ok {
+			ready = false
 			r.Log.Event(fmt.Sprintf("finding ⚠ %q is a probable duplicate of %s (close token overlap) — filing anyway, flagged", f.Title, dup.Identifier))
 			f.Body += fmt.Sprintf("\n\n_Probable duplicate of %s (%s) — the harness found a close key/title match among open findings. Check before triaging._", dup.Identifier, dup.Title)
 		}
 		created, err := sink.FileFinding(f, tracker.FileFindingOptions{
-			TeamID: teamID, RelatedKey: relatedIdentifier,
+			TeamID: teamID, RelatedKey: relatedIdentifier, Ready: ready,
 		})
 		if err != nil {
 			r.Log.Event(fmt.Sprintf("finding ✗ failed to file %q: %s", f.Title, err.Error()))

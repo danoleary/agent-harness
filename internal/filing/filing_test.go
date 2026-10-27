@@ -1077,3 +1077,28 @@ func TestAlreadyFiledOmitsFlaggedProbableDuplicates(t *testing.T) {
 		t.Errorf("AlreadyFiled = %+v, want only the canonical class %+v", got, want)
 	}
 }
+
+// ADR-0033: the router marks a new finding Ready unless the session flagged it
+// needs_human or it reads as a probable duplicate of an open one — both cases a
+// person should look at before an agent spends a run on it.
+func TestFileMarksReadyUnlessNeedsHumanOrProbableDuplicate(t *testing.T) {
+	dir := t.TempDir()
+	writeDropbox(t, dir, `[
+		{"title":"Fail make check when a guard is missing","body":"x","key":"check-guard-missing"},
+		{"title":"Pick a merge-queue strategy","body":"y","key":"merge-queue-strategy","needs_human":true},
+		{"title":"Gate re-run without the toolchain reads red","body":"z","key":"gate-rerun-missing-toolchain-reported-as-red-gate"}
+	]`)
+	filer := &fakeFiler{}
+	open := &fakeSearcher{existing: []tracker.ExistingFinding{{
+		Identifier: "#46", Title: "Host gate exit 127 misreported", Key: "host-gate-missing-toolchain-reported-as-red-gate",
+	}}}
+
+	Router{Project: sink(filer, open, nil), Log: &recorder{}}.File(dir, "acme/widgets", "#99")
+
+	if len(filer.opts) != 3 {
+		t.Fatalf("expected 3 findings filed, got %d", len(filer.opts))
+	}
+	if want := []bool{true, false, false}; filer.opts[0].Ready != want[0] || filer.opts[1].Ready != want[1] || filer.opts[2].Ready != want[2] {
+		t.Errorf("Ready = [%v %v %v], want %v", filer.opts[0].Ready, filer.opts[1].Ready, filer.opts[2].Ready, want)
+	}
+}

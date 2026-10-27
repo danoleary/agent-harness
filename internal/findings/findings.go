@@ -36,6 +36,10 @@ type Finding struct {
 	// the session can set so re-runs that re-surface the same problem dedup to one
 	// issue. Optional: when empty, filing falls back to the normalized title.
 	Key string `json:"key,omitempty"`
+	// NeedsHuman marks a finding an agent cannot act on alone — it needs a
+	// decision, a credential or a dashboard step. Every other finding is filed
+	// agent-ready (ADR-0033). Absent reads as false.
+	NeedsHuman bool `json:"needs_human,omitempty"`
 	// LabelIDs are any per-finding Linear label UUIDs to apply on top of the
 	// always-present agent-harness label (BEH-409). The dropbox doesn't surface
 	// these today; the field is the seam so a future kind-derived label is added
@@ -92,6 +96,9 @@ func Parse(text string) Parsed {
 		}
 		if key, keyOK := obj["key"].(string); keyOK {
 			f.Key = key
+		}
+		if nh, nhOK := obj["needs_human"].(bool); nhOK {
+			f.NeedsHuman = nh
 		}
 		out = append(out, f)
 	}
