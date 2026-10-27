@@ -95,6 +95,8 @@ type Fake struct {
 	Filed   []string
 	Routed  []string
 	Calls   []string
+	// PRBodies are the bodies of every `gh pr create`, in order.
+	PRBodies []string
 }
 
 var _ Host = (*Fake)(nil)
@@ -193,6 +195,7 @@ func (f *Fake) PushForceWithLease() error {
 
 func (f *Fake) CreatePR(title, body string) (string, error) {
 	f.record("create-pr %s", title)
+	f.PRBodies = append(f.PRBodies, body)
 	if f.CreatePRErr != nil {
 		return "", f.CreatePRErr
 	}

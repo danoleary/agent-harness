@@ -103,9 +103,9 @@ func TestLandVerdicts(t *testing.T) {
 		{"clean", func(scene) {}, nil, ship.Landed, true, true},
 		{"fetch failure is a warning", func(s scene) { s.h.FetchErr = errors.New("net down") }, nil, ship.Landed, true, true},
 		{"conflict, no hook", func(s scene) { s.repo.Conflict("proj-1") }, nil, ship.Conflict, false, false},
-		{"conflict, hook gives up", func(s scene) { s.repo.Conflict("proj-1") }, func(scene) ship.Resolve { return func() bool { return false } }, ship.Conflict, false, false},
+		{"conflict, hook gives up", func(s scene) { s.repo.Conflict("proj-1") }, func(scene) ship.Resolve { return func([]string) ship.Resolution { return ship.Resolution{} } }, ship.Conflict, false, false},
 		{"conflict, hook resolves", func(s scene) { s.repo.Conflict("proj-1") }, func(s scene) ship.Resolve {
-			return func() bool { s.repo.Resolve(s.wt); return true }
+			return func([]string) ship.Resolution { s.repo.Resolve(s.wt); return ship.Resolution{OK: true} }
 		}, ship.Landed, true, true},
 		{"disjoint history", func(s scene) { s.repo.Disjoint(s.wt) }, nil, ship.Disjoint, false, false},
 		{"replay collapses the branch", func(s scene) { s.repo.Supersede("proj-1") }, nil, ship.Collapsed, false, false},
@@ -146,10 +146,36 @@ func TestLandNeverHandsADisjointBranchToTheConflictHook(t *testing.T) {
 	s.repo.Disjoint(s.wt)
 	called := false
 
-	ship.Land(s.h, &sink{}, ticket.Ticket{}, func() bool { called = true; return true })
+	ship.Land(s.h, &sink{}, ticket.Ticket{}, func([]string) ship.Resolution { called = true; return ship.Resolution{OK: true} })
 
 	if called {
 		t.Error("the conflict hook ran for a disjoint branch; it must only see content conflicts")
+	}
+}
+
+// The conflict hook is told which files git reported as conflicted, so the caller
+// can tell the resolution's edits to them from its edits to anything else (#114),
+// and the note it returns reaches the PR body: a human reading the PR learns what
+// was written after review.
+func TestLandHandsTheHookTheConflictedFilesAndCarriesItsNoteToThePR(t *testing.T) {
+	s := newScene(t)
+	s.repo.Conflict("proj-1")
+	var got []string
+
+	landing := ship.Land(s.h, &sink{}, ticket.Ticket{Identifier: "PROJ-1"}, func(conflicted []string) ship.Resolution {
+		got = conflicted
+		s.repo.Resolve(s.wt)
+		return ship.Resolution{OK: true, Note: "written after review"}
+	})
+
+	if landing.Verdict != ship.Landed {
+		t.Fatalf("Verdict = %v, want Landed", landing.Verdict)
+	}
+	if len(got) != 1 || got[0] != "proj-1.txt" {
+		t.Errorf("conflicted = %v, want [proj-1.txt]", got)
+	}
+	if len(s.h.PRBodies) != 1 || !strings.Contains(s.h.PRBodies[0], "written after review") {
+		t.Errorf("PR bodies = %q, want the hook's note in the body", s.h.PRBodies)
 	}
 }
 

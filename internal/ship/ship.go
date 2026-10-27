@@ -72,15 +72,23 @@ const (
 // means: a landing rebases onto the ref it has, while the CI watch refuses to
 // re-push a branch replayed onto a base it could not refresh.
 func Replay(h Port) Replayed {
+	r, _ := replay(h)
+	return r
+}
+
+// replay is [Replay] that also names the files git reported as conflicted, which
+// a landing hands its Resolve hook (#114).
+func replay(h Port) (Replayed, []string) {
 	wt := h.Worktree()
-	if wt.Rebase() == gitpkg.RebaseClean {
-		return ReplayClean
+	res, conflicted := wt.RebaseConflicts()
+	if res == gitpkg.RebaseClean {
+		return ReplayClean, nil
 	}
 	wt.AbortRebase()
 	if wt.IsDisjointFrom(gitpkg.BaseRef) {
-		return ReplayDisjoint
+		return ReplayDisjoint, nil
 	}
-	return ReplayConflict
+	return ReplayConflict, conflicted
 }
 
 // Verdict is the one outcome of [Land]. Each caller maps it onto its own
@@ -115,11 +123,21 @@ type Landing struct {
 	Err     error
 }
 
-// Resolve is a caller's conflict hook: given a replay that hit a content conflict,
-// it tries to leave the worktree cleanly rebased onto origin/main and reports
-// whether it did. The review stage runs a sandboxed resolution session and re-runs
-// its gate; a hook that returns false owns its own narration and cleanup.
-type Resolve func() bool
+// Resolve is a caller's conflict hook: given a replay that hit a content conflict
+// in the conflicted files git named, it tries to leave the worktree cleanly
+// rebased onto origin/main and reports whether it did. The review stage runs a
+// sandboxed resolution session, re-runs its gate, and reviews what the session
+// wrote beyond those files (#114); a hook that fails owns its own narration and
+// cleanup.
+type Resolve func(conflicted []string) Resolution
+
+// Resolution is what a [Resolve] hook did. OK means the worktree is rebased onto
+// origin/main and cleared to push. Note, when set, goes into the PR body: what the
+// resolution wrote after the branch was reviewed, for the human who reads the PR.
+type Resolution struct {
+	OK   bool
+	Note string
+}
 
 // Land takes a clean, committed branch to an open pull request on the latest base:
 // refetch origin/main, replay onto it, stop on a disjoint history, hand a content
@@ -134,13 +152,19 @@ func Land(h Port, log EventSink, t ticket.Ticket, resolve Resolve) Landing {
 	if err := h.FetchMain(); err != nil {
 		log.Event("ship … warning: could not fetch origin/main before rebase: " + err.Error())
 	}
-	switch Replay(h) {
+	var note string
+	switch replayed, conflicted := replay(h); replayed {
 	case ReplayDisjoint:
 		return Landing{Verdict: Disjoint}
 	case ReplayConflict:
-		if resolve == nil || !resolve() {
+		if resolve == nil {
 			return Landing{Verdict: Conflict}
 		}
+		r := resolve(conflicted)
+		if !r.OK {
+			return Landing{Verdict: Conflict}
+		}
+		note = r.Note
 	}
 	log.Event("rebased " + h.Worktree().Branch() + " onto origin/main")
 
@@ -150,11 +174,11 @@ func Land(h Port, log EventSink, t ticket.Ticket, resolve Resolve) Landing {
 	if verify.PostRebasePush(h.Worktree()).RecommendClose {
 		return Landing{Verdict: Collapsed}
 	}
-	return finish(h, log, t)
+	return finish(h, log, t, note)
 }
 
 // finish pushes the ticket's branch and opens its PR from the templated title and
-// body (internal/pr) over the branch's commit subjects.
+// body (internal/pr) over the branch's commit subjects and the conflict hook's note.
 //
 // The push is force-with-lease, never a plain push: the branch was just replayed
 // onto the latest main, so on any branch already on the remote every SHA has been
@@ -164,13 +188,13 @@ func Land(h Port, log EventSink, t ticket.Ticket, resolve Resolve) Landing {
 // again, and rejected again, forever. The lease keeps the force safe: it refuses
 // to clobber remote commits the harness has not observed, and the harness owns
 // this branch outright.
-func finish(h Port, log EventSink, t ticket.Ticket) Landing {
+func finish(h Port, log EventSink, t ticket.Ticket, note string) Landing {
 	if err := h.PushForceWithLease(); err != nil {
 		return Landing{Verdict: PushFailed, Err: err}
 	}
 	log.Event("pushed " + h.Worktree().Branch() + " to origin")
 
-	url, err := h.CreatePR(pr.BuildTitle(t), pr.BuildBody(t, h.Worktree().CommitSubjects()))
+	url, err := h.CreatePR(pr.BuildTitle(t), pr.BuildBody(t, h.Worktree().CommitSubjects(), note))
 	if err != nil {
 		return Landing{Verdict: PRFailed, Err: err}
 	}

@@ -29,7 +29,7 @@ func TestBuildBodyListsCommitSubjects(t *testing.T) {
 		"feat(agent-harness): review tool (BEH-371)",
 		"test(agent-harness): gate decision",
 	}
-	body := BuildBody(sample, subjects)
+	body := BuildBody(sample, subjects, "")
 
 	for _, s := range subjects {
 		if !strings.Contains(body, s) {
@@ -39,7 +39,7 @@ func TestBuildBodyListsCommitSubjects(t *testing.T) {
 }
 
 func TestBuildBodyReferencesTicket(t *testing.T) {
-	body := BuildBody(sample, []string{"feat: x"})
+	body := BuildBody(sample, []string{"feat: x"}, "")
 
 	if !strings.Contains(body, "BEH-371") {
 		t.Errorf("body %q missing the ticket id", body)
@@ -50,7 +50,7 @@ func TestBuildBodyReferencesTicket(t *testing.T) {
 }
 
 func TestBuildBodyCarriesGeneratedByTrailer(t *testing.T) {
-	body := BuildBody(sample, []string{"feat: x"})
+	body := BuildBody(sample, []string{"feat: x"}, "")
 
 	// A trailer marking the PR as harness-generated (so a human reading the PR
 	// knows it was not hand-authored).
@@ -62,12 +62,30 @@ func TestBuildBodyCarriesGeneratedByTrailer(t *testing.T) {
 func TestBuildBodyHandlesNoCommits(t *testing.T) {
 	// Defensive: an empty subject list must still produce a usable body (the
 	// harness should never crash on an unusual diff), not a stray empty bullet.
-	body := BuildBody(sample, nil)
+	body := BuildBody(sample, nil, "")
 
 	if !strings.Contains(body, "BEH-371") {
 		t.Errorf("body %q missing the ticket id even with no commits", body)
 	}
 	if strings.Contains(body, "\n- \n") {
 		t.Errorf("body %q has an empty bullet", body)
+	}
+}
+
+// A note the harness has for the reviewer — what a conflict resolution wrote after
+// review (#114) — sits after the commits, as its own paragraph, and before the
+// trailer.
+func TestBuildBodyPlacesANoteBeforeTheTrailer(t *testing.T) {
+	note := "The pre-push conflict resolution changed `a.go` after review."
+	for _, subjects := range [][]string{{"feat: x"}, nil} {
+		body := BuildBody(sample, subjects, note)
+
+		at, trailerAt := strings.Index(body, note), strings.Index(body, "\n---\n")
+		if at < 0 || at > trailerAt {
+			t.Errorf("body %q: want the note before the trailer", body)
+		}
+		if !strings.Contains(body, "\n\n"+note) {
+			t.Errorf("body %q: want the note as its own paragraph", body)
+		}
 	}
 }

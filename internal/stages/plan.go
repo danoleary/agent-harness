@@ -186,6 +186,20 @@ func reviewRun(cfg config.Config, s Subject, prior *prompt.PriorReview, redGate 
 	}
 }
 
+// resolutionReviewRun is the scoped review of what a pre-push conflict resolution
+// wrote beyond the conflicted files (#114). Its base is the one the branch now
+// sits on, so the envelope's range is the resolved branch.
+func resolutionReviewRun(cfg config.Config, s Subject, base string, r *prompt.Resolution) hostio.AgentRun {
+	s.Base = base
+	run := reviewRun(cfg, s, nil, nil)
+	run.Label = reviewSession + "-resolution"
+	run.Prompt = prompt.For(prompt.Review, prompt.Context{
+		Ticket: s.Ticket, Slug: s.Slug, BranchPrefix: cfg.BranchPrefix, Tracker: cfg.Tracker.Kind, WorktreePath: s.WorktreePath, Body: cfg.Prompts.Review,
+		Base: s.Base, Resolution: r,
+	})
+	return run
+}
+
 // retrospectiveRun is the retrospective session, handed the finding classes a
 // prior run already filed as settled context (BEH-539).
 func retrospectiveRun(cfg config.Config, s Subject, filed []prompt.FiledFinding) hostio.AgentRun {
