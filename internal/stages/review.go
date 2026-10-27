@@ -629,6 +629,13 @@ func reviewResolution(fixes fix.Env, comment func(string), base, head string, co
 		ReviewedBase: base, ReviewedHead: head,
 		Conflicted: conflicted, Beyond: beyond, Messages: rw.Messages, RangeDiff: rw.RangeDiff,
 	})
+	// A session the spending cap or a stop signal cut short reviewed nothing, so it
+	// did not decline the changes either: hold the push, but leave no breadcrumb
+	// saying it did, as the resolution session's own cap abort defers quietly.
+	if _, stopped := out.Interrupted(); stopped || out.SpendingCapAbort {
+		log.Event("review ↻ scoped review of the conflict resolution was cut short before its verdict — keeping worktree, nothing pushed (#114)")
+		return ship.Resolution{}
+	}
 	// The post-resolution gate is already green over headBefore; a fix the scoped
 	// review committed is gated afresh, like any other review fix.
 	var gate session.Outcome

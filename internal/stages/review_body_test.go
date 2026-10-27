@@ -368,6 +368,25 @@ func TestReviewWithholdsAResolutionItsScopedReviewDidNotClear(t *testing.T) {
 	assertNothingPushed(t, h, repo)
 }
 
+// A scoped review the spending cap killed reviewed nothing: the push is withheld,
+// but no breadcrumb claims the review declined the resolution's edits.
+func TestReviewHoldsAResolutionWhoseScopedReviewWasCutShortWithoutABreadcrumb(t *testing.T) {
+	h, repo := handedOff(t, "PROJ-16")
+	repo.Merge("api_test.go", "Run()\n", "a sibling's test of Run")
+	repo.Conflict("proj-16")
+	resolvesBeyondTheConflict(h, repo, session.Outcome{ExitCode: 1, SpendingCapAbort: true})
+
+	res := Review(h, stageCfg(), stageLog(t, "PROJ-16"), Args{Identifier: "PROJ-16"})
+
+	if res.OK {
+		t.Fatalf("a scoped review cut short ships nothing, got %+v", res)
+	}
+	if len(h.Trk.Comments) != 0 {
+		t.Errorf("comments = %v, want none: a capped session did not decline anything", h.Trk.Comments)
+	}
+	assertNothingPushed(t, h, repo)
+}
+
 // A conflict the session could not resolve keeps the worktree and leaves a tracker
 // breadcrumb, so ~30 min of reviewed, gate-green work surfaces rather than sitting
 // silent.

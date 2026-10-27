@@ -40,7 +40,8 @@ push, and the PR says what was written after review.**
   whose envelope names the conflicted files, the files beyond them and the
   range-diff, and limits the review to those. The push waits on `verify.Review`
   over its verdict. A fix it commits gets fresh gates. A blocked or missing
-  verdict keeps the worktree and leaves a tracker breadcrumb naming the files.
+  verdict keeps the worktree and leaves a tracker breadcrumb naming the files;
+  a session the spending cap or a stop signal cut short holds the push quietly.
 - **The PR body says so.** `ship.Resolution.Note` goes into the PR body ahead of
   the trailer. It names the conflicted files and any reworded messages, and when
   there were extra edits it names them and says a scoped review cleared them.
