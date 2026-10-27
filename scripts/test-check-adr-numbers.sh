@@ -156,6 +156,7 @@ R="$TEST_DIR/t13"
 git init -q -b main "$R"
 git -C "$R" config user.email t@example.com
 git -C "$R" config user.name t
+git -C "$R" config commit.gpgsign false
 mkdir -p "$R/docs/adr"
 printf '# ADR-0028: Open questions\n' > "$R/docs/adr/0028-a-ready-ticket-with-open-questions-is-dispatched-with-a-warning.md"
 printf '# ADR-0029: Diataxis\n' > "$R/docs/adr/0029-docs-are-split-by-diataxis-and-live-in-the-repo.md"
