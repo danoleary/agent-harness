@@ -186,7 +186,7 @@ invocation that lacks `-buildvcs=false`. Non-stamping go subcommands (`go vet`,
 
 ## check-adr-numbers.sh
 
-Guard ADR numbering against parallel tickets (#92).
+Guard ADR numbering against parallel tickets (#92, #146).
 
 ### Purpose
 
@@ -196,6 +196,12 @@ both, and every `ADR-NNNN` cross-reference the second ticket wrote points at the
 wrong decision. This guard runs under `make check`, so the host-side Gate re-run
 and CI both catch the collision. It is bash-3.2-safe.
 
+Each run sees one tree, though, so two open PRs that took the same number both
+pass, and the second to merge leaves main red (#146). The index check closes
+that: every new ADR appends its line to the end of `docs/adr/README.md`, so two
+branches taking the same number conflict there, and the second PR can't merge
+until it is renumbered (ADR-0034).
+
 ### What it checks
 
 - Two files in `docs/adr/` with the same four-digit prefix.
@@ -203,6 +209,10 @@ and CI both catch the collision. It is bash-3.2-safe.
   file in `docs/adr/`.
 - A Markdown link to `adr/NNNN-<slug>.md` whose file doesn't exist (a renumber
   that kept the old path, say).
+- `docs/adr/README.md` (the index) missing, leaving an ADR out, listing a file
+  that doesn't exist, labelling an entry `ADR-NNNN` for another number's file,
+  or out of ascending order. Only `- [ADR-NNNN]` lines linking an `NNNN-<slug>.md`
+  file count as entries.
 
 Go string literals are not scanned (they are test data), and `.git` and linked
 worktrees under `.claude/worktrees` are skipped.
@@ -211,7 +221,8 @@ worktrees under `.claude/worktrees` are skipped.
 
 Renumber the ADR your branch added to the next number free on `origin/main`, add
 a `- Renumbered: from ADR-NNNN by #<ticket>` line under its header, and update
-the references that mean it.
+the references that mean it and its index line. A new ADR's index line goes
+at the end of the list.
 
 ### Usage
 
@@ -412,7 +423,7 @@ The guard is integrated into the Makefile's `check` target, which runs:
 5. `check-awk` - The awk portability guard (#129)
 6. `check-buildvcs` - The -buildvcs=false guard (BEH-459)
 7. `check-ci` - The CI-runs-check guard (BEH-462)
-8. `check-adr` - The ADR-numbering guard (#92)
+8. `check-adr` - The ADR-numbering guard (#92, #146)
 9. `check-bundle-links` - The installed-README link guard (#96)
 10. `check-scripts` - The harness shell tests (BEH-591)
 11. `test` - Full test suite

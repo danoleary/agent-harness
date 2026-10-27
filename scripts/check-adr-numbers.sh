@@ -9,10 +9,16 @@
 #   - two files in docs/adr/ share a numeric prefix;
 #   - an ADR-NNNN reference in a Go comment or a Markdown file names a number
 #     with no file in docs/adr/;
-#   - a Markdown link to adr/NNNN-<slug>.md names a file that doesn't exist.
+#   - a Markdown link to adr/NNNN-<slug>.md names a file that doesn't exist;
+#   - the index, docs/adr/README.md, is not exactly the ADR files, one
+#     `- [ADR-NNNN](NNNN-<slug>.md)` line each, in ascending order (#146).
 #
 # It runs under `make check`, so both the host-side Gate re-run and CI catch a
-# collision even after a clean rebase. Go string literals are not scanned: they
+# collision even after a clean rebase. But each sees one branch: two open PRs
+# that took the same number both pass, and the second to merge leaves main red.
+# The index closes that gap (ADR-0034): a new ADR appends its line after the
+# last one, so two branches taking the same number edit the same spot of one
+# file, and the second PR conflicts with main instead of merging cleanly. Go string literals are not scanned: they
 # are test data, not cross-references. Linked worktrees under .claude/worktrees
 # are other branches' trees and are skipped.
 #
@@ -83,6 +89,44 @@ while IFS= read -r file; do
         awk '/^[0-9]+:$/ { line = $0; next } { print line $0 }')
 done < <(sources)
 
+# 4. The index.
+INDEX="$ADR_DIR/README.md"
+adrs=""
+if [ -d "$ADR_DIR" ]; then
+    adrs=$(find "$ADR_DIR" -maxdepth 1 -type f -name '[0-9][0-9][0-9][0-9]-*.md' -exec basename {} \; | sort)
+fi
+if [ -n "$adrs" ] && [ ! -f "$INDEX" ]; then
+    echo "docs/adr/README.md: missing; it must list every ADR, one '- [ADR-NNNN](NNNN-<slug>.md)' line each, in ascending order"
+    violations=$((violations + 1))
+elif [ -n "$adrs" ]; then
+    indexed=""
+    prev=0
+    while read -r line_no n file; do
+        if [ ! -e "$ADR_DIR/$file" ]; then
+            echo "docs/adr/README.md:${line_no}: index entry ${file} names no file in docs/adr/"
+            violations=$((violations + 1))
+        fi
+        if [ "${file%%-*}" != "$n" ]; then
+            echo "docs/adr/README.md:${line_no}: ADR-$n is linked to ${file}"
+            violations=$((violations + 1))
+        fi
+        if [ $((10#${file%%-*})) -le "$prev" ]; then
+            echo "docs/adr/README.md:${line_no}: ${file} is out of order; the index lists ADRs in ascending order, a new one last"
+            violations=$((violations + 1))
+        fi
+        prev=$((10#${file%%-*}))
+        indexed="$indexed$file
+"
+    done < <(grep -nE '^- \[ADR-[0-9]{4}\]\([0-9]{4}-[^)]*\.md\)' "$INDEX" |
+        sed -E 's/^([0-9]+):- \[ADR-([0-9]{4})\]\(([^)]*)\).*/\1 \2 \3/')
+    for f in $adrs; do
+        if ! printf '%s' "$indexed" | grep -qxF "$f"; then
+            echo "docs/adr/README.md: ${f} is not listed; append a '- [ADR-${f%%-*}](${f})' line for it"
+            violations=$((violations + 1))
+        fi
+    done
+fi
+
 if [ "$violations" -gt 0 ]; then
     echo
     echo "Found ${violations} ADR numbering problem(s). Number a new ADR against origin/main's"
@@ -90,4 +134,4 @@ if [ "$violations" -gt 0 ]; then
     exit 1
 fi
 
-echo "✓ ADR numbers are unique and every ADR reference resolves"
+echo "✓ ADR numbers are unique, indexed in order, and every ADR reference resolves"
