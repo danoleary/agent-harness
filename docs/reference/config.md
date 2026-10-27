@@ -69,7 +69,7 @@ is env-only. Setup guides: [GitHub Issues](../how-to/github-issues.md),
 |---|---|---|---|
 | `kind` | all | yes | `"github"`, `"linear"` or `"jira"`. |
 | `findings_label_id` | all | no | The label applied to filed Findings. A label **name** on GitHub and Jira; a label **UUID** on Linear. |
-| `ready_label` | github, linear | yes | The human-applied label that makes a ticket eligible. Checked at load for Linear only. |
+| `ready_label` | github, linear | yes | The label that makes a ticket eligible. On GitHub the harness also adds it to Findings that don't need a human (ADR-0033). Checked at load for Linear only. |
 | `blocked_label` | github, linear | no | Screens a ticket out until a person removes the label. |
 | `repo` | github | yes | `"owner/name"`. Checked when the tracker is built. |
 | `in_progress_label` | github | yes | Added on claim, removed on release. |

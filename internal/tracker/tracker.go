@@ -31,6 +31,10 @@ type FileFindingOptions struct {
 	TeamID string
 	// RelatedKey is the Key of the ticket whose session surfaced this finding.
 	RelatedKey Key
+	// Ready asks the sink to file the finding agent-ready too (ADR-0033): the
+	// router sets it unless the finding needs a human or reads as a probable
+	// duplicate. A sink with no ready marker configured ignores it.
+	Ready bool
 }
 
 // CreatedIssue is the result of filing a finding: the new issue's Key and URL.

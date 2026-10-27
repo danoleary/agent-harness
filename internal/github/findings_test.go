@@ -155,3 +155,44 @@ func TestAddCommentPostsToIssue(t *testing.T) {
 		t.Errorf("comment body = %q", bodyString((*calls)[0].body))
 	}
 }
+
+// TestFileFindingAddsReadyLabelWhenReady pins ADR-0033: a finding the router
+// marks Ready is filed with the ready label too, so the loop picks it up without
+// a human relabelling it; one not marked Ready carries the findings label only.
+func TestFileFindingAddsReadyLabelWhenReady(t *testing.T) {
+	for _, tc := range []struct {
+		ready bool
+		want  []string
+	}{
+		{true, []string{"agent-harness", "ready-for-agent"}},
+		{false, []string{"agent-harness"}},
+	} {
+		tr, calls := fakeTransport(map[string]any{
+			"POST /repos/acme/widgets/issues": map[string]any{"number": 7, "html_url": "u"},
+		})
+		c := NewClient(tr, "acme", "widgets", readyLabels)
+		if _, err := c.FileFinding(findings.Finding{Title: "t", Body: "b"}, tracker.FileFindingOptions{Ready: tc.ready}); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		m, _ := (*calls)[0].body.(map[string]any)
+		if got, _ := m["labels"].([]string); strings.Join(got, ",") != strings.Join(tc.want, ",") {
+			t.Errorf("ready=%v: labels = %v, want %v", tc.ready, got, tc.want)
+		}
+	}
+}
+
+// With no ready label configured (the upstream sink), Ready adds nothing: a
+// finding filed into the public harness repo stays behind a human (ADR-0033).
+func TestFileFindingWithoutReadyLabelConfiguredAddsNothing(t *testing.T) {
+	tr, calls := fakeTransport(map[string]any{
+		"POST /repos/acme/widgets/issues": map[string]any{"number": 7, "html_url": "u"},
+	})
+	c := NewClient(tr, "acme", "widgets", Options{Findings: "harness-finding"})
+	if _, err := c.FileFinding(findings.Finding{Title: "t", Body: "b"}, tracker.FileFindingOptions{Ready: true}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	m, _ := (*calls)[0].body.(map[string]any)
+	if got, _ := m["labels"].([]string); len(got) != 1 || got[0] != "harness-finding" {
+		t.Errorf("labels = %v, want [harness-finding]", got)
+	}
+}

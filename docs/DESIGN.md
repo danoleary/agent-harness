@@ -942,6 +942,13 @@ the backstop that keeps the public sink safe regardless of classification; only
 `harness`-audience findings ever reach it. Default stays `off` — herd flips to
 `github` only once the public repo exists.
 
+**Findings are filed agent-ready (ADR-0033).** A finding also carries
+`needs_human`, which the retrospective sets only when the fix needs a person's
+decision, a credential or a dashboard step. The router files every other finding
+with the ready label too (GitHub tracker only), unless it reads as a probable
+duplicate of an open one. The upstream sink has no ready label, so findings
+filed into the public harness repo still wait for a human.
+
 **Re-run dedup context (BEH-539).** When a ticket goes through the pipeline more
 than once, an earlier run's retrospective may have already filed findings. The
 harness already skips re-filing a finding whose `key` has an open issue, but a

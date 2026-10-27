@@ -41,5 +41,8 @@ so that it could be picked up as a ticket on its own:
 - **kind** — e.g. `prompt`, `skill`, `sandbox`, `gate`, `docs`.
 - **key** — a stable slug for the failure class, so re-runs dedupe.
 - **audience** — as the envelope defines it.
+- **needs_human** — `true` only when an agent cannot do the fix alone: it needs
+  a person to choose between designs, a credential, or a dashboard step. Leave
+  it `false` otherwise; the harness files those ready for an agent.
 
 Three sharp findings beat ten vague ones. Zero is a fine answer: write `[]`.
