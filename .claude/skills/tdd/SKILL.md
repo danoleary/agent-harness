@@ -52,8 +52,9 @@ prompt around this skill tells you the ticket, the worktree and the branch.
   `-buildvcs=false`**, on one line — `check-buildvcs` (`scripts/check-buildvcs.sh`).
   Without it go aborts inside a linked worktree.
 - **Two ADRs can't share a number, and every `ADR-NNNN` reference (Go comment or
-  Markdown) or `adr/NNNN-<slug>.md` link must name an existing file** —
-  `check-adr` (`scripts/check-adr-numbers.sh`); see Finish.
+  Markdown) or `adr/NNNN-<slug>.md` link must name an existing file, and
+  every ADR has a line in the index, `docs/adr/README.md`, in ascending
+  order** — `check-adr` (`scripts/check-adr-numbers.sh`); see Finish.
 - **Every relative link in `README.md` must name a file on `install.sh`'s
   `DOCS` list** (not a directory, not a path outside the bundle), and every doc
   on that list must exist — `check-bundle-links`
@@ -91,7 +92,9 @@ private helper is testing the wrong thing.
    nothing appended. Both must be clean.
 2. Update docs the change makes stale (README, `docs/DESIGN.md`, an ADR).
    Before numbering a new ADR, check `origin/main`'s `docs/adr/` (`git fetch`
-   first), not local main, and expect a sibling branch may take the same number;
+   first), not local main, and expect a sibling branch may take the same number.
+   Append the new ADR's line to the end of `docs/adr/README.md`: a sibling that
+   took the same number then conflicts with yours there (ADR-0034), and
    `make check` (`scripts/check-adr-numbers.sh`) fails on a collision as the
    backstop. That fetch is read-only: do not rebase or merge `origin/main` into
    the branch, even if main has moved. The harness rebases it before push and
