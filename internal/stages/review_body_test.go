@@ -289,6 +289,102 @@ func TestReviewResolvesAPrePushConflictThenRegatesAndPushes(t *testing.T) {
 	if wt := h.Worktree(); !wt.IsRebasedOnto(gitpkg.BaseRef) || repo.OnOrigin(wt.Branch()) == "" {
 		t.Error("the resolved branch must sit on origin/main and reach origin")
 	}
+	if len(h.PRBodies) != 1 || !strings.Contains(h.PRBodies[0], "`proj-10.txt`") {
+		t.Errorf("PR bodies = %q, want the conflicted file named as resolved after review (#114)", h.PRBodies)
+	}
+}
+
+// resolvesBeyondTheConflict is a host whose conflict-resolution session resolves
+// the conflict and then, as in #114, goes past it: it ports a test the base just
+// added to the branch's API, in a file git never flagged. The scoped review of
+// what it wrote reports scoped; every other session reaches its verdict.
+func resolvesBeyondTheConflict(h *hostio.Fake, repo *gittest.Repo, scoped session.Outcome) {
+	h.AgentFn = func(_ int, run hostio.AgentRun) session.Outcome {
+		switch run.Label {
+		case "rebasefix":
+			repo.Resolve(h.Worktree())
+			repo.Commit(h.Worktree(), "api_test.go", "Run(ctx)\n", "Port the sibling's test to the new Run")
+			return session.Outcome{}
+		case "review-resolution":
+			return scoped
+		}
+		return session.Outcome{ReviewVerdictEmitted: true}
+	}
+}
+
+// #114, replayed: the base advanced during review — a conflicting edit to the
+// branch's file, and a new test of the API the branch changes. The resolution
+// session resolved the conflict and ported that test, an edit git never flagged
+// and review never saw. Before the push, a scoped review is run over exactly what
+// the resolution wrote beyond the conflicted file, and the PR says so.
+func TestReviewReviewsWhatTheConflictResolutionWroteBeyondTheConflict(t *testing.T) {
+	h, repo := handedOff(t, "PROJ-14")
+	repo.Merge("api_test.go", "Run()\n", "a sibling's test of Run")
+	repo.Conflict("proj-14")
+	resolvesBeyondTheConflict(h, repo, session.Outcome{ReviewVerdictEmitted: true})
+
+	res := Review(h, stageCfg(), stageLog(t, "PROJ-14"), Args{Identifier: "PROJ-14"})
+
+	if !res.OK || res.Disposition != Shipped {
+		t.Fatalf("a resolution whose extra edits pass a scoped review ships, got %+v", res)
+	}
+	got := labels(h.Agents)
+	if len(got) != 3 || got[1] != "rebasefix" || got[2] != "review-resolution" {
+		t.Fatalf("agent runs = %v, want a scoped review after the conflict resolution", got)
+	}
+	scoped := h.Agents[2].Prompt
+	for _, want := range []string{"api_test.go", "Port the sibling's test", "proj-14.txt"} {
+		if !strings.Contains(scoped, want) {
+			t.Errorf("scoped review prompt lacks %q:\n%s", want, scoped)
+		}
+	}
+	if len(h.PRBodies) != 1 {
+		t.Fatalf("PR bodies = %v, want one PR", h.PRBodies)
+	}
+	body := h.PRBodies[0]
+	for _, want := range []string{"`proj-14.txt`", "`api_test.go`", "scoped review"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("PR body lacks %q, so its reader cannot tell what was written after review:\n%s", want, body)
+		}
+	}
+}
+
+// A scoped review that does not clear the resolution's extra edits withholds the
+// push, like the first review would have, and leaves a breadcrumb naming them.
+func TestReviewWithholdsAResolutionItsScopedReviewDidNotClear(t *testing.T) {
+	h, repo := handedOff(t, "PROJ-15")
+	repo.Merge("api_test.go", "Run()\n", "a sibling's test of Run")
+	repo.Conflict("proj-15")
+	resolvesBeyondTheConflict(h, repo, session.Outcome{ReviewVerdictEmitted: true, ReviewBlocked: true})
+
+	res := Review(h, stageCfg(), stageLog(t, "PROJ-15"), Args{Identifier: "PROJ-15"})
+
+	if res.OK {
+		t.Fatalf("a blocked scoped review ships nothing, got %+v", res)
+	}
+	if len(h.Trk.Comments) != 1 || !strings.Contains(h.Trk.Comments[0], "api_test.go") || !strings.Contains(h.Trk.Comments[0], "#114") {
+		t.Errorf("comments = %v, want one breadcrumb naming the unreviewed file", h.Trk.Comments)
+	}
+	assertNothingPushed(t, h, repo)
+}
+
+// A scoped review the spending cap killed reviewed nothing: the push is withheld,
+// but no breadcrumb claims the review declined the resolution's edits.
+func TestReviewHoldsAResolutionWhoseScopedReviewWasCutShortWithoutABreadcrumb(t *testing.T) {
+	h, repo := handedOff(t, "PROJ-16")
+	repo.Merge("api_test.go", "Run()\n", "a sibling's test of Run")
+	repo.Conflict("proj-16")
+	resolvesBeyondTheConflict(h, repo, session.Outcome{ExitCode: 1, SpendingCapAbort: true})
+
+	res := Review(h, stageCfg(), stageLog(t, "PROJ-16"), Args{Identifier: "PROJ-16"})
+
+	if res.OK {
+		t.Fatalf("a scoped review cut short ships nothing, got %+v", res)
+	}
+	if len(h.Trk.Comments) != 0 {
+		t.Errorf("comments = %v, want none: a capped session did not decline anything", h.Trk.Comments)
+	}
+	assertNothingPushed(t, h, repo)
 }
 
 // A conflict the session could not resolve keeps the worktree and leaves a tracker

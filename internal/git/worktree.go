@@ -237,6 +237,20 @@ func (w Worktree) Clean() bool {
 // pushing a branch it could not cleanly replay. There is no network here, so unlike
 // the remote ops it is not retried.
 func (w Worktree) Rebase() RebaseResult {
+	res, _ := w.rebase(false)
+	return res
+}
+
+// RebaseConflicts is [Worktree.Rebase] that also names the files git reported as
+// conflicted when the replay halted, read before the replay is aborted (#114). A
+// replay stops at its first conflicting commit, so a later commit's conflicts are
+// not among them: the list is what git flagged, never more. Empty on a clean replay
+// and on a failure that was not a halt on unmerged paths.
+func (w Worktree) RebaseConflicts() (RebaseResult, []string) {
+	return w.rebase(true)
+}
+
+func (w Worktree) rebase(nameConflicts bool) (RebaseResult, []string) {
 	// Strip the readiness sentinel before replaying. new-worktree.sh drops an untracked
 	// .worktree-ready into every worktree (BEH-549), and a checkout that wants to write a
 	// now-tracked .worktree-ready over the untracked copy can refuse ("untracked working
@@ -247,21 +261,21 @@ func (w Worktree) Rebase() RebaseResult {
 	// Pin the feature tip so `reset --hard` can't lose the commits and the cherry-pick
 	// range / conflict-restore can name them.
 	if w.run("git", "-C", w.path, "update-ref", rebaseBackupRef, "HEAD") != nil {
-		return RebaseConflict
+		return RebaseConflict, nil
 	}
 	defer func() { _ = w.run("git", "-C", w.path, "update-ref", "-d", rebaseBackupRef) }()
 
 	// Move the branch onto the fresh base. reset --hard escapes the rebase checkout
 	// false-fail and also fast-forwards a branch that is merely behind origin/main.
 	if w.run("git", "-C", w.path, "reset", "--hard", "origin/main") != nil {
-		return RebaseConflict
+		return RebaseConflict, nil
 	}
 
 	// Nothing to replay if the feature tip is already contained in origin/main (the
 	// branch was behind or equal): the reset alone completed the move. cherry-pick of
 	// an empty range errors, so short-circuit it.
 	if w.run("git", "-C", w.path, "merge-base", "--is-ancestor", rebaseBackupRef, "origin/main") == nil {
-		return RebaseClean
+		return RebaseClean, nil
 	}
 
 	// Replay the feature's own commits (origin/main..tip) onto the new base. cherry-pick
@@ -278,7 +292,7 @@ func (w Worktree) Rebase() RebaseResult {
 	args := append([]string{"-C", w.path}, identityArgs()...)
 	args = append(args, "cherry-pick", "origin/main.."+rebaseBackupRef)
 	if w.run("git", args...) == nil {
-		return RebaseClean
+		return RebaseClean, nil
 	}
 
 	// The cherry-pick halted. A bare cherry-pick halts on BOTH empty-commit classes
@@ -302,25 +316,31 @@ func (w Worktree) Rebase() RebaseResult {
 	if !w.cherryPickInProgress() {
 		_ = w.run("git", "-C", w.path, "cherry-pick", "--abort")
 		_ = w.run("git", "-C", w.path, "reset", "--hard", rebaseBackupRef)
-		return RebaseConflict
+		return RebaseConflict, nil
 	}
 	for i := 0; w.cherryPickInProgress(); i++ {
-		if w.hasUnmergedPaths() || i >= maxCherryPickSkips {
+		if unmerged := w.hasUnmergedPaths(); unmerged || i >= maxCherryPickSkips {
 			// Genuine content conflict (or a pathological non-progressing skip loop — the
 			// bound is a pure safety backstop): abort the cherry-pick and restore the
 			// branch to its original tip, leaving it exactly as it was for a human
 			// (BEH-570). Both are best-effort — if the cherry-pick never started, --abort
 			// fails harmlessly.
+			var conflicted []string
+			if unmerged && nameConflicts {
+				if out, err := w.output("git", "-C", w.path, "diff", "--name-only", "-z", "--diff-filter=U"); err == nil {
+					conflicted = nulPaths(out)
+				}
+			}
 			_ = w.run("git", "-C", w.path, "cherry-pick", "--abort")
 			_ = w.run("git", "-C", w.path, "reset", "--hard", rebaseBackupRef)
-			return RebaseConflict
+			return RebaseConflict, conflicted
 		}
 		// Empty commit → drop it and continue the sequence. --skip may itself halt on the
 		// next commit (empty or conflict), so its exit code isn't trusted — the loop
 		// re-reads git state and re-classifies.
 		_ = w.run("git", "-C", w.path, "cherry-pick", "--skip")
 	}
-	return RebaseClean
+	return RebaseClean, nil
 }
 
 // cherryPickInProgress reports whether a cherry-pick is currently halted awaiting

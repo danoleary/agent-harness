@@ -96,6 +96,7 @@ How a review ends when it takes the branch to a PR (`ship.Land`).
 | `rebase collapsed the branch to zero net change against origin/main` | Collapsed | the work is already on `main`; close the ticket |
 | `disjoint branch history — no common ancestor with origin/main` | Disjoint | reset the branch onto `origin/main` and cherry-pick the handoff commits |
 | `conflict-resolution session left the worktree dirty` / `left the branch on its stale base` | Conflict | resolve the conflict by hand in the kept worktree |
+| `scoped review of the conflict resolution: …` | Conflict | the resolution changed files git did not flag, and their review did not clear them; read the breadcrumb's file list and the range-diff in the kept worktree (#114) |
 | `review ✗ push failed:` | PushFailed | usually the token: scope, SSO, or `workflow` for a workflow-file change |
 | `review ✗ gh pr create failed: … branch pushed, open the PR manually` | PRFailed | open the PR yourself |
 

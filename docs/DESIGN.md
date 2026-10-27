@@ -346,6 +346,11 @@ loop:
                      re-run the host gate on the resolved tree; only then push. If it can't land a
                      clean, re-gated rebase -> abort + KEEP worktree + Linear breadcrumb (a spending-cap
                      abort defers quietly). A genuine unresolvable conflict still ends with a human.
+                     Then (#114, ADR-0034) compare the reviewed range with the resolved one: files
+                     whose changed lines differ, beyond the ones git flagged as conflicted, get a
+                     scoped review session over the range-diff before the push (a blocked or absent
+                     verdict keeps the worktree + breadcrumb), and the PR body says what was
+                     written after review.
                git -C $PROJECT_PATH push origin feat/beh-nnn
                gh pr create --repo <origin> --head feat/beh-nnn --base main \
                             --title <templated> --body <templated: ticket id + commit subjects>
@@ -1374,7 +1379,10 @@ reader over a structured stream rather than a `--tui` flag on the daemon.
   force-with-lease, templated `gh pr create` — and each maps its one verdict
   (Landed / Collapsed / Conflict / Disjoint / PushFailed / PRFailed) onto its own
   disposition. Only the review supplies a conflict hook (its BEH-581
-  resolve-and-regate session). The CI watch reuses only the replay half.
+  resolve-and-regate session, followed by a scoped review of whatever the
+  resolution wrote beyond the conflicted files —
+  [ADR-0034](adr/0034-a-conflict-resolutions-edits-beyond-the-conflict-are-reviewed-before-push.md)).
+  The CI watch reuses only the replay half.
 - **The worktree is a type** ([ADR-0015](adr/0015-the-worktree-is-a-type.md)). Below the host port, the harness's central
   noun has a name: `git.Open(checkout, branchPrefix).Worktree(slug)` carries the
   checkout, the branch and the worktree path together, and creating, gating,

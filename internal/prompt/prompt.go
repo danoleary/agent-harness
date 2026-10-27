@@ -106,6 +106,10 @@ type Context struct {
 	// RedGate is the host gate that went red over the review's own commit, for
 	// the one Review re-launch that follows it (#111); nil on a first review.
 	RedGate *RedGate
+	// Resolution is what a pre-push conflict resolution wrote beyond the files git
+	// flagged, for the scoped review of it that runs before the push (#114); nil on
+	// every other review.
+	Resolution *Resolution
 	// CILogs is the failing job log the host fetched for CIFix; CILogAvailable
 	// says whether it is a usable log or only an error marker (BEH-558).
 	CILogs         string
@@ -446,6 +450,25 @@ type RedGate struct {
 	Log  string
 }
 
+// Resolution is what a pre-push conflict-resolution session wrote after the branch
+// passed review, handed to the scoped review of it (#114). ReviewedBase..ReviewedHead
+// is the range the first review cleared; Conflicted are the files git flagged on
+// the replay; Beyond are the files the resolution changed outside them; Messages
+// says it also reworded commit messages; RangeDiff is `git range-diff` from the
+// reviewed range to the resolved one.
+type Resolution struct {
+	ReviewedBase string
+	ReviewedHead string
+	Conflicted   []string
+	Beyond       []string
+	Messages     bool
+	RangeDiff    string
+}
+
+// rangeDiffMaxLines bounds how much of the range-diff the scoped review is handed
+// inline; the session can run the command itself for the rest.
+const rangeDiffMaxLines = 400
+
 // retroFindingsProtocol is the retrospective stage's findings-dropbox contract:
 // unlike the implementation stage, the retrospective's ONLY output is findings, so
 // it must always write the file — an absent file means the step never ran.
@@ -553,6 +576,7 @@ func review(c Context) string {
 		branchBaseSection(c.Base),
 		priorReviewSection(c.PriorReview),
 		redGateSection(c.RedGate),
+		resolutionSection(c.Resolution),
 		"---",
 		reviewContractFooter(c.Tracker, c.BranchPrefix, c.Slug),
 	)
@@ -578,6 +602,41 @@ func redGateSection(g *RedGate) string {
 		return ""
 	}
 	return "IMPORTANT — THE HOST GATE IS RED OVER YOUR LAST COMMIT: a previous review session of this ticket committed a fix, and the harness's host-side re-run of gate `" + defang(g.Name) + "` then failed over it. This is that session's one re-launch. The tail of the gate's log:\n\n```\n" + defang(g.Log) + "\n```\n\nFix what the gate reports as a LOCAL commit, re-run that one gate to confirm it, then emit your `## Review:` report as usual. The harness re-runs every gate after you stop; if it is still red the ticket fails, so do not stop on a guess."
+}
+
+// resolutionSection scopes a review to what a pre-push conflict resolution wrote
+// after the branch passed review (#114). The resolution session is the one stage
+// that writes code after review, and a green gate cannot tell whether a test it
+// ported still asserts what its author meant, so its edits beyond the conflicted
+// files get a review of their own, and only those.
+func resolutionSection(r *Resolution) string {
+	if r == nil {
+		return ""
+	}
+	reworded := ""
+	if r.Messages {
+		reworded = " It also reworded the branch's commit message(s)."
+	}
+	conflicted := "a file git flagged"
+	if len(r.Conflicted) > 0 {
+		conflicted = codeList(r.Conflicted)
+	}
+	rangeDiff := r.RangeDiff
+	if lines := strings.Split(rangeDiff, "\n"); len(lines) > rangeDiffMaxLines {
+		rangeDiff = strings.Join(lines[:rangeDiffMaxLines], "\n") + "\n… (truncated — run the command for the rest)"
+	}
+	return "IMPORTANT — A SCOPED REVIEW OF A CONFLICT RESOLUTION: this branch already passed review as `" + r.ReviewedBase + ".." + r.ReviewedHead + "`. Before the harness could push it, origin/main had moved, and replaying the branch onto it conflicted in " + conflicted + ". A conflict-resolution session resolved that, and it also changed " + codeList(r.Beyond) + ", which git did not flag." + reworded + " The gates are green over the resolved tree, but nobody has reviewed those changes." +
+		"\n\nReview ONLY what the resolution wrote, set against the range review cleared — not the rest of the branch. In particular: does a test it ported or edited still assert what its author intended, does a file it renamed or renumbered have every reference updated, and does an edit git merged cleanly still mean what it did on both sides? `git range-diff " + r.ReviewedBase + ".." + r.ReviewedHead + " $(git merge-base origin/main HEAD)..HEAD` shows it. Its output:\n\n```\n" + defang(rangeDiff) + "\n```" +
+		"\n\nFix a real defect as a LOCAL commit, then emit your `## Review:` report with its Disposition line as usual. A disposition that blocks keeps the branch in its worktree for a human; nothing is pushed until this review clears."
+}
+
+// codeList renders paths as a comma-separated list of code spans, defanged.
+func codeList(paths []string) string {
+	quoted := make([]string, len(paths))
+	for i, p := range paths {
+		quoted[i] = "`" + defang(p) + "`"
+	}
+	return strings.Join(quoted, ", ")
 }
 
 // ciFix builds the `-p` prompt for a sandboxed session that diagnoses and

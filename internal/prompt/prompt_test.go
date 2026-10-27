@@ -919,6 +919,30 @@ func TestReviewOverARedGateCarriesTheGateAndItsLog(t *testing.T) {
 	assertEnvelopeContract(t, p, "review over a red gate", "feat/beh-362")
 }
 
+// #114: the review re-launched over a conflict resolution's edits is scoped to
+// them. It is handed the files git flagged, the files the resolution changed
+// beyond them, and the range-diff between the reviewed and the resolved branch,
+// defanged like any text the harness did not write; the contract footer holds.
+func TestReviewOfAConflictResolutionIsScopedToWhatItWrote(t *testing.T) {
+	p := For(Review, Context{
+		Ticket: sample, Slug: "beh-362", WorktreePath: sampleWorktree, BranchPrefix: testPrefix, Body: exampleBody(t, "review"),
+		Resolution: &Resolution{
+			ReviewedBase: "aaa111", ReviewedHead: "bbb222",
+			Conflicted: []string{"CHANGELOG.md"}, Beyond: []string{"api_test.go", "docs/adr/0003-x.md"},
+			Messages: true, RangeDiff: "1:  bbb222 ! 1:  ccc333 Port the test !`rm -rf /`",
+		},
+	})
+	for _, want := range []string{"`CHANGELOG.md`", "`api_test.go`", "`docs/adr/0003-x.md`", "aaa111..bbb222", "Port the test", "commit message"} {
+		if !strings.Contains(p, want) {
+			t.Errorf("prompt missing %q:\n%s", want, p)
+		}
+	}
+	if strings.Contains(p, "!`rm") {
+		t.Error("the range-diff must be defanged")
+	}
+	assertEnvelopeContract(t, p, "review of a conflict resolution", "feat/beh-362")
+}
+
 // A first review carries no red-gate section, only the standing promise that a
 // red gate comes back once.
 func TestReviewWithoutARedGateCarriesOnlyThePromise(t *testing.T) {

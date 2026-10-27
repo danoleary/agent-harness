@@ -25,8 +25,10 @@ func BuildTitle(t ticket.Ticket) string {
 // subjects (ahead of main). It references the ticket so Linear associates the PR,
 // lists the commits as a summary of the work, and ends with the generated-by
 // trailer. An empty subject list yields a body with no commit bullets rather than
-// a stray empty one.
-func BuildBody(t ticket.Ticket, commitSubjects []string) string {
+// a stray empty one. A non-empty note follows the commits: what the harness has to
+// tell the reviewer about how the branch got here, such as edits a conflict
+// resolution made after review (#114).
+func BuildBody(t ticket.Ticket, commitSubjects []string, note string) string {
 	var b strings.Builder
 
 	b.WriteString("Resolves " + t.Identifier + ".")
@@ -42,6 +44,13 @@ func BuildBody(t ticket.Ticket, commitSubjects []string) string {
 			}
 			b.WriteString("- " + s + "\n")
 		}
+	}
+
+	if note = strings.TrimSpace(note); note != "" {
+		if !strings.HasSuffix(b.String(), "\n") {
+			b.WriteString("\n")
+		}
+		b.WriteString("\n" + note + "\n")
 	}
 
 	b.WriteString("\n---\n\n" + trailer + "\n")

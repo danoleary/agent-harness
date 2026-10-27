@@ -10,6 +10,7 @@ import (
 	"github.com/danoleary/agent-harness/internal/ci"
 	"github.com/danoleary/agent-harness/internal/config"
 	"github.com/danoleary/agent-harness/internal/fix"
+	gitpkg "github.com/danoleary/agent-harness/internal/git"
 	"github.com/danoleary/agent-harness/internal/hostio"
 	"github.com/danoleary/agent-harness/internal/loopstream"
 	"github.com/danoleary/agent-harness/internal/prompt"
@@ -368,8 +369,21 @@ func Review(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Res
 	// beside the post-PR CI fix) and re-runs the host gate on the resolved tree
 	// before ship pushes. The hook returns false when it could not land a clean, re-gated rebase,
 	// having already left a tracker breadcrumb so the work surfaces autonomously.
-	landing := ship.Land(h, log, t, func() bool {
-		return resolveRebaseConflict(fixes, target, comment, "pre-push rebase", gateStep+"-postrebase")
+	//
+	// The resolution session is the one stage that writes code after review, and it
+	// can go past the conflicted hunks: port a test the base just added, renumber a
+	// file, reword a commit. So before the push, what it changed beyond the files git
+	// flagged gets a scoped review of its own, and the PR says what was written after
+	// review (#114). reviewedBase..reviewedHead is the range this review cleared.
+	reviewedBase, _ := wt.BaseSHA()
+	reviewedHead, _ := wt.HeadSHA()
+	landing := ship.Land(h, log, t, func(conflicted []string) ship.Resolution {
+		if !resolveRebaseConflict(fixes, target, comment, "pre-push rebase", gateStep+"-postrebase") {
+			return ship.Resolution{}
+		}
+		return reviewResolution(fixes, comment, reviewedBase, reviewedHead, conflicted, func(base string, r *prompt.Resolution) session.Outcome {
+			return launchReview(resolutionReviewRun(cfg, subject, base, r), "scoped review of the conflict resolution")
+		})
 	})
 	switch landing.Verdict {
 	case ship.Disjoint:
@@ -568,4 +582,92 @@ func resolveRebaseConflict(fixes fix.Env, target fix.Target, comment func(string
 		))
 	}
 	return res.OK
+}
+
+// reviewResolution is the review of what a pre-push conflict resolution wrote after
+// the branch passed review (#114), run once the resolution is verified and its
+// re-gate is green. It compares the reviewed range, base..head, with the resolved
+// branch. A resolution that changed nothing beyond the files git reported as
+// conflicted goes straight to the push. Anything more is handed to a review session
+// scoped to it, via launch, and the push waits on that review's verdict and, if it
+// committed a fix, on a fresh gate over it. Either way the returned note tells the
+// PR's reader what was written after review. A failure keeps the worktree and
+// leaves a tracker breadcrumb naming the unreviewed files.
+func reviewResolution(fixes fix.Env, comment func(string), base, head string, conflicted []string, launch func(base string, r *prompt.Resolution) session.Outcome) ship.Resolution {
+	log, wt := fixes.Log, fixes.Host.Worktree()
+	rw, err := wt.RewrittenSince(base, head)
+	if err != nil {
+		reason := "could not read what the conflict resolution changed: " + err.Error()
+		log.Event("review ✗ " + reason + " — keeping worktree, nothing pushed (#114)")
+		comment(fmt.Sprintf("The pre-push conflict on `%s` was auto-resolved, but the harness %s, so it cannot tell what was written after review. The rebased branch is waiting in a worktree for a look. (#114)", wt.Branch(), reason))
+		return ship.Resolution{}
+	}
+	flagged := map[string]bool{}
+	for _, p := range conflicted {
+		flagged[p] = true
+	}
+	var beyond []string
+	for _, p := range rw.Files {
+		if !flagged[p] {
+			beyond = append(beyond, p)
+		}
+	}
+
+	note := "**Written after review.** The pre-push rebase onto `main` conflicted in " + codeSpans(conflicted, "a file") + ", and a conflict-resolution session resolved it after the review above; the gates were re-run over the result."
+	if rw.Messages {
+		note += " The session also reworded the branch's commit message(s)."
+	}
+	if len(beyond) == 0 {
+		log.Event("review · the conflict resolution changed nothing beyond the conflicted files — no scoped review needed (#114)")
+		return ship.Resolution{OK: true, Note: note}
+	}
+
+	log.Event("review ↻ the conflict resolution also changed " + strings.Join(beyond, ", ") + " beyond the conflicted files — launching a scoped review of it before the push (#114)")
+	newBase, _ := wt.BaseSHA()
+	headBefore, _ := wt.HeadSHA()
+	out := launch(newBase, &prompt.Resolution{
+		ReviewedBase: base, ReviewedHead: head,
+		Conflicted: conflicted, Beyond: beyond, Messages: rw.Messages, RangeDiff: rw.RangeDiff,
+	})
+	// A session the spending cap or a stop signal cut short reviewed nothing, so it
+	// did not decline the changes either: hold the push, but leave no breadcrumb
+	// saying it did, as the resolution session's own cap abort defers quietly.
+	if _, stopped := out.Interrupted(); stopped || out.SpendingCapAbort {
+		log.Event("review ↻ scoped review of the conflict resolution was cut short before its verdict — keeping worktree, nothing pushed (#114)")
+		return ship.Resolution{}
+	}
+	// The post-resolution gate is already green over headBefore; a fix the scoped
+	// review committed is gated afresh, like any other review fix.
+	var gate session.Outcome
+	if headAfter, _ := wt.HeadSHA(); headAfter != headBefore {
+		gate = fixes.Gates(gateStep + "-resolution").Outcome
+	}
+	result := verify.Review(wt, gate, out)
+	if result.OK && !wt.IsRebasedOnto(gitpkg.BaseRef) {
+		result.OK, result.Reason = false, "the scoped review left the branch off origin/main"
+	}
+	if !result.OK {
+		log.Event("review ✗ scoped review of the conflict resolution: " + result.Reason + " — keeping worktree, nothing pushed (#114)")
+		comment(fmt.Sprintf(
+			"The pre-push conflict on `%s` was auto-resolved, but the resolution also changed %s, which git did not flag, and the scoped review of those changes did not clear them: %s. The rebased branch is waiting in a worktree for a look. (#114)",
+			wt.Branch(), codeSpans(beyond, ""), result.Reason,
+		))
+		return ship.Resolution{}
+	}
+	log.Event("review ✓ scoped review cleared what the conflict resolution wrote beyond the conflicted files (#114)")
+	note += " It also changed " + codeSpans(beyond, "") + ", which git did not flag; a scoped review of those changes cleared them before the push."
+	return ship.Resolution{OK: true, Note: note}
+}
+
+// codeSpans renders paths as a comma-separated list of Markdown code spans, or
+// none when there are no paths.
+func codeSpans(paths []string, none string) string {
+	if len(paths) == 0 {
+		return none
+	}
+	spans := make([]string, len(paths))
+	for i, p := range paths {
+		spans[i] = "`" + p + "`"
+	}
+	return strings.Join(spans, ", ")
 }
