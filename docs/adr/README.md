@@ -42,3 +42,4 @@ same number then conflict here, before either reaches main.
 - [ADR-0034](0034-adr-numbers-are-reserved-in-an-append-only-index.md): ADR numbers are reserved in an append-only index
 - [ADR-0035](0035-a-conflict-resolutions-edits-beyond-the-conflict-are-reviewed-before-push.md): A conflict resolution's edits beyond the conflict are reviewed before push
 - [ADR-0036](0036-a-red-base-holds-dispatch-instead-of-being-repaired-in-every-branch.md): A red base holds dispatch instead of being repaired in every branch
+- [ADR-0037](0037-a-replay-git-could-not-run-is-retried-not-resolved.md): A replay git could not run is retried, not resolved

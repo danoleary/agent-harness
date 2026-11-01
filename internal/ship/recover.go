@@ -79,6 +79,8 @@ func Recover(h Port, log EventSink, key string) Recovery {
 		log.Event("loop … " + key + " committed-fix recovery: branch has a disjoint history from main (BEH-597) — cannot auto-complete")
 	case Conflict:
 		log.Event("loop … " + key + " committed-fix recovery: rebase onto main conflicted — cannot auto-complete")
+	case RebaseFailed:
+		log.Event("loop … " + key + " committed-fix recovery: rebase onto main failed with no content conflict (#164) — cannot auto-complete")
 	case Collapsed:
 		log.Event("loop … " + key + " committed-fix recovery: branch became empty after rebase — nothing to ship")
 	case PushFailed:

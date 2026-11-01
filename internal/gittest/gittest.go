@@ -14,9 +14,11 @@
 package gittest
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -222,4 +224,56 @@ func (r *Repo) write(dir, file, body string) {
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		r.t.Fatalf("write %s: %v", file, err)
 	}
+}
+
+// InTheWayOfReplay makes the next `times` replays of wt's branch fail with no pick
+// left in progress, as a transient host-side git failure does (#164). After each of
+// the next `times` commits git makes in the checkout, a post-commit hook leaves an
+// untracked file in wt where the commit after it wants to write: the replay's
+// cherry-pick commits one pick and then refuses the next ("untracked working tree
+// files would be overwritten"), and its abort-and-restore puts the branch back.
+// file must be one that a later commit on the branch adds.
+func (r *Repo) InTheWayOfReplay(wt gitpkg.Worktree, file string, times int) {
+	r.t.Helper()
+	r.hook("post-commit", times, fmt.Sprintf("spend\necho stray > %q", filepath.Join(wt.Path(), file)))
+}
+
+// RefuseReplayedCommit makes git refuse, the next `times` times, to move wt's
+// branch to a commit whose subject is subject: a reference-transaction hook rejects
+// the update, so a cherry-pick of that commit halts with its change staged, no
+// unmerged paths and the pick still in progress — a halt that is neither an empty
+// commit nor a content conflict (#164).
+func (r *Repo) RefuseReplayedCommit(wt gitpkg.Worktree, subject string, times int) {
+	r.t.Helper()
+	r.hook("reference-transaction", times, fmt.Sprintf(`[ "$1" = prepared ] || exit 0
+refused=
+while read -r old new ref; do
+	[ "$ref" = %q ] || continue
+	[ "$(git log -1 --format=%%s "$new" 2>/dev/null)" = %q ] && refused=1
+done
+[ -n "$refused" ] || exit 0
+spend
+echo "the branch update is refused" >&2
+exit 1`, "refs/heads/"+wt.Branch(), subject))
+}
+
+// hook installs body as the checkout's name hook, live for `times` runs: body
+// calls spend when it acts, and once none are left the hook does nothing. The
+// hooks live in a directory of their own, set as core.hooksPath, so a test
+// machine's global hooksPath can neither replace nor add to them.
+func (r *Repo) hook(name string, times int, body string) {
+	r.t.Helper()
+	dir := filepath.Join(filepath.Dir(r.Dir), "hooks")
+	counter := filepath.Join(dir, name+".left")
+	r.write(dir, name+".left", strconv.Itoa(times)+"\n")
+	r.write(dir, name, fmt.Sprintf(`#!/bin/sh
+left=$(cat %[1]q 2>/dev/null || echo 0)
+[ "$left" -gt 0 ] || exit 0
+spend() { echo $((left - 1)) > %[1]q; }
+%[2]s
+`, counter, body))
+	if err := os.Chmod(filepath.Join(dir, name), 0o755); err != nil {
+		r.t.Fatalf("chmod %s hook: %v", name, err)
+	}
+	r.Git(r.Dir, "config", "core.hooksPath", dir)
 }

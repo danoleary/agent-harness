@@ -319,7 +319,7 @@ func (h *Real) rebaseOntoBase(resolve func() bool) (ci.RebaseVerdict, error) {
 	if err := h.FetchMain(); err != nil {
 		return ci.RebaseConflict, fmt.Errorf("fetch %s before rebase: %w", baseRef, err)
 	}
-	verdict, push := rebaseDecision(ship.Replay(h), resolve)
+	verdict, push := rebaseDecision(ship.Replay(h, h.log), resolve)
 	if !push {
 		return verdict, nil
 	}
@@ -332,8 +332,9 @@ func (h *Real) rebaseOntoBase(resolve func() bool) (ci.RebaseVerdict, error) {
 // rebaseDecision is the git-free half of [Real.rebaseOntoBase]: it maps the replay
 // verdict and the resolve callback to the watch's RebaseVerdict and whether the
 // rewritten branch is force-with-lease re-pushed. Only a content conflict is offered
-// to resolve; a disjoint history (or any verdict this switch does not know) goes to
-// a human without one, because no resolution session can fix it (#82, #103).
+// to resolve; a disjoint history, a replay git could not run (#164), or any verdict
+// this switch does not know goes to a human without one, because no resolution
+// session can fix it (#82, #103).
 func rebaseDecision(replay ship.Replayed, resolve func() bool) (verdict ci.RebaseVerdict, push bool) {
 	switch replay {
 	case ship.ReplayClean:

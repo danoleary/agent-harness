@@ -340,6 +340,8 @@ loop:
        The breaker treats it as neutral. (Fixes the PR #642 mistake.)
   if OK     -> git -C <worktree> rebase origin/main   // BEH-570: replay onto the fresh base
                  - clean replay  -> continue (the long pipeline let main move; PR opens current)
+                 - git failed with no unmerged paths (#164, ADR-0037) -> log git's output, replay once
+                     more; a second failure keeps the worktree + breadcrumb, with no resolution session
                  - content conflict -> NO dead-end (BEH-581): launch a sandboxed conflict-resolution
                      session over the worktree (rebase + resolve + commit, like the CI auto-fix),
                      verify ground truth (clean tree AND branch actually rebased — not abort-to-stale),
@@ -1391,12 +1393,15 @@ reader over a structured stream rather than a `--tui` flag on the daemon.
   recovery and the CI watch's reactive rebase share one `internal/ship` sequence —
   refetch, replay, disjoint guard, conflict hook, collapse check, push
   force-with-lease, templated `gh pr create` — and each maps its one verdict
-  (Landed / Collapsed / Conflict / Disjoint / PushFailed / PRFailed) onto its own
+  (Landed / Collapsed / Conflict / Disjoint / RebaseFailed / PushFailed / PRFailed) onto its own
   disposition. Only the review supplies a conflict hook (its BEH-581
   resolve-and-regate session, followed by a scoped review of whatever the
   resolution wrote beyond the conflicted files —
   [ADR-0035](adr/0035-a-conflict-resolutions-edits-beyond-the-conflict-are-reviewed-before-push.md)).
-  The CI watch reuses only the replay half.
+  The CI watch reuses only the replay half. Only a halt with unmerged paths is a
+  conflict. git failing with no conflict is logged with git's output, retried once,
+  and then left for a human as RebaseFailed. No resolution session is launched
+  for it ([ADR-0037](adr/0037-a-replay-git-could-not-run-is-retried-not-resolved.md)).
 - **The worktree is a type** ([ADR-0015](adr/0015-the-worktree-is-a-type.md)). Below the host port, the harness's central
   noun has a name: `git.Open(checkout, branchPrefix).Worktree(slug)` carries the
   checkout, the branch and the worktree path together, and creating, gating,

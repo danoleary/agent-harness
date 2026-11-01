@@ -181,6 +181,13 @@ func TestLandHandsTheHookTheConflictedFilesAndCarriesItsNoteToThePR(t *testing.T
 
 // --- Replay -----------------------------------------------------------------
 
+// inTheWay gives the branch a second commit and makes the next times replays stop
+// on it with no pick in progress and nothing unmerged.
+func inTheWay(s scene, times int) {
+	s.repo.Commit(s.wt, "second.txt", "more\n", "the second commit")
+	s.repo.InTheWayOfReplay(s.wt, "second.txt", times)
+}
+
 // The rebase half the CI watch reuses: whatever stops the replay, the worktree is
 // left clean on its branch's original tip, so nothing is left mid-replay.
 func TestReplay(t *testing.T) {
@@ -193,6 +200,10 @@ func TestReplay(t *testing.T) {
 		{"clean", func(scene) {}, ship.ReplayClean, false},
 		{"conflict", func(s scene) { s.repo.Conflict("proj-1") }, ship.ReplayConflict, true},
 		{"disjoint", func(s scene) { s.repo.Disjoint(s.wt) }, ship.ReplayDisjoint, true},
+		// #164: git failing with no content conflict is retried once, not reported as
+		// a conflict.
+		{"git fails once, retried", func(s scene) { inTheWay(s, 1) }, ship.ReplayClean, false},
+		{"git keeps failing", func(s scene) { inTheWay(s, 2) }, ship.ReplayFailed, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -203,7 +214,7 @@ func TestReplay(t *testing.T) {
 			}
 			before, _ := s.wt.HeadSHA()
 
-			if got := ship.Replay(s.h); got != tc.want {
+			if got := ship.Replay(s.h, &sink{}); got != tc.want {
 				t.Fatalf("Replay() = %v, want %v", got, tc.want)
 			}
 			if !tc.restored {
