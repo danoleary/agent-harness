@@ -209,6 +209,33 @@ func TestNextSkipsWhatItMustNotTouch(t *testing.T) {
 	}
 }
 
+// With scope all, a PR off the branch prefix and with no label is worked as a
+// human's branch: main is merged in, never rebased. A fork is still skipped.
+func TestScopeAllWorksAPRThatDidNotOptIn(t *testing.T) {
+	pr := github.PullRequest{Number: 7, HeadBranch: "dependabot/npm/web", HeadSHA: "a1", BaseBranch: "main"}
+	gh := newFakeGitHub(pr)
+	gh.checks["a1"] = github.ChecksRed
+	opts := testOptions
+	opts.AllPRs = true
+	s := NewSource(gh, opts, nil, &quietLog{})
+
+	item, _, ok, err := s.Next()
+	if err != nil || !ok {
+		t.Fatalf("Next = ok %v err %v, want the unlabelled PR", ok, err)
+	}
+	it := item.Context.(Item)
+	if it.Harness || it.Strategy().String() != "merge" {
+		t.Errorf("item = %+v strategy %v, want a non-harness item merged", it, it.Strategy())
+	}
+
+	fork := pr
+	fork.Fork = true
+	s = NewSource(newFakeGitHub(fork), opts, nil, &quietLog{})
+	if plan, _ := s.Plan(); len(plan) != 1 || !strings.Contains(plan[0].Skip, "fork") {
+		t.Errorf("plan = %+v, want a fork skipped under scope all", plan)
+	}
+}
+
 // A new push is a new item: a marker for an earlier head does not hold back the
 // current one.
 func TestNextRetriesANewHead(t *testing.T) {
@@ -494,8 +521,13 @@ func TestOptionsFromADeclaredLoop(t *testing.T) {
 	}
 	l := config.Loop{Name: "conflicts", Source: config.LoopSource{Kind: config.SourceGitHubPRs, Label: "rebase-me", When: []string{config.WhenConflicting}, MaxAttempts: 1}}
 	got := OptionsFrom(cfg, l)
-	if got.OptInLabel != "rebase-me" || got.MaxAttempts != 1 || got.Only != Conflict || got.LogDir != ".agent-harness/logs/loops/conflicts" {
+	if got.OptInLabel != "rebase-me" || got.MaxAttempts != 1 || got.Only != Conflict || got.LogDir != ".agent-harness/logs/loops/conflicts" || got.AllPRs {
 		t.Errorf("OptionsFrom = %+v", got)
+	}
+
+	l.Source.Scope = config.ScopeAll
+	if got := OptionsFrom(cfg, l); !got.AllPRs {
+		t.Errorf("OptionsFrom = %+v, want AllPRs under scope all", got)
 	}
 }
 

@@ -6,8 +6,9 @@
 // branch and watches CI to a verdict. Both reuse the review stage's machinery
 // (internal/fix) rather than copy it.
 //
-// The loop only touches PRs that opted in: those on the harness's branch_prefix,
-// and those a human labelled for it. It never works a fork (it cannot push there).
+// By default the loop only touches PRs that opted in: those on the harness's
+// branch_prefix, and those a human labelled for it. A loop with `scope = "all"`
+// touches every open PR. It never works a fork (it cannot push there).
 // Its lease is a label on the PR, and what it tried is recorded in marker comments
 // on the PR, so a restarted daemon neither double-works a PR nor forgets its budget.
 package prloop
@@ -64,6 +65,8 @@ type Options struct {
 	BranchPrefix string
 	// OptInLabel lets the loop work a PR off the branch prefix: a human's branch.
 	OptInLabel string
+	// AllPRs works every open PR the harness can push to, opted in or not.
+	AllPRs bool
 	// HeldLabel is the PR lease: the label a run holds on the PR it works.
 	HeldLabel string
 	// BlockedLabel marks a PR the loop must leave alone, and is what it adds when a
@@ -108,6 +111,7 @@ func OptionsFrom(cfg config.Config, l config.Loop) Options {
 	if l.Source.MaxAttempts > 0 {
 		o.MaxAttempts = l.Source.MaxAttempts
 	}
+	o.AllPRs = l.Source.Scope == config.ScopeAll
 	switch conflicts, red := l.Source.Yields(config.WhenConflicting), l.Source.Yields(config.WhenCIFailing); {
 	case conflicts && !red:
 		o.Only = Conflict
@@ -236,7 +240,7 @@ func (s *Source) judge(pr github.PullRequest, held map[string]string) Candidate 
 		return skip("base is %s, not %s", pr.BaseBranch, s.opts.BaseBranch)
 	case pr.HasLabel(s.opts.BlockedLabel):
 		return skip("labelled %s", s.opts.BlockedLabel)
-	case !c.Harness && !pr.HasLabel(s.opts.OptInLabel):
+	case !c.Harness && !s.opts.AllPRs && !pr.HasLabel(s.opts.OptInLabel):
 		return skip("not opted in (not on %s/ and no %s label)", s.opts.BranchPrefix, s.opts.OptInLabel)
 	case pr.HasLabel(s.opts.HeldLabel):
 		return skip("held (labelled %s)", s.opts.HeldLabel)

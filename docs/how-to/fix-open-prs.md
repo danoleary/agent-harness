@@ -27,7 +27,9 @@ leave `watch_ci` out of its steps ([declare a loop](declare-a-loop.md#stop-the-t
 A PR qualifies if its head branch is on your `branch_prefix` (the harness opened
 it), or if a human added the opt-in label. The label is `agent-maintained` by
 default; set the loop's `source.label` ([declare a loop](declare-a-loop.md)) or
-`PR_LOOP_LABEL` to change it. It never works:
+`PR_LOOP_LABEL` to change it. To work every open PR, with no label needed, set
+the loop's `source.scope = "all"`. A PR off your `branch_prefix` is then worked
+as a human's branch: `origin/main` is merged in and pushed normally. It never works:
 
 - a PR from a fork, because it cannot push there;
 - a PR into any base other than `main`;

@@ -125,7 +125,7 @@ it; any other name adds a loop. See
 | `kind` | Parameters |
 |---|---|
 | `tracker` | none: the queue is the one `[tracker]` describes |
-| `github_prs` | `label` (default `PR_LOOP_LABEL`), `when` (`"conflicting"`, `"ci_failing"`; default both), `max_attempts` (default `PR_LOOP_MAX_ATTEMPTS`) |
+| `github_prs` | `scope` (`"opted_in"`: PRs on `branch_prefix` or with the label; `"all"`: every open PR; default `"opted_in"`), `label` (default `PR_LOOP_LABEL`; not allowed with `scope = "all"`), `when` (`"conflicting"`, `"ci_failing"`; default both), `max_attempts` (default `PR_LOOP_MAX_ATTEMPTS`) |
 
 ### `steps`
 

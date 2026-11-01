@@ -87,6 +87,10 @@ func describeSource(cfg config.Config, l config.Loop) string {
 	switch l.Source.Kind {
 	case config.SourceGitHubPRs:
 		o := prloop.OptionsFrom(cfg, l)
+		if o.AllPRs {
+			return fmt.Sprintf("github_prs — every open PR into %s (scope all), when %s; %d attempts per PR",
+				o.BaseBranch, strings.Join(l.Source.When, ", "), o.MaxAttempts)
+		}
 		return fmt.Sprintf("github_prs — open PRs into %s on %s/ or with opt-in label %q, when %s; %d attempts per PR",
 			o.BaseBranch, o.BranchPrefix, o.OptInLabel, strings.Join(l.Source.When, ", "), o.MaxAttempts)
 	default:

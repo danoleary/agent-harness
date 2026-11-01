@@ -260,6 +260,24 @@ poll_interval = "10 minutes"
 source = { kind = "tracker" }
 steps = [{ use = "implement" }, { use = "review" }]
 `, `poll_interval "10 minutes" is not a duration`},
+		{"unknown scope", `
+[[loops]]
+name = "a"
+source = { kind = "github_prs", scope = "everything" }
+steps = [{ use = "checkout_pr" }, { use = "fix" }, { use = "gates" }, { use = "push_existing" }]
+`, `unknown scope "everything"`},
+		{"label with scope all", `
+[[loops]]
+name = "a"
+source = { kind = "github_prs", scope = "all", label = "x" }
+steps = [{ use = "checkout_pr" }, { use = "fix" }, { use = "gates" }, { use = "push_existing" }]
+`, "source.label has no effect"},
+		{"scope on a tracker", `
+[[loops]]
+name = "a"
+source = { kind = "tracker", scope = "all" }
+steps = [{ use = "implement" }, { use = "review" }]
+`, "source.scope is not a tracker parameter"},
 		{"negative count", `
 [[loops]]
 name = "a"
