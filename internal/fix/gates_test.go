@@ -12,6 +12,7 @@ import (
 	"github.com/danoleary/agent-harness/internal/config"
 	"github.com/danoleary/agent-harness/internal/gittest"
 	"github.com/danoleary/agent-harness/internal/hostio"
+	"github.com/danoleary/agent-harness/internal/hostlock"
 	"github.com/danoleary/agent-harness/internal/runlog"
 	"github.com/danoleary/agent-harness/internal/session"
 )
@@ -28,14 +29,6 @@ const meetDeadline = 10 * time.Second
 // race between sleeps (#131); with meet 0 each gate just holds briefly.
 func gatingRuns(t *testing.T, cfg config.Config, runs, meet int) int32 {
 	t.Helper()
-	worst, _ := gatingRunsLogged(t, cfg, runs, meet)
-	return worst
-}
-
-// gatingRunsLogged is gatingRuns that also returns each run's logs root.
-func gatingRunsLogged(t *testing.T, cfg config.Config, runs, meet int) (int32, []string) {
-	t.Helper()
-	var roots []string
 	var inside, worst atomic.Int32
 	var wg sync.WaitGroup
 	met := make(chan struct{})
@@ -69,9 +62,7 @@ func gatingRunsLogged(t *testing.T, cfg config.Config, runs, meet int) (int32, [
 			inside.Add(-1)
 			return session.Outcome{}
 		}
-		root := t.TempDir()
-		roots = append(roots, root)
-		log, err := runlog.New(root, "PROJ-1")
+		log, err := runlog.New(t.TempDir(), "PROJ-1")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -85,7 +76,7 @@ func gatingRunsLogged(t *testing.T, cfg config.Config, runs, meet int) (int32, [
 		}()
 	}
 	wg.Wait()
-	return worst.Load(), roots
+	return worst.Load()
 }
 
 // With the gate limit at 1, two instances never run gates at the same time
@@ -116,21 +107,55 @@ func TestGateLimitOfTwoLetsTwoRunsGateTogether(t *testing.T) {
 }
 
 // A run that waits for a gate slot says so, so a quiet run reads as queued, not
-// hung.
+// hung. The test holds the only slot itself until the run has narrated its wait,
+// so the wait is certain rather than a race between two runs' gate windows,
+// which a loaded machine could run back to back.
 func TestAGateRunThatWaitsForASlotNarratesIt(t *testing.T) {
 	cfg := config.Config{}
 	cfg.Gates = []config.Gate{{Name: "build", Command: "make"}}
 	cfg.GateConcurrency = 1
 	cfg.GateLockDir = t.TempDir()
 
-	_, roots := gatingRunsLogged(t, cfg, 2, 0)
-
-	var all strings.Builder
-	for _, root := range roots {
-		raw, _ := os.ReadFile(filepath.Join(root, "PROJ-1", "run.jsonl"))
-		all.Write(raw)
+	held, err := hostlock.Slots{Dir: cfg.GateSlotsDir(), Limit: 1}.Acquire(nil)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(all.String(), "waiting for a gate slot") {
-		t.Errorf("two runs over one gate slot, and neither narrated its wait:\n%s", all.String())
+	released := false
+	release := func() {
+		if !released {
+			released = true
+			held()
+		}
+	}
+	defer release()
+
+	repo := gittest.New(t)
+	repo.Handoff("proj-1")
+	h := hostio.NewFake(repo.Checkout(), "proj-1")
+	h.ShellFn = func(int, hostio.ShellRun) session.Outcome { return session.Outcome{} }
+	root := t.TempDir()
+	log, err := runlog.New(root, "PROJ-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := Env{Host: h, Cfg: cfg, Log: log, Who: "review"}
+	done := make(chan GateResult, 1)
+	go func() { done <- e.Gates("gate") }()
+
+	runLog := filepath.Join(root, "PROJ-1", "run.jsonl")
+	giveUp := time.Now().Add(meetDeadline)
+	for {
+		raw, _ := os.ReadFile(runLog)
+		if strings.Contains(string(raw), "waiting for a gate slot") {
+			break
+		}
+		if time.Now().After(giveUp) {
+			t.Fatalf("a run queued behind a held gate slot never narrated its wait:\n%s", raw)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	release()
+	if res := <-done; !res.Green() {
+		t.Errorf("gates = %+v, want green once the slot is free", res)
 	}
 }
