@@ -18,6 +18,8 @@
 package ship
 
 import (
+	"strings"
+
 	gitpkg "github.com/danoleary/agent-harness/internal/git"
 	"github.com/danoleary/agent-harness/internal/pr"
 	"github.com/danoleary/agent-harness/internal/ticket"
@@ -53,42 +55,87 @@ type Replayed int
 const (
 	// ReplayClean means the branch now sits on the latest base.
 	ReplayClean Replayed = iota
-	// ReplayConflict means a genuine content conflict; the branch is left on its
-	// original tip.
+	// ReplayConflict means a genuine content conflict: git left paths unmerged. The
+	// branch is left on its original tip.
 	ReplayConflict
 	// ReplayDisjoint means the branch shares no history with origin/main (BEH-597).
 	// Its replay collides on every commit, so it is not a content conflict and no
 	// resolution session can fix it; the branch is left on its original tip.
 	ReplayDisjoint
+	// ReplayFailed means git failed with no content conflict, on the replay and on
+	// the one retry it gets (#164): a held lock, a file in the way. There is nothing
+	// for a resolution session to resolve; the branch is left on its original tip.
+	ReplayFailed
 )
 
 // Replay is the rebase half of a landing: replay the branch onto the origin/main
-// the caller has just fetched, and tell a disjoint history apart from a content
-// conflict. On anything but a clean replay the worktree is restored to a clean,
-// on-branch state (best-effort — git's own replay already restores on conflict), so
-// a caller that stops here leaves nothing mid-replay behind.
+// the caller has just fetched, and tell a disjoint history and a git failure apart
+// from a content conflict. On anything but a clean replay the worktree is restored
+// to a clean, on-branch state (best-effort — git's own replay already restores on
+// conflict), so a caller that stops here leaves nothing mid-replay behind. What git
+// said when the replay did not apply goes to log.
 //
 // The fetch stays with the caller because the callers disagree on what a failed one
 // means: a landing rebases onto the ref it has, while the CI watch refuses to
 // re-push a branch replayed onto a base it could not refresh.
-func Replay(h Port) Replayed {
-	r, _ := replay(h)
+func Replay(h Port, log EventSink) Replayed {
+	r, _ := replay(h, log)
 	return r
 }
 
 // replay is [Replay] that also names the files git reported as conflicted, which
 // a landing hands its Resolve hook (#114).
-func replay(h Port) (Replayed, []string) {
+//
+// A replay that failed with no content conflict is run once more before it is
+// reported (#164). The failures behind it — an index.lock another git process
+// held, a stat or permission blip on the bind-mounted worktree — are usually gone a
+// moment later, and the alternative it used to get, a sandboxed resolution session
+// and two extra gate runs, found nothing to resolve. The retry runs only when git
+// put the branch back on the tip it started from: re-pinning any other tip would
+// replay the wrong commits.
+func replay(h Port, log EventSink) (Replayed, []string) {
 	wt := h.Worktree()
-	res, conflicted := wt.RebaseConflicts()
-	if res == gitpkg.RebaseClean {
+	tip, _ := wt.HeadSHA()
+	r := wt.RebaseDetail()
+	if r.Result == gitpkg.RebaseClean {
 		return ReplayClean, nil
 	}
 	wt.AbortRebase()
 	if wt.IsDisjointFrom(gitpkg.BaseRef) {
 		return ReplayDisjoint, nil
 	}
-	return ReplayConflict, conflicted
+	if !realConflict(r) {
+		log.Event("ship … replay onto origin/main failed with no content conflict (" + describe(r) + "); git said:\n" + r.Output)
+		if now, _ := wt.HeadSHA(); tip == "" || now != tip || !wt.Clean() {
+			log.Event("ship ✗ the failed replay did not leave the branch on its tip " + tip + " — not retrying it (#164)")
+			return ReplayFailed, nil
+		}
+		log.Event("ship ↻ retrying the replay once (#164)")
+		if r = wt.RebaseDetail(); r.Result == gitpkg.RebaseClean {
+			return ReplayClean, nil
+		}
+		wt.AbortRebase()
+		if !realConflict(r) {
+			log.Event("ship ✗ replay onto origin/main failed again with no content conflict (" + describe(r) + "); git said:\n" + r.Output)
+			return ReplayFailed, nil
+		}
+	}
+	log.Event("ship · replay onto origin/main hit a content conflict in " + strings.Join(r.Conflicted, ", ") + "; git said:\n" + r.Output)
+	return ReplayConflict, r.Conflicted
+}
+
+// realConflict reports whether a replay stopped on a content conflict a resolution
+// session can act on: git said so, and named the paths it left unmerged.
+func realConflict(r gitpkg.RebaseReport) bool {
+	return r.Result == gitpkg.RebaseConflict && len(r.Conflicted) > 0
+}
+
+// describe says which kind of stop a replay report is, for the narration.
+func describe(r gitpkg.RebaseReport) string {
+	if r.Result == gitpkg.RebaseConflict {
+		return "git reported a conflict but named no unmerged paths"
+	}
+	return r.Result.String()
 }
 
 // Verdict is the one outcome of [Land]. Each caller maps it onto its own
@@ -108,6 +155,9 @@ const (
 	// Disjoint means the branch has no common ancestor with origin/main (BEH-597).
 	// Nothing was pushed, and Resolve was never called.
 	Disjoint
+	// RebaseFailed means git failed to replay the branch with no content conflict,
+	// twice (#164). Nothing was pushed, and Resolve was never called.
+	RebaseFailed
 	// PushFailed means the force-with-lease push was rejected. Nothing reached origin.
 	PushFailed
 	// PRFailed means the branch reached origin but `gh pr create` failed, so the
@@ -140,9 +190,9 @@ type Resolution struct {
 }
 
 // Land takes a clean, committed branch to an open pull request on the latest base:
-// refetch origin/main, replay onto it, stop on a disjoint history, hand a content
-// conflict to resolve (nil means abort), stop if the replay collapsed the branch to
-// nothing, then push and open the PR from the ticket.
+// refetch origin/main, replay onto it, stop on a disjoint history or a replay git
+// could not run, hand a content conflict to resolve (nil means abort), stop if the
+// replay collapsed the branch to nothing, then push and open the PR from the ticket.
 //
 // The refetch is deliberate even when the caller fetched moments ago: a sibling PR
 // can merge during a multi-minute gate, and replaying onto the pre-gate ref would
@@ -153,9 +203,11 @@ func Land(h Port, log EventSink, t ticket.Ticket, resolve Resolve) Landing {
 		log.Event("ship … warning: could not fetch origin/main before rebase: " + err.Error())
 	}
 	var note string
-	switch replayed, conflicted := replay(h); replayed {
+	switch replayed, conflicted := replay(h, log); replayed {
 	case ReplayDisjoint:
 		return Landing{Verdict: Disjoint}
+	case ReplayFailed:
+		return Landing{Verdict: RebaseFailed}
 	case ReplayConflict:
 		if resolve == nil {
 			return Landing{Verdict: Conflict}

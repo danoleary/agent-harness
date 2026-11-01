@@ -187,6 +187,17 @@ func (w Worktree) HeadSHA() (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
+// HeadTree returns the tree the worktree's HEAD commit records: two commits with
+// the same tree carry byte-identical content, whatever their SHAs. Read host-side
+// via the real-path mount.
+func (w Worktree) HeadTree() (string, error) {
+	out, err := w.output("git", "-C", w.path, "rev-parse", "HEAD^{tree}")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
 // BaseSHA returns the commit the feature branch was cut from or last rebased onto:
 // its merge-base with origin/main, which stays put when origin/main advances
 // underneath it. Local `main` is no stand-in — the harness never moves it, so once
@@ -248,26 +259,27 @@ func (w Worktree) Clean() bool {
 // move, but without the false-positive) then `cherry-pick`s the feature commits back
 // on. cherry-pick's three-way merge surfaces only genuine content conflicts.
 //
-// A clean replay returns RebaseClean. A genuine conflict (or git refusing for any
-// other reason) aborts the cherry-pick, restores the branch to its original tip, and
-// returns RebaseConflict, so the caller hands resolution to a human rather than
-// pushing a branch it could not cleanly replay. There is no network here, so unlike
-// the remote ops it is not retried.
+// A clean replay returns RebaseClean. A genuine content conflict returns
+// RebaseConflict; git failing for any other reason returns RebaseFailed (#164).
+// Either way the cherry-pick is aborted and the branch restored to its original
+// tip, so the caller hands resolution on rather than pushing a branch it could not
+// cleanly replay. There is no network here, so unlike the remote ops it is not
+// retried; whether a RebaseFailed is worth one more replay is the caller's call.
 func (w Worktree) Rebase() RebaseResult {
-	res, _ := w.rebase(false)
-	return res
+	return w.rebase(false).Result
 }
 
-// RebaseConflicts is [Worktree.Rebase] that also names the files git reported as
-// conflicted when the replay halted, read before the replay is aborted (#114). A
-// replay stops at its first conflicting commit, so a later commit's conflicts are
-// not among them: the list is what git flagged, never more. Empty on a clean replay
-// and on a failure that was not a halt on unmerged paths.
-func (w Worktree) RebaseConflicts() (RebaseResult, []string) {
+// RebaseDetail is [Worktree.Rebase] that also says what git said. On a conflict it
+// names the files git reported as conflicted, read before the replay is aborted
+// (#114). A replay stops at its first conflicting commit, so a later commit's
+// conflicts are not among them: the list is what git flagged, never more. On any
+// result but a clean one it carries git's output from the failing step, so a run
+// log can tell a content conflict from a git failure (#164).
+func (w Worktree) RebaseDetail() RebaseReport {
 	return w.rebase(true)
 }
 
-func (w Worktree) rebase(nameConflicts bool) (RebaseResult, []string) {
+func (w Worktree) rebase(nameConflicts bool) RebaseReport {
 	// Strip the readiness sentinel before replaying. new-worktree.sh drops an untracked
 	// .worktree-ready into every worktree (BEH-549), and a checkout that wants to write a
 	// now-tracked .worktree-ready over the untracked copy can refuse ("untracked working
@@ -277,22 +289,24 @@ func (w Worktree) rebase(nameConflicts bool) (RebaseResult, []string) {
 
 	// Pin the feature tip so `reset --hard` can't lose the commits and the cherry-pick
 	// range / conflict-restore can name them.
-	if w.run("git", "-C", w.path, "update-ref", rebaseBackupRef, "HEAD") != nil {
-		return RebaseConflict, nil
+	if err := w.run("git", "-C", w.path, "update-ref", rebaseBackupRef, "HEAD"); err != nil {
+		return RebaseReport{Result: RebaseFailed, Output: err.Error()}
 	}
 	defer func() { _ = w.run("git", "-C", w.path, "update-ref", "-d", rebaseBackupRef) }()
 
 	// Move the branch onto the fresh base. reset --hard escapes the rebase checkout
 	// false-fail and also fast-forwards a branch that is merely behind origin/main.
-	if w.run("git", "-C", w.path, "reset", "--hard", "origin/main") != nil {
-		return RebaseConflict, nil
+	if err := w.run("git", "-C", w.path, "reset", "--hard", "origin/main"); err != nil {
+		// A reset that failed part-way may have moved the branch; put it back.
+		_ = w.run("git", "-C", w.path, "reset", "--hard", rebaseBackupRef)
+		return RebaseReport{Result: RebaseFailed, Output: err.Error()}
 	}
 
 	// Nothing to replay if the feature tip is already contained in origin/main (the
 	// branch was behind or equal): the reset alone completed the move. cherry-pick of
 	// an empty range errors, so short-circuit it.
 	if w.run("git", "-C", w.path, "merge-base", "--is-ancestor", rebaseBackupRef, "origin/main") == nil {
-		return RebaseClean, nil
+		return RebaseReport{Result: RebaseClean}
 	}
 
 	// Replay the feature's own commits (origin/main..tip) onto the new base. cherry-pick
@@ -306,10 +320,23 @@ func (w Worktree) rebase(nameConflicts bool) (RebaseResult, []string) {
 	// flag is rejected with a usage error (exit 129) that fails EVERY clean replay.
 	// Both empty-commit classes are instead handled uniformly by the auto-skip loop
 	// below, which reproduces an ideal `git rebase`'s auto-drop without the flag.
+	//
+	// What git prints is kept: it is the only record of why a replay stopped (#164).
 	args := append([]string{"-C", w.path}, identityArgs()...)
 	args = append(args, "cherry-pick", "origin/main.."+rebaseBackupRef)
-	if w.run("git", args...) == nil {
-		return RebaseClean, nil
+	out, err := w.combined("git", args...)
+	if err == nil {
+		return RebaseReport{Result: RebaseClean}
+	}
+	said := gitSaid(out, err)
+
+	// restore aborts the cherry-pick and puts the branch back on its original tip,
+	// leaving it exactly as it was for whoever acts on the report (BEH-570). Both are
+	// best-effort — if the cherry-pick never started, --abort fails harmlessly.
+	restore := func(r RebaseReport) RebaseReport {
+		_ = w.run("git", "-C", w.path, "cherry-pick", "--abort")
+		_ = w.run("git", "-C", w.path, "reset", "--hard", rebaseBackupRef)
+		return r
 	}
 
 	// The cherry-pick halted. A bare cherry-pick halts on BOTH empty-commit classes
@@ -320,44 +347,56 @@ func (w Worktree) rebase(nameConflicts bool) (RebaseResult, []string) {
 	// net diff (the BEH-678 d0177234b case). Neither is a content conflict: dropping
 	// either is a no-op, so escalating to a sandboxed conflict-resolution session
 	// (BEH-581) would waste a whole session on an empty commit. Auto-skip both inline
-	// instead, matching an ideal `git rebase`'s auto-drop. The empty-halt classes are
-	// told apart from a genuine conflict by unmerged paths: a conflict leaves unmerged
-	// index entries; an empty halt leaves a clean index. Loop because a multi-commit
+	// instead, matching an ideal `git rebase`'s auto-drop. Loop because a multi-commit
 	// replay can halt on several empty commits in turn; each `--skip` consumes one, so
 	// it always makes progress and terminates.
 	//
-	// Fail safe first: a cherry-pick error that left NO pick in progress is an
-	// unexpected failure (not a halt on an empty commit or a conflict), so restore the
-	// branch and report RebaseConflict rather than fall through to RebaseClean and push
-	// an incompletely-replayed branch — the file's "never push on doubt" convention.
+	// What halted is read from the index. Unmerged entries are a content conflict. A
+	// clean index that matches HEAD is an empty commit. A clean index that does NOT
+	// match HEAD is neither: the pick applied but git could not commit it (a ref
+	// update refused, a lock held), and skipping it would silently drop a commit, so
+	// it is a git failure (#164).
+	//
+	// Fail safe first: a cherry-pick error that left NO pick in progress is not a halt
+	// at all, so restore the branch and report RebaseFailed rather than fall through
+	// to RebaseClean and push an incompletely-replayed branch — the file's "never push
+	// on doubt" convention. It is not reported as a conflict either: there are no
+	// unmerged paths, and a resolution session would find nothing to resolve (#164).
 	if !w.cherryPickInProgress() {
-		_ = w.run("git", "-C", w.path, "cherry-pick", "--abort")
-		_ = w.run("git", "-C", w.path, "reset", "--hard", rebaseBackupRef)
-		return RebaseConflict, nil
+		return restore(RebaseReport{Result: RebaseFailed, Output: said})
 	}
 	for i := 0; w.cherryPickInProgress(); i++ {
-		if unmerged := w.hasUnmergedPaths(); unmerged || i >= maxCherryPickSkips {
-			// Genuine content conflict (or a pathological non-progressing skip loop — the
-			// bound is a pure safety backstop): abort the cherry-pick and restore the
-			// branch to its original tip, leaving it exactly as it was for a human
-			// (BEH-570). Both are best-effort — if the cherry-pick never started, --abort
-			// fails harmlessly.
-			var conflicted []string
-			if unmerged && nameConflicts {
+		if w.hasUnmergedPaths() {
+			r := RebaseReport{Result: RebaseConflict, Output: said}
+			if nameConflicts {
 				if out, err := w.output("git", "-C", w.path, "diff", "--name-only", "-z", "--diff-filter=U"); err == nil {
-					conflicted = nulPaths(out)
+					r.Conflicted = nulPaths(out)
 				}
 			}
-			_ = w.run("git", "-C", w.path, "cherry-pick", "--abort")
-			_ = w.run("git", "-C", w.path, "reset", "--hard", rebaseBackupRef)
-			return RebaseConflict, conflicted
+			return restore(r)
+		}
+		// A pathological non-progressing skip loop (the bound is a pure safety
+		// backstop), or a halted pick that is not empty: neither is a conflict.
+		if i >= maxCherryPickSkips || w.hasStagedChanges() {
+			return restore(RebaseReport{Result: RebaseFailed, Output: said})
 		}
 		// Empty commit → drop it and continue the sequence. --skip may itself halt on the
 		// next commit (empty or conflict), so its exit code isn't trusted — the loop
 		// re-reads git state and re-classifies.
-		_ = w.run("git", "-C", w.path, "cherry-pick", "--skip")
+		if out, err := w.combined("git", "-C", w.path, "cherry-pick", "--skip"); err != nil {
+			said = gitSaid(out, err)
+		}
 	}
-	return RebaseClean, nil
+	return RebaseReport{Result: RebaseClean}
+}
+
+// gitSaid is what a failed git command printed, or its error when it printed
+// nothing.
+func gitSaid(out []byte, err error) string {
+	if s := strings.TrimSpace(string(out)); s != "" {
+		return s
+	}
+	return err.Error()
 }
 
 // cherryPickInProgress reports whether a cherry-pick is currently halted awaiting
@@ -376,6 +415,14 @@ func (w Worktree) cherryPickInProgress() bool {
 // against the worktree via the real-path mount.
 func (w Worktree) hasUnmergedPaths() bool {
 	return w.run("git", "-C", w.path, "diff", "--quiet", "--diff-filter=U") != nil
+}
+
+// hasStagedChanges reports whether the index differs from HEAD — `git diff
+// --cached --quiet` exits non-zero when it does. A pick halted on an empty commit
+// leaves the index matching HEAD; one that applied but could not be committed
+// leaves its change staged, and must not be skipped as if it were empty (#164).
+func (w Worktree) hasStagedChanges() bool {
+	return w.run("git", "-C", w.path, "diff", "--cached", "--quiet") != nil
 }
 
 // AbortRebase restores a worktree a conflict-resolution session left mid-replay to a

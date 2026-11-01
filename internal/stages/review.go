@@ -400,6 +400,17 @@ func Review(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Res
 			wt.Branch(),
 		))
 		return Result{OK: false}
+	case ship.RebaseFailed:
+		// git failed to replay the branch with no content conflict, and failed again on
+		// ship's retry (#164). ship logged what git said both times. A resolution session
+		// would find nothing to resolve, so none is launched: keep the worktree for a
+		// human and say why.
+		log.Event("review ✗ pre-push rebase failed twice with no content conflict — not launching a conflict-resolution session; keeping worktree, nothing pushed (#164)")
+		comment(fmt.Sprintf(
+			"The pre-push rebase of `%s` onto `main` failed twice with no content conflict (git left no paths unmerged), so no conflict-resolution session was launched. What git printed is in this run's `run.jsonl`. The branch passed cold review and the harness gate; it is waiting in a worktree for a manual rebase onto `main`. (#164)",
+			wt.Branch(),
+		))
+		return Result{OK: false}
 	case ship.Conflict:
 		// resolveRebaseConflict already narrated why and left the breadcrumb.
 		return Result{OK: false}

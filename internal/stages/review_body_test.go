@@ -274,8 +274,9 @@ func TestReviewResolvesAPrePushConflictThenRegatesAndPushes(t *testing.T) {
 	h, repo := handedOff(t, "PROJ-10")
 	repo.Conflict("proj-10")
 	resolvesConflicts(h, repo)
+	log := stageLog(t, "PROJ-10")
 
-	res := Review(h, stageCfg(), stageLog(t, "PROJ-10"), Args{Identifier: "PROJ-10"})
+	res := Review(h, stageCfg(), log, Args{Identifier: "PROJ-10"})
 
 	if !res.OK {
 		t.Fatalf("a cleanly resolved, re-gated conflict ships, got %+v", res)
@@ -291,6 +292,80 @@ func TestReviewResolvesAPrePushConflictThenRegatesAndPushes(t *testing.T) {
 	}
 	if len(h.PRBodies) != 1 || !strings.Contains(h.PRBodies[0], "`proj-10.txt`") {
 		t.Errorf("PR bodies = %q, want the conflicted file named as resolved after review (#114)", h.PRBodies)
+	}
+	if got := narration(t, log); !strings.Contains(got, "proj-10.txt") || !strings.Contains(got, "CONFLICT") {
+		t.Errorf("run.jsonl must name the unmerged file and keep git's conflict report (#164); got %s", got)
+	}
+}
+
+// replayFailsWithNoConflict is the #164 branch: two commits cut from origin/main,
+// which has not moved, with a host-side failure in the way of the replay's second
+// pick for the next times replays. The cherry-pick commits the first pick and stops
+// on the second with no pick in progress and nothing unmerged.
+func replayFailsWithNoConflict(t *testing.T, key string, times int) (*hostio.Fake, *gittest.Repo, string) {
+	t.Helper()
+	h, repo := handedOff(t, key)
+	repo.Commit(h.Worktree(), "second.txt", "more\n", "the second commit")
+	tip, _ := h.Worktree().HeadSHA()
+	repo.InTheWayOfReplay(h.Worktree(), "second.txt", times)
+	return h, repo, tip
+}
+
+// #164, replayed: the pre-push replay stopped on the second commit with no pick in
+// progress. That is a git failure, not a content conflict, so no conflict-resolution
+// session is launched: the replay is run once more, applies, and the branch ships,
+// with git's account of the first failure in run.jsonl.
+func TestReviewRetriesAReplayThatFailedWithNoConflictInsteadOfResolvingIt(t *testing.T) {
+	h, repo, _ := replayFailsWithNoConflict(t, "PROJ-17", 1)
+	log := stageLog(t, "PROJ-17")
+
+	res := Review(h, stageCfg(), log, Args{Identifier: "PROJ-17"})
+
+	if !res.OK || res.Disposition != Shipped {
+		t.Fatalf("a replay that applies on its retry ships, got %+v", res)
+	}
+	if got := labels(h.Agents); len(got) != 1 {
+		t.Errorf("agent runs = %v, want no conflict-resolution session: nothing was unmerged", got)
+	}
+	if got := shellLabels(h.Shells); len(got) != 2 {
+		t.Errorf("shell runs = %v, want no post-resolution gate re-run", got)
+	}
+	got := narration(t, log)
+	if !strings.Contains(got, "untracked working tree files would be overwritten") {
+		t.Errorf("run.jsonl must keep what git printed when the replay failed; got %s", got)
+	}
+	if strings.Contains(got, "hit a content conflict") {
+		t.Errorf("a git failure must not be logged as a content conflict; got %s", got)
+	}
+	if wt := h.Worktree(); !wt.IsRebasedOnto(gitpkg.BaseRef) || repo.OnOrigin(wt.Branch()) == "" {
+		t.Error("the replayed branch must reach origin")
+	}
+}
+
+// A replay that fails with no conflict twice running is left for a human. It is
+// still not handed to a conflict-resolution session, which would find nothing to
+// resolve.
+func TestReviewDoesNotLaunchAResolutionForAReplayThatKeepsFailing(t *testing.T) {
+	h, repo, tip := replayFailsWithNoConflict(t, "PROJ-18", 2)
+	log := stageLog(t, "PROJ-18")
+
+	res := Review(h, stageCfg(), log, Args{Identifier: "PROJ-18"})
+
+	if res.OK {
+		t.Fatalf("a replay that never applied ships nothing, got %+v", res)
+	}
+	if got := labels(h.Agents); len(got) != 1 {
+		t.Errorf("agent runs = %v, want no conflict-resolution session for a git failure", got)
+	}
+	assertNothingPushed(t, h, repo)
+	if after, _ := h.Worktree().HeadSHA(); after != tip || !h.Worktree().Clean() {
+		t.Errorf("the branch must be left clean on its tip %s, got %s", tip, after)
+	}
+	if got := narration(t, log); !strings.Contains(got, "untracked working tree files would be overwritten") {
+		t.Errorf("run.jsonl must keep what git printed; got %s", got)
+	}
+	if len(h.Trk.Comments) != 1 || !strings.Contains(h.Trk.Comments[0], "#164") || strings.Contains(h.Trk.Comments[0], "conflict was") {
+		t.Errorf("comments = %v, want one breadcrumb saying the replay failed without a conflict", h.Trk.Comments)
 	}
 }
 

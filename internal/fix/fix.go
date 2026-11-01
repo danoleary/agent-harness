@@ -16,6 +16,7 @@ import (
 
 	"github.com/danoleary/agent-harness/internal/ci"
 	"github.com/danoleary/agent-harness/internal/config"
+	gitpkg "github.com/danoleary/agent-harness/internal/git"
 	"github.com/danoleary/agent-harness/internal/hostio"
 	"github.com/danoleary/agent-harness/internal/hostlock"
 	"github.com/danoleary/agent-harness/internal/prompt"
@@ -313,7 +314,15 @@ type ConflictResult struct {
 // only reports OK when they are green and the worktree still clean. A failed
 // session may have left the worktree mid-replay, so it is restored to a clean,
 // on-branch state for the next resume.
+//
+// A session can also find nothing to resolve: the branch already sat on origin/main,
+// so its replay applied cleanly and left the content exactly as it was (#164). That
+// is logged as such, not as a resolved conflict, so the run log does not record a
+// resolution that never happened.
 func (e Env) ResolveConflict(c Conflict) ConflictResult {
+	wt := e.Host.Worktree()
+	onBase := wt.IsRebasedOnto(gitpkg.BaseRef)
+	treeBefore, _ := wt.HeadTree()
 	e.Log.Event(fmt.Sprintf("launching conflict-resolution session (%s onto origin/main, cap %d min active)", c.Strategy, int(e.Cfg.ReviewTimeout.Minutes())))
 	pctx := e.promptContext(c.Target)
 	pctx.Merge = c.Strategy == Merge
@@ -325,7 +334,6 @@ func (e Env) ResolveConflict(c Conflict) ConflictResult {
 	})
 	e.Log.Event(fmt.Sprintf("conflict-resolution session exited (code %d)", res.ExitCode))
 
-	wt := e.Host.Worktree()
 	verdict := verify.RebaseResolution(wt, res.Outcome)
 	if !verdict.OK {
 		wt.AbortRebase()
@@ -336,7 +344,11 @@ func (e Env) ResolveConflict(c Conflict) ConflictResult {
 		e.Log.Event(e.Who + " ✗ " + verdict.Reason + " — keeping worktree, nothing pushed")
 		return ConflictResult{Reason: verdict.Reason}
 	}
-	e.Log.Event(e.Who + " ✓ " + verdict.Reason)
+	if treeAfter, _ := wt.HeadTree(); onBase && treeBefore != "" && treeAfter == treeBefore {
+		e.Log.Event(e.Who + " ✓ replay was clean in the sandbox — no conflict to resolve; the branch's content is unchanged on origin/main — re-gating before push (#164)")
+	} else {
+		e.Log.Event(e.Who + " ✓ " + verdict.Reason)
+	}
 
 	// The resolution rewrote the tree, so any earlier gate result is stale — re-run
 	// the gates before trusting the push. Push only on a green gate over a

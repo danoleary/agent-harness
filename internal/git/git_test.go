@@ -196,6 +196,12 @@ func blipRunner(clock *fakeClock, clearAfter time.Duration, errEach error) (comm
 // recordingRunner returns a commandRunner that records every argv it saw and
 // returns whatever fail(args) decides — letting a test branch the control flow on
 // the specific git subcommand (not just call order, which scriptedRunner keys on).
+// replayRunners is the seam a replay test drives: every command, including the
+// cherry-pick whose output the replay keeps, goes through run.
+func replayRunners(run commandRunner) runners {
+	return runners{run: run, combined: func(name string, args ...string) ([]byte, error) { return nil, run(name, args...) }}
+}
+
 func recordingRunner(fail func(args []string) error) (commandRunner, *[][]string) {
 	var calls [][]string
 	run := func(name string, args ...string) error {
@@ -290,7 +296,7 @@ func TestRebaseOntoMainReplaysViaResetAndCherryPickNotRebase(t *testing.T) {
 		}
 		return nil
 	})
-	if res := fakeWorktree("beh-618", runners{run: run}).Rebase(); res != RebaseClean {
+	if res := fakeWorktree("beh-618", replayRunners(run)).Rebase(); res != RebaseClean {
 		t.Fatalf("res = %v, want RebaseClean", res)
 	}
 
@@ -346,7 +352,7 @@ func TestRebaseOntoMainCherryPickConflictAbortsAndRestores(t *testing.T) {
 		}
 		return nil
 	})
-	if res := fakeWorktree("beh-618", runners{run: run}).Rebase(); res != RebaseConflict {
+	if res := fakeWorktree("beh-618", replayRunners(run)).Rebase(); res != RebaseConflict {
 		t.Fatalf("res = %v, want RebaseConflict", res)
 	}
 	var sawCherryAbort, sawRestore, sawSkip bool
@@ -413,7 +419,7 @@ func TestRebaseOntoMainSkipsInitiallyEmptyCommitInline(t *testing.T) {
 		}
 		return nil
 	})
-	if res := fakeWorktree("beh-618", runners{run: run}).Rebase(); res != RebaseClean {
+	if res := fakeWorktree("beh-618", replayRunners(run)).Rebase(); res != RebaseClean {
 		t.Fatalf("res = %v, want RebaseClean — an initially-empty commit must be auto-skipped inline, not escalated as a conflict (BEH-678)", res)
 	}
 	var sawSkip, sawAbort bool
@@ -437,9 +443,11 @@ func TestRebaseOntoMainSkipsInitiallyEmptyCommitInline(t *testing.T) {
 // BEH-678: the auto-skip path must stay fail-safe. If the replay cherry-pick errors
 // but leaves NO cherry-pick in progress (an unexpected git failure, not a halt on an
 // empty commit or a conflict), the harness must NOT fall through to RebaseClean and
-// push an incompletely-replayed branch — it aborts and reports RebaseConflict, exactly
-// as a genuine conflict would, so a push never happens on doubt.
-func TestRebaseOntoMainCherryPickErrorWithoutPickInProgressIsConflict(t *testing.T) {
+// push an incompletely-replayed branch — it aborts and restores exactly as a genuine
+// conflict would, so a push never happens on doubt. It reports RebaseFailed, not
+// RebaseConflict: there are no unmerged paths for a resolution session to resolve
+// (#164).
+func TestRebaseOntoMainCherryPickErrorWithoutPickInProgressFails(t *testing.T) {
 	run, calls := recordingRunner(func(args []string) error {
 		joined := strings.Join(args, " ")
 		if strings.Contains(joined, "merge-base --is-ancestor") {
@@ -454,8 +462,8 @@ func TestRebaseOntoMainCherryPickErrorWithoutPickInProgressIsConflict(t *testing
 		}
 		return nil
 	})
-	if res := fakeWorktree("beh-618", runners{run: run}).Rebase(); res != RebaseConflict {
-		t.Fatalf("res = %v, want RebaseConflict — an unexpected cherry-pick failure must fail safe, never RebaseClean (BEH-678)", res)
+	if res := fakeWorktree("beh-618", replayRunners(run)).Rebase(); res != RebaseFailed {
+		t.Fatalf("res = %v, want RebaseFailed — an unexpected cherry-pick failure must fail safe, never RebaseClean (BEH-678), and is not a content conflict (#164)", res)
 	}
 	var sawSkip, sawRestore bool
 	for _, c := range *calls {

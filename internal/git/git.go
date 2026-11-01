@@ -19,6 +19,7 @@ package git
 
 import (
 	"bytes"
+	"fmt"
 	"os/exec"
 	"regexp"
 	"strings"
@@ -38,6 +39,11 @@ type commandRunner func(name string, args ...string) error
 // --name-only) is unit-testable with an injected fake. Production uses execOutput.
 type outputRunner func(name string, args ...string) ([]byte, error)
 
+// combinedRunner runs a command and returns what it printed, stdout and stderr
+// together, + error — the shape [Worktree.Rebase] needs to keep git's own account
+// of a replay that failed (#164). Production uses execCombined.
+type combinedRunner func(name string, args ...string) ([]byte, error)
+
 // pipeRunner runs a command with stdin fed from a byte slice, returning its
 // combined output — the one shape the other two can't express, needed by
 // [Worktree.RegraftOntoBase]'s `git apply --index`. Production uses execPipe.
@@ -48,16 +54,17 @@ type pipeRunner func(stdin []byte, name string, args ...string) ([]byte, error)
 // [Worktree] carry one by value, so replacing it replaces the seam for every
 // operation either type performs — one hook where there were twelve twin pairs.
 type runners struct {
-	run    commandRunner
-	output outputRunner
-	pipe   pipeRunner
-	sleep  func(time.Duration)
-	now    func() time.Time
+	run      commandRunner
+	output   outputRunner
+	combined combinedRunner
+	pipe     pipeRunner
+	sleep    func(time.Duration)
+	now      func() time.Time
 }
 
 // execRunners is the production seam: the real git binary, the real clock.
 func execRunners() runners {
-	return runners{run: execRun, output: execOutput, pipe: execPipe, sleep: time.Sleep, now: time.Now}
+	return runners{run: execRun, output: execOutput, combined: execCombined, pipe: execPipe, sleep: time.Sleep, now: time.Now}
 }
 
 func execOutput(name string, args ...string) ([]byte, error) {
@@ -112,6 +119,10 @@ const remoteOpTimeout = 2 * time.Minute
 
 func execRun(name string, args ...string) error {
 	return proc.Run(remoteOpTimeout, name, args...)
+}
+
+func execCombined(name string, args ...string) ([]byte, error) {
+	return proc.CombinedOutput(remoteOpTimeout, name, args...)
 }
 
 // remoteRetryBudget caps the *total wall-clock* a git remote op (fetch/push) will
@@ -283,11 +294,44 @@ const (
 	// the remote needs a force-with-lease re-push ([Worktree.PushForceWithLease]); a
 	// not-yet-pushed branch ships with a plain [Worktree.Push].
 	RebaseClean RebaseResult = iota
-	// RebaseConflict — the rebase could not be applied cleanly (a genuine content
-	// conflict, or any other failure) and was aborted, restoring the branch exactly
-	// as it was. Resolution is left to a human (BEH-570).
+	// RebaseConflict — a genuine content conflict: the replay halted with unmerged
+	// paths in the index. It was aborted, restoring the branch exactly as it was;
+	// resolution is a conflict-resolution session's or a human's (BEH-570, BEH-581).
 	RebaseConflict
+	// RebaseFailed — git failed with no content conflict: a step of the replay
+	// errored with no pick left in progress (a held index.lock, a file in the way),
+	// or a pick halted with no unmerged paths and a non-empty change. It is aborted
+	// and the branch restored like a conflict, but no resolution session can help:
+	// there is nothing to resolve, and the same replay may well succeed if run
+	// again (#164).
+	RebaseFailed
 )
+
+// String names the result as the harness narrates it.
+func (r RebaseResult) String() string {
+	switch r {
+	case RebaseClean:
+		return "clean"
+	case RebaseConflict:
+		return "content conflict"
+	case RebaseFailed:
+		return "git failure"
+	}
+	return fmt.Sprintf("RebaseResult(%d)", int(r))
+}
+
+// RebaseReport is what [Worktree.RebaseDetail] found: the result and, when the
+// replay did not apply cleanly, git's own account of why — so the run log can say
+// which case happened rather than leave it to be guessed afterwards (#164).
+type RebaseReport struct {
+	Result RebaseResult
+	// Conflicted names the paths git left unmerged at the commit the replay halted
+	// on. Set only on a RebaseConflict.
+	Conflicted []string
+	// Output is what git printed on the step that failed, stdout and stderr
+	// together (for a failed setup step, its error). Empty on a clean replay.
+	Output string
+}
 
 // rebaseBackupRef marks the feature tip across the reset → cherry-pick replay
 // (BEH-618). `reset --hard origin/main` discards the feature commits from the branch

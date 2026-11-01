@@ -146,7 +146,7 @@ _Avoid_: outcome, signal, status.
 **Landing**:
 Taking a clean, committed branch to an open PR on the latest base (`ship.Land`):
 refetch, replay, disjoint guard, conflict hook, collapse check, push, PR. It ends in
-one verdict: **Landed**, **Collapsed**, **Conflict**, **Disjoint**, **PushFailed**
+one verdict: **Landed**, **Collapsed**, **Conflict**, **Disjoint**, **RebaseFailed**, **PushFailed**
 or **PRFailed**. Each caller maps that verdict onto its own **Disposition**.
 _Avoid_: ship step, finish, push-and-PR.
 

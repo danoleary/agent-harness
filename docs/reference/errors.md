@@ -113,6 +113,8 @@ How a review ends when it takes the branch to a PR (`ship.Land`).
 |---|---|---|
 | `rebase collapsed the branch to zero net change against origin/main` | Collapsed | the work is already on `main`; close the ticket |
 | `disjoint branch history — no common ancestor with origin/main` | Disjoint | reset the branch onto `origin/main` and cherry-pick the handoff commits |
+| `ship … replay onto origin/main failed with no content conflict` then `ship ↻ retrying the replay once` | — | nothing: git failed with nothing unmerged (a held `index.lock`, a file in the way), and the replay is run once more. git's output is in the line |
+| `review ✗ pre-push rebase failed twice with no content conflict` | RebaseFailed | read git's output in the `ship …` lines of `run.jsonl`, fix what it names, and rebase the kept worktree onto `origin/main` by hand (#164) |
 | `conflict-resolution session left the worktree dirty` / `left the branch on its stale base` | Conflict | resolve the conflict by hand in the kept worktree |
 | `scoped review of the conflict resolution: …` | Conflict | the resolution changed files git did not flag, and their review did not clear them; read the breadcrumb's file list and the range-diff in the kept worktree (#114) |
 | `review ✗ push failed:` | PushFailed | usually the token: scope, SSO, or `workflow` for a workflow-file change |

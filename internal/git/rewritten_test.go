@@ -51,9 +51,10 @@ func TestRewrittenSinceSeesWhatTheResolutionWroteBeyondTheConflict(t *testing.T)
 	repo.Merge("docs/adr/0002-sibling-record.md", "# ADR-0002: the sibling's record\n", "a sibling's design record")
 	repo.Git(repo.Dir, "fetch", "-q", "origin")
 
-	replay, conflicted := wt.RebaseConflicts()
-	if replay != gitpkg.RebaseConflict {
-		t.Fatalf("replay = %v, want a conflict", replay)
+	replay := wt.RebaseDetail()
+	conflicted := replay.Conflicted
+	if replay.Result != gitpkg.RebaseConflict {
+		t.Fatalf("replay = %v, want a conflict", replay.Result)
 	}
 	if want := []string{"CHANGELOG.md"}; !reflect.DeepEqual(conflicted, want) {
 		t.Fatalf("conflicted = %v, want %v: the files git reported", conflicted, want)
@@ -102,8 +103,8 @@ func TestRewrittenSinceIsEmptyAfterACleanReplay(t *testing.T) {
 
 	repo.Merge("multi.txt", "1\n2\n3\n4\n5\nsix\n7\n", "Spell out six")
 	repo.Git(repo.Dir, "fetch", "-q", "origin")
-	if replay, conflicted := wt.RebaseConflicts(); replay != gitpkg.RebaseClean || len(conflicted) != 0 {
-		t.Fatalf("replay = %v %v, want clean", replay, conflicted)
+	if replay := wt.RebaseDetail(); replay.Result != gitpkg.RebaseClean || len(replay.Conflicted) != 0 {
+		t.Fatalf("replay = %+v, want clean", replay)
 	}
 
 	got, err := wt.RewrittenSince(reviewedBase, reviewedHead)
