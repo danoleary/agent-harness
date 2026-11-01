@@ -98,7 +98,7 @@ func TestDescribeLoopPrintsTheResolvedSourceAndSteps(t *testing.T) {
 
 	for _, want := range []string{
 		"loop conflicts", "nothing below was changed",
-		"source: github_prs", `opt-in label "agent-maintained"`, "when conflicting", "3 attempts per PR",
+		"source: github_prs", "every open PR into main", "when conflicting", "3 attempts per PR",
 		"1. checkout_pr", "2. fix", "body prompts/fix-pr.md", "3. gates", "4. push_existing",
 		"poll every 10m0s",
 		"/src/app/.agent-harness/STOP-conflicts", "/src/app/.agent-harness/logs/loops/conflicts/loop.jsonl",
@@ -109,6 +109,11 @@ func TestDescribeLoopPrintsTheResolvedSourceAndSteps(t *testing.T) {
 	}
 	if strings.Contains(got, "watch_ci") {
 		t.Errorf("a step the loop leaves out must not be printed:\n%s", got)
+	}
+
+	l.Source.Scope = config.ScopeOptedIn
+	if got := describeLoop(cfg, l, limitsFrom(cfg, l)); !strings.Contains(got, `opt-in label "agent-maintained"`) {
+		t.Errorf("an opted_in loop names its label:\n%s", got)
 	}
 }
 

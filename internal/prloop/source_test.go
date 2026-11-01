@@ -209,6 +209,33 @@ func TestNextSkipsWhatItMustNotTouch(t *testing.T) {
 	}
 }
 
+// With scope all, a PR off the branch prefix and with no label is worked as a
+// human's branch: main is merged in, never rebased. A fork is still skipped.
+func TestScopeAllWorksAPRThatDidNotOptIn(t *testing.T) {
+	pr := github.PullRequest{Number: 7, HeadBranch: "dependabot/npm/web", HeadSHA: "a1", BaseBranch: "main"}
+	gh := newFakeGitHub(pr)
+	gh.checks["a1"] = github.ChecksRed
+	opts := testOptions
+	opts.AllPRs = true
+	s := NewSource(gh, opts, nil, &quietLog{})
+
+	item, _, ok, err := s.Next()
+	if err != nil || !ok {
+		t.Fatalf("Next = ok %v err %v, want the unlabelled PR", ok, err)
+	}
+	it := item.Context.(Item)
+	if it.Harness || it.Strategy().String() != "merge" {
+		t.Errorf("item = %+v strategy %v, want a non-harness item merged", it, it.Strategy())
+	}
+
+	fork := pr
+	fork.Fork = true
+	s = NewSource(newFakeGitHub(fork), opts, nil, &quietLog{})
+	if plan, _ := s.Plan(); len(plan) != 1 || !strings.Contains(plan[0].Skip, "fork") {
+		t.Errorf("plan = %+v, want a fork skipped under scope all", plan)
+	}
+}
+
 // A new push is a new item: a marker for an earlier head does not hold back the
 // current one.
 func TestNextRetriesANewHead(t *testing.T) {
@@ -467,14 +494,14 @@ func TestReleasingNarratesTheLeaseLabelNotTodo(t *testing.T) {
 // loop's opt-in label and budget, and — when its tracker is GitHub Issues — the
 // label names it already uses for held and blocked work, so one repository speaks
 // one vocabulary. The built-in pr-doctor loop takes the label and budget from the
-// PR_LOOP_* env knobs.
+// PR_LOOP_* env knobs, and works every open PR.
 func TestOptionsFromConfig(t *testing.T) {
 	cfg := config.Config{
 		Host:    config.Host{PRLoopLabel: "bot-fix", PRLoopMaxAttempts: 5},
 		Project: config.Project{BranchPrefix: "fix"},
 	}
 	prDoctor, _ := cfg.LoopNamed(config.PRDoctorLoopName)
-	want := Options{BranchPrefix: "fix", OptInLabel: "bot-fix", HeldLabel: "in-progress", BlockedLabel: "blocked", MaxAttempts: 5, BaseBranch: "main", LogDir: ".agent-harness/logs/loops/pr-doctor"}
+	want := Options{BranchPrefix: "fix", OptInLabel: "bot-fix", AllPRs: true, HeldLabel: "in-progress", BlockedLabel: "blocked", MaxAttempts: 5, BaseBranch: "main", LogDir: ".agent-harness/logs/loops/pr-doctor"}
 	if got := OptionsFrom(cfg, prDoctor); got != want {
 		t.Errorf("OptionsFrom = %+v, want %+v", got, want)
 	}
@@ -494,8 +521,18 @@ func TestOptionsFromADeclaredLoop(t *testing.T) {
 	}
 	l := config.Loop{Name: "conflicts", Source: config.LoopSource{Kind: config.SourceGitHubPRs, Label: "rebase-me", When: []string{config.WhenConflicting}, MaxAttempts: 1}}
 	got := OptionsFrom(cfg, l)
-	if got.OptInLabel != "rebase-me" || got.MaxAttempts != 1 || got.Only != Conflict || got.LogDir != ".agent-harness/logs/loops/conflicts" {
+	if got.OptInLabel != "rebase-me" || got.MaxAttempts != 1 || got.Only != Conflict || got.LogDir != ".agent-harness/logs/loops/conflicts" || got.AllPRs {
 		t.Errorf("OptionsFrom = %+v", got)
+	}
+
+	l.Source.Scope = config.ScopeAll
+	if got := OptionsFrom(cfg, l); !got.AllPRs {
+		t.Errorf("OptionsFrom = %+v, want AllPRs under scope all", got)
+	}
+
+	l.Source.Scope, l.Source.Label = "", ""
+	if got := OptionsFrom(cfg, l); !got.AllPRs {
+		t.Errorf("OptionsFrom = %+v, want AllPRs by default", got)
 	}
 }
 

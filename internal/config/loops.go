@@ -63,6 +63,14 @@ const (
 	PRDoctorLoopName = "pr-doctor"
 )
 
+// The github_prs source scopes. ScopeAll, the default, works every open PR the
+// harness can push to. ScopeOptedIn works only a PR on branch_prefix or with the
+// opt-in label; a loop that sets source.label without a scope gets it.
+const (
+	ScopeOptedIn = "opted_in"
+	ScopeAll     = "all"
+)
+
 // LoopConfig is one [[loops]] entry as written.
 type LoopConfig struct {
 	Name                   string       `toml:"name"`
@@ -80,6 +88,7 @@ type LoopConfig struct {
 type SourceConfig struct {
 	Kind        string   `toml:"kind"`
 	Label       string   `toml:"label"`
+	Scope       string   `toml:"scope"`
 	When        []string `toml:"when"`
 	MaxAttempts int      `toml:"max_attempts"`
 }
@@ -111,10 +120,26 @@ type LoopSource struct {
 	Kind string
 	// Label is the github_prs opt-in label.
 	Label string
+	// Scope is which PRs a github_prs Source may work: ScopeAll or ScopeOptedIn.
+	// Empty reads as ScopeAll, unless Label is set: a label asks for opt-in.
+	Scope string
 	// When is what a github_prs Source yields: conflicting PRs, PRs with red CI.
 	When []string
 	// MaxAttempts is the github_prs per-PR attempt budget.
 	MaxAttempts int
+}
+
+// WorksAllPRs reports whether a github_prs Source works every open PR rather than
+// only those that opted in.
+func (s LoopSource) WorksAllPRs() bool {
+	switch s.Scope {
+	case ScopeAll:
+		return true
+	case ScopeOptedIn:
+		return false
+	default:
+		return s.Label == ""
+	}
 }
 
 // Yields reports whether a github_prs Source yields PRs in this state.
@@ -274,7 +299,7 @@ func BuiltInLoops() []Loop {
 		},
 		{
 			Name: PRDoctorLoopName, BuiltIn: true,
-			Source: LoopSource{Kind: SourceGitHubPRs, When: []string{WhenConflicting, WhenCIFailing}},
+			Source: LoopSource{Kind: SourceGitHubPRs, Scope: ScopeAll, When: []string{WhenConflicting, WhenCIFailing}},
 			Steps:  steps(StepCheckoutPR, StepFix, StepGates, StepPushExisting, StepWatchCI, StepRetro),
 		},
 	}
@@ -435,7 +460,7 @@ func resolveLoops(loops []LoopConfig, dir string, at positions) ([]Loop, []strin
 		l := Loop{Name: lc.Name}
 		l.Limits = resolveLimits(lc, path, add)
 
-		l.Source = LoopSource{Kind: lc.Source.Kind, Label: lc.Source.Label, When: lc.Source.When, MaxAttempts: lc.Source.MaxAttempts}
+		l.Source = LoopSource{Kind: lc.Source.Kind, Label: lc.Source.Label, Scope: lc.Source.Scope, When: lc.Source.When, MaxAttempts: lc.Source.MaxAttempts}
 		src := path + ".source"
 		switch lc.Source.Kind {
 		case "":
@@ -443,6 +468,9 @@ func resolveLoops(loops []LoopConfig, dir string, at positions) ([]Loop, []strin
 		case SourceTracker:
 			if lc.Source.Label != "" {
 				add(src+".label", "source.label is not a tracker parameter: the ticket queue is set under [tracker]")
+			}
+			if lc.Source.Scope != "" {
+				add(src+".scope", "source.scope is not a tracker parameter")
 			}
 			if len(lc.Source.When) > 0 {
 				add(src+".when", "source.when is not a tracker parameter")
@@ -461,6 +489,20 @@ func resolveLoops(loops []LoopConfig, dir string, at positions) ([]Loop, []strin
 			}
 			if lc.Source.MaxAttempts < 0 {
 				add(src+".max_attempts", "source.max_attempts must be positive, got %d", lc.Source.MaxAttempts)
+			}
+			switch lc.Source.Scope {
+			case "":
+				l.Source.Scope = ScopeAll
+				if lc.Source.Label != "" {
+					l.Source.Scope = ScopeOptedIn
+				}
+			case ScopeOptedIn:
+			case ScopeAll:
+				if lc.Source.Label != "" {
+					add(src+".label", "source.label has no effect with scope %q: every PR is already in scope", ScopeAll)
+				}
+			default:
+				add(src+".scope", "unknown scope %q: use %q or %q", lc.Source.Scope, ScopeOptedIn, ScopeAll)
 			}
 		default:
 			add(src+".kind", "unknown source kind %q: use %q or %q", lc.Source.Kind, SourceTracker, SourceGitHubPRs)

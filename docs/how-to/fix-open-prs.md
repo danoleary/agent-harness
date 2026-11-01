@@ -24,10 +24,15 @@ leave `watch_ci` out of its steps ([declare a loop](declare-a-loop.md#stop-the-t
 
 ## Choose which PRs it touches
 
-A PR qualifies if its head branch is on your `branch_prefix` (the harness opened
-it), or if a human added the opt-in label. The label is `agent-maintained` by
-default; set the loop's `source.label` ([declare a loop](declare-a-loop.md)) or
-`PR_LOOP_LABEL` to change it. It never works:
+By default every open PR qualifies. A PR off your `branch_prefix` is worked as a
+human's branch: `origin/main` is merged in and pushed normally, never rebased.
+
+To work only the PRs that opted in, set the loop's `source.scope = "opted_in"`
+([declare a loop](declare-a-loop.md)). A PR then qualifies if its head branch is
+on your `branch_prefix` (the harness opened it), or if a human added the opt-in
+label. The label is `agent-maintained` by default; set the loop's `source.label`
+or `PR_LOOP_LABEL` to change it. Setting `source.label` alone also selects
+`opted_in`. Whatever the scope, it never works:
 
 - a PR from a fork, because it cannot push there;
 - a PR into any base other than `main`;
