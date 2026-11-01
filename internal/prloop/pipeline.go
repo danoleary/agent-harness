@@ -91,7 +91,7 @@ func Fix(h hostio.Host, cfg config.Config, log *runlog.Logger, it Item, l config
 	key := Key(it.PR.Number)
 	slug := ticket.Slug(key)
 	fixes := fix.Env{Host: h, Cfg: cfg, Log: log, Who: who}
-	target := fix.Target{Slug: slug, Ticket: prTicket(cfg, key, it.PR), Branch: it.PR.HeadBranch}
+	target := fix.Target{Slug: slug, Ticket: prTicket(key, it.PR), Branch: it.PR.HeadBranch}
 	log.Structured(loopstream.Record{Kind: loopstream.KindStageStart, Ticket: key, Stage: who, Message: fmt.Sprintf("run %s — %s %s on %s at %s (%s)", h.RunID(), it.Kind.describe(), key, it.PR.HeadBranch, short(it.PR.HeadSHA), it.Strategy())})
 
 	if err := h.Preflight(); err != nil {
@@ -120,8 +120,10 @@ func Fix(h hostio.Host, cfg config.Config, log *runlog.Logger, it Item, l config
 
 	out := r.repair()
 	if r.sessions && l.Has(config.StepRetro) {
+		t := target.Ticket
+		t.TeamID = findingsTeam(h, log, key)
 		stages.RetrospectiveOver(h, cfg, log, stages.Subject{
-			Ticket: target.Ticket, Slug: slug, WorktreePath: wt.Path(), Branch: wt.Branch(), LogDir: log.Dir,
+			Ticket: t, Slug: slug, WorktreePath: wt.Path(), Branch: wt.Branch(), LogDir: log.Dir,
 		}, false)
 	}
 	return out
@@ -260,15 +262,25 @@ func (r *run) cleanup() {
 	}
 }
 
-// prTicket is the PR as the sessions' prompts and the retrospective's filing see
-// it: the intent is the PR's title and description. TeamID is where project
-// findings file to; with GitHub Issues as the tracker that is the configured
-// repository, and otherwise no ticket names a team for a PR, so only harness
-// findings are routed.
-func prTicket(cfg config.Config, key string, pr github.PullRequest) ticket.Ticket {
-	t := ticket.Ticket{Identifier: key, Title: pr.Title, Description: pr.Body, URL: pr.URL}
-	if cfg.Tracker.Kind == "github" {
-		t.TeamID = cfg.Tracker.Repo
+// prTicket is the PR as the sessions' prompts see it: the intent is the PR's
+// title and description.
+func prTicket(key string, pr github.PullRequest) ticket.Ticket {
+	return ticket.Ticket{Identifier: key, Title: pr.Title, Description: pr.Body, URL: pr.URL}
+}
+
+// findingsTeam is where the retrospective's project findings file to. No ticket
+// names a team for a PR, so it is the tracker's findings team — the configured
+// repo, project or team (ADR-0038). A tracker that cannot name one leaves it
+// empty, and only harness findings are routed.
+func findingsTeam(h hostio.Host, log *runlog.Logger, key string) string {
+	trk, err := h.Tracker()
+	if err != nil {
+		log.Event(fmt.Sprintf("%s … warning: no tracker for %s's project findings: %v", who, key, err))
+		return ""
 	}
-	return t
+	team, err := trk.FindingsTeam()
+	if err != nil {
+		log.Event(fmt.Sprintf("%s … warning: no tracker team for %s's project findings: %v", who, key, err))
+	}
+	return team
 }

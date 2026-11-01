@@ -71,6 +71,9 @@ func (c *Client) searchQuery() string {
 	return c.issuesPath("") + "?" + v.Encode()
 }
 
+// FindingsTeam is the bound repo, the container every ticket it fetches names.
+func (c *Client) FindingsTeam() (string, error) { return c.slug(), nil }
+
 // SearchFindings lists the repo's already-filed open harness findings (scoped by
 // the findings label), recovering each one's dedup key from its body marker and
 // screening out pull requests. teamID is ignored: a GitHub client is repo-bound,

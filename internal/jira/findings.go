@@ -68,6 +68,10 @@ func (c *Client) findingsSearchJQL(project string) string {
 	return fmt.Sprintf("project = %s AND labels = %s AND statusCategory != Done", project, c.opts.Findings)
 }
 
+// FindingsTeam is the configured project, the container every ticket it fetches
+// names.
+func (c *Client) FindingsTeam() (string, error) { return c.opts.ProjectKey, nil }
+
 // SearchFindings lists the project's already-filed open harness findings (scoped
 // by the findings label), recovering each one's dedup key from its description
 // marker. teamID selects the project to search (falling back to the configured

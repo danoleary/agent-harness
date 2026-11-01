@@ -70,8 +70,9 @@ Every fix is checked host-side before it is pushed: the conflict session must
 leave a clean tree with `origin/main` in its history, a CI fix must be committed,
 and every Gate must be green. If any check fails, nothing is pushed. After a push,
 the loop watches CI until it passes or fails, then runs the retrospective over the
-session transcripts. Project findings from a PR run are filed only when your
-tracker is GitHub Issues. Harness findings are always routed.
+session transcripts. Project findings from a PR run file into your tracker's
+configured `repo`, `project_key` or `team_key` (ADR-0038). Harness findings are
+always routed.
 
 ## Give a PR a fresh attempt budget
 

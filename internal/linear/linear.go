@@ -459,6 +459,41 @@ func (c *Client) AddComment(identifier, body string) error {
 	return err
 }
 
+// findingsTeamQuery resolves the configured team key to the team's UUID, which
+// the create API takes.
+const findingsTeamQuery = `
+	query FindingsTeam($key: String!) {
+		teams(filter: { key: { eq: $key } }) {
+			nodes {
+				id
+			}
+		}
+	}
+`
+
+// FindingsTeam resolves the configured team key to the UUID a finding with no
+// ticket of its own files into (#174). A ticket's own team comes with the ticket.
+func (c *Client) FindingsTeam() (string, error) {
+	data, err := c.transport(findingsTeamQuery, map[string]any{"key": c.opts.TeamKey})
+	if err != nil {
+		return "", err
+	}
+	var resp struct {
+		Teams struct {
+			Nodes []struct {
+				ID string `json:"id"`
+			} `json:"nodes"`
+		} `json:"teams"`
+	}
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return "", err
+	}
+	if len(resp.Teams.Nodes) == 0 || resp.Teams.Nodes[0].ID == "" {
+		return "", fmt.Errorf("no Linear team has the key %q", c.opts.TeamKey)
+	}
+	return resp.Teams.Nodes[0].ID, nil
+}
+
 // SearchFindings lists the team's already-filed harness findings (scoped by the
 // configured findings label), recovering each one's dedup key from its body marker
 // and whether it is closed. The caller decides the open/closed dedup policy.
