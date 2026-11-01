@@ -10,6 +10,7 @@ import (
 	"github.com/danoleary/agent-harness/internal/ci"
 	"github.com/danoleary/agent-harness/internal/config"
 	"github.com/danoleary/agent-harness/internal/github"
+	"github.com/danoleary/agent-harness/internal/loop"
 	"github.com/danoleary/agent-harness/internal/loopstream"
 )
 
@@ -442,6 +443,23 @@ func TestClaimsAndReleaseWorkTheHeldLabel(t *testing.T) {
 	}
 	if err := s.Release("PR-12"); err != nil || strings.Join(gh.removed[12], ",") != "in-progress" {
 		t.Errorf("Release = %v, removed %v; want the in-progress label removed", err, gh.removed[12])
+	}
+}
+
+// #173: herd PR-1312's attempt pushed nothing, and the daemon narrated it as
+// "PR-1312 produced no PR; releasing back to Todo so it isn't stranded In
+// Progress". A PR has no Todo and its run never meant to open a PR: the Source
+// words every give-back as what it is, the lease label coming off.
+func TestReleasingNarratesTheLeaseLabelNotTodo(t *testing.T) {
+	s := newTestSource(newFakeGitHub(), nil)
+	for why, want := range map[loop.ReleaseReason]string{
+		loop.ReleaseNoPR:     "PR-1312 pushed nothing; releasing its in-progress label",
+		loop.ReleaseCapAbort: "spending-cap abort on PR-1312; releasing its in-progress label",
+		loop.ReleaseStale:    "reaping stale claim PR-1312 (in-progress label past the claim TTL); releasing the label",
+	} {
+		if got := s.Releasing(why, "PR-1312"); got != want {
+			t.Errorf("Releasing(%d) = %q, want %q", why, got, want)
+		}
 	}
 }
 

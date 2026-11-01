@@ -168,6 +168,18 @@ func (s *TicketSource) Release(key string) error { return s.client.ReleaseToTodo
 // Comment posts a breadcrumb on the ticket.
 func (s *TicketSource) Comment(key, body string) error { return s.client.AddComment(key, body) }
 
+// Releasing narrates a ticket going back to Todo.
+func (s *TicketSource) Releasing(why loop.ReleaseReason, key string) string {
+	switch why {
+	case loop.ReleaseCapAbort:
+		return "spending-cap abort on " + key + "; releasing to Todo"
+	case loop.ReleaseStale:
+		return "reaping stale claim " + key + " (In Progress past TTL with no branch/PR); releasing to Todo (BEH-677)"
+	default:
+		return key + " produced no PR; releasing back to Todo so it isn't stranded In Progress (BEH-590)"
+	}
+}
+
 // Claims projects the tracker's agent-claimed In Progress set onto the loop's
 // StaleClaim shape (BEH-677), so the daemon stays decoupled from the Tracker port.
 func (s *TicketSource) Claims() ([]loop.StaleClaim, error) {

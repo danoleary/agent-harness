@@ -112,7 +112,26 @@ type Source interface {
 	// looks rather than silently bouncing. Best-effort: a post failure is tolerated
 	// (the release is what matters; the comment is the breadcrumb).
 	Comment(key, body string) error
+	// Releasing words the stream line the daemon writes as it gives key's claim
+	// back for why, without the "loop — " prefix the daemon adds. Only the Source
+	// knows what releasing means for its items: a ticket goes back to Todo, a PR
+	// loses its in-progress label (#173).
+	Releasing(why ReleaseReason, key string) string
 }
+
+// ReleaseReason is why the daemon is giving a claimed item back, so its
+// [Source] can say so in its own words.
+type ReleaseReason int
+
+const (
+	// ReleaseNoPR: the run ended without shipping anything (BEH-590).
+	ReleaseNoPR ReleaseReason = iota + 1
+	// ReleaseCapAbort: a spending cap cut the run short before it could ship.
+	ReleaseCapAbort
+	// ReleaseStale: the reaper found a dead run's claim past the claim TTL with
+	// nothing in flight (BEH-677).
+	ReleaseStale
+)
 
 // Pipeline is what happens to one [WorkItem]: for a ticket, the
 // implementation→review→retrospective Stages (loophost.TicketPipeline). The loop
@@ -355,9 +374,9 @@ func Run(d Deps) int {
 		// the cap window resets. A shipped PR wins, and the pipeline's fold already
 		// settled that: a CapAborted run is one where nothing shipped.
 		if outcome.Disposition == stages.CapAborted {
-			d.Log.Structured(loopstream.Record{Kind: loopstream.KindCapAbort, Ticket: key, Message: "loop — spending-cap abort on " + key + "; releasing to Todo"})
+			d.Log.Structured(loopstream.Record{Kind: loopstream.KindCapAbort, Ticket: key, Message: "loop — " + d.Source.Releasing(ReleaseCapAbort, key)})
 			if err := claim.Release(); err != nil {
-				d.Log.Event("loop … warning: could not release " + key + " to Todo after cap abort: " + err.Error())
+				d.Log.Event("loop … warning: could not release " + key + " after cap abort: " + err.Error())
 			}
 			d.comment(key, "Autonomous run aborted by the Anthropic spending cap before it could ship — released back to Todo. The daemon backs off and auto-resumes once the cap window resets, so this should retry on its own.")
 			d.capBackoffWait(key, outcome.CapResetAt)
@@ -482,9 +501,9 @@ func Run(d Deps) int {
 			// (a Shipped disposition) is the success signal — never released, even on a non-zero
 			// exit (CI red after the auto-fix budget). Best-effort: a Linear hiccup here is
 			// warned, never fatal — the daemon must keep running.
-			d.Log.Structured(loopstream.Record{Kind: loopstream.KindTicketReleased, Ticket: key, Message: "loop — " + key + " produced no PR; releasing back to Todo so it isn't stranded In Progress (BEH-590)"})
+			d.Log.Structured(loopstream.Record{Kind: loopstream.KindTicketReleased, Ticket: key, Message: "loop — " + d.Source.Releasing(ReleaseNoPR, key)})
 			if err := claim.Release(); err != nil {
-				d.Log.Event("loop … warning: could not release " + key + " to Todo after a no-PR run: " + err.Error())
+				d.Log.Event("loop … warning: could not release " + key + " after a no-PR run: " + err.Error())
 			}
 			d.comment(key, "Autonomous run finished with no PR for this ticket — released back to Todo so a later run can re-grab it. Repeated occurrences here mean the ticket keeps failing to ship; see the run logs for the cause.")
 		}
@@ -658,10 +677,10 @@ func (d Deps) reapStaleClaims() {
 		d.Log.Structured(loopstream.Record{
 			Kind:    loopstream.KindTicketReleased,
 			Ticket:  c.Key,
-			Message: "loop — reaping stale claim " + c.Key + " (In Progress past TTL with no branch/PR); releasing to Todo (BEH-677)",
+			Message: "loop — " + d.Source.Releasing(ReleaseStale, c.Key),
 		})
 		if err := d.Source.Release(c.Key); err != nil {
-			d.Log.Event("loop … warning: could not reap stale claim " + c.Key + " to Todo: " + err.Error())
+			d.Log.Event("loop … warning: could not reap stale claim " + c.Key + ": " + err.Error())
 			continue
 		}
 		d.comment(c.Key, "Autonomous reaper released this claim back to Todo: it sat In Progress past the claim TTL with no branch and no linked PR, so the agent that claimed it almost certainly died before pushing (sandbox OOM/timeout/crash). A later run can now re-grab it.")
