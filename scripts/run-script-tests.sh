@@ -6,7 +6,7 @@
 # scripts dir uses the PREFIX form (test-<name>.sh) instead, and nothing ran it —
 # the tests passed by hand but gated nothing. This is that runner. Like the
 # repo-root one it makes no assumption beyond "execute the file, check its exit
-# code", so a new agent-harness/scripts/test-<name>.sh is picked up by the glob
+# code", so a new scripts/test-<name>.sh is picked up by the glob
 # with zero extra wiring. Must stay bash-3.2-safe (macOS stock).
 #
 # Usage:

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Tests for run-script-tests.sh — the gate that discovers and runs every
-# agent-harness/scripts/test-*.sh (BEH-591).
+# scripts/test-*.sh (BEH-591).
 #
 # The agent-harness scripts dir uses the PREFIX form (test-<name>.sh), unlike
 # the repo-root suite's *.test.sh suffix — so this runner globs test-*.sh. The
@@ -10,7 +10,7 @@
 # (and without recursion). Must run under macOS's stock bash 3.2.
 #
 # Harness-agnostic: plain bash + shell fixtures, no Go, no app server. Run directly:
-#   agent-harness/scripts/test-run-script-tests.sh
+#   scripts/test-run-script-tests.sh
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

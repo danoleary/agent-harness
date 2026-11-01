@@ -1,19 +1,18 @@
 #!/usr/bin/env bash
 # Tests for require-script-test-coverage.sh — the diff-coverage gate that fails a
-# push when a behavioral change to an agent-harness script
-# (agent-harness/scripts/<name>.sh) ships WITHOUT touching its sibling
-# agent-harness/scripts/test-<name>.sh (BEH-591).
+# push when a behavioral change to a harness script (scripts/<name>.sh) ships
+# WITHOUT touching its sibling scripts/test-<name>.sh (BEH-591).
 #
-# This is the agent-harness counterpart to the repo-root gate (BEH-463): same
-# idea, but the sibling lives at the PREFIX-form path test-<name>.sh, and the
-# scripts live under agent-harness/scripts/ rather than scripts/.
+# The fixtures live at scripts/, where this repo keeps its scripts: the gate once
+# matched a stale agent-harness/scripts/ prefix, so it never fired here and these
+# fixtures, built under that same prefix, stayed green with it (#171).
 #
 # Each case builds a throwaway git repo, commits a base, then a branch tip, and
 # runs the gate with the base ref as its argument — mirroring how CI calls it
 # with FETCH_HEAD. Must run under macOS's stock bash 3.2.
 #
 # Harness-agnostic: plain git + shell, no Go, no app server. Run directly:
-#   agent-harness/scripts/test-require-script-test-coverage.sh
+#   scripts/test-require-script-test-coverage.sh
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -32,15 +31,15 @@ assert_contains() { # haystack needle label
 }
 
 # Build a fresh git repo with a base commit on `main`, returning its path. The
-# base holds agent-harness/scripts/sample.sh + test-sample.sh so the sibling
+# base holds scripts/sample.sh + test-sample.sh so the sibling
 # relationship exists to be (un)covered by the branch tip.
 new_repo() {
 	local repo="$1"
 	scratch_git_repo "$repo"
-	mkdir -p "${repo}/agent-harness/scripts"
-	printf '#!/usr/bin/env bash\necho base\n' >"${repo}/agent-harness/scripts/sample.sh"
-	printf '#!/usr/bin/env bash\nexit 0\n'     >"${repo}/agent-harness/scripts/test-sample.sh"
-	git -C "$repo" add agent-harness
+	mkdir -p "${repo}/scripts"
+	printf '#!/usr/bin/env bash\necho base\n' >"${repo}/scripts/sample.sh"
+	printf '#!/usr/bin/env bash\nexit 0\n'     >"${repo}/scripts/test-sample.sh"
+	git -C "$repo" add scripts
 	git -C "$repo" commit -qm "base"
 }
 
@@ -53,7 +52,7 @@ trap 'rm -rf "$tmp"' EXIT
 repo="${tmp}/uncovered"
 new_repo "$repo"
 git -C "$repo" checkout -q -b feat
-printf '#!/usr/bin/env bash\necho changed\n' >"${repo}/agent-harness/scripts/sample.sh"
+printf '#!/usr/bin/env bash\necho changed\n' >"${repo}/scripts/sample.sh"
 git -C "$repo" commit -qam "change sample.sh only"
 
 if out="$(cd "$repo" && "$script" main 2>&1)"; then
@@ -68,8 +67,8 @@ assert_contains "$out" "sample.sh" "names the uncovered script"
 repo="${tmp}/covered"
 new_repo "$repo"
 git -C "$repo" checkout -q -b feat
-printf '#!/usr/bin/env bash\necho changed\n' >"${repo}/agent-harness/scripts/sample.sh"
-printf '#!/usr/bin/env bash\nexit 1\n'       >"${repo}/agent-harness/scripts/test-sample.sh"
+printf '#!/usr/bin/env bash\necho changed\n' >"${repo}/scripts/sample.sh"
+printf '#!/usr/bin/env bash\nexit 1\n'       >"${repo}/scripts/test-sample.sh"
 git -C "$repo" commit -qam "change sample.sh + its test"
 
 if (cd "$repo" && "$script" main >/dev/null 2>&1); then
@@ -82,8 +81,8 @@ fi
 repo="${tmp}/no-sibling"
 new_repo "$repo"
 git -C "$repo" checkout -q -b feat
-printf '#!/usr/bin/env bash\necho hi\n' >"${repo}/agent-harness/scripts/fresh.sh"
-git -C "$repo" add agent-harness/scripts/fresh.sh
+printf '#!/usr/bin/env bash\necho hi\n' >"${repo}/scripts/fresh.sh"
+git -C "$repo" add scripts/fresh.sh
 git -C "$repo" commit -qm "add a script with no sibling test"
 
 if (cd "$repo" && "$script" main >/dev/null 2>&1); then
@@ -98,7 +97,7 @@ fi
 repo="${tmp}/test-only"
 new_repo "$repo"
 git -C "$repo" checkout -q -b feat
-printf '#!/usr/bin/env bash\nexit 1\n' >"${repo}/agent-harness/scripts/test-sample.sh"
+printf '#!/usr/bin/env bash\nexit 1\n' >"${repo}/scripts/test-sample.sh"
 git -C "$repo" commit -qam "change only the test"
 
 if (cd "$repo" && "$script" main >/dev/null 2>&1); then
@@ -111,8 +110,8 @@ fi
 repo="${tmp}/unrelated"
 new_repo "$repo"
 git -C "$repo" checkout -q -b feat
-printf 'docs\n' >"${repo}/agent-harness/README.md"
-git -C "$repo" add agent-harness/README.md
+printf 'docs\n' >"${repo}/README.md"
+git -C "$repo" add README.md
 git -C "$repo" commit -qm "unrelated change"
 
 if (cd "$repo" && "$script" main >/dev/null 2>&1); then
@@ -125,7 +124,7 @@ fi
 repo="${tmp}/deleted"
 new_repo "$repo"
 git -C "$repo" checkout -q -b feat
-git -C "$repo" rm -q agent-harness/scripts/sample.sh
+git -C "$repo" rm -q scripts/sample.sh
 git -C "$repo" commit -qm "delete sample.sh"
 
 if (cd "$repo" && "$script" main >/dev/null 2>&1); then
@@ -140,8 +139,8 @@ fi
 repo="${tmp}/deleted-test"
 new_repo "$repo"
 git -C "$repo" checkout -q -b feat
-printf '#!/usr/bin/env bash\necho changed\n' >"${repo}/agent-harness/scripts/sample.sh"
-git -C "$repo" rm -q agent-harness/scripts/test-sample.sh
+printf '#!/usr/bin/env bash\necho changed\n' >"${repo}/scripts/sample.sh"
+git -C "$repo" rm -q scripts/test-sample.sh
 git -C "$repo" commit -qam "change sample.sh and delete its test"
 
 if out="$(cd "$repo" && "$script" main 2>&1)"; then
@@ -152,37 +151,58 @@ else
 fi
 assert_contains "$out" "sample.sh" "names the script whose test was deleted"
 
-# ---- repo-root scripts/ changes are out of scope for THIS gate --------------
-# This gate guards agent-harness/scripts/ only; a change under the repo-root
-# scripts/ dir (covered by its own BEH-463 gate) must not be flagged here.
+# ---- #171: scripts/foo.sh changed, test-foo.sh untouched -> gate fails ------
+# The ticket's own case, at the repo-root scripts/ path CI diffs in this repo.
+# With the stale agent-harness/scripts/ filter no path here ever matched, so the
+# gate passed vacuously.
 repo="${tmp}/repo-root"
 new_repo "$repo"
-mkdir -p "${repo}/scripts"
-printf '#!/usr/bin/env bash\necho base\n' >"${repo}/scripts/other.sh"
-printf '#!/usr/bin/env bash\nexit 0\n'     >"${repo}/scripts/other.test.sh"
+printf '#!/usr/bin/env bash\necho base\n' >"${repo}/scripts/foo.sh"
+printf '#!/usr/bin/env bash\nexit 0\n'     >"${repo}/scripts/test-foo.sh"
 git -C "$repo" add scripts
-git -C "$repo" commit -qm "add a repo-root tested script"
+git -C "$repo" commit -qm "add a tested repo-root script"
 git -C "$repo" checkout -q -b feat
-printf '#!/usr/bin/env bash\necho changed\n' >"${repo}/scripts/other.sh"
-git -C "$repo" commit -qam "change a repo-root script only"
+printf '#!/usr/bin/env bash\necho changed\n' >"${repo}/scripts/foo.sh"
+git -C "$repo" commit -qam "change scripts/foo.sh only"
+
+if out="$(cd "$repo" && "$script" main 2>&1)"; then
+	ng "fails when scripts/foo.sh changes without scripts/test-foo.sh"
+	printf '  got: %s\n' "$out"
+else
+	ok "fails when scripts/foo.sh changes without scripts/test-foo.sh"
+fi
+assert_contains "$out" "scripts/foo.sh changed, but scripts/test-foo.sh" "names scripts/foo.sh and its sibling test"
+
+# ---- a script in a subdirectory of scripts/ is out of scope ------------------
+# scripts/lib/*.sh are sourced helpers, not siblings of a test-<name>.sh.
+repo="${tmp}/nested"
+new_repo "$repo"
+mkdir -p "${repo}/scripts/lib"
+printf '#!/usr/bin/env bash\necho base\n' >"${repo}/scripts/lib/helper.sh"
+printf '#!/usr/bin/env bash\nexit 0\n'     >"${repo}/scripts/lib/test-helper.sh"
+git -C "$repo" add scripts
+git -C "$repo" commit -qm "add a nested helper"
+git -C "$repo" checkout -q -b feat
+printf '#!/usr/bin/env bash\necho changed\n' >"${repo}/scripts/lib/helper.sh"
+git -C "$repo" commit -qam "change the nested helper only"
 
 if (cd "$repo" && "$script" main >/dev/null 2>&1); then
-	ok "ignores repo-root scripts/ changes (other gate's job)"
+	ok "ignores scripts in subdirectories of scripts/"
 else
-	ng "ignores repo-root scripts/ changes (other gate's job)"
+	ng "ignores scripts in subdirectories of scripts/"
 fi
 
 # ---- several scripts change, only one is covered -> gate fails on the gap ----
 repo="${tmp}/multi"
 new_repo "$repo"
-printf '#!/usr/bin/env bash\necho base2\n' >"${repo}/agent-harness/scripts/second.sh"
-printf '#!/usr/bin/env bash\nexit 0\n'     >"${repo}/agent-harness/scripts/test-second.sh"
-git -C "$repo" add agent-harness/scripts/second.sh agent-harness/scripts/test-second.sh
+printf '#!/usr/bin/env bash\necho base2\n' >"${repo}/scripts/second.sh"
+printf '#!/usr/bin/env bash\nexit 0\n'     >"${repo}/scripts/test-second.sh"
+git -C "$repo" add scripts/second.sh scripts/test-second.sh
 git -C "$repo" commit -qm "add a second already-tested script"
 git -C "$repo" checkout -q -b feat
-printf '#!/usr/bin/env bash\necho changed\n'  >"${repo}/agent-harness/scripts/sample.sh"
-printf '#!/usr/bin/env bash\nexit 1\n'        >"${repo}/agent-harness/scripts/test-sample.sh"
-printf '#!/usr/bin/env bash\necho changed2\n' >"${repo}/agent-harness/scripts/second.sh"
+printf '#!/usr/bin/env bash\necho changed\n'  >"${repo}/scripts/sample.sh"
+printf '#!/usr/bin/env bash\nexit 1\n'        >"${repo}/scripts/test-sample.sh"
+printf '#!/usr/bin/env bash\necho changed2\n' >"${repo}/scripts/second.sh"
 git -C "$repo" commit -qam "change both scripts, cover only sample"
 
 if out="$(cd "$repo" && "$script" main 2>&1)"; then

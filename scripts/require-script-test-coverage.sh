@@ -1,17 +1,18 @@
 #!/usr/bin/env bash
-# Fail when a behavioral change to an agent-harness script ships without touching
-# its sibling test (BEH-591).
+# Fail when a behavioral change to a harness script ships without touching its
+# sibling test (BEH-591).
 #
 # The run-script-tests gate (this dir's run-script-tests.sh) only RUNS the
-# test-*.sh files that exist — so a change to agent-harness/scripts/foo.sh that
-# adds no covering case sails through green. This gate closes that loop by
-# inspecting the DIFF: if a changed agent-harness/scripts/<name>.sh already has a
-# sibling agent-harness/scripts/test-<name>.sh, that test file MUST also appear
-# in the diff. It is the agent-harness counterpart of the repo-root BEH-463 gate,
-# differing only in the PREFIX-form sibling (test-<name>.sh) and the
-# agent-harness/scripts/ location. Scripts with no sibling test yet are out of
-# scope — this guards regressions in already-tested scripts, it does not force
-# tests onto untested ones. Must stay bash-3.2-safe (macOS stock).
+# test-*.sh files that exist — so a change to scripts/foo.sh that adds no
+# covering case sails through green. This gate closes that loop by inspecting
+# the DIFF: if a changed scripts/<name>.sh already has a sibling
+# scripts/test-<name>.sh, that test file MUST also appear in the diff. Only
+# top-level scripts/*.sh are in scope (not scripts/lib/), and the path is
+# repo-relative: an old agent-harness/scripts/ prefix, from when the harness
+# lived in a subdirectory, matched nothing here and let CI pass vacuously
+# (#171). Scripts with no sibling test yet are out of scope — this guards
+# regressions in already-tested scripts, it does not force tests onto untested
+# ones. Must stay bash-3.2-safe (macOS stock).
 #
 # Usage:
 #   require-script-test-coverage.sh [BASE_REF]   # BASE_REF defaults to origin/main
@@ -27,14 +28,14 @@ cd "$root"
 base="$(git merge-base "$base_ref" HEAD 2>/dev/null || echo "$base_ref")"
 changed="$(git diff --name-only "$base" HEAD)"
 
-# Production harness scripts that changed: agent-harness/scripts/*.sh, excluding
+# Production harness scripts that changed: scripts/*.sh, excluding
 # the prefix-form test files (basename starting with test-). Build the list with
 # a while-read loop rather than `mapfile` (bash 4+; macOS ships 3.2 — BEH-457).
 prod=()
 while IFS= read -r f; do
 	[ -n "$f" ] || continue
 	prod+=("$f")
-done < <(printf '%s\n' "$changed" | grep -E '^agent-harness/scripts/[^/]+\.sh$' | grep -vE '/test-[^/]+\.sh$' || true)
+done < <(printf '%s\n' "$changed" | grep -E '^scripts/[^/]+\.sh$' | grep -vE '/test-[^/]+\.sh$' || true)
 
 violations=()
 for f in "${prod[@]+"${prod[@]}"}"; do
@@ -62,7 +63,7 @@ for f in "${prod[@]+"${prod[@]}"}"; do
 done
 
 if [ "${#violations[@]}" -gt 0 ]; then
-	printf 'ERROR: agent-harness script changed without touching its sibling test (BEH-591):\n'
+	printf 'ERROR: harness script changed without touching its sibling test (BEH-591):\n'
 	for v in "${violations[@]}"; do
 		printf '  - %s\n' "$v"
 	done
