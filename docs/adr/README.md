@@ -40,3 +40,4 @@ same number then conflict here, before either reaches main.
 - [ADR-0032](0032-a-ticket-that-names-files-in-flight-waits-for-them.md): A ticket that names files in flight waits for them
 - [ADR-0033](0033-a-filed-finding-is-agent-ready-unless-it-needs-a-human.md): A filed finding is agent-ready unless it needs a human
 - [ADR-0034](0034-adr-numbers-are-reserved-in-an-append-only-index.md): ADR numbers are reserved in an append-only index
+- [ADR-0035](0035-a-conflict-resolutions-edits-beyond-the-conflict-are-reviewed-before-push.md): A conflict resolution's edits beyond the conflict are reviewed before push

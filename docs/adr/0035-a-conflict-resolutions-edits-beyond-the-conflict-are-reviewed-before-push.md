@@ -1,4 +1,4 @@
-# ADR-0034: A conflict resolution's edits beyond the conflict are reviewed before push
+# ADR-0035: A conflict resolution's edits beyond the conflict are reviewed before push
 
 - Status: Accepted
 - Date: 2026-10-27
