@@ -23,6 +23,7 @@ fi
 SCRIPT_PATH="$(cd "$(dirname "$0")" && pwd)/release.sh"
 TEST_DIR=$(mktemp -d)
 trap 'rm -rf "$TEST_DIR"' EXIT
+. "$(dirname "$0")/lib/scratch-git.sh"
 
 # Fakes: make passes unless FAKE_MAKE_FAIL=1; gh answers just the calls release.sh
 # makes, and `run watch` exits FAKE_WATCH_RC.
@@ -49,14 +50,10 @@ export RELEASE_POLL_INTERVAL=0 RELEASE_POLL_TRIES=1
 # A fresh origin + clone at v0.5.0 with every file release.sh rewrites.
 fixture() { # name -> prints the clone path
     local origin="$TEST_DIR/$1.git" clone="$TEST_DIR/$1"
-    git init --quiet --bare -b main "$origin"
-    git init --quiet -b main "$clone"
+    scratch_git_repo "$origin" --bare
+    scratch_git_repo "$clone"
     (
         cd "$clone"
-        git config user.name test
-        git config user.email test@example.invalid
-        git config commit.gpgsign false
-        git config tag.gpgsign false
         mkdir -p .agent-harness docs/how-to internal/scaffold/templates
         echo 'FROM ghcr.io/danoleary/agent-harness-base:0.5.0' >.agent-harness/Dockerfile
         printf '# << .Label >>\nFROM ghcr.io/danoleary/agent-harness-base:0.5.0\n' >internal/scaffold/templates/Dockerfile.tmpl

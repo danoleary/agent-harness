@@ -27,6 +27,7 @@ TEST_DIR=$(mktemp -d)
 trap "rm -rf $TEST_DIR" EXIT
 
 SCRIPT_PATH="$(dirname "$0")/check-adr-numbers.sh"
+. "$(dirname "$0")/lib/scratch-git.sh"
 
 # fixture DIR — a repo with two distinct ADRs, their index, and references to both.
 fixture() {
@@ -153,10 +154,7 @@ expect_pass "no ADRs" "$TEST_DIR/t12"
 # a resolver gets by keeping both index lines must still fail the guard.
 echo -n "Test 13: two branches taking the same number conflict once one merges (#146)... "
 R="$TEST_DIR/t13"
-git init -q -b main "$R"
-git -C "$R" config user.email t@example.com
-git -C "$R" config user.name t
-git -C "$R" config commit.gpgsign false
+scratch_git_repo "$R"
 mkdir -p "$R/docs/adr"
 printf '# ADR-0028: Open questions\n' > "$R/docs/adr/0028-a-ready-ticket-with-open-questions-is-dispatched-with-a-warning.md"
 printf '# ADR-0029: Diataxis\n' > "$R/docs/adr/0029-docs-are-split-by-diataxis-and-live-in-the-repo.md"

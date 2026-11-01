@@ -7,6 +7,14 @@ must run under mawk (the sandbox's awk), BWK awk (macOS) and gawk (CI): no awk
 interval expressions (`{n}`, `{n,m}`) and no gawk-only functions (`gensub`,
 `asort`, `strftime`) (`check-awk`).
 
+## Script tests
+
+`check-scripts` runs every `scripts/test-*.sh`. A script test must not read the
+operator's global git config or `.agent-harness/.env`: the sandbox has neither,
+so a test that depends on them passes there and fails on the operator's machine
+(#161, #166). A test that builds a git repo sources `lib/scratch-git.sh` and
+builds it with `scratch_git_repo` (`check-script-git`).
+
 ## loop-start.sh
 
 Launch the autonomous loop daemon (`cmd/loop`) as a detached background process —
@@ -135,6 +143,51 @@ repo's `.agent-harness/Dockerfile`, then runs it. bash-3.2-safe.
 
 ```bash
 ./scripts/test-check-sandbox-image.sh   # a fake docker; no daemon needed
+```
+
+## check-script-test-git-config.sh
+
+Guard against script tests that build a git repo under the operator's global
+git config (#166).
+
+### Purpose
+
+A script test inherits the host's environment. The sandbox has no global git
+config, so a test that runs `git init` and commits passes there, and on an
+operator's machine that sets `commit.gpgsign` it fails or prompts for a key. No
+other gate can see the difference. `lib/scratch-git.sh`, sourced, exports
+`GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_NOSYSTEM=1` and a fixed author and
+committer for the rest of the test; `scratch_git_repo DIR [--bare]` runs
+`git init -q -b main` on DIR. It is bash-3.2-safe.
+
+### What it checks
+
+Every `scripts/test-*.sh` with a non-comment `git … init` or `git … clone` line
+(`git -C dir init` and `git -c k=v init` included) must also, outside comments,
+source `scratch-git.sh` or set `GIT_CONFIG_GLOBAL=` itself. The check is per
+file.
+
+### Fix violations
+
+```bash
+. "$(dirname "$0")/lib/scratch-git.sh"
+scratch_git_repo "$dir"
+```
+
+Drop the `git config user.name`/`user.email`/`commit.gpgsign` lines the test
+set by hand; the helper covers them.
+
+### Usage
+
+```bash
+./scripts/check-script-test-git-config.sh              # the make check-script-git default
+./scripts/check-script-test-git-config.sh /path/to/dir
+```
+
+### Testing
+
+```bash
+./scripts/test-check-script-test-git-config.sh
 ```
 
 ## check-buildvcs.sh
@@ -421,12 +474,13 @@ The guard is integrated into the Makefile's `check` target, which runs:
 3. `check-exec` - This exec.Command guard
 4. `check-bash3` - The bash 3.2 compatibility guard
 5. `check-awk` - The awk portability guard (#129)
-6. `check-buildvcs` - The -buildvcs=false guard (BEH-459)
-7. `check-ci` - The CI-runs-check guard (BEH-462)
-8. `check-adr` - The ADR-numbering guard (#92, #146)
-9. `check-bundle-links` - The installed-README link guard (#96)
-10. `check-scripts` - The harness shell tests (BEH-591)
-11. `test` - Full test suite
+6. `check-script-git` - The script-test git-config guard (#166)
+7. `check-buildvcs` - The -buildvcs=false guard (BEH-459)
+8. `check-ci` - The CI-runs-check guard (BEH-462)
+9. `check-adr` - The ADR-numbering guard (#92, #146)
+10. `check-bundle-links` - The installed-README link guard (#96)
+11. `check-scripts` - The harness shell tests (BEH-591)
+12. `test` - Full test suite
 
 CI runs `make check` directly (then `make build`), so adding a guard to the
 `check` target above covers it in CI with no workflow edit. The `check-ci` guard

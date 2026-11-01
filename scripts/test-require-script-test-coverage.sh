@@ -18,6 +18,7 @@ set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 script="${here}/require-script-test-coverage.sh"
+. "${here}/lib/scratch-git.sh"
 
 pass=0
 fail=0
@@ -35,10 +36,7 @@ assert_contains() { # haystack needle label
 # relationship exists to be (un)covered by the branch tip.
 new_repo() {
 	local repo="$1"
-	git -c init.defaultBranch=main init -q "$repo"
-	git -C "$repo" config user.email test@example.com
-	git -C "$repo" config user.name "Test"
-	git -C "$repo" config commit.gpgsign false
+	scratch_git_repo "$repo"
 	mkdir -p "${repo}/agent-harness/scripts"
 	printf '#!/usr/bin/env bash\necho base\n' >"${repo}/agent-harness/scripts/sample.sh"
 	printf '#!/usr/bin/env bash\nexit 0\n'     >"${repo}/agent-harness/scripts/test-sample.sh"
