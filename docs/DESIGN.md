@@ -555,9 +555,9 @@ poll (Source github_prs, read-only judgement — also what --dry-run prints):
       by its retrospective, so its later red CI is this loop's, #110)
     kind = conflict if mergeable=CONFLICTING/DIRTY, else ci if a check is red, else skip
     skip if source.when leaves the kind out
-    skip if a marker comment already records (head sha, kind)               // a new push = a new item
     attempts since the last hand-off >= source.max_attempts | PR_LOOP_MAX_ATTEMPTS
       -> comment what was tried + label blocked (once), skip
+    a marker for (head sha, kind) = an attempt that pushed nothing -> work it again  // #167
   first workable PR: add in-progress label (the lease), post the attempt marker
 
 pipeline (one PR, worktree .claude/worktrees/pr-<n> on the PR's head branch):
@@ -570,9 +570,12 @@ pipeline (one PR, worktree .claude/worktrees/pr-<n> on the PR's head branch):
   both kinds: ci.WatchAndFix to a terminal verdict
     red check: flake re-run, then CIFix session over the failing logs
     -> committed fix -> all gates -> push (append-only)
+    a red gate with an infrastructure signature, or red only in files the fix
+      did not touch, is re-run once before it refuses the fix (#167)
     a human branch is never reactively rebased (CIWatch.KeepHistory)
   retrospective over the run's transcripts (if a session ran) -> route findings
   remove the in-progress label; remove the worktree if clean
+    the last attempt of the budget, PR still failing at its head -> hand off now
 ```
 
 It writes its own stream (`logs/loops/pr-doctor/loop.jsonl`, per-PR logs under

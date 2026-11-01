@@ -1,6 +1,8 @@
 package prloop
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -256,6 +258,77 @@ func TestFixRefusesACIFixWhoseGatesFail(t *testing.T) {
 	}
 	if res.OK || res.Disposition != stages.NoPR {
 		t.Errorf("a refused fix pushed nothing, so the run is no-PR, got %+v", res)
+	}
+}
+
+// herd PR #1312 (#167): red CI on Build, a CIFix session that commits a fix, and
+// the storybook gate over it red because the test browser's connection closed
+// under a story the fix never touched. The gate is re-run once, and the fix it
+// then passes is accepted rather than lost with the worktree. A red that names
+// only files the fix left alone is re-run the same way; one in a file the fix
+// changed is the fix's, and refuses it.
+func TestFixRerunsAGateThatFailedForTheEnvironmentNotTheFix(t *testing.T) {
+	const browserCrash = `Error: Failed to run the test /work/herd/web/src/routes/call/-components/more-tray.stories.tsx.
+Caused by: Error: [vitest] Browser connection was closed while running tests. Was the page closed unexpectedly?
+Caused by: Error: [birpc] rpc is closed, cannot call "createTesters"
+`
+	cases := []struct {
+		name, log string
+		accepted  bool
+	}{
+		{"the PR-1312 browser crash", browserCrash, true},
+		{"a failure in a file the fix did not touch", "FAIL web/src/routes/call/-components/more-tray.stories.tsx > MoreTray\n", true},
+		{"a failure in the file the fix changed", "FAIL web/vite.config.ts > config\n", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			h, it, repo := prHost(t, harnessItem(CIRed))
+			log := pipelineLog(t)
+			cfg := pipelineCfg()
+			cfg.Gates = []config.Gate{{Name: "storybook", Command: "pnpm run test-storybook:changed"}}
+			h.AgentFn = func(_ int, run hostio.AgentRun) session.Outcome {
+				if run.Label == "cifix-1" {
+					repo.Commit(h.Worktree(), "web/vite.config.ts", "export default {}\n", "Fix the RolldownError in Build")
+				}
+				return session.Outcome{}
+			}
+			gateRuns := 0
+			h.ShellFn = func(_ int, s hostio.ShellRun) session.Outcome {
+				if !strings.HasPrefix(s.Label, "gate-cifix1-storybook") {
+					return session.Outcome{}
+				}
+				if gateRuns++; gateRuns > 1 && c.accepted {
+					return session.Outcome{}
+				}
+				if err := os.WriteFile(filepath.Join(log.Dir, s.Label+".log"), []byte(c.log), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				return session.Outcome{ExitCode: 1}
+			}
+			var fixErr error
+			h.CIFn = func(w hostio.CIWatch) ci.Outcome {
+				fixErr = w.Fix("RolldownError: Build failed", true)
+				return ci.Outcome{OK: fixErr == nil, Reason: "the fix's CI"}
+			}
+
+			res := Fix(h, cfg, log, it, prDoctor())
+
+			if !c.accepted {
+				if fixErr == nil || gateRuns != 1 {
+					t.Fatalf("a red in the fix's own file refuses it with no re-run, got %v after %d gate runs", fixErr, gateRuns)
+				}
+				return
+			}
+			if fixErr != nil {
+				t.Fatalf("the fix must be accepted once the re-run is green, got %v", fixErr)
+			}
+			if gateRuns != 2 || !strings.Contains(calls(h), "shell gate-cifix1-storybook|shell gate-cifix1-storybook-rerun|") {
+				t.Errorf("want the gate then one re-run; calls = %v", h.Calls)
+			}
+			if !res.OK || res.Disposition != stages.Shipped {
+				t.Errorf("an accepted fix ships, got %+v", res)
+			}
+		})
 	}
 }
 

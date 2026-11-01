@@ -70,9 +70,14 @@ tracker is GitHub Issues. Harness findings are always routed.
 
 ## Give a PR a fresh attempt budget
 
-The loop works each PR once per head commit and failure kind, and records each
-attempt in a hidden marker comment on the PR, so a restarted daemon neither
-retries a commit nor loses count. Any new push starts a new attempt. After
-`source.max_attempts` attempts (else `PR_LOOP_MAX_ATTEMPTS`, default 3), the loop
-comments on the PR with what it tried and labels it `blocked`. Remove the label to
-give it a fresh budget.
+The loop records each attempt in a hidden marker comment on the PR, so a restarted
+daemon never loses count. An attempt that pushes nothing (a gate stayed red, say)
+leaves the head where it was, and the loop tries that head again on its next poll.
+Any new push is a new attempt too. After `source.max_attempts` attempts (else
+`PR_LOOP_MAX_ATTEMPTS`, default 3), the loop comments on the PR with what it tried
+and labels it `blocked`. Remove the label to give it a fresh budget.
+
+A run of failed attempts on one PR also counts towards the loop's circuit breaker
+(`max_consecutive_failures`, default 3), which can stop the daemon after the
+hand-off. Set the loop's `max_consecutive_failures` above its `max_attempts` if
+one stuck PR should not stop it.

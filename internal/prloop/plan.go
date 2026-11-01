@@ -33,6 +33,8 @@ func RenderPlan(cands []Candidate) string {
 			fmt.Fprintf(&b, "  skip: %s\n", c.Skip)
 		case c.Exhausted:
 			fmt.Fprintf(&b, "  %s, but its %d-attempt budget is used up: would comment with what was tried and label it blocked\n", c.Kind.describe(), c.Attempts)
+		case c.Unpushed:
+			fmt.Fprintf(&b, "  work: %s (attempt %d, again: the previous attempt at this head pushed nothing) — %s\n", c.Kind.describe(), c.Attempts+1, planFor(c.Item))
 		default:
 			fmt.Fprintf(&b, "  work: %s (attempt %d) — %s\n", c.Kind.describe(), c.Attempts+1, planFor(c.Item))
 		}

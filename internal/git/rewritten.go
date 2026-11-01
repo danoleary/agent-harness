@@ -77,6 +77,20 @@ func (w Worktree) RewrittenSince(base, head string) (Rewrite, error) {
 	return r, nil
 }
 
+// ChangedSince lists the paths the commits since rev changed: what a fix that
+// started at rev touched (#167). It is never nil on success, so a fix that changed
+// nothing reads as an empty list rather than as no answer.
+func (w Worktree) ChangedSince(rev string) ([]string, error) {
+	paths, err := w.changedPaths(rev, "HEAD")
+	if err != nil {
+		return nil, err
+	}
+	if paths == nil {
+		paths = []string{}
+	}
+	return paths, nil
+}
+
 // changedPaths lists the paths from..to changes, renames split into a delete and
 // an add so a renumbered file shows under both names.
 func (w Worktree) changedPaths(from, to string) ([]string, error) {

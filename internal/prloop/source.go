@@ -167,6 +167,10 @@ type Candidate struct {
 	Attempts int
 	// Exhausted marks a PR past its attempt budget: the loop hands it to a human.
 	Exhausted bool
+	// Unpushed marks a PR already tried at this head for this kind: that attempt
+	// pushed nothing, since a push moves the head. It is retried while budget
+	// remains (#167).
+	Unpushed bool
 }
 
 // Source is the `github_prs` [loop.Source].
@@ -271,16 +275,11 @@ func (s *Source) judge(pr github.PullRequest, held map[string]string) Candidate 
 		return skip("could not read its comments: %v", err)
 	}
 	c.Tried, c.Attempts = attempts(comments)
-	// The budget is judged before the already-tried skip: a last attempt that pushed
-	// nothing leaves the PR failing at the head it tried, and must still be handed to
-	// a human rather than wait silently for a push that may never come.
-	if c.Exhausted = c.Attempts >= s.opts.MaxAttempts; c.Exhausted {
-		return c
-	}
+	c.Exhausted = c.Attempts >= s.opts.MaxAttempts
+	// An attempt at this head pushed nothing, so no push will come to start a new
+	// item: the PR is retried, spending its budget, until it is handed off (#167).
 	for _, a := range c.Tried {
-		if a.SHA == pr.HeadSHA && a.Kind == c.Kind {
-			return skip("%s at %s already tried — waiting for a new push", c.Kind.describe(), short(pr.HeadSHA))
-		}
+		c.Unpushed = c.Unpushed || (a.SHA == pr.HeadSHA && a.Kind == c.Kind)
 	}
 	return c
 }
@@ -302,16 +301,22 @@ func (s *Source) Next() (loop.WorkItem, *lease.Lease, bool, error) {
 			continue
 		}
 		key := Key(c.PR.Number)
-		claim := lease.Unheld(labelQueue{gh: s.gh, label: s.opts.HeldLabel}, key)
+		q := &labelQueue{gh: s.gh, label: s.opts.HeldLabel}
+		claim := lease.Unheld(q, key)
 		if err := claim.Hold(); err != nil {
 			return loop.WorkItem{}, nil, false, fmt.Errorf("hold %s: %w", key, err)
 		}
 		if err := s.gh.Comment(c.PR.Number, s.attemptComment(c)); err != nil {
-			// Without the record a restart would retry this head: give the lease back.
+			// Without the record the budget would not count this try: give the lease back.
 			_ = claim.Release()
 			return loop.WorkItem{}, nil, false, fmt.Errorf("record the attempt on %s: %w", key, err)
 		}
-		s.log.Structured(loopstream.Record{Kind: loopstream.KindTicketSelected, Ticket: key, Message: fmt.Sprintf("loop — selected %s (%s at %s on %s, attempt %d of %d)", key, c.Kind.describe(), short(c.PR.HeadSHA), c.PR.HeadBranch, c.Attempts+1, s.opts.MaxAttempts)})
+		q.released = func() { s.settle(c) }
+		retry := ""
+		if c.Unpushed {
+			retry = "; the previous attempt at this head pushed nothing"
+		}
+		s.log.Structured(loopstream.Record{Kind: loopstream.KindTicketSelected, Ticket: key, Message: fmt.Sprintf("loop — selected %s (%s at %s on %s, attempt %d of %d%s)", key, c.Kind.describe(), short(c.PR.HeadSHA), c.PR.HeadBranch, c.Attempts+1, s.opts.MaxAttempts, retry)})
 		return loop.WorkItem{Key: key, Branch: c.PR.HeadBranch, Context: c.Item}, claim, true, nil
 	}
 	return loop.WorkItem{}, nil, false, nil
@@ -329,6 +334,35 @@ func (s *Source) handOff(c Candidate) {
 	}
 	if err := s.gh.AddLabel(c.PR.Number, s.opts.BlockedLabel); err != nil {
 		s.log.Event("loop … warning: could not label " + key + " " + s.opts.BlockedLabel + ": " + err.Error())
+	}
+}
+
+// settle runs as the lease on c's PR is released, after the run that worked it. A
+// run that spent the PR's last attempt and left it failing hands it to a human
+// now, not on the next poll: the daemon's breaker may stop it before then, and the
+// PR must not sit red with no visible state (#167). Best-effort: anything it cannot
+// read leaves the PR to the next poll, which hands off a spent PR the same way.
+func (s *Source) settle(c Candidate) {
+	if c.Attempts+1 < s.opts.MaxAttempts {
+		return
+	}
+	prs, err := s.gh.OpenPRs()
+	if err != nil {
+		return
+	}
+	held, err := s.held()
+	if err != nil {
+		return
+	}
+	for _, pr := range prs {
+		if pr.Number != c.PR.Number {
+			continue
+		}
+		// Still failing at the head this run tried: the run pushed nothing.
+		if now := s.judge(pr, held); now.Skip == "" && now.Exhausted && now.Unpushed {
+			s.handOff(now)
+		}
+		return
 	}
 }
 
@@ -382,13 +416,24 @@ func (s *Source) Comment(string, string) error { return nil }
 type labelQueue struct {
 	gh    GitHub
 	label string
+	// released, when set, runs once the label is off: the Source settles the attempt.
+	released func()
 }
 
-func (q labelQueue) MoveToInProgress(key tracker.Key) error { return q.edit(key, q.gh.AddLabel) }
-func (q labelQueue) ReleaseToTodo(key tracker.Key) error    { return q.edit(key, q.gh.RemoveLabel) }
-func (q labelQueue) MoveToCanceled(key tracker.Key) error   { return q.edit(key, q.gh.RemoveLabel) }
+func (q *labelQueue) MoveToInProgress(key tracker.Key) error { return q.edit(key, q.gh.AddLabel) }
+func (q *labelQueue) MoveToCanceled(key tracker.Key) error   { return q.edit(key, q.gh.RemoveLabel) }
 
-func (q labelQueue) edit(key tracker.Key, op func(int, string) error) error {
+func (q *labelQueue) ReleaseToTodo(key tracker.Key) error {
+	if err := q.edit(key, q.gh.RemoveLabel); err != nil {
+		return err
+	}
+	if q.released != nil {
+		q.released()
+	}
+	return nil
+}
+
+func (q *labelQueue) edit(key tracker.Key, op func(int, string) error) error {
 	n, err := Number(key)
 	if err != nil {
 		return err
@@ -442,8 +487,12 @@ func attempts(comments []github.PRComment) (tried []Attempt, sinceHandOff int) {
 }
 
 func (s *Source) attemptComment(c Candidate) string {
-	return fmt.Sprintf("%s\nagent-harness is fixing the %s at `%s` (attempt %d of %d): %s. It pushes only if the result passes every gate.",
-		attemptMarker(c.PR.HeadSHA, c.Kind), c.Kind.describe(), short(c.PR.HeadSHA), c.Attempts+1, s.opts.MaxAttempts, planFor(c.Item))
+	retry := ""
+	if c.Unpushed {
+		retry = " The previous attempt at this head pushed nothing, so it is trying again."
+	}
+	return fmt.Sprintf("%s\nagent-harness is fixing the %s at `%s` (attempt %d of %d): %s. It pushes only if the result passes every gate.%s",
+		attemptMarker(c.PR.HeadSHA, c.Kind), c.Kind.describe(), short(c.PR.HeadSHA), c.Attempts+1, s.opts.MaxAttempts, planFor(c.Item), retry)
 }
 
 func (s *Source) handOffComment(c Candidate) string {

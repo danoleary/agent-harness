@@ -102,6 +102,7 @@ for 30 minutes, so a flaky gate is re-run after that. The verdicts live under
 | `⚠ post_create exited N` | `post_create` failed some other way | a warning only; the session installs what's missing |
 | `gate re-run could not execute … toolchain missing in the gate shell` | the same PATH problem, in a gate | the same |
 | `harness gate re-run is red — not pushing` | a gate failed on the host | read the gate output in the review log |
+| `↻ gate "…" is red (exit N) with … — re-running it once` | the gate's log shows an environment failure (the test browser's connection closed, an out-of-memory kill or SIGKILL, a download failure, the gate cap), or a PR loop CI fix's gate failed only in files the fix did not touch | nothing; only a second red counts. If the re-run is red too, read its log (`gate-…-rerun-*.log`) |
 | `review ✗ no worktree at … — run implementation first` | `review` was run alone | run `implementation` first |
 
 ## Landing

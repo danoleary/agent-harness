@@ -208,10 +208,20 @@ func (r *run) watch() stages.Result {
 	gated := func(logs string, available bool) error {
 		attempt++
 		r.sessions = true
+		wt := r.h.Worktree()
+		before, _ := wt.HeadSHA()
 		if err := ciFix(logs, available); err != nil {
 			return err
 		}
-		gate := r.fixes.Gates(fmt.Sprintf("gate-cifix%d", attempt))
+		// A gate red only in files the fix left alone is re-run once before it refuses
+		// the fix (#167). Not knowing what the fix changed leaves the plain gates.
+		label := fmt.Sprintf("gate-cifix%d", attempt)
+		var gate fix.GateResult
+		if fixed, err := wt.ChangedSince(before); before != "" && err == nil {
+			gate = r.fixes.GatesOver(label, fixed)
+		} else {
+			gate = r.fixes.Gates(label)
+		}
 		if !gate.Green() {
 			return fmt.Errorf("gate %q is red over auto-fix %d (exit %d) — not pushing", gate.FailedGate, attempt, gate.Outcome.ExitCode)
 		}
