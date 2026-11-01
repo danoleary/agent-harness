@@ -62,9 +62,10 @@ const (
 	// Its replay collides on every commit, so it is not a content conflict and no
 	// resolution session can fix it; the branch is left on its original tip.
 	ReplayDisjoint
-	// ReplayFailed means git failed with no content conflict, on the replay and on
-	// the one retry it gets (#164): a held lock, a file in the way. There is nothing
-	// for a resolution session to resolve; the branch is left on its original tip.
+	// ReplayFailed means git failed with no content conflict (#164): a held lock, a
+	// file in the way. It failed again on its one retry, or left the branch off its
+	// original tip so no retry could run. There is nothing for a resolution session
+	// to resolve.
 	ReplayFailed
 )
 
@@ -156,7 +157,7 @@ const (
 	// Nothing was pushed, and Resolve was never called.
 	Disjoint
 	// RebaseFailed means git failed to replay the branch with no content conflict,
-	// twice (#164). Nothing was pushed, and Resolve was never called.
+	// and the replay was not rescued by its retry (#164). Nothing was pushed, and Resolve was never called.
 	RebaseFailed
 	// PushFailed means the force-with-lease push was rejected. Nothing reached origin.
 	PushFailed

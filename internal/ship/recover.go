@@ -80,7 +80,7 @@ func Recover(h Port, log EventSink, key string) Recovery {
 	case Conflict:
 		log.Event("loop … " + key + " committed-fix recovery: rebase onto main conflicted — cannot auto-complete")
 	case RebaseFailed:
-		log.Event("loop … " + key + " committed-fix recovery: rebase onto main failed with no conflict, twice (#164) — cannot auto-complete")
+		log.Event("loop … " + key + " committed-fix recovery: rebase onto main failed with no content conflict (#164) — cannot auto-complete")
 	case Collapsed:
 		log.Event("loop … " + key + " committed-fix recovery: branch became empty after rebase — nothing to ship")
 	case PushFailed:
