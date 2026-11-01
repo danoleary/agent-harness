@@ -495,3 +495,23 @@ func TestRunInterruptedRetrospectiveKeepsTheFailure(t *testing.T) {
 		t.Errorf("no retrospective interruption narration; events = %v", r.events)
 	}
 }
+
+// A ticket held on a red base launched no session (#125), so the slice ends at
+// implementation: no review, no retrospective over a transcript that does not exist,
+// and the BaseRed disposition reaches the loop.
+func TestRunEndsTheSliceAtARedBaseHold(t *testing.T) {
+	r := &recorder{}
+	out := Run(Deps{
+		FetchMain:      func() error { return nil },
+		Implementation: r.stage("impl", stages.Result{OK: false, Disposition: stages.BaseRed}),
+		Review:         r.stage("review", stages.Result{OK: true}),
+		Retrospective:  r.stage("retro", stages.Result{OK: true}),
+		Log:            r,
+	})
+	if out.Disposition != stages.BaseRed {
+		t.Errorf("Disposition = %s, want base-red", out.Disposition)
+	}
+	if want := []string{"impl"}; !reflect.DeepEqual(r.order, want) {
+		t.Errorf("stage order = %v, want %v (a red-base hold ends the slice)", r.order, want)
+	}
+}

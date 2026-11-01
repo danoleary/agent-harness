@@ -106,12 +106,16 @@ func retryableEnvCrash(outcome session.Outcome, capAborted bool) bool {
 // that advertised readiness it did not have, and it only surfaced on the first failed
 // test (BEH-796). Re-running is cheap and safe because a Consumer's post_create is
 // required to be idempotent.
-func provisionWorktree(h hostio.Host, cfg config.Config, log *runlog.Logger) error {
+//
+// provisioned reports whether the tree holds its toolchain: no post_create is
+// declared, or it exited 0. Gates run over a tree whose install failed say nothing
+// about the base, so the base check (#125) needs to know.
+func provisionWorktree(h hostio.Host, cfg config.Config, log *runlog.Logger) (provisioned bool, err error) {
 	wt := h.Worktree()
 	worktreePath := wt.Path()
 	if !wt.Exists() {
 		if err := wt.Create(); err != nil {
-			return fmt.Errorf("creating worktree %s: %w", worktreePath, err)
+			return false, fmt.Errorf("creating worktree %s: %w", worktreePath, err)
 		}
 		log.Event("created worktree " + worktreePath + " on " + wt.Branch() + " (host-side)")
 	} else {
@@ -124,7 +128,7 @@ func provisionWorktree(h hostio.Host, cfg config.Config, log *runlog.Logger) err
 	if cfg.PostCreate != "" {
 		return runPostCreate(h, cfg, log)
 	}
-	return nil
+	return true, nil
 }
 
 // errPostCreateUnrunnable is provisionWorktree's verdict when the shell could not
@@ -144,7 +148,9 @@ var errPostCreateUnrunnable = errors.New("post_create could not run in the workt
 // PATH. The session runs in a different container whose PATH is fine, so nothing it
 // installs reaches the gate container, and every session launched over it is spent
 // on a pipeline that can never push (#46). It returns errPostCreateUnrunnable.
-func runPostCreate(h hostio.Host, cfg config.Config, log *runlog.Logger) error {
+//
+// ok reports whether post_create exited 0.
+func runPostCreate(h hostio.Host, cfg config.Config, log *runlog.Logger) (ok bool, err error) {
 	log.Event("provisioning worktree — running post_create toolchain setup")
 	run := postCreateRun(cfg, h.Worktree().Path())
 	run.Retry = hostio.Retry{
@@ -160,7 +166,7 @@ func runPostCreate(h hostio.Host, cfg config.Config, log *runlog.Logger) error {
 	res := h.Shell(run)
 	if missing, ok := verify.CommandUnrunnable(res.Outcome); ok {
 		log.Event("tdd ✗ " + unrunnableReport("post_create", missing, res.Outcome) + "; no session launched")
-		return errPostCreateUnrunnable
+		return false, errPostCreateUnrunnable
 	}
 	if res.ExitCode != 0 {
 		log.Event(fmt.Sprintf(
@@ -168,7 +174,7 @@ func runPostCreate(h hostio.Host, cfg config.Config, log *runlog.Logger) error {
 			res.ExitCode,
 		))
 	}
-	return nil
+	return res.ExitCode == 0, nil
 }
 
 // unrunnableReport narrates a worktree command the shell could not run (#46): what
@@ -310,13 +316,32 @@ func Implementation(h hostio.Host, cfg config.Config, log *runlog.Logger, args A
 	// A post_create the shell could not run is NOT retryable: re-attempting in the
 	// same environment fails the same way, so the stage stops before any session
 	// launches (#46). The claim goes back — nothing was worked.
-	if err := provisionWorktree(h, cfg, log); errors.Is(err, errPostCreateUnrunnable) {
+	provisioned, err := provisionWorktree(h, cfg, log)
+	if errors.Is(err, errPostCreateUnrunnable) {
 		releaseClaim(claim, "post_create could not run in the worktree-command container (#46)", log)
 		return Result{OK: false}
 	} else if err != nil {
 		log.Event("tdd ✗ host-side worktree provisioning failed: " + err.Error())
 		releaseClaim(claim, "host-side worktree provisioning failed", log)
 		return Result{OK: false, Retryable: true}
+	}
+
+	// Gate the untouched base before the session (#125). A base that already fails
+	// a Gate would have the session repair it in this branch, as every sibling cut
+	// from the same base would, and the second of those PRs to land conflicts with
+	// base. Hold the ticket instead: discard the worktree no session has touched, so
+	// the next attempt is cut from wherever main has moved to, and give the claim
+	// back. The loop backs off and re-polls (BaseRed is breaker-neutral). A tree
+	// whose post_create failed lacks its toolchain, so its Gates would judge the
+	// install, not the base: it dispatches unchecked, as before.
+	if !provisioned {
+		log.Event("tdd · post_create did not succeed, so the base's gates would judge the install, not the base — not gating the base (#125)")
+	} else if baseIsRed(h, cfg, log, t, args.Force, findingsDir) {
+		if err := wt.Discard(); err != nil {
+			log.Event("⚠ could not discard the untouched worktree on the red base (" + err.Error() + ") — the next attempt may reuse it at this base")
+		}
+		releaseClaim(claim, "the base fails its gates, so no session launched (#125)", log)
+		return Result{OK: false, Disposition: BaseRed}
 	}
 
 	// The tdd session runs at most twice. A terminal usage-policy refusal is a

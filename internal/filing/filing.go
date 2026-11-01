@@ -13,6 +13,7 @@
 package filing
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -38,6 +39,18 @@ func ClearDropbox(findingsDir string) error {
 		return err
 	}
 	return nil
+}
+
+// WriteDropbox writes fs as the dropbox in findingsDir, replacing any there. It
+// is how the host records a finding of its own — one it makes before any session
+// runs, such as a base that fails its Gates (#125) — through the same filing path
+// a session's findings take.
+func WriteDropbox(findingsDir string, fs []findings.Finding) error {
+	raw, err := json.MarshalIndent(fs, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(findingsDir, dropboxFile), append(raw, '\n'), 0o644)
 }
 
 // ClearEmptyDropbox removes the dropbox iff it is present and cleanly parses to

@@ -158,6 +158,23 @@ func (w Worktree) Remove() error {
 	return w.run("git", "-C", w.repo, "worktree", "remove", w.path)
 }
 
+// Discard removes the worktree and deletes its branch, so the next [Worktree.Create]
+// cuts a fresh branch from the then-current origin/main instead of re-attaching
+// this one at the base it was cut from (#125). It refuses a branch carrying commits
+// ahead of origin/main, and, like Remove, a worktree with uncommitted work: it is
+// for a worktree no session has touched.
+func (w Worktree) Discard() error {
+	if n := w.CommitsAhead(); n > 0 {
+		return fmt.Errorf("%s carries %d commit(s) ahead of origin/main — not discarding it", w.branch, n)
+	}
+	if w.Exists() {
+		if err := w.Remove(); err != nil {
+			return err
+		}
+	}
+	return w.run("git", "-C", w.repo, "branch", "-D", w.branch)
+}
+
 // HeadSHA returns the commit SHA at the worktree's HEAD, read host-side via the
 // real-path mount (the same seam Clean/Checkpoint use). It lets a caller capture
 // the tip before a session and tell afterwards whether that session actually

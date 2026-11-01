@@ -77,6 +77,23 @@ worktree for the next run, and the circuit breaker doesn't count it. Nothing to
 fix unless you didn't send the signal: then look for what is stopping containers.
 Exit 137 (SIGKILL) is not an interruption — it is an OOM-kill or the session cap.
 
+## A red base
+
+`⏸ base <sha> fails gate "…" before any change — holding <KEY>` means `main`
+itself fails a gate. After `post_create`, the implementation stage runs the gates
+once over the untouched base, keyed by its SHA. If they fail, no session
+launches: the ticket goes back to Todo, its empty worktree and branch are
+removed, and the run ends **BaseRed** (ADR-0036). The loop refetches `main` and
+backs off, and every ticket cut from the same base is held without gating it
+again. The circuit breaker doesn't count it. The harness files one finding,
+`base-gates-red`, for a human.
+
+Fix: repair `main`. Or dispatch the finding's issue by hand
+(`agent-harness pipeline <KEY>`), since an issue carrying that finding key is
+exempt from the hold. `--force` also skips the check. A red verdict is trusted
+for 30 minutes, so a flaky gate is re-run after that. The verdicts live under
+`.agent-harness/locks/base-gates/`; delete one to re-gate its base now.
+
 ## Worktree setup and gates
 
 | Message | Cause | Fix |

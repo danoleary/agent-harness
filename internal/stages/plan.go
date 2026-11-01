@@ -95,7 +95,8 @@ func (p StagePlan) Render(pr hostio.Planner) string {
 }
 
 // ImplementationPlan is what [Implementation] launches for s: the host-side
-// worktree creation, the Consumer's post_create hook, then the /tdd session.
+// worktree creation, the Consumer's post_create hook, the Gates over the untouched
+// base (#125), then the /tdd session.
 // resume picks the Implement prompt variant (the host chooses it from the branch).
 func ImplementationPlan(cfg config.Config, s Subject, resume prompt.Resume) StagePlan {
 	steps := []Step{{
@@ -107,6 +108,10 @@ func ImplementationPlan(cfg config.Config, s Subject, resume prompt.Resume) Stag
 		steps = append(steps, Step{Title: "post_create hook", Shell: &run})
 	} else {
 		steps = append(steps, Step{Title: "post_create hook", Note: "(none — no post_create hook configured)"})
+	}
+	for _, g := range cfg.Gates {
+		run := fix.GateRun(cfg, s.WorktreePath, baseGateStep, g)
+		steps = append(steps, Step{Title: fmt.Sprintf("base gate %q (once per base SHA; a red base holds the ticket — #125)", g.Name), Shell: &run})
 	}
 	run := implementationRun(cfg, s, resume)
 	steps = append(steps, Step{Title: implementationSession, Agent: &run})

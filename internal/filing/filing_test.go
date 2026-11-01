@@ -1102,3 +1102,23 @@ func TestFileMarksReadyUnlessNeedsHumanOrProbableDuplicate(t *testing.T) {
 		t.Errorf("Ready = [%v %v %v], want %v", filer.opts[0].Ready, filer.opts[1].Ready, filer.opts[2].Ready, want)
 	}
 }
+
+// A finding the host writes with WriteDropbox files like one a session dropped,
+// needs_human and dedup key intact (#125).
+func TestWriteDropboxFilesThroughTheRouter(t *testing.T) {
+	dir := t.TempDir()
+	want := findings.Finding{Title: "base is red", Body: "b", Audience: findings.AudienceProject, Key: "base-gates-red", NeedsHuman: true}
+	if err := WriteDropbox(dir, []findings.Finding{want}); err != nil {
+		t.Fatalf("WriteDropbox: %v", err)
+	}
+
+	filer := &fakeFiler{}
+	Router{Project: sink(filer, noExisting(), nil), Log: &recorder{}}.File(dir, "team-uuid", "#125")
+
+	if len(filer.calls) != 1 || filer.calls[0].Key != want.Key || filer.calls[0].Title != want.Title {
+		t.Fatalf("filed %+v, want the written finding", filer.calls)
+	}
+	if filer.opts[0].Ready {
+		t.Error("a needs_human finding must not be filed agent-ready (ADR-0033)")
+	}
+}

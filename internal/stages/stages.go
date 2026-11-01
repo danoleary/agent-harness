@@ -220,6 +220,14 @@ const (
 	// Stage (not even the retrospective), and the loop leaves the claim in place for
 	// a later run — the stale-claim reaper returns it — and the breaker stays blind.
 	Interrupted
+	// BaseRed — the base the worktree was cut from already fails a Gate, so the
+	// implementation stage held the ticket before launching a session (#125). Only
+	// the implementation stage produces it. A session would only meet the red Gate
+	// mid-run and repair it in its own branch, as every sibling cut from that base
+	// would, each PR then conflicting with the next. Like a preflight abort it is
+	// not the ticket's fault: the stage has already released the claim, the loop
+	// backs off and re-polls until main moves, and the breaker stays blind to it.
+	BaseRed
 )
 
 func (d Disposition) String() string {
@@ -234,6 +242,8 @@ func (d Disposition) String() string {
 		return "recommend-close"
 	case Interrupted:
 		return "interrupted"
+	case BaseRed:
+		return "base-red"
 	default:
 		return "no-pr"
 	}

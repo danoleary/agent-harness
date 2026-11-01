@@ -46,7 +46,7 @@ func TestProvisionWorktreeReprovisionsExistingWorktree(t *testing.T) {
 	repo.Dirty(h.Worktree())
 	cfg := config.Config{Project: config.Project{BranchPrefix: "feat", PostCreate: "cd web && pnpm install"}}
 
-	if err := provisionWorktree(h, cfg, newProvisionLog(t, "BEH-796")); err != nil {
+	if _, err := provisionWorktree(h, cfg, newProvisionLog(t, "BEH-796")); err != nil {
 		t.Fatalf("provisionWorktree on an existing worktree: %v", err)
 	}
 	if len(h.Shells) != 1 || h.Shells[0].Label != postCreateStep {
@@ -68,7 +68,7 @@ func TestProvisionWorktreeCreatesThenProvisionsFreshWorktree(t *testing.T) {
 	}
 	cfg := config.Config{Project: config.Project{BranchPrefix: "feat", PostCreate: "cd web && pnpm install"}}
 
-	if err := provisionWorktree(h, cfg, newProvisionLog(t, "BEH-796")); err != nil {
+	if _, err := provisionWorktree(h, cfg, newProvisionLog(t, "BEH-796")); err != nil {
 		t.Fatalf("provisionWorktree on a fresh worktree: %v", err)
 	}
 	if want := []string{"shell " + postCreateStep}; !reflect.DeepEqual(h.Calls, want) {
@@ -91,7 +91,7 @@ func TestProvisionWorktreeSkipsPostCreateWhenCreationFails(t *testing.T) {
 	repo.BlockWorktrees()
 	cfg := config.Config{Project: config.Project{BranchPrefix: "feat", PostCreate: "cd web && pnpm install"}}
 
-	err := provisionWorktree(h, cfg, newProvisionLog(t, "BEH-796"))
+	_, err := provisionWorktree(h, cfg, newProvisionLog(t, "BEH-796"))
 	if err == nil {
 		t.Fatal("a failed worktree creation must be fatal")
 	}
@@ -110,7 +110,7 @@ func TestProvisionWorktreeSkipsUnconfiguredPostCreate(t *testing.T) {
 	h, _ := fresh(t, "BEH-796")
 	cfg := config.Config{Project: config.Project{BranchPrefix: "feat"}}
 
-	if err := provisionWorktree(h, cfg, newProvisionLog(t, "BEH-796")); err != nil {
+	if _, err := provisionWorktree(h, cfg, newProvisionLog(t, "BEH-796")); err != nil {
 		t.Fatalf("provisionWorktree with no post_create: %v", err)
 	}
 	if !h.Worktree().Exists() {

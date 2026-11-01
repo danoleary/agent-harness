@@ -781,6 +781,57 @@ func TestPreflightAbortReclaimsBacksOffAndLeavesBreakerNeutral(t *testing.T) {
 	}
 }
 
+// A red-base hold (#125) backs off one poll and refetches origin/main, so the
+// next attempt sees a repair the moment it merges. The stage already released the
+// claim, so the loop must not release it again, and the breaker stays blind.
+func TestBaseRedHoldRefetchesMainBacksOffAndLeavesBreakerNeutral(t *testing.T) {
+	r := &recorder{}
+	var ran, fetches int
+	var slept []time.Duration
+	code := Run(Deps{
+		Host: &fakeHost{
+			clearStop:     func() error { return nil },
+			fetchMain:     func() error { fetches++; return nil },
+			stopRequested: stopAfter(6),
+		},
+		Source: &fakeSource{
+			next: func() (string, bool) { return "BEH-8", true },
+			release: func(id string) error {
+				t.Fatalf("loop must not release %s — the impl stage already did", id)
+				return nil
+			},
+		},
+		Pipeline: &fakePipeline{
+			run: func(string) stages.Result {
+				ran++
+				return stages.Result{Disposition: stages.BaseRed}
+			},
+		},
+		Limits: Limits{
+			PollInterval:           10 * time.Second,
+			TickInterval:           2 * time.Second,
+			MaxConsecutiveFailures: 1,
+		},
+		Clock: testClock{sleep: func(d time.Duration) { slept = append(slept, d) }},
+		Log:   r,
+	})
+	if code != 0 || ran != 1 {
+		t.Errorf("code = %d, ran = %d; want a clean exit after one run", code, ran)
+	}
+	if r.saw("circuit breaker") {
+		t.Errorf("a red-base hold must NOT trip the breaker (threshold 1); events = %v", r.events)
+	}
+	if fetches == 0 {
+		t.Error("a red-base hold must refetch origin/main before the next attempt")
+	}
+	if len(slept) != 5 {
+		t.Errorf("backoff slept %d ticks, want 5 (PollInterval/TickInterval)", len(slept))
+	}
+	if k, ok := r.kindFor("held — the base fails its gates"); !ok || k != loopstream.KindTicketReleased {
+		t.Errorf("red-base record kind = %q (found=%v), want %q", k, ok, loopstream.KindTicketReleased)
+	}
+}
+
 // TestCapBackoffWaitsUntilParsedResetTime proves the loop honours the exact reset time
 // the abort message carried (BEH-708): when the cap outcome carries a CapResetAt, the
 // backoff waits until that reset plus the margin — resuming right when the cap clears —

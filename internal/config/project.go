@@ -268,6 +268,13 @@ func LocksDir(checkoutPath string) string {
 	return filepath.Join(ProjectDir(checkoutPath), "locks")
 }
 
+// BaseVerdictsDir is where the loop instances of one Consumer record, per base
+// SHA, whether that untouched base passed its Gates (#125), so a base is gated
+// once rather than once per ticket cut from it.
+func BaseVerdictsDir(checkoutPath string) string {
+	return filepath.Join(LocksDir(checkoutPath), "base-gates")
+}
+
 // ClaimLockFile is the lock every loop instance of a Consumer holds while it
 // confirms and claims a selected ticket, so two never claim one ticket (#89).
 func ClaimLockFile(checkoutPath string) string {
