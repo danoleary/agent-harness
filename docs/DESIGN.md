@@ -551,7 +551,8 @@ after their review stage finished. The sketch below is the built-in loop's Steps
 poll (Source github_prs, read-only judgement — also what --dry-run prints):
   for each open PR:
     skip fork | base != main | labelled blocked | held (in-progress label)
-    skip unless head on <branch_prefix>/  OR  labelled source.label | PR_LOOP_LABEL  // opt-in
+    scope opted_in (or a source.label) only:                                // default scope all: every PR
+      skip unless head on <branch_prefix>/  OR  labelled source.label | PR_LOOP_LABEL
     skip if the ticket loop holds the branch (an In Progress ticket's slug  // lease keyed on the branch
       whose worktree is still checked out: a shipped ticket's is reaped
       by its retrospective, so its later red CI is this loop's, #110)
@@ -1479,7 +1480,7 @@ reader over a structured stream rather than a `--tui` flag on the daemon.
   | `GATE_LOCK_DIR` | `.agent-harness/locks/` | where the gate slots' lock files live; one dir shared by several projects bounds the whole host |
   | `OVERLAP_THRESHOLD` | `1` | how many files a ready ticket must name that one open harness PR or claimed worktree already changes before selection defers it for the poll (ADR-0032); `0` = off |
   | `OVERLAP_ESCAPE_LABEL` | `parallel-ok` | the ticket label that dispatches a ticket whatever it overlaps |
-  | `PR_LOOP_LABEL` | `agent-maintained` | PR loops: the label that opts a PR whose head is off `branch_prefix` in, unless the loop's `source.label` sets one (ADR-0019) |
+  | `PR_LOOP_LABEL` | `agent-maintained` | PR loops with `scope = "opted_in"`: the label that opts a PR whose head is off `branch_prefix` in, unless the loop's `source.label` sets one (ADR-0019) |
   | `PR_LOOP_MAX_ATTEMPTS` | `3` | PR loops: attempts per PR, unless `source.max_attempts` sets one; past it the loop comments what it tried and labels the PR `blocked` |
 
   A loop's own `[[loops]]` limits override the `LOOP_*` knobs above for that loop

@@ -27,7 +27,7 @@ built-in's name replaces it; any other name adds a loop. This one re-tunes
 name = "pr-doctor"
 poll_interval = "10m"            # each limit overrides its LOOP_* env knob, for this loop only
 max_consecutive_failures = 3
-source = { kind = "github_prs", label = "agent-maintained", when = ["conflicting", "ci_failing"] }
+source = { kind = "github_prs", scope = "all", when = ["conflicting", "ci_failing"] }   # "opted_in" (or a label) limits it to branch_prefix and labelled PRs
 steps = [
   { use = "checkout_pr" },
   { use = "fix", prompt = "prompts/fix-pr.md" },   # a Project body, relative to .agent-harness/

@@ -39,6 +39,9 @@ func TestNoLoopsDeclaredLeavesTheBuiltIns(t *testing.T) {
 	if pr.Source.Kind != SourceGitHubPRs || !reflect.DeepEqual(pr.StepNames(), []string{StepCheckoutPR, StepFix, StepGates, StepPushExisting, StepWatchCI, StepRetro}) {
 		t.Errorf("pr-doctor = %+v", pr)
 	}
+	if !pr.Source.WorksAllPRs() {
+		t.Error("the built-in pr-doctor works every open PR by default")
+	}
 	if _, ok := p.LoopNamed("nope"); ok {
 		t.Error("an undeclared name is not a loop")
 	}
@@ -65,6 +68,34 @@ steps = [{ use = "implement" }, { use = "review" }, { use = "retro" }]
 	pr, _ := p.LoopNamed(PRDoctorLoopName)
 	if pr.LeavesCIToPRLoop() {
 		t.Error("only a ticket loop hands its CI on")
+	}
+}
+
+// A github_prs loop works every open PR unless it says otherwise: a scope of
+// opted_in, or a label (which only means something under opt-in).
+func TestAGitHubPRsLoopScopesToAllPRsByDefault(t *testing.T) {
+	for _, tc := range []struct {
+		source string
+		scope  string
+	}{
+		{`{ kind = "github_prs", when = ["conflicting"] }`, ScopeAll},
+		{`{ kind = "github_prs", when = ["conflicting"], scope = "all" }`, ScopeAll},
+		{`{ kind = "github_prs", when = ["conflicting"], scope = "opted_in" }`, ScopeOptedIn},
+		{`{ kind = "github_prs", when = ["conflicting"], label = "rebase-me" }`, ScopeOptedIn},
+	} {
+		pc, err := LoadProject(loopsCheckout(t, `
+[[loops]]
+name = "prs"
+source = `+tc.source+`
+steps = [{ use = "checkout_pr" }, { use = "fix" }, { use = "gates" }, { use = "push_existing" }]
+`))
+		if err != nil {
+			t.Fatalf("%s: LoadProject: %v", tc.source, err)
+		}
+		l, _ := Project{Loops: pc.ResolvedLoops}.LoopNamed("prs")
+		if l.Source.Scope != tc.scope || l.Source.WorksAllPRs() != (tc.scope == ScopeAll) {
+			t.Errorf("%s: scope = %q, want %q", tc.source, l.Source.Scope, tc.scope)
+		}
 	}
 }
 

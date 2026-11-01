@@ -494,14 +494,14 @@ func TestReleasingNarratesTheLeaseLabelNotTodo(t *testing.T) {
 // loop's opt-in label and budget, and — when its tracker is GitHub Issues — the
 // label names it already uses for held and blocked work, so one repository speaks
 // one vocabulary. The built-in pr-doctor loop takes the label and budget from the
-// PR_LOOP_* env knobs.
+// PR_LOOP_* env knobs, and works every open PR.
 func TestOptionsFromConfig(t *testing.T) {
 	cfg := config.Config{
 		Host:    config.Host{PRLoopLabel: "bot-fix", PRLoopMaxAttempts: 5},
 		Project: config.Project{BranchPrefix: "fix"},
 	}
 	prDoctor, _ := cfg.LoopNamed(config.PRDoctorLoopName)
-	want := Options{BranchPrefix: "fix", OptInLabel: "bot-fix", HeldLabel: "in-progress", BlockedLabel: "blocked", MaxAttempts: 5, BaseBranch: "main", LogDir: ".agent-harness/logs/loops/pr-doctor"}
+	want := Options{BranchPrefix: "fix", OptInLabel: "bot-fix", AllPRs: true, HeldLabel: "in-progress", BlockedLabel: "blocked", MaxAttempts: 5, BaseBranch: "main", LogDir: ".agent-harness/logs/loops/pr-doctor"}
 	if got := OptionsFrom(cfg, prDoctor); got != want {
 		t.Errorf("OptionsFrom = %+v, want %+v", got, want)
 	}
@@ -528,6 +528,11 @@ func TestOptionsFromADeclaredLoop(t *testing.T) {
 	l.Source.Scope = config.ScopeAll
 	if got := OptionsFrom(cfg, l); !got.AllPRs {
 		t.Errorf("OptionsFrom = %+v, want AllPRs under scope all", got)
+	}
+
+	l.Source.Scope, l.Source.Label = "", ""
+	if got := OptionsFrom(cfg, l); !got.AllPRs {
+		t.Errorf("OptionsFrom = %+v, want AllPRs by default", got)
 	}
 }
 

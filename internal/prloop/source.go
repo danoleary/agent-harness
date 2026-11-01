@@ -6,9 +6,10 @@
 // branch and watches CI to a verdict. Both reuse the review stage's machinery
 // (internal/fix) rather than copy it.
 //
-// By default the loop only touches PRs that opted in: those on the harness's
-// branch_prefix, and those a human labelled for it. A loop with `scope = "all"`
-// touches every open PR. It never works a fork (it cannot push there).
+// By default the loop touches every open PR. A loop with `scope = "opted_in"` (or
+// a source.label) touches only PRs that opted in: those on the harness's
+// branch_prefix, and those a human labelled for it. It never works a fork (it
+// cannot push there).
 // Its lease is a label on the PR, and what it tried is recorded in marker comments
 // on the PR, so a restarted daemon neither double-works a PR nor forgets its budget.
 package prloop
@@ -111,7 +112,7 @@ func OptionsFrom(cfg config.Config, l config.Loop) Options {
 	if l.Source.MaxAttempts > 0 {
 		o.MaxAttempts = l.Source.MaxAttempts
 	}
-	o.AllPRs = l.Source.Scope == config.ScopeAll
+	o.AllPRs = l.Source.WorksAllPRs()
 	switch conflicts, red := l.Source.Yields(config.WhenConflicting), l.Source.Yields(config.WhenCIFailing); {
 	case conflicts && !red:
 		o.Only = Conflict

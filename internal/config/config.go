@@ -192,7 +192,7 @@ type Host struct {
 	// has judged it safe to run in parallel. Defaults to "parallel-ok".
 	OverlapEscapeLabel string
 
-	// PRLoopLabel is the opt-in label that lets a PR loop (`loop pr-doctor`) work a
+	// PRLoopLabel is the opt-in label that lets a PR loop with scope opted_in work a
 	// PR whose head branch is not on the harness's branch_prefix (ADR-0019), unless
 	// the loop's source.label sets its own. Defaults to "agent-maintained".
 	PRLoopLabel string

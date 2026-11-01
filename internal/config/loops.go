@@ -63,8 +63,9 @@ const (
 	PRDoctorLoopName = "pr-doctor"
 )
 
-// The github_prs source scopes. ScopeOptedIn works a PR on branch_prefix or with
-// the opt-in label. ScopeAll works every open PR the harness can push to.
+// The github_prs source scopes. ScopeAll, the default, works every open PR the
+// harness can push to. ScopeOptedIn works only a PR on branch_prefix or with the
+// opt-in label; a loop that sets source.label without a scope gets it.
 const (
 	ScopeOptedIn = "opted_in"
 	ScopeAll     = "all"
@@ -119,12 +120,26 @@ type LoopSource struct {
 	Kind string
 	// Label is the github_prs opt-in label.
 	Label string
-	// Scope is which PRs a github_prs Source may work: ScopeOptedIn or ScopeAll.
+	// Scope is which PRs a github_prs Source may work: ScopeAll or ScopeOptedIn.
+	// Empty reads as ScopeAll, unless Label is set: a label asks for opt-in.
 	Scope string
 	// When is what a github_prs Source yields: conflicting PRs, PRs with red CI.
 	When []string
 	// MaxAttempts is the github_prs per-PR attempt budget.
 	MaxAttempts int
+}
+
+// WorksAllPRs reports whether a github_prs Source works every open PR rather than
+// only those that opted in.
+func (s LoopSource) WorksAllPRs() bool {
+	switch s.Scope {
+	case ScopeAll:
+		return true
+	case ScopeOptedIn:
+		return false
+	default:
+		return s.Label == ""
+	}
 }
 
 // Yields reports whether a github_prs Source yields PRs in this state.
@@ -284,7 +299,7 @@ func BuiltInLoops() []Loop {
 		},
 		{
 			Name: PRDoctorLoopName, BuiltIn: true,
-			Source: LoopSource{Kind: SourceGitHubPRs, Scope: ScopeOptedIn, When: []string{WhenConflicting, WhenCIFailing}},
+			Source: LoopSource{Kind: SourceGitHubPRs, Scope: ScopeAll, When: []string{WhenConflicting, WhenCIFailing}},
 			Steps:  steps(StepCheckoutPR, StepFix, StepGates, StepPushExisting, StepWatchCI, StepRetro),
 		},
 	}
@@ -476,8 +491,12 @@ func resolveLoops(loops []LoopConfig, dir string, at positions) ([]Loop, []strin
 				add(src+".max_attempts", "source.max_attempts must be positive, got %d", lc.Source.MaxAttempts)
 			}
 			switch lc.Source.Scope {
-			case "", ScopeOptedIn:
-				l.Source.Scope = ScopeOptedIn
+			case "":
+				l.Source.Scope = ScopeAll
+				if lc.Source.Label != "" {
+					l.Source.Scope = ScopeOptedIn
+				}
+			case ScopeOptedIn:
 			case ScopeAll:
 				if lc.Source.Label != "" {
 					add(src+".label", "source.label has no effect with scope %q: every PR is already in scope", ScopeAll)

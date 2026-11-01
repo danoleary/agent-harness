@@ -91,8 +91,9 @@ agent-harness watch --all           # every instance, each line labeled
 touch .agent-harness/STOP-b         # stop instance b alone; plain STOP stops all
 ```
 
-A second loop, `pr-doctor`, fixes harness PRs (and PRs you label
-`agent-maintained`) that went red on CI or conflict with `main` after review.
+A second loop, `pr-doctor`, fixes open PRs that went red on CI or conflict with
+`main` (set its `source.scope = "opted_in"` to limit it to harness PRs and PRs
+you label `agent-maintained`).
 `--dry-run` prints the loop and what it would do; `--list` names every loop. A
 project can change these loops or add its own as `[[loops]]` in `config.toml`. See
 [fix open PRs](docs/how-to/fix-open-prs.md) and
