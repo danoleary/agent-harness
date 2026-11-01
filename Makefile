@@ -1,5 +1,5 @@
 # Agent harness — Go toolchain shortcuts. Requires Go 1.26+.
-.PHONY: build install uninstall base-image release test implementation review retrospective pipeline loop watch vet fmt fmt-check check-exec check-bash3 check-awk check-buildvcs check-ci check-adr check-bundle-links check-scripts check tidy
+.PHONY: build install uninstall base-image release test implementation review retrospective pipeline loop watch vet fmt fmt-check check-exec check-bash3 check-awk check-script-git check-buildvcs check-ci check-adr check-bundle-links check-scripts check tidy
 
 # Build the tool binaries into ./bin.
 #
@@ -152,6 +152,13 @@ check-bash3:
 check-awk:
 	@./scripts/check-awk-portability.sh
 
+# Fail if a scripts/test-*.sh runs `git init`/`git clone` without sourcing
+# scripts/lib/scratch-git.sh: the sandbox has no global git config, so a test
+# that commits under the operator's (commit.gpgsign, say) passes here and fails
+# on their machine, and no other gate sees the difference (#166).
+check-script-git:
+	@./scripts/check-script-test-git-config.sh
+
 # Fail if a VCS-stamping go command in a Makefile drops -buildvcs=false, which
 # breaks builds from a linked worktree (BEH-459).
 check-buildvcs:
@@ -187,7 +194,7 @@ check-scripts:
 	@./scripts/run-script-tests.sh
 
 # The pre-push gate: format check, vet, the script guards, and the full test suite.
-check: fmt-check vet check-exec check-bash3 check-awk check-buildvcs check-ci check-adr check-bundle-links check-scripts test
+check: fmt-check vet check-exec check-bash3 check-awk check-script-git check-buildvcs check-ci check-adr check-bundle-links check-scripts test
 
 tidy:
 	go mod tidy

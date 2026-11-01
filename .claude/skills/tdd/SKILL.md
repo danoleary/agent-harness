@@ -48,6 +48,11 @@ prompt around this skill tells you the ticket, the worktree and the branch.
   BWK awk (macOS) and gawk (CI)** — `check-awk` (`scripts/check-awk-portability.sh`):
   no regex interval expressions (`{n}`, `{n,m}`; mawk silently never matches them,
   so repeat the atom or use `?`) and no `gensub`, `asort`/`asorti` or `strftime`.
+- **A `scripts/test-*.sh` that runs `git init` or `git clone` must source
+  `scripts/lib/scratch-git.sh`** (and build the repo with `scratch_git_repo`) —
+  `check-script-git` (`scripts/check-script-test-git-config.sh`). The helper
+  cuts git off from the operator's global config, which may sign commits; the
+  sandbox has none, so nothing else sees the difference (#166).
 - **Every `go build`/`test`/`run`/`install` in a Makefile keeps
   `-buildvcs=false`**, on one line — `check-buildvcs` (`scripts/check-buildvcs.sh`).
   Without it go aborts inside a linked worktree.
