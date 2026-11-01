@@ -411,6 +411,21 @@ func (s *Source) Release(key string) error {
 // marker it posts on every try and the hand-off comment past the budget.
 func (s *Source) Comment(string, string) error { return nil }
 
+// Releasing narrates the lease label coming off a PR. A PR run pushes to the
+// existing PR, so one that ships nothing pushed nothing, rather than "produced
+// no PR", and there is no Todo to go back to (#173).
+func (s *Source) Releasing(why loop.ReleaseReason, key string) string {
+	label := s.opts.HeldLabel
+	switch why {
+	case loop.ReleaseCapAbort:
+		return "spending-cap abort on " + key + "; releasing its " + label + " label"
+	case loop.ReleaseStale:
+		return "reaping stale claim " + key + " (" + label + " label past the claim TTL); releasing the label"
+	default:
+		return key + " pushed nothing; releasing its " + label + " label"
+	}
+}
+
 // labelQueue is the PR lease's [lease.Queue]: holding a PR adds the label, and
 // releasing or closing it removes the label. The loop never closes a PR.
 type labelQueue struct {

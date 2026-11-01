@@ -284,3 +284,19 @@ it was not handed off either. It sat red with no visible state.
 - The re-run is one more gate run, and only its exit counts, so the gate's exit is
   still the only thing that authorises a push (ADR-0016). The signals lean towards
   re-running: a red the diff caused is red again, at the cost of one gate run.
+
+## Amendment, 2026-11-01: the Source words the daemon's release lines (#173)
+
+On herd PR-1312 (#167) an attempt pushed nothing, and the PR loop's stream said
+`PR-1312 produced no PR; releasing back to Todo so it isn't stranded In
+Progress`. `Source.Comment` already kept the ticket-worded breadcrumbs off PRs,
+but the daemon's own stream lines were still written for tickets.
+
+- **`Source.Releasing(why, key)` words the line the daemon writes as it gives an
+  item back**, for each of the three reasons: a run that shipped nothing, a
+  spending-cap abort, and a stale claim the reaper releases. The daemon adds the
+  `loop — ` prefix and the record kind, and still owns when to release.
+- The ticket Source keeps the wording it had ("releasing back to Todo"). The PR
+  Source says what happens to a PR: `PR-1312 pushed nothing; releasing its
+  in-progress label`, naming the lease label it is configured with.
+- The breadcrumb bodies stay in the daemon. Only the ticket Source posts them.

@@ -331,6 +331,21 @@ func TestTicketMutationsReachTheTracker(t *testing.T) {
 	}
 }
 
+// A ticket the daemon gives back goes back to Todo, and the stream says so
+// (BEH-590, BEH-677) — the wording the PR loop must not borrow (#173).
+func TestReleasingNarratesTheTicketGoingBackToTodo(t *testing.T) {
+	h := sourceFor(t, config.Config{}, newQueueTracker())
+	for why, want := range map[loop.ReleaseReason]string{
+		loop.ReleaseNoPR:     "PROJ-1 produced no PR; releasing back to Todo so it isn't stranded In Progress (BEH-590)",
+		loop.ReleaseCapAbort: "spending-cap abort on PROJ-1; releasing to Todo",
+		loop.ReleaseStale:    "reaping stale claim PROJ-1 (In Progress past TTL with no branch/PR); releasing to Todo (BEH-677)",
+	} {
+		if got := h.Releasing(why, "PROJ-1"); got != want {
+			t.Errorf("Releasing(%d) = %q, want %q", why, got, want)
+		}
+	}
+}
+
 // --- disk reclaim -----------------------------------------------------------
 
 // A Consumer that declares no cache.prune_command must skip the rung entirely

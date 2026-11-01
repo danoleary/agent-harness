@@ -150,6 +150,19 @@ func (s *fakeSource) Comment(key, body string) error {
 	return s.comment(key, body)
 }
 
+// Releasing words a give-back as a ticket Source does (loophost.TicketSource
+// carries the real wording).
+func (s *fakeSource) Releasing(why ReleaseReason, key string) string {
+	switch why {
+	case ReleaseNoPR:
+		return key + " produced no PR; releasing back to Todo"
+	case ReleaseCapAbort:
+		return "spending-cap abort on " + key + "; releasing to Todo"
+	default:
+		return "reaping stale claim " + key + "; releasing to Todo"
+	}
+}
+
 func (s *fakeSource) Claims() ([]StaleClaim, error) {
 	if s.claims == nil {
 		return nil, nil

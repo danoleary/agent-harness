@@ -3,6 +3,7 @@ package loop
 import (
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -18,6 +19,7 @@ type prSource struct {
 	open     []int
 	labelled []string // the claim: a PR carries the label while a run holds it
 	comments map[string][]string
+	stale    []StaleClaim
 }
 
 func (s *prSource) MoveToInProgress(key string) error {
@@ -43,7 +45,7 @@ func (s *prSource) Next() (WorkItem, *lease.Lease, bool, error) {
 	}
 	n := s.open[0]
 	s.open = s.open[1:]
-	key := fmt.Sprintf("pr-%d", n)
+	key := fmt.Sprintf("PR-%d", n)
 	claim := lease.Unheld(s, key)
 	if err := claim.Hold(); err != nil {
 		return WorkItem{}, nil, false, err
@@ -51,9 +53,23 @@ func (s *prSource) Next() (WorkItem, *lease.Lease, bool, error) {
 	return WorkItem{Key: key, Branch: "someone/their-branch-" + key}, claim, true, nil
 }
 
-func (s *prSource) Claims() ([]StaleClaim, error) { return nil, nil }
-func (s *prSource) HasRemoteBranch(string) bool   { return true }
+func (s *prSource) Claims() ([]StaleClaim, error) { return s.stale, nil }
+func (s *prSource) HasRemoteBranch(string) bool   { return false }
 func (s *prSource) Release(key string) error      { return s.ReleaseToTodo(key) }
+
+// Releasing words a give-back as a PR loop would: there is no Todo, and the lease
+// is a label.
+func (s *prSource) Releasing(why ReleaseReason, key string) string {
+	switch why {
+	case ReleaseNoPR:
+		return key + " pushed nothing; releasing its label"
+	case ReleaseCapAbort:
+		return "spending-cap abort on " + key + "; releasing its label"
+	default:
+		return "reaping " + key + "'s stale label"
+	}
+}
+
 func (s *prSource) Comment(key, body string) error {
 	if s.comments == nil {
 		s.comments = map[string][]string{}
@@ -86,7 +102,7 @@ func (p *prPipeline) Recover(WorkItem) (stages.Result, bool) { return stages.Res
 func TestDaemonWorksASourceWhoseItemsAreNotTickets(t *testing.T) {
 	r := &recorder{}
 	src := &prSource{open: []int{3, 7}}
-	pipe := &prPipeline{noPR: map[string]bool{"pr-7": true}}
+	pipe := &prPipeline{noPR: map[string]bool{"PR-7": true}}
 
 	code := Run(Deps{
 		Host:     &fakeHost{stopRequested: stopAfter(2)},
@@ -101,16 +117,62 @@ func TestDaemonWorksASourceWhoseItemsAreNotTickets(t *testing.T) {
 		t.Errorf("exit code = %d, want 0", code)
 	}
 	want := []WorkItem{
-		{Key: "pr-3", Branch: "someone/their-branch-pr-3"},
-		{Key: "pr-7", Branch: "someone/their-branch-pr-7"},
+		{Key: "PR-3", Branch: "someone/their-branch-PR-3"},
+		{Key: "PR-7", Branch: "someone/their-branch-PR-7"},
 	}
 	if !reflect.DeepEqual(pipe.ran, want) {
 		t.Errorf("pipeline ran %v, want %v (each item reaches the Pipeline as the Source made it)", pipe.ran, want)
 	}
-	if want := []string{"pr-3"}; !reflect.DeepEqual(src.labelled, want) {
+	if want := []string{"PR-3"}; !reflect.DeepEqual(src.labelled, want) {
 		t.Errorf("labelled = %v, want %v (the shipped PR keeps its claim; the no-PR one is released)", src.labelled, want)
 	}
-	if len(src.comments["pr-7"]) != 1 || len(src.comments["pr-3"]) != 0 {
-		t.Errorf("comments = %v, want one breadcrumb on pr-7 only", src.comments)
+	if len(src.comments["PR-7"]) != 1 || len(src.comments["PR-3"]) != 0 {
+		t.Errorf("comments = %v, want one breadcrumb on PR-7 only", src.comments)
+	}
+}
+
+// #173: on herd PR-1312 (#167) a PR loop attempt pushed nothing, and the daemon
+// narrated it as "PR-1312 produced no PR; releasing back to Todo so it isn't
+// stranded In Progress" — but a PR has no Todo, its run never meant to produce a
+// PR, and its lease is a label. Every line the daemon writes as it gives an item
+// back — a run that shipped nothing, a spending-cap abort, a reaped stale claim —
+// is the Source's own wording, so no PR is ever narrated in ticket words.
+func TestDaemonNarratesAGiveBackInTheSourcesWords(t *testing.T) {
+	stale := []StaleClaim{{Key: "PR-1312", StartedAt: fixedNow.Add(-2 * time.Hour)}}
+	for _, tc := range []struct {
+		name  string
+		why   ReleaseReason
+		open  []int
+		stale []StaleClaim
+		run   stages.Disposition
+	}{
+		{name: "a run that pushed nothing", why: ReleaseNoPR, open: []int{1312}, run: stages.NoPR},
+		{name: "a spending-cap abort", why: ReleaseCapAbort, open: []int{1312}, run: stages.CapAborted},
+		{name: "a reaped stale claim", why: ReleaseStale, stale: stale},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := &recorder{}
+			src := &prSource{open: tc.open, stale: tc.stale}
+			Run(Deps{
+				Host:   &fakeHost{stopRequested: stopAfter(1)},
+				Source: src,
+				Pipeline: &fakePipeline{run: func(string) stages.Result {
+					return stages.Result{Disposition: tc.run}
+				}},
+				Limits: Limits{ClaimTTL: 30 * time.Minute, PollInterval: time.Minute, TickInterval: 2 * time.Second, CapBackoff: time.Minute, MaxConsecutiveFailures: 3},
+				Clock:  testClock{now: func() time.Time { return fixedNow }, sleep: func(time.Duration) {}},
+				Log:    r,
+			})
+
+			want := "loop — " + src.Releasing(tc.why, "PR-1312")
+			if !r.saw(want) {
+				t.Errorf("no record %q; events = %v", want, r.events)
+			}
+			for _, e := range r.events {
+				if strings.Contains(e, "Todo") || strings.Contains(e, "In Progress") {
+					t.Errorf("event %q narrates a PR in ticket words", e)
+				}
+			}
+		})
 	}
 }
