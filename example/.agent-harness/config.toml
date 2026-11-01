@@ -104,14 +104,16 @@ command = "dotnet format --verify-no-changes"
 # steps = [{ use = "implement" }, { use = "review" }, { use = "watch_ci" }, { use = "retro" }]
 #
 # The PR loop, with a project body for its fix sessions and its own limits. Each
-# limit overrides its LOOP_* env knob for this loop only; source.label and
-# source.max_attempts override PR_LOOP_LABEL and PR_LOOP_MAX_ATTEMPTS. Stop it
-# alone with `touch .agent-harness/STOP-pr-doctor`; a plain STOP stops every loop.
+# limit overrides its LOOP_* env knob for this loop only; source.max_attempts
+# overrides PR_LOOP_MAX_ATTEMPTS. It works every open PR (scope "all", the
+# default); scope = "opted_in", or a source.label (overriding PR_LOOP_LABEL),
+# limits it to PRs on branch_prefix or with that label. Stop it alone with
+# `touch .agent-harness/STOP-pr-doctor`; a plain STOP stops every loop.
 [[loops]]
 name = "pr-doctor"
 poll_interval = "10m"
 max_consecutive_failures = 3
-source = { kind = "github_prs", label = "agent-maintained", when = ["conflicting", "ci_failing"] }
+source = { kind = "github_prs", scope = "all", when = ["conflicting", "ci_failing"] }
 steps = [
   { use = "checkout_pr" },
   { use = "fix", prompt = "prompts/fix-pr.md" },
