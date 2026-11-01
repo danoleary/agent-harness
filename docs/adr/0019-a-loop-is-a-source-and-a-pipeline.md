@@ -57,7 +57,8 @@ Pipeline  : Run(WorkItem, Lease) stages.Result
 3. **The PR loop is the second instance, written in Go first.** It has three parts:
    - *Source* `github_prs`: open PRs that are conflicting or have red checks, and
      that it is allowed to touch (see 4). One item per (PR number, head SHA,
-     failure kind). The loop never retries a head SHA it has already tried. A new
+     failure kind). The loop never retries a head SHA it has already tried (reversed
+     for an attempt that pushed nothing: see the 2026-11-01 amendment). A new
      push by anyone starts a new item. Each PR has an attempt budget; past it, the
      loop leaves a comment and labels the PR `blocked`.
    - *Pipeline*: check out the PR branch into a worktree → a fresh sandbox session
@@ -250,3 +251,36 @@ the daemon down and never showed it winding down.
   it sits under `logs/`, so the path form probes the same files.
 - A loop run in the foreground (`agent-harness loop <name>`) writes no pidfile,
   so the viewer reads it as down, as it always has for the ticket loop.
+
+## Amendment, 2026-11-01: an attempt that pushed nothing is retried, and a gate that crashed is re-run once (#167)
+
+On herd PR #1312 a CIFix session fixed the red `Build`, and then the host's
+`storybook` gate went red over the fix because the test browser's connection
+closed under a story the fix never touched. The harness did not push, and the fix
+was lost with the worktree. The head did not move, so every later poll skipped the
+PR as "already tried — waiting for a new push". It had used 1 of its 3 attempts, so
+it was not handed off either. It sat red with no visible state.
+
+- **An attempt at the PR's current head pushed nothing**, because a push moves the
+  head. Such a marker no longer skips the PR. The PR is worked again, and the
+  attempt counts against the budget, so a PR that keeps failing reaches the hand-off
+  after `max_attempts`. The attempt comment and the dry-run say it is a retry. An
+  attempt a spending cap cut short pushed nothing too, so it also spends one.
+- **The attempt that spends the budget hands off when its lease is released.** If
+  the PR is still failing at the head that attempt tried, the Source comments and
+  labels it `blocked` then, not on the next poll. A PR that fails its whole budget in
+  a row is that many consecutive no-push runs, which trips the daemon's breaker at
+  the default limits (3 and 3), and the hand-off must not wait for a restart. A
+  loop whose `max_consecutive_failures` is above its `max_attempts` keeps running.
+- **A red gate with an infrastructure signature is re-run once** before it counts
+  (`fix.Env.Gates`, so the review stage gets it too): the test browser's connection
+  closing, an out-of-memory kill or SIGKILL, a network failure downloading a
+  toolchain or package, or the gate cap. The signatures are read from the gate's
+  step log and stderr tail. An exit 137 the OOM-retry schedule (BEH-530) already
+  spent its attempts on is not re-run again.
+- **A CI fix's gate that is red only in files the fix did not touch is re-run once
+  too** (`fix.Env.GatesOver`, over the files the fix's commits changed). A failure
+  in a file the fix changed is final.
+- The re-run is one more gate run, and only its exit counts, so the gate's exit is
+  still the only thing that authorises a push (ADR-0016). The signals lean towards
+  re-running: a red the diff caused is red again, at the cost of one gate run.

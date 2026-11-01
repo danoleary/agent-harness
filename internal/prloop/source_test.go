@@ -181,15 +181,6 @@ func TestNextSkipsWhatItMustNotTouch(t *testing.T) {
 		{name: "another base", pr: func() github.PullRequest { p := harnessPR(1, "a1"); p.BaseBranch = "release"; return p }(), want: "base"},
 		{name: "PR held", pr: func() github.PullRequest { p := harnessPR(1, "a1"); p.Labels = []string{"in-progress"}; return p }(), want: "held"},
 		{name: "branch held by the ticket loop", pr: harnessPR(1, "a1"), held: map[string]string{"feat/gh-1": "#1"}, want: "held by #1"},
-		{
-			name: "head already tried",
-			pr:   harnessPR(1, "a1"),
-			prep: func(g *fakeGitHub) {
-				g.merge[1] = ci.MergeConflicting
-				g.comments[1] = []github.PRComment{{Body: attemptMarker("a1", Conflict)}}
-			},
-			want: "already tried",
-		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -226,6 +217,91 @@ func TestNextRetriesANewHead(t *testing.T) {
 
 	if _, _, ok, _ := newTestSource(gh, nil).Next(); !ok {
 		t.Fatal("a head the loop has not tried must be worked")
+	}
+}
+
+// herd PR #1312 (#167): an attempt at head 9ec4875 pushed nothing (its gate went
+// red), so the head did not move. With budget left the PR is retried at once —
+// the attempt counts — instead of sitting red waiting for a push nothing makes.
+func TestNextRetriesAHeadWhoseAttemptPushedNothing(t *testing.T) {
+	pr := harnessPR(1312, "9ec4875")
+	pr.HeadBranch = "feat/beh-1234"
+	gh := newFakeGitHub(pr)
+	gh.checks["9ec4875"] = github.ChecksRed
+	gh.comments[1312] = []github.PRComment{{Body: attemptMarker("9ec4875", CIRed)}}
+	s := newTestSource(gh, nil)
+	plan, _ := s.Plan()
+	if out := RenderPlan(plan); !strings.Contains(out, "work: red CI (attempt 2, again: the previous attempt at this head pushed nothing)") {
+		t.Errorf("the dry-run must say the PR is retried, and why:\n%s", out)
+	}
+
+	item, _, ok, err := s.Next()
+
+	if !ok || err != nil {
+		t.Fatalf("Next = ok %v err %v; a red PR with budget left must be retried", ok, err)
+	}
+	if item.Key != "PR-1312" || item.Branch != "feat/beh-1234" {
+		t.Errorf("item = %+v", item)
+	}
+	if len(gh.posted[1312]) != 1 || !strings.Contains(gh.posted[1312][0], "attempt 2 of 3") || !strings.Contains(gh.posted[1312][0], "pushed nothing") {
+		t.Errorf("the retry is recorded as attempt 2, saying why: %v", gh.posted[1312])
+	}
+}
+
+// The attempt that spends the budget and pushes nothing hands the PR to a human as
+// its lease is released, so it is labelled blocked even if the daemon stops before
+// its next poll (its breaker counts that attempt too).
+func TestReleasingTheLastAttemptHandsTheStillRedPRToAHuman(t *testing.T) {
+	gh := newFakeGitHub(harnessPR(12, "c3"))
+	gh.checks["c3"] = github.ChecksRed
+	gh.comments[12] = []github.PRComment{{Body: attemptMarker("c3", CIRed)}, {Body: attemptMarker("c3", CIRed)}}
+
+	_, claim, ok, _ := newTestSource(gh, nil).Next()
+	if !ok {
+		t.Fatal("the last attempt of the budget is worked")
+	}
+	if err := claim.Release(); err != nil {
+		t.Fatal(err)
+	}
+
+	if strings.Join(gh.added[12], ",") != "in-progress,blocked" {
+		t.Errorf("added = %v, want the lease then blocked", gh.added[12])
+	}
+	if n := len(gh.posted[12]); n != 2 || !strings.Contains(gh.posted[12][1], "attempt budget") {
+		t.Errorf("posted = %v, want the attempt and then the hand-off", gh.posted[12])
+	}
+}
+
+// Releasing a lease hands nothing off while budget remains, or once the PR is no
+// longer failing at the head that was tried.
+func TestReleasingALeaseHandsOffOnlyASpentStillRedPR(t *testing.T) {
+	cases := []struct {
+		name  string
+		tried int
+		after func(*fakeGitHub)
+	}{
+		{"budget left", 0, func(*fakeGitHub) {}},
+		{"green after the last attempt", 2, func(g *fakeGitHub) { g.checks["c3"] = github.ChecksGreen }},
+		{"pushed by the last attempt", 2, func(g *fakeGitHub) { g.prs[0].HeadSHA = "d4" }},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			gh := newFakeGitHub(harnessPR(12, "c3"))
+			gh.checks["c3"] = github.ChecksRed
+			for i := 0; i < c.tried; i++ {
+				gh.comments[12] = append(gh.comments[12], github.PRComment{Body: attemptMarker("c3", CIRed)})
+			}
+			_, claim, ok, _ := newTestSource(gh, nil).Next()
+			if !ok {
+				t.Fatal("the PR is worked")
+			}
+			c.after(gh)
+			_ = claim.Release()
+
+			if strings.Contains(strings.Join(gh.added[12], ","), "blocked") || len(gh.posted[12]) != 1 {
+				t.Errorf("added %v posted %v, want no hand-off", gh.added[12], gh.posted[12])
+			}
+		})
 	}
 }
 

@@ -37,3 +37,26 @@ func TestChangedFilesOfAMissingWorktreeIsEmpty(t *testing.T) {
 		t.Errorf("ChangedFiles = %v, %v; want none", got, err)
 	}
 }
+
+// What a fix changed is what its commits changed since the head it started from,
+// and nothing the branch carried before it (#167).
+func TestChangedSinceIsWhatTheCommitsSinceAHeadChanged(t *testing.T) {
+	repo := gittest.New(t)
+	wt := repo.Handoff("gh-1") // commits gh-1.txt
+	before, err := wt.HeadSHA()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := wt.ChangedSince(before); err != nil || got == nil || len(got) != 0 {
+		t.Errorf("ChangedSince(HEAD) = %#v, %v; want empty, not nil", got, err)
+	}
+	repo.Commit(wt, "src/fix.go", "package src\n", "the CI fix")
+
+	got, err := wt.ChangedSince(before)
+	if err != nil {
+		t.Fatalf("ChangedSince: %v", err)
+	}
+	if want := []string{"src/fix.go"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("ChangedSince = %v, want %v", got, want)
+	}
+}

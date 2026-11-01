@@ -120,8 +120,24 @@ func GateRun(cfg config.Config, worktreePath, labelPrefix string, g config.Gate)
 // agent's report. A 137 OOM-kill is environmental, never the diff: the gate's own
 // install (and even a typecheck) can be SIGKILLed under memory pressure, which
 // would flip a genuinely green branch red and push nothing. A real gate failure
-// returns a non-137 code and is final on the first attempt.
-func (e Env) Gates(labelPrefix string) GateResult {
+// returns a non-137 code and is final unless its log carries an infrastructure
+// signature, which earns it one re-run (#167).
+func (e Env) Gates(labelPrefix string) GateResult { return e.gates(labelPrefix, nil) }
+
+// GatesOver is [Env.Gates] over a fix whose commits changed fixed: a red gate whose
+// failures name only files outside fixed is re-run once too, since a fix cannot
+// have broken a file it never touched (#167). A failure in a file the fix changed
+// stays final. Pass a non-nil fixed, empty for a fix that changed nothing.
+func (e Env) GatesOver(labelPrefix string, fixed []string) GateResult {
+	if fixed == nil {
+		fixed = []string{}
+	}
+	return e.gates(labelPrefix, fixed)
+}
+
+// gates is Gates, with the files the fix changed when there is a fix to compare
+// against (nil when there is none).
+func (e Env) gates(labelPrefix string, fixed []string) GateResult {
 	// A docs-only diff (root markdown / docs/**) feeds none of the gates, so the heavy
 	// host re-run validates nothing a prose edit could break — skip it and treat the
 	// gate as green (BEH-687). Read fresh here, not once up front: an earlier
@@ -164,6 +180,11 @@ func (e Env) Gates(labelPrefix string) GateResult {
 			},
 		}
 		r := e.Host.Shell(run)
+		if why := rerunReason(r.Outcome, e.gateLog(r.Transcript), fixed); why != "" {
+			e.Log.Event(fmt.Sprintf("%s ↻ gate %q is red (exit %d) with %s — re-running it once before it counts as red (#167)", e.Who, g.Name, r.ExitCode, why))
+			run.Label += "-rerun"
+			r = e.Host.Shell(run)
+		}
 		lastLog = r.Transcript
 		return r.Outcome
 	})

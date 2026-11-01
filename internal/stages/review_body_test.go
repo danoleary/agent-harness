@@ -943,7 +943,15 @@ func TestReviewRedGateIsNotRelaunchedForAnEnvironmentFailure(t *testing.T) {
 				repo.Commit(h.Worktree(), "review.txt", "a review fix\n", "fix: the defect the review found")
 				return c.session
 			}
-			h.ShellFn = redFirstGate(log, c.gate, redGateLog)
+			// Red on every run: a gate cap-kill earns the gate one re-run (#167), and
+			// what is under test is that no review session is re-launched over it.
+			h.ShellFn = func(_ int, s hostio.ShellRun) session.Outcome {
+				if !strings.HasPrefix(s.Label, gateStep) {
+					return session.Outcome{}
+				}
+				_ = os.WriteFile(filepath.Join(log.Dir, s.Label+".log"), []byte(redGateLog), 0o644)
+				return c.gate
+			}
 
 			if res := Review(h, stageCfg(), log, Args{Identifier: "PROJ-63"}); res.OK {
 				t.Fatalf("nothing ships, got %+v", res)
