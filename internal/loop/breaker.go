@@ -30,12 +30,13 @@ func newBreaker(threshold int) *breaker { return &breaker{threshold: threshold} 
 // refusal before any item work (so a poison top-of-queue item can't trip the
 // breaker in seconds on identical 2s failures); a recommend-close is a correct
 // terminal no-op, neither a ship nor a failure (BEH-603); and an interruption is a
-// session a stop signal killed from outside, which says nothing about the item (#99).
+// session a stop signal killed from outside, which says nothing about the item (#99);
+// and a red-base hold is main's fault, shared by every item cut from it (#125).
 func (b *breaker) record(key string, o stages.Result) {
 	switch o.Disposition {
 	case stages.Shipped:
 		b.streak = nil
-	case stages.CapAborted, stages.PreflightAborted, stages.RecommendClose, stages.Interrupted:
+	case stages.CapAborted, stages.PreflightAborted, stages.RecommendClose, stages.Interrupted, stages.BaseRed:
 		// neutral — blind by design
 	default:
 		b.streak = append(b.streak, key)

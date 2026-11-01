@@ -86,8 +86,8 @@ func TestPlanIsWhatTheStagesLaunch(t *testing.T) {
 	if got, want := shellsWithoutRetry(h.Shells), shellsWithoutRetry(shells); !reflect.DeepEqual(got, want) {
 		t.Errorf("shell runs launched != planned\nlaunched: %+v\nplanned:  %+v", got, want)
 	}
-	if len(agents) != 3 || len(shells) != 3 || len(h.Agents) != 3 {
-		t.Fatalf("plan has %d agent / %d shell runs, want 3 / 3 (impl, review, retro / postcreate, prep, gate)", len(agents), len(shells))
+	if len(agents) != 3 || len(shells) != 4 || len(h.Agents) != 3 {
+		t.Fatalf("plan has %d agent / %d shell runs, want 3 / 4 (impl, review, retro / postcreate, basegate, prep, gate)", len(agents), len(shells))
 	}
 	// Plan and launch share one builder, so agreement alone can't catch a builder
 	// that pins the wrong model: each session must carry its own Stage's model.

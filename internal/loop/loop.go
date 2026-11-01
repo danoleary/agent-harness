@@ -396,6 +396,22 @@ func Run(d Deps) int {
 			continue
 		}
 
+		// A red-base hold is not a ticket verdict either (#125): the base the ticket
+		// was cut from already fails a Gate, so the implementation stage launched no
+		// session and released the claim itself. Refresh origin/main so the next
+		// attempt sees a repair the moment it merges, then back off one poll — every
+		// ticket on the same base is held the same way, from the recorded verdict, at
+		// no gate cost. Breaker-neutral: tripping on main's state would stop the loop
+		// just as main goes green.
+		if outcome.Disposition == stages.BaseRed {
+			d.Log.Structured(loopstream.Record{Kind: loopstream.KindTicketReleased, Ticket: key, Message: "loop ⏸ " + key + " held — the base fails its gates; backing off until main moves — breaker-neutral (#125)"})
+			if err := d.Host.FetchMain(); err != nil {
+				d.Log.Event("loop … warning: could not fetch origin/main after a red-base hold: " + err.Error())
+			}
+			d.interruptibleSleep(d.Limits.PollInterval)
+			continue
+		}
+
 		// Fetch main again — "pull main after every session" keeps the next ticket's
 		// merge-base honest across the loop's long run.
 		if err := d.Host.FetchMain(); err != nil {

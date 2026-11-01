@@ -113,8 +113,8 @@ func TestPlanRendersEachStagesOwnRuns(t *testing.T) {
 			containers = append(containers, "docker "+strings.Join(preview.ShellPreview(sh), " "))
 		}
 	}
-	if len(sessions) != 3 || len(containers) != 4 {
-		t.Fatalf("planned %d sessions / %d containers, want 3 / 4 (postcreate, prep, 2 gates)", len(sessions), len(containers))
+	if len(sessions) != 3 || len(containers) != 6 {
+		t.Fatalf("planned %d sessions / %d containers, want 3 / 6 (postcreate, 2 base gates, prep, 2 gates)", len(sessions), len(containers))
 	}
 	last := -1
 	for _, w := range sessions {

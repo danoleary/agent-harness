@@ -168,3 +168,15 @@ func TestBreakerNeutralOnInterrupted(t *testing.T) {
 		t.Error("the interruptions must not reset the counter either")
 	}
 }
+
+// A red-base hold is neutral (#125): every ticket on the base is held the same way,
+// so counting them would trip the breaker on main's state, not the tickets'.
+func TestBreakerNeutralOnBaseRed(t *testing.T) {
+	b := newBreaker(2)
+	b.record("BEH-1", stages.Result{})
+	b.record("BEH-2", stages.Result{Disposition: stages.BaseRed})
+	b.record("BEH-3", stages.Result{Disposition: stages.BaseRed})
+	if b.tripped() {
+		t.Error("red-base holds must not advance the counter")
+	}
+}

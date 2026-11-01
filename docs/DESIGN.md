@@ -450,7 +450,8 @@ loop:
   // PreflightAborted / NoPR, in that precedence — a stage that reached a verdict (shipped,
   // or "this branch is a no-op") outranks a later stage's environmental abort. An interrupted
   // implementation or review makes the run Interrupted; an interrupted retrospective is left
-  // out of the fold, so the earlier stages' verdict stands (ADR-0030).
+  // out of the fold, so the earlier stages' verdict stands (ADR-0030). An implementation that
+  // held its ticket on a red base makes the run BaseRed; review and retrospective don't run (ADR-0036).
 
   // SPENDING-CAP ABORT is a control-flow signal, NOT a ticket failure (see invariant below).
   // Any stage aborted by an external Anthropic spending cap, with nothing shipped:
@@ -468,6 +469,16 @@ loop:
     reclaim disk (incl. the Docker prune) // the usual cause — clear the floor for the retry
     short backoff sleep (interruptible by STOP; = pollInterval)   // don't spin re-selecting the same top-of-queue ticket
     do NOT touch the breaker counter  // breaker stays blind; otherwise 3 identical ~2s preflight failures trip it in seconds
+    continue
+
+  // BASE RED (ADR-0036): the base the worktree was cut from already fails a Gate, so the
+  // implementation stage gated it after post_create, held the ticket, and launched no session.
+  // The verdict is recorded per base SHA, so every other ticket on that base is held at no gate cost.
+  if Disposition == BaseRed:
+    // ticket was already released -> Todo and its untouched worktree + branch discarded by the impl stage
+    fetch origin/main                 // the next attempt sees a repair the moment it merges
+    short backoff sleep (interruptible by STOP; = pollInterval)
+    do NOT touch the breaker counter  // main's state, shared by every ticket on it
     continue
 
   // INTERRUPTED (ADR-0030): a stop signal killed a session from outside (exit 128+N) — the
@@ -517,7 +528,7 @@ loop:
 
   // breaker signal = the run's Disposition, NOT the pipeline exit code
   if Disposition == Shipped    -> reset consecutive-failure counter to 0
-  else if Disposition in {CapAborted, PreflightAborted, RecommendClose, Interrupted} -> neutral (neither increment nor reset)
+  else if Disposition in {CapAborted, PreflightAborted, RecommendClose, Interrupted, BaseRed} -> neutral (neither increment nor reset)
   else /* NoPR */              -> increment consecutive-failure counter
   // a retrospective-only failure (PR shipped) and a CI-red-after-budget (a reviewable PR
   // exists) do NOT count as failures; only "never produced a PR" does.

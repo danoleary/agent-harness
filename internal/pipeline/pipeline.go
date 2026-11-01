@@ -68,7 +68,9 @@ func ForTicket(cfg config.Config, log *runlog.Logger, runID string, args stages.
 //     is exactly the run worth mining for findings (the one deliberate divergence
 //     from the loop's "if not OK -> skip rest");
 //   - except after an interruption: a Stage whose session a stop signal killed
-//     ends the slice there, retrospective included (#99, ADR-0030).
+//     ends the slice there, retrospective included (#99, ADR-0030);
+//   - and except when implementation held the ticket on a red base: no session
+//     ran, so the slice ends there too (#125).
 //
 // It returns the slice's folded [stages.Result] (not a bare exit code) so the
 // autonomous loop can read the run's Disposition — did the ticket ship, was it
@@ -87,6 +89,12 @@ func Run(d Deps) stages.Result {
 	narrateErr(d.Log, "implementation", impl)
 	if impl.Disposition == stages.Interrupted {
 		return interrupted(d.Log, "implementation", impl)
+	}
+	// A ticket held on a red base launched no session (#125): there is nothing to
+	// review and no transcript for a retrospective to mine.
+	if impl.Disposition == stages.BaseRed {
+		d.Log.Event("pipeline ⏸ the base fails its gates — ticket held, no session ran; skipping the rest of the slice, retrospective included (#125)")
+		return impl
 	}
 
 	// Re-attempt the implementation stage once when the first attempt crashed
