@@ -506,8 +506,11 @@ loop:
   // A completion that ships folds in as a Shipped disposition (breaker resets, no release); anything
   // that can't complete (conflict, empty-after-rebase, push/PR failure, or nothing to recover)
   // falls through to the normal release so a later run re-grabs — never worse than no attempt.
+  // A completion that ships also reaps the worktree (#184): the slice's retrospective kept it
+  // only for this recovery, and none follows, so left checked out it would hold the branch
+  // against pr-doctor for as long as the ticket stays In Progress.
   if Disposition == NoPR and there IS a committed-but-unpushed fix:
-    complete it host-side (rebase + push + PR); on success the run becomes Shipped
+    complete it host-side (rebase + push + PR); on success reap the worktree and the run becomes Shipped
 
   // RELEASE-ON-NO-PR (BEH-590): any non-cap run that did NOT reach a pushed PR — OOM,
   // sandbox crash, a review stage that died before pushing, an empty-diff verification
@@ -555,7 +558,8 @@ poll (Source github_prs, read-only judgement — also what --dry-run prints):
       skip unless head on <branch_prefix>/  OR  labelled source.label | PR_LOOP_LABEL
     skip if the ticket loop holds the branch (an In Progress ticket's slug  // lease keyed on the branch
       whose worktree is still checked out: a shipped ticket's is reaped
-      by its retrospective, so its later red CI is this loop's, #110)
+      by its retrospective, or by the committed-fix recovery that shipped
+      it, so its later red CI is this loop's, #110, #184)
     kind = conflict if mergeable=CONFLICTING/DIRTY, else ci if a check is red, else skip
     skip if source.when leaves the kind out
     attempts since the last hand-off >= source.max_attempts | PR_LOOP_MAX_ATTEMPTS

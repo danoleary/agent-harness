@@ -289,11 +289,17 @@ func TestRecoverCompletesACommittedUnpushedFix(t *testing.T) {
 	if c := calls(s.h); !strings.Contains(c, want) {
 		t.Errorf("calls = %v,\nwant the sequence %q", s.h.Calls, want)
 	}
-	if !s.wt.IsRebasedOnto(gitpkg.BaseRef) || s.repo.OnOrigin("feat/proj-1") == "" {
+	pushed := s.repo.OnOrigin("feat/proj-1")
+	if pushed == "" || s.repo.Git(s.repo.Dir, "merge-base", gitpkg.BaseRef, pushed) != s.repo.Git(s.repo.Dir, "rev-parse", gitpkg.BaseRef) {
 		t.Error("the fix must be replayed onto the latest main and pushed")
 	}
 	if !log.saw("completing it host-side") {
 		t.Errorf("events = %v, want the recovery announced", log.events)
+	}
+	// The slice's retrospective kept the worktree only so this recovery could finish
+	// it; with the PR open the work has escaped it, so recovery reaps it (#184).
+	if s.wt.Exists() {
+		t.Error("a shipped recovery must reap the worktree, or the ticket loop holds its branch forever")
 	}
 }
 
