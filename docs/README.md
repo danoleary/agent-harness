@@ -41,7 +41,7 @@ Running:
 
 - [DESIGN.md](DESIGN.md): how the harness works, its invariants and its failure
   handling.
-- [Architecture decision records](adr/): one file per decision, with the context
+- [Architecture decision records](https://github.com/danoleary/agent-harness/tree/main/docs/adr): one file per decision, with the context
   and the alternatives it ruled out.
-- [CONTEXT.md](../CONTEXT.md): the vocabulary (Stage, Gate, Lease, Landing,
+- [CONTEXT.md](https://github.com/danoleary/agent-harness/blob/main/CONTEXT.md): the vocabulary (Stage, Gate, Lease, Landing,
   Disposition, …) every other page uses.

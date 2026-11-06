@@ -81,6 +81,6 @@ agent-harness pipeline --next --dry-run
 `doctor` reports a missing or blank body. The dry run prints the plan for the
 next ticket without starting a container.
 
-For a worked example, see [`example/.agent-harness/prompts/`](../../example/.agent-harness/prompts/).
+For a worked example, see [`example/.agent-harness/prompts/`](https://github.com/danoleary/agent-harness/tree/main/example/.agent-harness/prompts).
 A body for a `[[loops]]` Step, such as `fix`, follows the same rules; see
 [declare a loop](declare-a-loop.md).

@@ -1,11 +1,11 @@
 #!/bin/bash
-# Unit tests for check-bundle-links.sh (#96).
+# Unit tests for check-bundle-links.sh (#96, #127).
 #
 # The installed README lives in <prefix>/share/agent-harness/, beside only the
 # docs install.sh ships (its DOCS list). A relative link to anything else is
 # broken in every install, and nothing on our side noticed. The guard resolves
-# each relative Markdown link in README.md against DOCS and fails on a link to a
-# file the bundle doesn't carry. Fixture trees stand in for the repo. Like the
+# each relative Markdown link in every shipped .md against DOCS, from that doc's
+# own directory, and fails on a link to a file the bundle doesn't carry. Fixture trees stand in for the repo. Like the
 # other harness guards, this must run under macOS's stock bash 3.2.
 
 set -euo pipefail
@@ -27,14 +27,17 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SCRIPT_PATH="$SCRIPT_DIR/check-bundle-links.sh"
 REPO_DIR="$(dirname "$SCRIPT_DIR")"
 
-# fixture DIR README_BODY — a repo whose install.sh ships README.md and
-# docs/GUIDE.md, with docs/EXTRA.md in the tree but not in the bundle.
+# fixture DIR README_BODY [GUIDE_BODY] — a repo whose install.sh ships
+# README.md, docs/GUIDE.md and docs/HOWTO.md, with docs/EXTRA.md and
+# docs/adr/0001-a.md in the tree but not in the bundle.
 fixture() {
-    mkdir -p "$1/docs"
-    printf 'DOCS="README.md LICENSE docs/GUIDE.md"\n' > "$1/install.sh"
+    mkdir -p "$1/docs/adr"
+    printf 'DOCS="README.md LICENSE\n\tdocs/GUIDE.md docs/HOWTO.md"\n' > "$1/install.sh"
     printf 'license\n' > "$1/LICENSE"
-    printf '# Guide\n' > "$1/docs/GUIDE.md"
+    printf '%b' "${3:-# Guide\n}" > "$1/docs/GUIDE.md"
+    printf '# How to\n' > "$1/docs/HOWTO.md"
     printf '# Extra\n' > "$1/docs/EXTRA.md"
+    printf '# ADR-0001\n' > "$1/docs/adr/0001-a.md"
     printf '%b' "$2" > "$1/README.md"
 }
 
@@ -104,8 +107,22 @@ echo -n "Test 8: several links on one line are each checked... "
 fixture "$TEST_DIR/t8" '# Readme\n\n[ok](docs/GUIDE.md) and [bad](docs/EXTRA.md).\n'
 expect_fail "second link on a line" "$TEST_DIR/t8" 'README\.md:3:.*docs/EXTRA\.md'
 
-echo -n "Test 9: this repo's README links only to shipped docs... "
-expect_pass "the real README" "$REPO_DIR"
+# The #127 bug: the installed docs/DESIGN.md linked adr/NNNN-*.md, which the
+# bundle never shipped. A shipped doc's links resolve from its own directory.
+echo -n "Test 9: a shipped doc's link to an unshipped file is flagged... "
+fixture "$TEST_DIR/t9" '# Readme\n' '# Guide\n\nSee [ADR-0001](adr/0001-a.md).\n'
+expect_fail "unshipped link in a shipped doc" "$TEST_DIR/t9" 'docs/GUIDE\.md:3:.*docs/adr/0001-a\.md'
+
+echo -n "Test 10: a shipped doc's links resolve from its own directory... "
+fixture "$TEST_DIR/t10" '# Readme\n' '# Guide\n\n[Up](../README.md), [sibling](HOWTO.md#x), [self](./GUIDE.md),\n[licence](../LICENSE) and [ADR-0001](https://github.com/o/r/blob/main/docs/adr/0001-a.md).\n'
+expect_pass "doc-relative links" "$TEST_DIR/t10"
+
+echo -n "Test 11: a shipped doc's link that climbs out of the bundle is flagged... "
+fixture "$TEST_DIR/t11" '# Readme\n' '# Guide\n\n[Releases](../../releases).\n'
+expect_fail "escaping link in a shipped doc" "$TEST_DIR/t11" 'docs/GUIDE\.md:3:.*\.\./\.\./releases'
+
+echo -n "Test 12: this repo's shipped docs link only to shipped docs... "
+expect_pass "the real bundle" "$REPO_DIR"
 
 echo
 echo -e "${GREEN}All tests passed!${NC}"

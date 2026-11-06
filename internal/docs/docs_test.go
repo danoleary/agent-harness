@@ -132,6 +132,11 @@ func TestEveryRelativeLinkResolves(t *testing.T) {
 	}
 }
 
+// adrTreeURL is where docs/README.md links the ADRs. The install bundle does not
+// ship docs/adr/, so a relative link to it would be broken in every install
+// (#127, scripts/check-bundle-links.sh).
+const adrTreeURL = "https://github.com/danoleary/agent-harness/tree/main/docs/adr"
+
 // TestTheIndexListsEveryPage keeps docs/README.md the one map of the docs: a page
 // added under docs/ that the index does not link is a page nobody finds.
 func TestTheIndexListsEveryPage(t *testing.T) {
@@ -141,6 +146,9 @@ func TestTheIndexListsEveryPage(t *testing.T) {
 	for _, l := range prose(t, index) {
 		for _, m := range linkRe.FindAllStringSubmatch(l, -1) {
 			file, _, _ := strings.Cut(m[1], "#")
+			if file == adrTreeURL {
+				file = "adr"
+			}
 			linked[filepath.ToSlash(filepath.Clean(filepath.Join("docs", file)))] = true
 		}
 	}

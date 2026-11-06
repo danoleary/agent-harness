@@ -49,12 +49,13 @@ TOOLS="implementation review retrospective pipeline loop watch"
 # repo-relative paths, which the bundle keeps: the README links docs/CONSUMER.md,
 # and a flattened copy would break that link in every install. The release
 # workflow and `make install` copy this same list, and scripts/check-bundle-links.sh
-# fails `make check` when the README links a file that is not on it (#96).
+# fails `make check` when a shipped doc links a file that is not on it (#96, #127).
 DOCS="README.md LICENSE .env.example
 	docs/README.md docs/tutorial.md docs/CONSUMER.md docs/DESIGN.md docs/troubleshooting.md
 	docs/how-to/claude-credential.md docs/how-to/declare-a-loop.md docs/how-to/fix-open-prs.md
 	docs/how-to/github-issues.md docs/how-to/jira.md docs/how-to/linear.md
 	docs/how-to/prompt-bodies.md docs/how-to/run-several-instances.md docs/how-to/sandbox-image.md
+	docs/how-to/upstream-findings.md
 	docs/reference/cli.md docs/reference/config.md docs/reference/env.md
 	docs/reference/errors.md docs/reference/tokens.md"
 

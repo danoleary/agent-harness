@@ -3,7 +3,7 @@
 `.agent-harness/config.toml` holds a project's non-secret settings (ADR-0008).
 Never put a credential here; credentials are
 [environment variables](env.md). For a complete, working file see
-[`example/.agent-harness/config.toml`](../../example/.agent-harness/config.toml).
+[`example/.agent-harness/config.toml`](https://github.com/danoleary/agent-harness/blob/main/example/.agent-harness/config.toml).
 
 ## How it is checked
 

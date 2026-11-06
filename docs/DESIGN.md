@@ -88,7 +88,7 @@ runnable by hand against a ticket id before the next is added:
    which steers the agent to inspect the branch's existing commits (`git log
    origin/main..HEAD`) and prefer verify-and-handoff over re-implementing.
    A fourth advisory (`Ticket.OpenQuestions`, #90,
-   [ADR-0028](adr/0028-a-ready-ticket-with-open-questions-is-dispatched-with-a-warning.md)) fires when the
+   [ADR-0028](https://github.com/danoleary/agent-harness/blob/main/docs/adr/0028-a-ready-ticket-with-open-questions-is-dispatched-with-a-warning.md)) fires when the
    ready-labelled ticket's body still has a section of questions for a human — a
    heading like "Open questions (for a human before this is agent-ready)", "Not
    yet agent-ready" or "Questions for a human", outside fenced blocks, not marked
@@ -203,7 +203,7 @@ Design decisions, and why:
   single GraphQL round-trip. The cost — claiming *before* Docker preflight, which
   inverts the implementation stage's hard-won "never claim a ticket we cannot work"
   ordering — is paid back by **release-on-preflight-failure**, and the whole trade-off
-  is recorded in [ADR-0003](adr/0003-claim-on-select.md).
+  is recorded in [ADR-0003](https://github.com/danoleary/agent-harness/blob/main/docs/adr/0003-claim-on-select.md).
 - **A ticket lease carries the claim into the stage; the hand-passed path is
   untouched.** Selection hands over a *held* `lease.Lease` in `args.Lease`. The
   implementation stage then (a) skips its own claim (the lease already holds the
@@ -628,7 +628,7 @@ for `tickets`, as before, and `logs/loops/<name>/` for every other loop.
 ## Loop instances
 
 The ticket loop can run as several daemons against one checkout
-([ADR-0024](adr/0024-several-instances-of-the-ticket-loop-share-a-claim-lock-and-gate-slots.md)):
+([ADR-0024](https://github.com/danoleary/agent-harness/blob/main/docs/adr/0024-several-instances-of-the-ticket-loop-share-a-claim-lock-and-gate-slots.md)):
 `agent-harness start --instance <id>` (or `loop --instance <id>` in the
 foreground). An **instance** is one of them; the one with no id is the default.
 
@@ -670,7 +670,7 @@ shared        : STOP (every loop), STOP-tickets (every instance), locks/claim.lo
   and several loop instances may run against one checkout (§Loop instances): the
   claim lock makes selection exclusive, and the gate slots bound the host load.
   Parallelism *inside* one daemon is out of scope.
-- **Real-path bind mount — see [ADR-0002](adr/0002-harness-owns-remote-io.md).**
+- **Real-path bind mount — see [ADR-0002](https://github.com/danoleary/agent-harness/blob/main/docs/adr/0002-harness-owns-remote-io.md).**
   The whole herd checkout (incl. `.git` and `.claude/worktrees/`) is bind-mounted
   into every container at **its own real host path** (`$PROJECT_PATH:$PROJECT_PATH`,
   `-w $PROJECT_PATH`), not a synthetic `/workspace/herd`. A worktree's `.git` pointer
@@ -818,7 +818,7 @@ shared        : STOP (every loop), STOP-tickets (every instance), locks/claim.lo
     The loop also reclaims *proactively* one tier above this floor: a between-ticket
     `statfs` runs `prune-merged-worktrees.sh` when free space dips below a soft
     `DiskReclaimThreshold` (~8 GiB), so the daemon self-heals merged-worktree creep
-    *before* the preflight ever has to refuse a launch ([ADR-0027](adr/0027-loop-reclaims-disk-by-pruning-merged-worktrees.md)).
+    *before* the preflight ever has to refuse a launch ([ADR-0027](https://github.com/danoleary/agent-harness/blob/main/docs/adr/0027-loop-reclaims-disk-by-pruning-merged-worktrees.md)).
   - **Graceful-degrade (where prevention can't reach):** a findings-dir `mkdir` that
     still races to ENOSPC is recognised (`isDiskFull`) and logged as a clear,
     actionable warning rather than a hard pipeline error that masquerades as a stage
@@ -826,8 +826,8 @@ shared        : STOP (every loop), STOP-tickets (every instance), locks/claim.lo
   An exit-125 whose reason *is* the read-only-fs signature is also retried as transient
   (BEH-542 above); the precondition is the cheaper front-line defence that stops the
   session ever starting on a doomed disk.
-- **The harness owns all remote I/O — Linear ([ADR-0001](adr/0001-harness-owns-linear-integration.md))
-  *and* git push / PR ([ADR-0002](adr/0002-harness-owns-remote-io.md)).** Agents
+- **The harness owns all remote I/O — Linear ([ADR-0001](https://github.com/danoleary/agent-harness/blob/main/docs/adr/0001-harness-owns-linear-integration.md))
+  *and* git push / PR ([ADR-0002](https://github.com/danoleary/agent-harness/blob/main/docs/adr/0002-harness-owns-remote-io.md)).** Agents
   commit only into the local shared `.git`; the harness pushes (via the main
   checkout) and opens the PR host-side. The sandbox is air-gapped except for
   Anthropic: the **only** secret in the container is the Claude credential
@@ -860,12 +860,12 @@ A ticket is eligible iff **all** hold:
   unmerged branch, so working the ticket now would build on a base that changes
   underneath it when the PR merges. A plain open issue named in prose does not
   hold it, and neither does a reference that 404s; any other read error fails the
-  selection closed ([ADR-0023](adr/0023-a-ticket-waits-on-an-open-pr-its-body-names.md)).
+  selection closed ([ADR-0023](https://github.com/danoleary/agent-harness/blob/main/docs/adr/0023-a-ticket-waits-on-an-open-pr-its-body-names.md)).
   The native relation is the way to make a ticket wait on another: it unblocks
   itself when the blocker closes. The `Blocked` label (`tracker.blocked_label`,
   optional) never clears on its own, so it is only for a hold no issue models.
 - **not overlapping the work in flight** (#97,
-  [ADR-0032](adr/0032-a-ticket-that-names-files-in-flight-waits-for-them.md)), on
+  [ADR-0032](https://github.com/danoleary/agent-harness/blob/main/docs/adr/0032-a-ticket-that-names-files-in-flight-waits-for-them.md)), on
   every tracker. Selection reads the files changed by each open PR on
   `branch_prefix` (`/pulls/N/files`) and by each claimed ticket's worktree
   (`git diff --merge-base origin/main`, uncommitted edits included), plus the
@@ -897,7 +897,7 @@ Ordering: **priority** (Urgent → High → Medium → Low → No-priority), tie
 `selectNextTicket()` implements this predicate. Its **first consumer is `pipeline
 --next`** (see "Single-shot auto-select") — not only the future loop — and it
 **claims** the chosen ticket as part of selection (dequeue semantics,
-[ADR-0003](adr/0003-claim-on-select.md)), so the returned ticket is already In
+[ADR-0003](https://github.com/danoleary/agent-harness/blob/main/docs/adr/0003-claim-on-select.md)), so the returned ticket is already In
 Progress.
 
 ## Harness-improvement findings (retrospective owns this, alone)
@@ -1353,30 +1353,30 @@ reader over a structured stream rather than a `--tui` flag on the daemon.
 
 ## Harness runtime (host side)
 
-- **One host port, two adapters** ([ADR-0013](adr/0013-stages-talk-to-the-host-through-one-port.md)). Everything a Stage does that leaves
+- **One host port, two adapters** ([ADR-0013](https://github.com/danoleary/agent-harness/blob/main/docs/adr/0013-stages-talk-to-the-host-through-one-port.md)). Everything a Stage does that leaves
   the process — `docker run`, git, `gh`, the tracker — goes through the
   `hostio.Host` it is handed, never through a package-level function. `hostio.Real`
   is docker/git/gh/tracker; `hostio.Fake` scripts the sandbox, the network and the
   tracker over a real temp git repo (`internal/gittest`), so the harness's policy
   (which is nearly all of `internal/stages`) is testable without a daemon, and the
-  git states it acts on are ones git really holds ([ADR-0025](adr/0025-the-host-is-bound-to-one-ticket-and-git-is-not-faked.md)).
+  git states it acts on are ones git really holds ([ADR-0025](https://github.com/danoleary/agent-harness/blob/main/docs/adr/0025-the-host-is-bound-to-one-ticket-and-git-is-not-faked.md)).
   Behind it a `Runner` owns `{cfg, log, runID, prefix}` and is the only thing that
   names a container: it mints the `--name`, the argv that carries it, the
   `session.Options` the watchdog kills through, and the transcript filename, all
   from one label — so "the name must match the argv or the timeout kill misses"
   stops being a comment and becomes unrepresentable.
-- **The dry-run plan is the Stages' own run specs** ([ADR-0018](adr/0018-the-dry-run-plan-is-the-stages-own-run-specs.md)). Each Stage
+- **The dry-run plan is the Stages' own run specs** ([ADR-0018](https://github.com/danoleary/agent-harness/blob/main/docs/adr/0018-the-dry-run-plan-is-the-stages-own-run-specs.md)). Each Stage
   builds each `AgentRun`/`ShellRun` in one place and both launches it and lists it
   in its `StagePlan`; `--dry-run` renders that plan through `hostio.NewPreview`, the
   Runner with placeholder run id and pid. A test pins the plans to what the Stages
   actually launch over `hostio.Fake`.
-- **One Stage frame, one pipeline root** ([ADR-0026](adr/0026-one-stage-frame-and-one-pipeline-composition-root.md)). The three Stages share
+- **One Stage frame, one pipeline root** ([ADR-0026](https://github.com/danoleary/agent-harness/blob/main/docs/adr/0026-one-stage-frame-and-one-pipeline-composition-root.md)). The three Stages share
   one set of steps: the stage-start record, the ticket fetch, the findings
   dropbox, and the launch record and transcript line around each session. The
   Stage bodies hold only their own decisions. `pipeline.ForTicket` binds the three
   Stages to one Host for both `cmd/pipeline` and the ticket loop, and
   `trackers.FromConfig` is the one place the config's credentials become a tracker.
-- **The daemon takes the same shape** ([ADR-0014](adr/0014-the-daemon-takes-a-host-limits-and-a-clock.md)). `loop.Run` takes a
+- **The daemon takes the same shape** ([ADR-0014](https://github.com/danoleary/agent-harness/blob/main/docs/adr/0014-the-daemon-takes-a-host-limits-and-a-clock.md)). `loop.Run` takes a
   `loop.Host` (the STOP sentinel, the credential check, the main fetch, the
   between-ticket disk reclaim), a `loop.Limits` of cadences/ceilings/thresholds, a
   `loop.Clock` and a narrator — where there were 27 fields — and no feature
@@ -1385,12 +1385,12 @@ reader over a structured stream rather than a `--tui` flag on the daemon.
   so the daemon works `loop.WorkItem`s and never learns they are tickets.
   `loophost.Daemon`, `loophost.TicketSource` and `loophost.TicketPipeline` are the
   production adapters, so `cmd/loop` is a composition root and nothing else.
-- **A loop is a Source and a Pipeline** ([ADR-0019](adr/0019-a-loop-is-a-source-and-a-pipeline.md), proposed). The daemon chores
+- **A loop is a Source and a Pipeline** ([ADR-0019](https://github.com/danoleary/agent-harness/blob/main/docs/adr/0019-a-loop-is-a-source-and-a-pipeline.md), proposed). The daemon chores
   (stop, idle, cap backoff, breaker, disk reclaim) stay shared. Where the work
   comes from (a tracker queue, or PRs that are conflicting or red) and what runs
   on each item are pluggable. Consumers will declare loops in `[[loops]]`, using
   a fixed set of Steps written in Go, each with its own ground-truth check.
-- **ship lands the branch** ([ADR-0017](adr/0017-ship-lands-the-branch.md)). The review stage, the daemon's committed-fix
+- **ship lands the branch** ([ADR-0017](https://github.com/danoleary/agent-harness/blob/main/docs/adr/0017-ship-lands-the-branch.md)). The review stage, the daemon's committed-fix
   recovery and the CI watch's reactive rebase share one `internal/ship` sequence —
   refetch, replay, disjoint guard, conflict hook, collapse check, push
   force-with-lease, templated `gh pr create` — and each maps its one verdict
@@ -1398,12 +1398,12 @@ reader over a structured stream rather than a `--tui` flag on the daemon.
   disposition. Only the review supplies a conflict hook (its BEH-581
   resolve-and-regate session, followed by a scoped review of whatever the
   resolution wrote beyond the conflicted files —
-  [ADR-0035](adr/0035-a-conflict-resolutions-edits-beyond-the-conflict-are-reviewed-before-push.md)).
+  [ADR-0035](https://github.com/danoleary/agent-harness/blob/main/docs/adr/0035-a-conflict-resolutions-edits-beyond-the-conflict-are-reviewed-before-push.md)).
   The CI watch reuses only the replay half. Only a halt with unmerged paths is a
   conflict. git failing with no conflict is logged with git's output, retried once,
   and then left for a human as RebaseFailed. No resolution session is launched
-  for it ([ADR-0037](adr/0037-a-replay-git-could-not-run-is-retried-not-resolved.md)).
-- **The worktree is a type** ([ADR-0015](adr/0015-the-worktree-is-a-type.md)). Below the host port, the harness's central
+  for it ([ADR-0037](https://github.com/danoleary/agent-harness/blob/main/docs/adr/0037-a-replay-git-could-not-run-is-retried-not-resolved.md)).
+- **The worktree is a type** ([ADR-0015](https://github.com/danoleary/agent-harness/blob/main/docs/adr/0015-the-worktree-is-a-type.md)). Below the host port, the harness's central
   noun has a name: `git.Open(checkout, branchPrefix).Worktree(slug)` carries the
   checkout, the branch and the worktree path together, and creating, gating,
   checkpointing, rebasing, pushing and tearing one down are its methods. One
@@ -1412,7 +1412,7 @@ reader over a structured stream rather than a `--tui` flag on the daemon.
   operations, and with them the transient-retry budget, were the untested ones.
   A Host is bound to one ticket and hands its `git.Worktree` out whole
   (`h.Worktree()`), so adding a git operation touches `internal/git` alone
-  ([ADR-0025](adr/0025-the-host-is-bound-to-one-ticket-and-git-is-not-faked.md)).
+  ([ADR-0025](https://github.com/danoleary/agent-harness/blob/main/docs/adr/0025-the-host-is-bound-to-one-ticket-and-git-is-not-faked.md)).
 - **Go 1.26+**, standard library only — zero module dependencies: `net/http`
   (Linear GraphQL), `os/exec` (driving `docker`), `os`/`encoding/json` (logs +
   stop file). No dep tree on purpose — this process holds real credentials.
@@ -1423,15 +1423,16 @@ reader over a structured stream rather than a `--tui` flag on the daemon.
   `checksums.txt`, and lays it out under a sudo-free prefix (`~/.local` by
   default): `bin/agent-harness` alone on the `PATH`, the six stage binaries and
   `loop-start.sh` in `libexec/agent-harness/`, the docs and `.env.example` in
-  `share/agent-harness/`, with `docs/` kept as a subdirectory so the README's
-  links resolve there (`DOCS` in `install.sh`, checked by
-  `scripts/check-bundle-links.sh`). `cmd/agent-harness` is a dispatcher that resolves a
+  `share/agent-harness/`, with `docs/` kept as a subdirectory so the shipped
+  docs' links resolve there (`DOCS` in `install.sh`, checked by
+  `scripts/check-bundle-links.sh`; anything else, like the ADRs, is linked by its
+  github.com URL). `cmd/agent-harness` is a dispatcher that resolves a
   subcommand out of that private dir and `syscall.Exec`s it, so the stage
   binaries keep their signal, TTY and exit-code behaviour exactly — and their
   generic names (`watch`, `review`, `loop`, …) never reach a shared `bin` dir.
   The release archive's layout *is* the installed layout, so an unpacked archive
   also runs in place.
-- **`agent-harness doctor` checks the whole setup** ([ADR-0020](adr/0020-doctor-checks-the-whole-setup-in-one-pass.md)). One of the two
+- **`agent-harness doctor` checks the whole setup** ([ADR-0020](https://github.com/danoleary/agent-harness/blob/main/docs/adr/0020-doctor-checks-the-whole-setup-in-one-pass.md)). One of the two
   commands the dispatcher runs itself rather than exec'ing, so it still works on a
   broken install. `internal/doctor` runs every check without stopping — the host
   tools, the `.env` `config.ResolveEnvFile` picked and the ones it skipped, each
@@ -1441,7 +1442,7 @@ reader over a structured stream rather than a `--tui` flag on the daemon.
   and prints a fix under each failure. It exits 1 on any failure; `--offline`
   skips the network calls. Every setup error (config load, tracker selection,
   sandbox preflight) ends by pointing at it.
-- **`agent-harness init` scaffolds a Consumer** ([ADR-0021](adr/0021-init-scaffolds-a-consumer-from-recorded-toolchain-defaults.md), proposed).
+- **`agent-harness init` scaffolds a Consumer** ([ADR-0021](https://github.com/danoleary/agent-harness/blob/main/docs/adr/0021-init-scaffolds-a-consumer-from-recorded-toolchain-defaults.md), proposed).
   `internal/scaffold` detects the toolchain (Go, pnpm, .NET, Python) and the GitHub
   origin remote. It writes a loadable `.agent-harness/`: config, a Dockerfile `FROM`
   the release's base pin, three prompt bodies with `/TODO-…-skill` placeholders,
@@ -1450,12 +1451,12 @@ reader over a structured stream rather than a `--tui` flag on the daemon.
   Like `doctor`, it runs in the dispatcher's own process, with no stage binary
   behind it.
 - **A branch that edits the sandbox Dockerfile is gated in its own image**
-  ([ADR-0022](adr/0022-a-branch-that-edits-the-sandbox-dockerfile-is-gated-in-its-own-image.md)).
+  ([ADR-0022](https://github.com/danoleary/agent-harness/blob/main/docs/adr/0022-a-branch-that-edits-the-sandbox-dockerfile-is-gated-in-its-own-image.md)).
   `hostio.Runner.Shell` runs `post_create` and every gate in
   `<image>:branch-<fingerprint>`, built from the worktree's Dockerfile through the
   same `sandbox.Preflight`, when that Dockerfile differs from the checkout's.
 - **A ticket waits on an open PR its body names**
-  ([ADR-0023](adr/0023-a-ticket-waits-on-an-open-pr-its-body-names.md)). GitHub
+  ([ADR-0023](https://github.com/danoleary/agent-harness/blob/main/docs/adr/0023-a-ticket-waits-on-an-open-pr-its-body-names.md)). GitHub
   selection skips it; a dispatched one carries `ticket.Prerequisites`, which the
   implementation envelope names by branch; and the CI watch resolves a conflict
   with base once when it is that prerequisite's merge.
