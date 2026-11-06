@@ -74,7 +74,7 @@ is env-only. Setup guides: [GitHub Issues](../how-to/github-issues.md),
 | `repo` | github | yes | `"owner/name"`. Checked when the tracker is built. |
 | `in_progress_label` | github | yes | Added on claim, removed on release. |
 | `assignee` | github | no | A login to assign on claim, besides the label. |
-| `team_key` | linear | yes | The Linear team to select from, e.g. `"ENG"`. |
+| `team_key` | linear | yes | The Linear team to select from, e.g. `"ENG"`. A PR loop's project Findings are filed in it. |
 | `findings_label` | linear | no | The findings label's **name**, which Linear's issue filter takes. Without it, Findings aren't deduplicated against open issues. |
 | `project_key` | jira | yes | The Jira project Findings are filed in. |
 | `ready_jql` | jira | yes | JQL for the ready queue. |

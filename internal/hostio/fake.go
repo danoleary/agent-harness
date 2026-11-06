@@ -94,7 +94,9 @@ type Fake struct {
 	Watches []CIWatch
 	Filed   []string
 	Routed  []string
-	Calls   []string
+	// RoutedTeams are the team ids each RouteFindings filed project findings into.
+	RoutedTeams []string
+	Calls       []string
 	// PRBodies are the bodies of every `gh pr create`, in order.
 	PRBodies []string
 }
@@ -233,6 +235,7 @@ func (f *Fake) FileFindings(findingsDir, teamID, key string) {
 
 func (f *Fake) RouteFindings(findingsDir, teamID, key string) {
 	f.Routed = append(f.Routed, key)
+	f.RoutedTeams = append(f.RoutedTeams, teamID)
 	f.record("route-findings %s", key)
 }
 
@@ -240,7 +243,10 @@ func (f *Fake) RouteFindings(findingsDir, teamID, key string) {
 // recorded so a test can assert the claim/release choreography (ADR-0003) without
 // a live tracker.
 type FakeTracker struct {
-	Ticket    ticket.Ticket
+	Ticket ticket.Ticket
+	// Team is the findings team FindingsTeam resolves.
+	Team      string
+	TeamErr   error
 	FetchErr  error
 	ClaimErr  error
 	ReleErr   error
@@ -259,7 +265,7 @@ var _ tracker.Tracker = (*FakeTracker)(nil)
 
 // NewFakeTracker returns a tracker that resolves one ordinary ticket.
 func NewFakeTracker() *FakeTracker {
-	return &FakeTracker{Ticket: ticket.Ticket{Identifier: "PROJ-1", Title: "a ticket", TeamID: "team"}}
+	return &FakeTracker{Ticket: ticket.Ticket{Identifier: "PROJ-1", Title: "a ticket", TeamID: "team"}, Team: "team"}
 }
 
 func (t *FakeTracker) FetchTicket(key tracker.Key) (ticket.Ticket, error) {
@@ -317,6 +323,8 @@ func (t *FakeTracker) FileFinding(findings.Finding, tracker.FileFindingOptions) 
 }
 
 func (t *FakeTracker) SearchFindings(string) ([]tracker.ExistingFinding, error) { return nil, nil }
+
+func (t *FakeTracker) FindingsTeam() (string, error) { return t.Team, t.TeamErr }
 
 func (t *FakeTracker) RecordOccurrence(tracker.Key, tracker.Key) (int, error) { return 0, nil }
 

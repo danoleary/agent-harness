@@ -1,6 +1,7 @@
 package prloop
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -437,3 +438,44 @@ type fakeErr string
 func (e fakeErr) Error() string { return string(e) }
 
 const errFake = fakeErr("docker unreachable")
+
+// #174, replaying herd's PR-1312: with Linear as the tracker, the retrospective's
+// project findings were dropped ("no team id resolved for PR-1312") because only
+// a GitHub Issues tracker named a team for a PR. The tracker's findings team is
+// where they file, whatever the tracker and whoever's branch the PR is on.
+func TestFixFilesProjectFindingsIntoTheTrackersTeam(t *testing.T) {
+	herdPR := func(it Item) Item {
+		it.PR.Number = 1312
+		return it
+	}
+	for name, it := range map[string]Item{
+		"harness branch": herdPR(harnessItem(Conflict)),
+		"human branch":   herdPR(humanItem(Conflict)),
+	} {
+		t.Run(name, func(t *testing.T) {
+			h, it, _ := prHost(t, it)
+			h.Trk.Team = "beh-team-uuid"
+			cfg := pipelineCfg()
+			cfg.Tracker = config.TrackerConfig{Kind: "linear", TeamKey: "BEH"}
+
+			Fix(h, cfg, pipelineLog(t), it, prDoctor())
+
+			if strings.Join(h.Routed, ",") != "PR-1312" || strings.Join(h.RoutedTeams, ",") != "beh-team-uuid" {
+				t.Errorf("routed %v into teams %v, want PR-1312 into beh-team-uuid", h.Routed, h.RoutedTeams)
+			}
+		})
+	}
+}
+
+// A tracker that cannot be resolved names no team, and the run goes on: filing is
+// best-effort (ADR-0001).
+func TestFixRunsTheRetrospectiveWhenTheTrackerIsUnresolvable(t *testing.T) {
+	h, it, _ := prHost(t, harnessItem(Conflict))
+	h.TrackerErr = errors.New("LINEAR_API_KEY is not set")
+
+	Fix(h, pipelineCfg(), pipelineLog(t), it, prDoctor())
+
+	if strings.Join(h.RoutedTeams, ",") != "" || !strings.Contains(strings.Join(agentLabels(h), ","), "retrospective") {
+		t.Errorf("agents %v routed into teams %q, want a retrospective with no team", agentLabels(h), h.RoutedTeams)
+	}
+}

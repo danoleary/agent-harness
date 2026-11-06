@@ -32,3 +32,17 @@ func TestClientSatisfiesTrackerPort(t *testing.T) {
 		t.Errorf("expected one fetch keyed by the opaque #7 Key, got %+v", *calls)
 	}
 }
+
+// A finding with no ticket of its own (a PR loop's) files into the bound repo.
+func TestFindingsTeamIsTheBoundRepo(t *testing.T) {
+	tr, calls := fakeTransport(nil)
+	var trk tracker.Tracker = NewClient(tr, "acme", "widgets", readyLabels)
+
+	got, err := trk.FindingsTeam()
+	if err != nil || got != "acme/widgets" {
+		t.Errorf("FindingsTeam() = %q, %v; want acme/widgets", got, err)
+	}
+	if len(*calls) != 0 {
+		t.Errorf("the repo is configured; want no API call, got %+v", *calls)
+	}
+}

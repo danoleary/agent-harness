@@ -102,11 +102,14 @@ type Queue interface {
 
 // FindingsSink files and dedups findings (ADR-0010 layer 3). SearchFindings lists
 // the open filed findings so File can skip duplicates; RecordOccurrence bumps an
-// already-tracked finding instead of filing a duplicate. Best-effort by contract
-// (ADR-0001): callers degrade every failure to narration, never a crash.
+// already-tracked finding instead of filing a duplicate. FindingsTeam is the
+// container a finding files into when no ticket names one — a PR loop's run works
+// a PR, not a ticket (ADR-0038). Best-effort by contract (ADR-0001): callers
+// degrade every failure to narration, never a crash.
 type FindingsSink interface {
 	FileFinding(f findings.Finding, opts FileFindingOptions) (CreatedIssue, error)
 	SearchFindings(teamID string) ([]ExistingFinding, error)
+	FindingsTeam() (string, error)
 	RecordOccurrence(key, relatedKey Key) (count int, err error)
 }
 

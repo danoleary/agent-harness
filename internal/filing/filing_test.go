@@ -47,6 +47,8 @@ func (s *fakeSearcher) SearchFindings(_ string) ([]tracker.ExistingFinding, erro
 	return s.existing, s.err
 }
 
+func (s *fakeSearcher) FindingsTeam() (string, error) { return "team", nil }
+
 // noExisting is a searcher that finds nothing already tracked (the first-run case).
 func noExisting() *fakeSearcher { return &fakeSearcher{} }
 
