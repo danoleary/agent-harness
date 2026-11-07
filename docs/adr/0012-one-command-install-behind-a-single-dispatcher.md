@@ -130,3 +130,9 @@ belongs to.
   like `example/` or the ADRs, uses its github.com URL. `install.sh` still
   installs an archive from v0.7.0 or earlier, whose docs sit flat at the root,
   into the new layout, and an upgrade removes the old root `CONSUMER.md`.
+- **Amended by #127:** the guard covers every shipped `.md`, not only the
+  README, resolving each link from its doc's own directory: the installed
+  `docs/DESIGN.md` linked twenty-odd `adr/NNNN-*.md` files the bundle never
+  carried. The ADRs stay out of the bundle and are linked by github.com URL.
+  Shipping them would make `DOCS` a glob, and `--uninstall`, which removes only
+  the files it names, would then need a manifest of what it installed.

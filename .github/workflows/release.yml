@@ -98,7 +98,7 @@ jobs:
             # impossible to follow from a release archive.
             #
             # The list is install.sh's DOCS, so the archive, the installer and the
-            # README's links (scripts/check-bundle-links.sh) agree on what ships.
+            # shipped docs' links (scripts/check-bundle-links.sh) agree on what ships.
             # Each doc keeps its repo-relative path: the README links docs/*.md.
             for doc in $(AGENT_HARNESS_SOURCE_ONLY=1 sh -c '. ./install.sh && echo "$DOCS"'); do
               mkdir -p "$stage/$(dirname "$doc")"

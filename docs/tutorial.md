@@ -63,7 +63,7 @@ must name a skill your repository carries.
 If your repository already has Claude Code skills for implementing, reviewing
 and running a retrospective, put their names in place of the placeholders. If it
 doesn't, the harness repo's own skills are a starting point: copy
-[`.claude/skills/`](../.claude/skills/) from the harness into your project, adapt
+[`.claude/skills/`](https://github.com/danoleary/agent-harness/tree/main/.claude/skills) from the harness into your project, adapt
 them to your project, and name `/tdd`, `/review-worktree` and `/retrospective`.
 
 Delete each `TODO(agent-harness init)` comment once you've dealt with it.

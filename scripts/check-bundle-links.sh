@@ -1,13 +1,14 @@
 #!/bin/bash
-# Guard the installed README's links against docs the install doesn't ship (#96).
+# Guard the installed docs' links against files the install doesn't ship (#96, #127).
 #
 # install.sh copies the README into <prefix>/share/agent-harness/ beside exactly
 # the files in its DOCS list, keeping their repo-relative paths. A relative link
-# in README.md to anything else — a doc left off the list, a directory, a
-# GitHub-relative path like ../../releases — works on github.com and is broken in
-# every install, which no one on our side ever sees. This guard reads DOCS from
-# install.sh (the one list the installer, `make install` and the release workflow
-# all copy) and fails when a relative link in README.md:
+# in a shipped doc to anything else — a doc left off the list, an ADR, a
+# directory, a GitHub-relative path like ../../releases — works on github.com and
+# is broken in every install, which no one on our side ever sees. This guard
+# reads DOCS from install.sh (the one list the installer, `make install` and the
+# release workflow all copy) and fails when a relative link in any shipped .md,
+# resolved from that doc's own directory:
 #
 #   - resolves to a file that isn't in DOCS;
 #   - names a directory (the bundle ships files, not trees);
@@ -24,7 +25,6 @@
 set -euo pipefail
 
 ROOT="$(cd "${1:-.}" && pwd)"
-README="README.md"
 
 # The shipped docs, one per line, straight from install.sh — sourced, not
 # grepped, so the list this checks is the list the installer acts on.
@@ -86,41 +86,55 @@ normalize() {
         }'
 }
 
-# 2. Every relative link in the README resolves to a shipped doc.
+# 2. Every relative link in a shipped .md resolves to a shipped doc.
 tab=$(printf '\t')
-while IFS="$tab" read -r line_no target; do
-    # <dest> and [text](dest "title") forms: the destination is the first token.
-    target="${target#<}"
-    target="${target%%>*}"
-    target="${target%%[ $tab]*}"
-    case "$target" in
-        "" | "#"*) continue ;;
+while IFS= read -r doc; do
+    case "$doc" in
+        *.md) ;;
+        *) continue ;;
     esac
-    # Any URL scheme (https:, mailto:, …) points outside the bundle on purpose.
-    if printf '%s' "$target" | grep -qE '^[A-Za-z][A-Za-z0-9+.-]*:'; then
-        continue
-    fi
+    [ -f "$ROOT/$doc" ] || continue
+    # A link resolves from the doc's own directory: "" for a root doc.
+    dir=""
+    case "$doc" in
+        */*) dir="${doc%/*}/" ;;
+    esac
+    while IFS="$tab" read -r line_no target; do
+        # <dest> and [text](dest "title") forms: the destination is the first token.
+        target="${target#<}"
+        target="${target%%>*}"
+        target="${target%%[ $tab]*}"
+        case "$target" in
+            "" | "#"*) continue ;;
+        esac
+        # Any URL scheme (https:, mailto:, …) points outside the bundle on purpose.
+        if printf '%s' "$target" | grep -qE '^[A-Za-z][A-Za-z0-9+.-]*:'; then
+            continue
+        fi
 
-    path="${target%%#*}"
-    path="${path%%\?*}"
-    resolved=$(normalize "$path")
-    if [ -z "$resolved" ]; then
-        echo "${README}:${line_no}: link to ${target} climbs out of the installed bundle"
-    elif [ "${resolved%/}" != "$resolved" ] || [ -d "$ROOT/$resolved" ]; then
-        echo "${README}:${line_no}: link to ${target} names a directory; the bundle ships files only"
-    elif ! shipped "$resolved"; then
-        echo "${README}:${line_no}: link to ${target} names ${resolved}, which install.sh does not ship"
-    else
-        continue
-    fi
-    violations=$((violations + 1))
-done < <(links "$ROOT/$README")
+        path="${target%%#*}"
+        path="${path%%\?*}"
+        resolved=$(normalize "$dir$path")
+        if [ -z "$resolved" ]; then
+            echo "${doc}:${line_no}: link to ${target} climbs out of the installed bundle"
+        elif [ "${resolved%/}" != "$resolved" ] || [ -d "$ROOT/$resolved" ]; then
+            echo "${doc}:${line_no}: link to ${target} names a directory; the bundle ships files only"
+        elif ! shipped "$resolved"; then
+            echo "${doc}:${line_no}: link to ${target} names ${resolved}, which install.sh does not ship"
+        else
+            continue
+        fi
+        violations=$((violations + 1))
+    done < <(links "$ROOT/$doc")
+done <<EOF
+$docs
+EOF
 
 if [ "$violations" -gt 0 ]; then
     echo
-    echo "Found ${violations} README link problem(s). Add the doc to DOCS in install.sh, or"
+    echo "Found ${violations} bundle link problem(s). Add the doc to DOCS in install.sh, or"
     echo "link it by its https://github.com/... URL if it is not meant to be installed."
     exit 1
 fi
 
-echo "✓ every relative link in README.md resolves to a doc install.sh ships"
+echo "✓ every relative link in a shipped doc resolves to a doc install.sh ships"
