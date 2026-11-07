@@ -48,7 +48,8 @@ branch only while it has the branch checked out.**
    slice's own retrospective already ran and kept the worktree because the branch
    had no PR yet. So the recovery reaps the worktree itself once the PR is open
    (#184). Otherwise the hold would last until the PR merged, and the PR loop would
-   never work that PR.
+   never work that PR. (Amended by ADR-0043: the hold is the ticket's live run
+   lock, not its worktree, which other paths leave behind.)
 
 The breaker is unchanged: a pushed PR was already a success (DESIGN.md §Circuit
 breaker).

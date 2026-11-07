@@ -74,18 +74,48 @@ func (s Slots) Acquire(onWait func()) (release func(), err error) {
 
 // try takes slot i without blocking; nil, nil means another holder has it.
 func (s Slots) try(i int) (func(), error) {
-	file, err := open(filepath.Join(s.Dir, fmt.Sprintf("gate-%d.lock", i)))
+	unlock, _, err := File(filepath.Join(s.Dir, fmt.Sprintf("gate-%d.lock", i))).TryLock()
+	return unlock, err
+}
+
+// TryLock takes the lock if no one holds it, without waiting: ok=false with no
+// error means another holder has it.
+func (f File) TryLock() (unlock func(), ok bool, err error) {
+	file, err := open(string(f))
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		file.Close()
 		if err == syscall.EWOULDBLOCK {
-			return nil, nil
+			return nil, false, nil
 		}
-		return nil, fmt.Errorf("lock %s: %w", file.Name(), err)
+		return nil, false, fmt.Errorf("lock %s: %w", f, err)
 	}
-	return func() { release(file) }, nil
+	return func() { release(file) }, true, nil
+}
+
+// Held reports whether someone holds the lock right now, without taking it for
+// longer than the probe. A missing file is a lock no one has ever taken. Because
+// the kernel drops a dead holder's lock, held means a live holder: another loop
+// reads a run's liveness here (#231).
+func (f File) Held() (bool, error) {
+	file, err := os.Open(string(f))
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	defer file.Close()
+	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		if err == syscall.EWOULDBLOCK {
+			return true, nil
+		}
+		return false, fmt.Errorf("probe %s: %w", f, err)
+	}
+	_ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
+	return false, nil
 }
 
 // open opens (creating) a lock file, and the directory it lives in.

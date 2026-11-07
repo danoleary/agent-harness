@@ -288,12 +288,13 @@ func runPRLoop(cfg config.Config, l config.Loop, dryRun bool) int {
 }
 
 // prSource is the github_prs Source over the Consumer's checkout. It skips a
-// branch the ticket loop holds, and a branch a worktree other than the loop's own
-// has checked out, which git would refuse to check out again (#192).
+// branch a live ticket run holds. A worktree other than the loop's own that has a
+// branch checked out, which git would refuse to check out again (#192), it removes
+// when that loses nothing, and otherwise skips the PR with the reason (#231).
 func prSource(cfg config.Config, l config.Loop, pulls prloop.GitHub, held func() (map[string]string, error), log loop.Narrator) *prloop.Source {
 	co := gitpkg.Open(cfg.ProjectPath, cfg.BranchPrefix)
 	own := func(n int) string { return co.Worktree(ticket.Slug(prloop.Key(n))).Path() }
-	return prloop.NewSource(pulls, prloop.OptionsFrom(cfg, l), held, log).WatchWorktrees(co.CheckedOutBranches, own)
+	return prloop.NewSource(pulls, prloop.OptionsFrom(cfg, l), held, log).WatchWorktrees(co, own)
 }
 
 // limitsFrom maps the Consumer's config onto the daemon's knobs: the LOOP_* env

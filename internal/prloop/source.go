@@ -177,6 +177,23 @@ type Candidate struct {
 	// pushed nothing, since a push moves the head. It is retried while budget
 	// remains (#167).
 	Unpushed bool
+	// Worktree is a stale worktree that has the PR's head branch checked out: not
+	// the loop's own, with no live run in it, clean, and holding nothing origin's
+	// tip lacks. Next removes it before it works anything, so the checkout can
+	// succeed (#231); the dry-run only names it.
+	Worktree string
+}
+
+// Worktrees is the checkout's worktrees as the PR loop reads and reclaims them
+// ([git.Checkout]).
+type Worktrees interface {
+	// CheckedOutBranches maps each branch a worktree has checked out to its path.
+	CheckedOutBranches() (map[string]string, error)
+	// WorktreeSafeToRemove says why removing the worktree at path would lose work
+	// origin's tip does not have, or nil when it would not.
+	WorktreeSafeToRemove(path, tip string) error
+	// RemoveWorktree removes the worktree at path.
+	RemoveWorktree(path string) error
 }
 
 // Source is the `github_prs` [loop.Source].
@@ -184,18 +201,22 @@ type Source struct {
 	gh   GitHub
 	opts Options
 	// held lists the branches another loop holds right now (branch → the Key it is
-	// held under): the ticket loop's In Progress tickets. The lease is keyed on the
-	// branch, so the PR loop skips a branch whose ticket is still being worked.
+	// held under): the ticket loop's In Progress tickets whose run is live. The lease
+	// is keyed on the branch, so the PR loop skips a branch whose ticket is still
+	// being worked.
 	held func() (map[string]string, error)
-	// checkedOut lists the branches the checkout's worktrees have checked out
-	// (branch → worktree path), and own is the path of the loop's own worktree for
-	// a PR. git refuses to check out a branch another worktree holds, so the loop
-	// skips that PR rather than spend an attempt on a checkout that cannot succeed
-	// (#192).
-	checkedOut func() (map[string]string, error)
-	own        func(number int) string
-	log        loop.Narrator
-	now        func() time.Time
+	// worktrees are the checkout's worktrees, and own is the path of the loop's own
+	// worktree for a PR. git refuses to check out a branch another worktree holds
+	// (#192). A worktree is not a hold, though (#231): one no live run is in is
+	// removed when that loses nothing, and the PR is skipped, with the reason in
+	// the stream, only when it would.
+	worktrees Worktrees
+	own       func(number int) string
+	// reported is the last skip narrated per PR, so a PR skipped poll after poll
+	// for the same reason is narrated once.
+	reported map[int]string
+	log      loop.Narrator
+	now      func() time.Time
 }
 
 var _ loop.Source = (*Source)(nil)
@@ -206,14 +227,14 @@ func NewSource(gh GitHub, opts Options, held func() (map[string]string, error), 
 	if held == nil {
 		held = func() (map[string]string, error) { return nil, nil }
 	}
-	return &Source{gh: gh, opts: opts, held: held, log: log, now: time.Now}
+	return &Source{gh: gh, opts: opts, held: held, reported: map[int]string{}, log: log, now: time.Now}
 }
 
-// WatchWorktrees turns on the worktree check (#192): a PR whose head branch a
-// worktree other than own(number) has checked out is skipped until that worktree
-// is gone. checkedOut maps each checked-out branch to its worktree's path.
-func (s *Source) WatchWorktrees(checkedOut func() (map[string]string, error), own func(number int) string) *Source {
-	s.checkedOut, s.own = checkedOut, own
+// WatchWorktrees turns on the worktree check (#192, #231): a worktree other than
+// own(number) that has a PR's head branch checked out is removed when that loses
+// nothing, and otherwise the PR is skipped, with the reason, until it is gone.
+func (s *Source) WatchWorktrees(wts Worktrees, own func(number int) string) *Source {
+	s.worktrees, s.own = wts, own
 	return s
 }
 
@@ -233,8 +254,8 @@ func (s *Source) holds() (holds, error) {
 	if h.tickets, err = s.held(); err != nil {
 		return h, fmt.Errorf("could not read which branches the ticket loop holds: %w", err)
 	}
-	if s.checkedOut != nil {
-		if h.worktrees, err = s.checkedOut(); err != nil {
+	if s.worktrees != nil {
+		if h.worktrees, err = s.worktrees.CheckedOutBranches(); err != nil {
 			return h, fmt.Errorf("could not list the checkout's worktrees: %w", err)
 		}
 	}
@@ -312,9 +333,14 @@ func (s *Source) judge(pr github.PullRequest, held holds) Candidate {
 	case held.tickets[pr.HeadBranch] != "":
 		return skip("branch held by %s in the ticket loop", held.tickets[pr.HeadBranch])
 	case worktree != "":
-		// Not an attempt: the checkout cannot succeed, so the budget is not spent on
-		// it, and the PR is judged afresh once the worktree is gone (#192).
-		return skip("branch checked out in worktree %s", worktree)
+		// No live run holds the branch, so the worktree is a leftover, not a hold
+		// (#231). One that cannot go without losing work is a skip, not an attempt:
+		// the checkout cannot succeed, so the budget is not spent on it, and the PR is
+		// judged afresh once the worktree is gone (#192).
+		if err := s.worktrees.WorktreeSafeToRemove(worktree, pr.HeadSHA); err != nil {
+			return skip("branch checked out in worktree %s, which cannot be removed safely: %v", worktree, err)
+		}
+		c.Worktree = worktree
 	}
 
 	merge, err := s.gh.MergeState(pr.Number)
@@ -365,6 +391,34 @@ func (s *Source) Next() (loop.WorkItem, *lease.Lease, bool, error) {
 	if err != nil {
 		return loop.WorkItem{}, nil, false, err
 	}
+	// Reclaim every stale worktree first, whether or not its PR is worked now: a
+	// green PR that goes red later must not find its branch still held (#231). A
+	// run may have started in the GitHub reads since Plan read the holds, so they
+	// are read again first: the loop never removes a worktree a live run is in.
+	var live map[string]string
+	for i, c := range cands {
+		if c.Worktree == "" {
+			continue
+		}
+		if live == nil {
+			if live, err = s.held(); err != nil {
+				return loop.WorkItem{}, nil, false, fmt.Errorf("could not read which branches the ticket loop holds: %w", err)
+			}
+			if live == nil {
+				live = map[string]string{}
+			}
+		}
+		if by := live[c.PR.HeadBranch]; by != "" {
+			cands[i].Skip = fmt.Sprintf("branch held by %s in the ticket loop", by)
+			continue
+		}
+		if err := s.worktrees.RemoveWorktree(c.Worktree); err != nil {
+			cands[i].Skip = fmt.Sprintf("branch checked out in worktree %s, whose removal failed: %v", c.Worktree, err)
+			continue
+		}
+		s.log.Event(fmt.Sprintf("loop — removed the stale worktree %s, which held %s of %s: no live run in it, clean, nothing origin lacks (#231)", c.Worktree, c.PR.HeadBranch, Key(c.PR.Number)))
+	}
+	s.report(cands)
 	for _, c := range cands {
 		if c.Skip != "" {
 			continue
@@ -393,6 +447,31 @@ func (s *Source) Next() (loop.WorkItem, *lease.Lease, bool, error) {
 		return loop.WorkItem{Key: key, Branch: c.PR.HeadBranch, Context: c.Item}, claim, true, nil
 	}
 	return loop.WorkItem{}, nil, false, nil
+}
+
+// report narrates, into the stream, each PR a worktree keeps the loop off, so the
+// skip is not hidden behind "queue empty" (#231). A PR skipped for the same reason
+// poll after poll is narrated once; the other skips (green, pending, not opted in)
+// are the steady state and stay in the dry-run.
+func (s *Source) report(cands []Candidate) {
+	seen := map[int]bool{}
+	for _, c := range cands {
+		if !strings.HasPrefix(c.Skip, "branch checked out in worktree") {
+			continue
+		}
+		seen[c.PR.Number] = true
+		if s.reported[c.PR.Number] == c.Skip {
+			continue
+		}
+		s.reported[c.PR.Number] = c.Skip
+		key := Key(c.PR.Number)
+		s.log.Structured(loopstream.Record{Kind: loopstream.KindItemSkipped, Ticket: key, Message: "loop — skip " + key + ": " + c.Skip})
+	}
+	for n := range s.reported {
+		if !seen[n] {
+			delete(s.reported, n)
+		}
+	}
 }
 
 // handOff comments on a PR past its attempt budget with what was tried, and labels

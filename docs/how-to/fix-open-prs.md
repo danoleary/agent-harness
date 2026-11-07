@@ -38,15 +38,22 @@ or `PR_LOOP_LABEL` to change it. Setting `source.label` alone also selects
 - a PR into any base other than `main`;
 - a PR labelled `blocked`;
 - a PR whose branch is already being worked, either because the PR has the
-  `in-progress` label or because the ticket loop holds that branch's ticket In
-  Progress with its worktree still checked out (a shipped ticket's worktree is
-  removed by its retrospective, which frees the branch);
+  `in-progress` label or because a ticket-loop run working that branch's ticket
+  is still live (a leftover worktree does not count);
 - a PR whose head branch is checked out in another worktree of your checkout
-  (say, one you opened in your editor or a Claude Code session), because git
-  will not check out a branch twice. The skip names the worktree, it spends none
-  of the PR's attempts, and the PR is worked on the first poll after you remove
-  that worktree. The harness never touches a worktree it did not create;
+  (say, one you opened in your editor or a Claude Code session) that cannot be
+  removed without losing work: it has uncommitted changes, commits origin's
+  head lacks, or it is your main checkout. git will not check out a branch
+  twice. The skip names the worktree and the reason, in `--dry-run` and once in
+  the loop's stream. It spends none of the PR's attempts, and the PR is worked
+  on the first poll after you remove that worktree;
 - a PR failing in a way its `source.when` leaves out.
+
+A worktree that would lose nothing (clean, and its HEAD already on origin's
+head for the PR) is removed by the loop on its next poll, and the removal is
+logged. That includes a worktree you made yourself, along with any ignored
+files in it, such as build output or a local `.env`. Leave something
+uncommitted in a worktree you want to keep.
 
 When your tracker is GitHub Issues, the loop uses your `in_progress_label` and
 `blocked_label` names instead of `in-progress` and `blocked`.

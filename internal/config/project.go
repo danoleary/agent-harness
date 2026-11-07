@@ -327,6 +327,14 @@ func ClaimLockFile(checkoutPath string) string {
 	return filepath.Join(LocksDir(checkoutPath), "claim.lock")
 }
 
+// RunLockFile is the lock the run working a ticket holds for as long as it runs,
+// keyed by the ticket's slug. The kernel drops it with a dead run's file
+// descriptors, so it reads true only while the run is live: the PR loop stays off
+// the ticket's branch on it, not on whether a worktree was left behind (#231).
+func RunLockFile(checkoutPath, slug string) string {
+	return filepath.Join(LocksDir(checkoutPath), "runs", slug+".lock")
+}
+
 // GateSlotsDir is where the gate slots' lock files live: GATE_LOCK_DIR when set,
 // else the Consumer's LocksDir.
 func (h Host) GateSlotsDir() string {

@@ -599,10 +599,11 @@ poll (Source github_prs, read-only judgement — also what --dry-run prints):
     scope opted_in (or a source.label) only:                                // default scope all: every PR
       skip unless head on <branch_prefix>/  OR  labelled source.label | PR_LOOP_LABEL
     skip if the ticket loop holds the branch (an In Progress ticket's slug  // lease keyed on the branch
-      whose worktree is still checked out: a shipped ticket's is reaped
-      by its retrospective, or by the committed-fix recovery that shipped
-      it, so its later red CI is this loop's, #110, #184)
-    skip if a worktree other than pr-<n>'s has the branch checked out      // git refuses it: no attempt spent, #192
+      whose run is live, holding locks/runs/<slug>.lock: once the run
+      ends its later red CI is this loop's, #110, ADR-0043)
+    a worktree other than pr-<n>'s has the branch checked out:             // git refuses it, #192
+      clean, and origin's head contains its HEAD -> remove it (Next, every poll; narrated)  // #231
+      else skip with the reason, once per reason in the stream (item-skipped); no attempt spent
     kind = conflict if mergeable=CONFLICTING/DIRTY, else ci if a check is red, else skip
     skip if source.when leaves the kind out
     attempts since the last hand-off >= source.max_attempts | PR_LOOP_MAX_ATTEMPTS
