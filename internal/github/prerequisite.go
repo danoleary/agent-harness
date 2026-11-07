@@ -19,8 +19,8 @@ var bareRefRe = regexp.MustCompile(`(?:^|[^\w/&#])#(\d+)\b`)
 
 // urlRefRe matches a GitHub issue or pull-request URL, capturing owner, repo and
 // number so only the Client's own repo is followed (LCD: cross-repo dropped, as
-// for task-list children).
-var urlRefRe = regexp.MustCompile(`https://github\.com/([\w.-]+)/([\w.-]+)/(?:pull|issues)/(\d+)`)
+// for task-list children). Boundaries avoid matching inside larger URL/text tokens.
+var urlRefRe = regexp.MustCompile(`(?:^|[\s<(])https://github\.com/([\w.-]+)/([\w.-]+)/(?:pull|issues)/(\d+)(?:$|[\s)>.,:;!?])`)
 
 // referencedNumbers extracts the de-duplicated same-repo issue/PR numbers a body
 // names — bare `#N` and full URLs — in first-seen order, skipping self (#82). A
