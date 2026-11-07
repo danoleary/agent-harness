@@ -201,6 +201,23 @@ func TestResolvedFailsClosedOnAVersionItCannotParse(t *testing.T) {
 	assertResolved(t, lock, "lodash", nil)
 }
 
+// A v6 lockfile keys a git or tarball resolution by its source and names the
+// package only in a `name:` field; that too fails closed rather than read clean.
+func TestResolvedFailsClosedOnAV6GitResolution(t *testing.T) {
+	lock := []byte("lockfileVersion: '6.0'\n\npackages:\n\n  github.com/npm/node-semver/abc123:\n    resolution: {tarball: https://codeload.github.com/npm/node-semver/tar.gz/abc123}\n    name: semver\n    version: 7.5.1\n    dev: false\n\n  /react@18.2.0:\n    name: react\n    dev: false\n")
+	if got, err := Resolved(lock, "semver"); err == nil {
+		t.Errorf("Resolved = %v, want an error", got)
+	}
+	// A registry entry that also carries `name:` is read as usual.
+	assertResolved(t, lock, "react", []string{"18.2.0"})
+}
+
+func TestResolvedRefusesAnEmptyPackageName(t *testing.T) {
+	if got, err := Resolved(readFixture(t, "pnpm-lock-v9.yaml"), ""); err == nil {
+		t.Errorf("Resolved = %v, want an error", got)
+	}
+}
+
 func TestVulnerableNamesTheResolvedVersionsInsideAnyRange(t *testing.T) {
 	ranges := []Range{mustRange(t, "< 6.3.1"), mustRange(t, ">= 7.0.0, < 7.5.2")}
 	cases := []struct {

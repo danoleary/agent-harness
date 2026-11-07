@@ -13,14 +13,18 @@ import (
 //
 // It fails closed. A lockfile with no lockfileVersion, or a version it does not
 // read, is an error; so is a resolution of pkg that is not a semver version (a
-// tarball, a git commit, a link), which no range can place.
+// tarball, a git commit, a link), which no range can place, whether its key
+// carries the version (v9) or only a `name:` field names pkg (v6).
 func Resolved(lock []byte, pkg string) ([]Version, error) {
 	lines := strings.Split(strings.ReplaceAll(string(lock), "\r\n", "\n"), "\n")
 	if err := checkLockfileVersion(lines); err != nil {
 		return nil, err
 	}
+	if pkg == "" {
+		return nil, fmt.Errorf("pnpm lockfile: no package name")
+	}
 	var found []Version
-	section := ""
+	section, entry, entryName := "", "", ""
 	for _, line := range lines {
 		if strings.TrimSpace(line) == "" {
 			continue
@@ -32,11 +36,21 @@ func Resolved(lock []byte, pkg string) ([]Version, error) {
 		if section != "packages:" && section != "snapshots:" {
 			continue
 		}
+		// A v6 entry for a git or tarball resolution is keyed by its source, not
+		// `name@version`, and names its package in a `name:` field.
+		if field, ok := strings.CutPrefix(line, "    name: "); ok {
+			if strings.Trim(strings.TrimSpace(field), `'"`) == pkg && entryName != pkg {
+				return nil, fmt.Errorf("pnpm lockfile: %s resolves to %q, which is not a semver version", pkg, entry)
+			}
+			continue
+		}
 		// An entry is a key at an indent of two; deeper lines are its fields.
 		if !strings.HasPrefix(line, "  ") || len(line) < 3 || line[2] == ' ' {
 			continue
 		}
-		name, version := splitKey(entryKey(line[2:]))
+		entry = entryKey(line[2:])
+		name, version := splitKey(entry)
+		entryName = name
 		if name != pkg {
 			continue
 		}
