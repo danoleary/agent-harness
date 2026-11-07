@@ -35,8 +35,9 @@ func everyStage(t *testing.T, kind string) map[string]string {
 		"retrospective": For(Retrospective, with("retro", func(c *Context) {
 			c.Filed = []FiledFinding{{Key: "sandbox-x", Title: "X"}}
 		})),
-		"cifix":     For(CIFix, Context{Ticket: tk, Slug: "gh-30", BranchPrefix: testPrefix, WorktreePath: "/wt/gh-30", Tracker: kind, CILogs: "boom", CILogAvailable: true}),
-		"rebasefix": For(RebaseFix, Context{Ticket: tk, Slug: "gh-30", BranchPrefix: testPrefix, WorktreePath: "/wt/gh-30", Tracker: kind}),
+		"cifix":       For(CIFix, Context{Ticket: tk, Slug: "gh-30", BranchPrefix: testPrefix, WorktreePath: "/wt/gh-30", Tracker: kind, CILogs: "boom", CILogAvailable: true}),
+		"rebasefix":   For(RebaseFix, Context{Ticket: tk, Slug: "gh-30", BranchPrefix: testPrefix, WorktreePath: "/wt/gh-30", Tracker: kind}),
+		"securityfix": For(SecurityFix, Context{Slug: "lodash", BranchPrefix: testPrefix, WorktreePath: "/wt/lodash", Tracker: kind, Alerts: lodashAlerts}),
 	}
 }
 

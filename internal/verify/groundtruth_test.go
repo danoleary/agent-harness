@@ -24,6 +24,9 @@ type truth struct {
 	rebased   bool
 	pr        bool
 
+	changed    []string
+	changedErr error
+
 	reads []string
 }
 
@@ -42,6 +45,11 @@ func (g *truth) DiffEmpty() bool       { g.read("DiffEmpty"); return g.diffEmpty
 func (g *truth) BranchExists() bool    { g.read("BranchExists"); return g.branch }
 func (g *truth) BranchPushed() bool    { g.read("BranchPushed"); return g.pushed }
 func (g *truth) PRExists() bool        { g.read("PRExists"); return g.pr }
+
+func (g *truth) ChangedFiles() ([]string, error) {
+	g.read("ChangedFiles")
+	return g.changed, g.changedErr
+}
 
 func (g *truth) IsRebasedOnto(ref string) bool {
 	g.t.Helper()

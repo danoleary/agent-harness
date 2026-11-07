@@ -179,6 +179,60 @@ func TestLandHandsTheHookTheConflictedFilesAndCarriesItsNoteToThePR(t *testing.T
 	}
 }
 
+// A landing with no ticket opens the PR its caller describes (ADR-0040): the title
+// as given, and a body built from the commit subjects the replay left on the
+// branch and the conflict hook's note. Land is the ticket's Opening over LandAs.
+func TestLandAsOpensThePRItsCallerDescribes(t *testing.T) {
+	s := newScene(t)
+	s.repo.Conflict("proj-1")
+	var gotSubjects []string
+	var gotNote string
+	opening := ship.Opening{
+		Title: "Fix 2 security alerts in lodash",
+		Body: func(subjects []string, note string) string {
+			gotSubjects, gotNote = subjects, note
+			return "bumps lodash"
+		},
+	}
+
+	landing := ship.LandAs(s.h, &sink{}, opening, func([]string) ship.Resolution {
+		s.repo.Resolve(s.wt)
+		return ship.Resolution{OK: true, Note: "resolved after review"}
+	})
+
+	if landing.Verdict != ship.Landed {
+		t.Fatalf("Verdict = %v, want Landed", landing.Verdict)
+	}
+	if c := calls(s.h); !strings.HasSuffix(c, "create-pr Fix 2 security alerts in lodash") {
+		t.Errorf("calls = %q, want the PR opened under the Opening's title", c)
+	}
+	if len(s.h.PRBodies) != 1 || s.h.PRBodies[0] != "bumps lodash" {
+		t.Errorf("PR bodies = %q, want the Opening's body", s.h.PRBodies)
+	}
+	if len(gotSubjects) == 0 || gotSubjects[0] != gittest.HandoffSubject {
+		t.Errorf("subjects = %q, want the branch's commit subjects led by %q", gotSubjects, gittest.HandoffSubject)
+	}
+	if gotNote != "resolved after review" {
+		t.Errorf("note = %q, want the conflict hook's note", gotNote)
+	}
+}
+
+// A landing that stops before the push never builds the body: there is no PR.
+func TestLandAsBuildsNoBodyWhenNothingIsPushed(t *testing.T) {
+	s := newScene(t)
+	s.repo.Supersede("proj-1")
+	built := false
+
+	landing := ship.LandAs(s.h, &sink{}, ship.Opening{Title: "t", Body: func([]string, string) string { built = true; return "" }}, nil)
+
+	if landing.Verdict != ship.Collapsed {
+		t.Fatalf("Verdict = %v, want Collapsed", landing.Verdict)
+	}
+	if built {
+		t.Error("the body must not be built for a branch that was never pushed")
+	}
+}
+
 // --- Replay -----------------------------------------------------------------
 
 // inTheWay gives the branch a second commit and makes the next times replays stop

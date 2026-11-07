@@ -283,3 +283,47 @@ func mustRange(t *testing.T, s string) Range {
 	}
 	return r
 }
+
+// Check is the one call the host check makes: it parses the alerts' ranges and
+// scans the lockfile, and folds every way that can fail into a Result that is
+// not Clean, so a caller cannot read a failed scan as a fixed lockfile.
+func TestCheckIsCleanOnlyWhenTheScanRanAndFoundNothing(t *testing.T) {
+	cases := []struct {
+		name       string
+		lock       []byte
+		ranges     []string
+		clean      bool
+		vulnerable []string
+		err        bool
+	}{
+		{"fixed lockfile", readFixture(t, "pnpm-lock-v9.yaml"), []string{"< 6.3.1", ">= 7.0.0, < 7.5.2"}, true, nil, false},
+		{"still vulnerable", readFixture(t, "pnpm-lock-v6.yaml"), []string{"< 6.3.1", ">= 7.0.0, < 7.5.2"}, false, []string{"6.3.0", "7.5.1"}, false},
+		{"unreadable lockfile", []byte("packages:\n"), []string{"< 6.3.1"}, false, nil, true},
+		{"malformed range", readFixture(t, "pnpm-lock-v9.yaml"), []string{"<= banana"}, false, nil, true},
+		{"no ranges", readFixture(t, "pnpm-lock-v9.yaml"), nil, false, nil, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			r := Check(c.lock, "semver", c.ranges)
+			if r.Package != "semver" {
+				t.Errorf("Package = %q, want semver", r.Package)
+			}
+			if r.Clean() != c.clean {
+				t.Errorf("Clean() = %v, want %v (%+v)", r.Clean(), c.clean, r)
+			}
+			if !reflect.DeepEqual(strs(r.Vulnerable), c.vulnerable) {
+				t.Errorf("Vulnerable = %v, want %v", strs(r.Vulnerable), c.vulnerable)
+			}
+			if (r.Err != nil) != c.err {
+				t.Errorf("Err = %v, want an error: %v", r.Err, c.err)
+			}
+		})
+	}
+}
+
+// The zero Result is no check at all, so it is not Clean.
+func TestTheZeroResultIsNotClean(t *testing.T) {
+	if (Result{}).Clean() {
+		t.Error("a Result no scan produced must not read as a clean lockfile")
+	}
+}

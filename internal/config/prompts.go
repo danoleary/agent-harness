@@ -25,6 +25,10 @@ type PromptBodies struct {
 	// sessions. It is optional and empty by default: those sessions invoke no
 	// skill, so the envelope alone is a complete prompt.
 	Fix string
+	// SecurityFix is the body a security-alerts loop's `fix` step supplies for its
+	// SecurityFix session (ADR-0040). Optional for the same reason as Fix: the
+	// session invokes no skill.
+	SecurityFix string
 }
 
 // LoadPrompts reads the per-Stage body files from
