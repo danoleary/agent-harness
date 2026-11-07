@@ -27,6 +27,7 @@ Running:
 - [Fix open PRs with `pr-doctor`](how-to/fix-open-prs.md)
 - [Change a loop or declare your own](how-to/declare-a-loop.md)
 - [Send harness findings upstream](how-to/upstream-findings.md)
+- [Give sessions the Sentry issues a ticket cites](how-to/sentry.md)
 - [Troubleshoot what `doctor` can't see](troubleshooting.md)
 
 ## Reference: look something up

@@ -42,6 +42,7 @@ credentials stay on the host (ADR-0002). For the scopes each one needs, see
 | `JIRA_BASE_URL` | `kind = "jira"` | Your Jira Cloud site, e.g. `https://acme.atlassian.net`. |
 | `JIRA_EMAIL` | `kind = "jira"` | The account the API token belongs to. |
 | `JIRA_API_TOKEN` | `kind = "jira"` | An Atlassian API token. |
+| `SENTRY_AUTH_TOKEN` | `[sentry]` set | A Sentry auth token with `event:read`, `project:read` and `org:read`. The harness reads the Sentry issues a ticket cites with it, on the host. Without it those issues are reported as not fetched and dispatch goes ahead. |
 | `HARNESS_ENV_FILE` | no | An env file to read before every other candidate. |
 | `HARNESS_IMAGE` | no | Overrides `image` in `config.toml`. |
 | `PNPM_STORE_VOLUME` | no | Overrides `[cache].volume`. |

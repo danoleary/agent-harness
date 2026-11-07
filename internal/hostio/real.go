@@ -2,6 +2,7 @@ package hostio
 
 import (
 	"fmt"
+	"net/http"
 	"path/filepath"
 	"strings"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"github.com/danoleary/agent-harness/internal/proc"
 	"github.com/danoleary/agent-harness/internal/runlog"
 	"github.com/danoleary/agent-harness/internal/semdedup"
+	"github.com/danoleary/agent-harness/internal/sentry"
 	"github.com/danoleary/agent-harness/internal/ship"
 	"github.com/danoleary/agent-harness/internal/tracker"
 	"github.com/danoleary/agent-harness/internal/trackers"
@@ -230,6 +232,18 @@ func (h *Real) FetchMain() error { return h.checkout().FetchMain() }
 func (h *Real) Push() error { return h.Worktree().Push() }
 
 func (h *Real) PushForceWithLease() error { return h.Worktree().PushForceWithLease() }
+
+// SentryIssue reads one cited Sentry issue from the Consumer's `[sentry]` org with
+// the host's SENTRY_AUTH_TOKEN (ADR-0041). The stage asks only when the table is
+// set; without a token every read fails with sentry.ErrNoToken, which the stage
+// reports and dispatches past.
+func (h *Real) SentryIssue(r sentry.Ref) (sentry.Issue, error) {
+	sc := h.cfg.Sentry
+	if sc == nil {
+		return sentry.Issue{}, fmt.Errorf("no [sentry] table in the project config")
+	}
+	return sentry.Client{BaseURL: sc.BaseURL, Org: sc.Org, Token: h.cfg.SentryAuthToken, HTTP: &http.Client{Timeout: sentry.Timeout}}.Fetch(r)
+}
 
 // CreatePR opens the pull request from the main checkout with `gh`, which infers
 // the origin repo from the checkout. GH_TOKEN stays host-only (ADR-0002) — gh

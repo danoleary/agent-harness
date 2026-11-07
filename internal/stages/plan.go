@@ -9,6 +9,7 @@ import (
 	"github.com/danoleary/agent-harness/internal/hostio"
 	"github.com/danoleary/agent-harness/internal/prompt"
 	"github.com/danoleary/agent-harness/internal/runlog"
+	"github.com/danoleary/agent-harness/internal/sentry"
 	"github.com/danoleary/agent-harness/internal/ticket"
 )
 
@@ -24,6 +25,9 @@ type Subject struct {
 	// host-side when the Stage runs; the review and retrospective prompts scope
 	// their diff to it (#86). A plan built before then leaves it empty.
 	Base string
+	// Sentry is what the host fetched of the Sentry issues the ticket cites, for
+	// the implementation and review prompts (#211); nil when the feature is off.
+	Sentry *sentry.Snapshot
 }
 
 // NewSubject resolves identifier's worktree and branch through p — the run's Host,
@@ -158,7 +162,7 @@ func postCreateRun(cfg config.Config, worktreePath string) hostio.ShellRun {
 // a usage-policy refusal re-enters the worktree the first attempt left, so only
 // that variant is told where it is (BEH-389).
 func implementationRun(cfg config.Config, s Subject, resume prompt.Resume) hostio.AgentRun {
-	pctx := prompt.Context{Ticket: s.Ticket, Slug: s.Slug, BranchPrefix: cfg.BranchPrefix, Tracker: cfg.Tracker.Kind, Body: cfg.Prompts.Implement, Resume: resume}
+	pctx := prompt.Context{Ticket: s.Ticket, Slug: s.Slug, BranchPrefix: cfg.BranchPrefix, Tracker: cfg.Tracker.Kind, Body: cfg.Prompts.Implement, Resume: resume, Sentry: s.Sentry}
 	if resume == prompt.AfterRefusal {
 		pctx.WorktreePath = s.WorktreePath
 	}
@@ -185,7 +189,7 @@ func reviewRun(cfg config.Config, s Subject, prior *prompt.PriorReview, redGate 
 		Model: cfg.ReviewModel,
 		Prompt: prompt.For(prompt.Review, prompt.Context{
 			Ticket: s.Ticket, Slug: s.Slug, BranchPrefix: cfg.BranchPrefix, Branch: s.Branch, Tracker: cfg.Tracker.Kind, WorktreePath: s.WorktreePath, Body: cfg.Prompts.Review,
-			PriorReview: prior, RedGate: redGate, Base: s.Base,
+			PriorReview: prior, RedGate: redGate, Base: s.Base, Sentry: s.Sentry,
 		}),
 		Cap: cfg.ReviewTimeout,
 	}
@@ -200,7 +204,7 @@ func resolutionReviewRun(cfg config.Config, s Subject, base string, r *prompt.Re
 	run.Label = reviewSession + "-resolution"
 	run.Prompt = prompt.For(prompt.Review, prompt.Context{
 		Ticket: s.Ticket, Slug: s.Slug, BranchPrefix: cfg.BranchPrefix, Branch: s.Branch, Tracker: cfg.Tracker.Kind, WorktreePath: s.WorktreePath, Body: cfg.Prompts.Review,
-		Base: s.Base, Resolution: r,
+		Base: s.Base, Resolution: r, Sentry: s.Sentry,
 	})
 	return run
 }

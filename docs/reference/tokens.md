@@ -57,6 +57,17 @@ searches, transition issues, edit and comment on them, and create issues of
 **What `doctor` checks:** `GET /rest/api/3/myself`, then
 `GET /rest/api/3/project/<project_key>`.
 
+## `SENTRY_AUTH_TOKEN`
+
+Read only when `config.toml` has a [`[sentry]`](config.md#sentry) table. An auth
+token from <https://sentry.io/settings/account/api/auth-tokens/> with
+`event:read`, `project:read` and `org:read`. The harness reads the Sentry issues
+a ticket cites with it, on the host, and puts them into the prompt. See
+[give sessions the Sentry issues a ticket cites](../how-to/sentry.md).
+
+**What `doctor` checks:** that it is set, then
+`GET <base_url>/api/0/organizations/<org>/`.
+
 ## Offline
 
 `agent-harness doctor --offline` skips every network call. A credential it can't

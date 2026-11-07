@@ -53,6 +53,11 @@ type Host struct {
 	// x-api-key header rejects an OAuth token (BEH-316) — and semantic dedup is then
 	// skipped (best-effort), with filing degrading to exact key/title dedup.
 	AnthropicAPIKey string
+	// SentryAuthToken is the host-only SENTRY_AUTH_TOKEN the harness reads the
+	// Sentry issues a ticket cites with, when the project config has a `[sentry]`
+	// table (ADR-0041). Optional: without it a cited issue is reported as not
+	// fetched, and dispatch goes ahead. Never passed into the sandbox.
+	SentryAuthToken string
 
 	// Host paths.
 
@@ -251,6 +256,9 @@ type Project struct {
 	// harness-audience findings go (local artifact vs the public harness repo).
 	// The upstream sink reuses the host's GH_TOKEN; nothing here is a credential.
 	Feedback FeedbackConfig
+	// Sentry is the project config's `[sentry]` table, nil when absent: the
+	// host-side Sentry fetch is off (ADR-0041).
+	Sentry *SentryConfig
 	// Prompts holds the Consumer's per-Stage prompt bodies, read from the
 	// bind-mounted checkout's `.agent-harness/prompts/` (ADR-0009). The harness
 	// composes each body inside its non-overridable contract envelope.
@@ -402,6 +410,7 @@ func loadHost(get Getenv, workingDir string) (Host, error) {
 		JiraEmail:       get("JIRA_EMAIL"),
 		JiraAPIToken:    get("JIRA_API_TOKEN"),
 		AnthropicAPIKey: get("ANTHROPIC_API_KEY"),
+		SentryAuthToken: get("SENTRY_AUTH_TOKEN"),
 		ProjectPath:     get("PROJECT_PATH"),
 	}
 
@@ -612,6 +621,7 @@ func loadProject(get Getenv, checkout, harnessVersion string) (Project, error) {
 		SourceRoots:           pc.SourceRoots,
 		Tracker:               pc.Tracker,
 		Feedback:              pc.Feedback,
+		Sentry:                pc.Sentry,
 		Prompts:               prompts,
 		Loops:                 pc.ResolvedLoops,
 		Warnings:              pc.Warnings,

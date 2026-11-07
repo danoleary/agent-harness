@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	toml "github.com/pelletier/go-toml/v2"
@@ -102,6 +104,11 @@ type ProjectConfig struct {
 	// harness-audience findings go. Default (empty/`off`) keeps them in the local
 	// artifact dir; `github` files them to the configured public harness repo.
 	Feedback FeedbackConfig `toml:"feedback"`
+	// Sentry, when the table is present, has the harness fetch on the host the
+	// Sentry issues a ticket body cites and put them into the Stage prompt (#211,
+	// ADR-0041). Nil turns the feature off. The token is the host env's
+	// SENTRY_AUTH_TOKEN, never a key here.
+	Sentry *SentryConfig `toml:"sentry"`
 	// Loops are the Consumer's [[loops]] (ADR-0019): each a Source kind, an ordered
 	// list of Steps and its own limits. Without any, the built-in loops stand
 	// (BuiltInLoops).
@@ -136,6 +143,45 @@ type FeedbackConfig struct {
 	// (ADR-0011's project-tagged dedup). Optional — empty falls back to the worked
 	// ticket identifier.
 	Project string `toml:"project"`
+}
+
+// SentryConfig names the Sentry org whose issues a ticket may cite (ADR-0041).
+type SentryConfig struct {
+	// Org is the organization slug, as in `https://<org>.sentry.io`.
+	Org string `toml:"org"`
+	// Projects are the short-ID prefixes that mark a Sentry issue in a ticket body
+	// (`HERD` for `HERD-3P`). Only these match, which keeps a tracker Key such as
+	// `BEH-1148` from reading as one.
+	Projects []string `toml:"projects"`
+	// BaseURL is the Sentry site; empty defaults to https://sentry.io.
+	BaseURL string `toml:"base_url"`
+}
+
+// defaultSentryBaseURL is the Sentry SaaS site (sentry.DefaultBaseURL).
+const defaultSentryBaseURL = "https://sentry.io"
+
+// sentryPrefix is what a short-ID prefix looks like: Sentry upper-cases them.
+var sentryPrefix = regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`)
+
+// validate rejects a `[sentry]` table that could never cite an issue: no org to
+// read from, no prefix to match, or a site that is not an absolute URL.
+func (sc *SentryConfig) validate() []string {
+	var problems []string
+	if sc.Org == "" {
+		problems = append(problems, "sentry.org is required when [sentry] is set (the organization slug, as in https://<org>.sentry.io)")
+	}
+	if len(sc.Projects) == 0 {
+		problems = append(problems, "sentry.projects is required when [sentry] is set (the short-ID prefixes to look for, e.g. [\"HERD\"])")
+	}
+	for _, p := range sc.Projects {
+		if !sentryPrefix.MatchString(p) {
+			problems = append(problems, fmt.Sprintf("sentry.projects entry %q is not a short-ID prefix: use the upper-case prefix Sentry shows, e.g. \"HERD\" for HERD-3P", p))
+		}
+	}
+	if u, err := url.Parse(sc.BaseURL); err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+		problems = append(problems, fmt.Sprintf("sentry.base_url must be an absolute http(s) URL, got %q", sc.BaseURL))
+	}
+	return problems
 }
 
 // upstreamOff / upstreamGitHub are the recognized feedback.upstream modes.
@@ -426,6 +472,9 @@ func (pc *ProjectConfig) applyDefaults() {
 	if pc.Feedback.Upstream == "" {
 		pc.Feedback.Upstream = upstreamOff
 	}
+	if pc.Sentry != nil && pc.Sentry.BaseURL == "" {
+		pc.Sentry.BaseURL = defaultSentryBaseURL
+	}
 	// Map the deprecated herd-specific pnpm_store_volume onto the generalized
 	// cache surface, defaulting to its historical /pnpm-store mount.
 	if pc.Cache.Volume == "" && pc.PnpmStoreVolume != "" {
@@ -496,6 +545,9 @@ func (pc *ProjectConfig) validate() []string {
 	}
 	if err := pc.Feedback.validate(); err != nil {
 		problems = append(problems, err.Error())
+	}
+	if pc.Sentry != nil {
+		problems = append(problems, pc.Sentry.validate()...)
 	}
 	return problems
 }
