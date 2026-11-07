@@ -8,6 +8,7 @@ package runlog
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -27,6 +28,10 @@ type Logger struct {
 	// feed, separate from the per-ticket run.jsonl. It is the daemon→viewer contract
 	// (ADR-0005); nil-safe so a hand-built Logger{} in tests never panics.
 	stream *loopstream.Stream
+	// Console is where the narration lines go; nil means stdout. A test sets it to
+	// keep a fake run's narration beside its own failure instead of in the
+	// package's stdout (#225).
+	Console io.Writer
 }
 
 // MakeRunID builds a sortable, filesystem-safe run id from a timestamp,
@@ -133,7 +138,11 @@ func (l *Logger) Structured(r loopstream.Record) {
 // timestamp it stamped so a caller (Structured) can reuse it for the global stream.
 func (l *Logger) narrate(message string) string {
 	ts := time.Now().UTC().Format(time.RFC3339)
-	fmt.Printf("%s  %s\n", ts, message)
+	console := l.Console
+	if console == nil {
+		console = os.Stdout
+	}
+	fmt.Fprintf(console, "%s  %s\n", ts, message)
 	record, _ := json.Marshal(struct {
 		TS      string `json:"ts"`
 		Message string `json:"message"`

@@ -9,7 +9,6 @@ import (
 	"github.com/danoleary/agent-harness/internal/config"
 	"github.com/danoleary/agent-harness/internal/gittest"
 	"github.com/danoleary/agent-harness/internal/hostio"
-	"github.com/danoleary/agent-harness/internal/runlog"
 	"github.com/danoleary/agent-harness/internal/sandbox"
 	"github.com/danoleary/agent-harness/internal/session"
 )
@@ -40,10 +39,7 @@ func scriptedGates(t *testing.T, gates []config.Gate, script ...gateScript) (Env
 	repo := gittest.New(t)
 	repo.Handoff("proj-1")
 	h := hostio.NewFake(repo.Checkout(), "proj-1")
-	log, err := runlog.New(t.TempDir(), "PROJ-1")
-	if err != nil {
-		t.Fatal(err)
-	}
+	log := testLog(t)
 	h.ShellFn = func(call int, s hostio.ShellRun) session.Outcome {
 		step := script[len(script)-1]
 		if call <= len(script) {

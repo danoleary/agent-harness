@@ -13,19 +13,20 @@ import (
 	"github.com/danoleary/agent-harness/internal/gittest"
 	"github.com/danoleary/agent-harness/internal/hostio"
 	"github.com/danoleary/agent-harness/internal/hostlock"
-	"github.com/danoleary/agent-harness/internal/runlog"
 	"github.com/danoleary/agent-harness/internal/session"
 )
 
-// meetDeadline bounds how long, from the start of gatingRuns, its gates wait for
-// each other: long enough that a loaded machine still meets, short enough that a
-// limiter which serialises gates fails the test instead of hanging it.
+// meetDeadline bounds how long a gate in gatingRuns waits, from its own entry, for
+// the others: long enough that a loaded machine still meets, short enough that a
+// limiter which serialises gates fails the test instead of hanging it. The clock
+// is the gate's own, not the test's, so neither building the git repo nor another
+// run's git work before its gate can spend it (#225).
 const meetDeadline = 10 * time.Second
 
 // gatingRuns runs `runs` gate sets at once, one per loop instance, each with its
 // own Host and run log over one shared lock dir, and reports the most gates that
 // were running at any moment. With meet > 0 each gate holds until meet gates are
-// inside at once (or meetDeadline passes), so overlap is a barrier rather than a
+// inside at once (or its meetDeadline passes), so overlap is a barrier rather than a
 // race between sleeps (#131); with meet 0 each gate just holds briefly.
 func gatingRuns(t *testing.T, cfg config.Config, runs, meet int) int32 {
 	t.Helper()
@@ -33,7 +34,6 @@ func gatingRuns(t *testing.T, cfg config.Config, runs, meet int) int32 {
 	var wg sync.WaitGroup
 	met := make(chan struct{})
 	var meetOnce sync.Once
-	giveUp := time.Now().Add(meetDeadline)
 	// One handoff carrying a code change, so the docs-only skip never fires; every
 	// run gates the same worktree, each through its own Host.
 	repo := gittest.New(t)
@@ -56,16 +56,13 @@ func gatingRuns(t *testing.T, cfg config.Config, runs, meet int) int32 {
 				}
 				select {
 				case <-met:
-				case <-time.After(time.Until(giveUp)):
+				case <-time.After(meetDeadline):
 				}
 			}
 			inside.Add(-1)
 			return session.Outcome{}
 		}
-		log, err := runlog.New(t.TempDir(), "PROJ-1")
-		if err != nil {
-			t.Fatal(err)
-		}
+		log := testLog(t)
 		e := Env{Host: h, Cfg: cfg, Log: log, Who: "review"}
 		wg.Add(1)
 		go func() {
@@ -133,16 +130,12 @@ func TestAGateRunThatWaitsForASlotNarratesIt(t *testing.T) {
 	repo.Handoff("proj-1")
 	h := hostio.NewFake(repo.Checkout(), "proj-1")
 	h.ShellFn = func(int, hostio.ShellRun) session.Outcome { return session.Outcome{} }
-	root := t.TempDir()
-	log, err := runlog.New(root, "PROJ-1")
-	if err != nil {
-		t.Fatal(err)
-	}
+	log := testLog(t)
 	e := Env{Host: h, Cfg: cfg, Log: log, Who: "review"}
 	done := make(chan GateResult, 1)
 	go func() { done <- e.Gates("gate") }()
 
-	runLog := filepath.Join(root, "PROJ-1", "run.jsonl")
+	runLog := filepath.Join(log.Dir, "run.jsonl")
 	giveUp := time.Now().Add(meetDeadline)
 	for {
 		raw, _ := os.ReadFile(runLog)
