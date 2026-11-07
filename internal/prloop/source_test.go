@@ -473,6 +473,39 @@ func TestClaimsAndReleaseWorkTheHeldLabel(t *testing.T) {
 	}
 }
 
+// #196: a held label with no attempt marker was not set by this loop — a human
+// labelled the PR, or another loop holds it under the same label (the security
+// loop, during its CI watch). It is not this loop's claim, so the reaper never
+// sees it: its zero start time would be older than any TTL and the label stripped.
+func TestAHeldPRWithNoAttemptMarkerIsNotAClaim(t *testing.T) {
+	held := harnessPR(12, "a1")
+	held.Labels = []string{"in-progress"}
+	gh := newFakeGitHub(held)
+	gh.comments[12] = []github.PRComment{{Body: "a human's review comment", CreatedAt: testNow.Add(-48 * time.Hour)}}
+	s := newTestSource(gh, nil)
+
+	claims, err := s.Claims()
+	if err != nil || len(claims) != 0 {
+		t.Fatalf("Claims = %+v, %v; want none — the loop did not hold PR-12", claims, err)
+	}
+}
+
+// A held PR whose attempt marker is older than the claim TTL is still a claim: the
+// label a dead daemon stranded is still reaped.
+func TestAHeldPRWithAnAttemptMarkerPastTheTTLIsStillAClaim(t *testing.T) {
+	held := harnessPR(12, "a1")
+	held.Labels = []string{"in-progress"}
+	gh := newFakeGitHub(held)
+	startedAt := testNow.Add(-72 * time.Hour)
+	gh.comments[12] = []github.PRComment{{Body: attemptMarker("a1", CIRed), CreatedAt: startedAt}}
+	s := newTestSource(gh, nil)
+
+	claims, err := s.Claims()
+	if err != nil || len(claims) != 1 || claims[0].Key != "PR-12" || !claims[0].StartedAt.Equal(startedAt) {
+		t.Fatalf("Claims = %+v, %v; want PR-12 started at its attempt marker", claims, err)
+	}
+}
+
 // #173: herd PR-1312's attempt pushed nothing, and the daemon narrated it as
 // "PR-1312 produced no PR; releasing back to Todo so it isn't stranded In
 // Progress". A PR has no Todo and its run never meant to open a PR: the Source

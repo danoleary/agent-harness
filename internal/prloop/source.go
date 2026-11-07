@@ -443,6 +443,10 @@ func (s *Source) settle(c Candidate) {
 // marker, so the reaper releases a label a dead daemon stranded once it is older
 // than the claim TTL. The reaper only ever runs between this daemon's own items, so
 // a held PR it sees is never one this daemon is working. One PR loop per checkout.
+//
+// A held PR with no attempt marker is not this loop's claim: a human labelled it,
+// or another loop holds it under the same label. It is left out, since its zero
+// start time would be past any TTL and the reaper would strip the label (#196).
 func (s *Source) Claims() ([]loop.StaleClaim, error) {
 	prs, err := s.gh.OpenPRs()
 	if err != nil {
@@ -457,11 +461,11 @@ func (s *Source) Claims() ([]loop.StaleClaim, error) {
 		if err != nil {
 			continue
 		}
-		claim := loop.StaleClaim{Key: Key(pr.Number)}
-		if tried, _ := attempts(comments); len(tried) > 0 {
-			claim.StartedAt = tried[len(tried)-1].At
+		tried, _ := attempts(comments)
+		if len(tried) == 0 {
+			continue
 		}
-		out = append(out, claim)
+		out = append(out, loop.StaleClaim{Key: Key(pr.Number), StartedAt: tried[len(tried)-1].At})
 	}
 	return out, nil
 }
