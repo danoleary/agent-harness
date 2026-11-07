@@ -183,6 +183,10 @@ type Host interface {
 	// FetchMain fast-forwards the primary checkout's origin/main, at startup and
 	// after every item ("pull main after every session").
 	FetchMain() error
+	// MainSHA reads the commit origin/main points at in the primary checkout, as
+	// of the last FetchMain. The loop compares it with the base a red-base hold
+	// was on, so it idles while main has not moved (#190).
+	MainSHA() (string, error)
 
 	// FreeDisk reports the bytes available on the worktrees volume via a cheap statfs;
 	// it gates the reclaim step so a healthy disk triggers no shell-out / gh calls. A
@@ -304,6 +308,7 @@ func Run(d Deps) int {
 
 	b := newBreaker(d.Limits.MaxConsecutiveFailures)
 	attempted := 0
+	var hold baseHold
 	for {
 		// Stop only ever lands BETWEEN items — a graceful, per-item checkpoint
 		// (DESIGN.md "Stop control"): stopping mid-item would strand a worktree.
@@ -337,6 +342,14 @@ func Run(d Deps) int {
 		// very pass rather than occupying the lane forever (BEH-677). Best-effort: a
 		// failed list/release is narrated and swallowed, never an item outcome.
 		d.reapStaleClaims()
+
+		// A red base held the last item, and nothing about it has changed: idle
+		// without selecting, so no claim, worktree or post_create is spent on a
+		// hold the recorded verdict already decides (#190).
+		if hold.sha != "" && d.stillHeld(&hold) {
+			d.idleWait()
+			continue
+		}
 
 		item, claim, ok, err := d.Source.Next()
 		if err != nil {
@@ -417,16 +430,14 @@ func Run(d Deps) int {
 
 		// A red-base hold is not a ticket verdict either (#125): the base the ticket
 		// was cut from already fails a Gate, so the implementation stage launched no
-		// session and released the claim itself. Refresh origin/main so the next
-		// attempt sees a repair the moment it merges, then back off one poll — every
-		// ticket on the same base is held the same way, from the recorded verdict, at
-		// no gate cost. Breaker-neutral: tripping on main's state would stop the loop
-		// just as main goes green.
+		// session and released the claim itself. Remember the base and when its red
+		// verdict expires, then back off one poll: each later poll refetches
+		// origin/main and selects again only once main moves or the verdict expires
+		// (#190). Breaker-neutral: tripping on main's state would stop the loop just
+		// as main goes green.
 		if outcome.Disposition == stages.BaseRed {
 			d.Log.Structured(loopstream.Record{Kind: loopstream.KindTicketReleased, Ticket: key, Message: "loop ⏸ " + key + " held — the base fails its gates; backing off until main moves — breaker-neutral (#125)"})
-			if err := d.Host.FetchMain(); err != nil {
-				d.Log.Event("loop … warning: could not fetch origin/main after a red-base hold: " + err.Error())
-			}
+			hold = baseHold{sha: outcome.HeldBase, until: outcome.HeldUntil}
 			d.interruptibleSleep(d.Limits.PollInterval)
 			continue
 		}
@@ -522,6 +533,49 @@ func Run(d Deps) int {
 			return d.stopped("circuit breaker tripped")
 		}
 	}
+}
+
+// baseHold is the red base the last item was held on (#190): the origin/main SHA
+// and when the red verdict recorded for it stops being trusted. The zero value is
+// no hold.
+type baseHold struct {
+	sha   string
+	until time.Time
+}
+
+// stillHeld refetches origin/main and reports whether hold still decides the next
+// item: main sits on the held base and the red verdict has not expired. Every
+// selection would end in the same hold, so the caller idles instead, and this
+// narrates one heartbeat line in place of a whole select→claim→provision→release
+// cycle. Otherwise it clears hold and says why the loop selects again. A main it
+// cannot read clears the hold too: a hold it cannot confirm must not idle the loop.
+func (d Deps) stillHeld(hold *baseHold) bool {
+	if err := d.Host.FetchMain(); err != nil {
+		d.Log.Event("loop … warning: could not fetch origin/main while held on a red base: " + err.Error())
+	}
+	short := shortSHA(hold.sha)
+	sha, err := d.Host.MainSHA()
+	switch {
+	case err != nil:
+		d.Log.Event("loop … warning: could not read origin/main (" + err.Error() + ") — selecting again rather than idling on the hold on " + short)
+	case sha != hold.sha:
+		d.Log.Event("loop — main moved off the red base " + short + " to " + shortSHA(sha) + " — selecting again (#190)")
+	case !d.clock().Now().Before(hold.until):
+		d.Log.Event("loop — the red verdict on " + short + " expired — selecting again to re-check the base (#190)")
+	default:
+		d.Log.Structured(loopstream.Record{Kind: loopstream.KindIdle, Message: fmt.Sprintf("loop ⏸ still held on %s, re-check at %s (#190)", short, hold.until.UTC().Format("15:04Z"))})
+		return true
+	}
+	*hold = baseHold{}
+	return false
+}
+
+// shortSHA abbreviates a commit SHA for narration.
+func shortSHA(sha string) string {
+	if len(sha) > 12 {
+		return sha[:12]
+	}
+	return sha
 }
 
 // stopped emits the daemon's terminal record and returns the clean exit code (0).

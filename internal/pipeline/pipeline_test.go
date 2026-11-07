@@ -498,18 +498,23 @@ func TestRunInterruptedRetrospectiveKeepsTheFailure(t *testing.T) {
 
 // A ticket held on a red base launched no session (#125), so the slice ends at
 // implementation: no review, no retrospective over a transcript that does not exist,
-// and the BaseRed disposition reaches the loop.
+// and the BaseRed disposition reaches the loop with the base it held on and the
+// verdict's expiry, which the loop idles on (#190).
 func TestRunEndsTheSliceAtARedBaseHold(t *testing.T) {
 	r := &recorder{}
+	until := time.Date(2026, 11, 6, 14, 32, 0, 0, time.UTC)
 	out := Run(Deps{
 		FetchMain:      func() error { return nil },
-		Implementation: r.stage("impl", stages.Result{OK: false, Disposition: stages.BaseRed}),
+		Implementation: r.stage("impl", stages.Result{OK: false, Disposition: stages.BaseRed, HeldBase: "3f9c2e7a", HeldUntil: until}),
 		Review:         r.stage("review", stages.Result{OK: true}),
 		Retrospective:  r.stage("retro", stages.Result{OK: true}),
 		Log:            r,
 	})
 	if out.Disposition != stages.BaseRed {
 		t.Errorf("Disposition = %s, want base-red", out.Disposition)
+	}
+	if out.HeldBase != "3f9c2e7a" || !out.HeldUntil.Equal(until) {
+		t.Errorf("held on %q until %v, want the implementation stage's 3f9c2e7a until %v", out.HeldBase, out.HeldUntil, until)
 	}
 	if want := []string{"impl"}; !reflect.DeepEqual(r.order, want) {
 		t.Errorf("stage order = %v, want %v (a red-base hold ends the slice)", r.order, want)

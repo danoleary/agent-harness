@@ -201,6 +201,8 @@ func (h *Daemon) checkout() gitpkg.Checkout {
 
 func (h *Daemon) FetchMain() error { return h.checkout().FetchMain() }
 
+func (h *Daemon) MainSHA() (string, error) { return h.checkout().MainSHA() }
+
 // CheckAccess proves both host credentials work before the daemon polls: GH_TOKEN
 // (every Consumer pushes and opens PRs with it, whatever its Source) and the
 // Source's own, via the probe the composition root handed [NewDaemon].

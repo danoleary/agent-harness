@@ -310,6 +310,12 @@ type Result struct {
 	// Signal is the stop signal that killed the session when Disposition is
 	// Interrupted (#99); zero otherwise.
 	Signal syscall.Signal
+	// HeldBase and HeldUntil name the base SHA a BaseRed hold was on and when its
+	// red verdict stops being trusted (baseRedRecheck), so the loop can idle on an
+	// unchanged origin/main without selecting, claiming or provisioning again
+	// (#190). Zero otherwise.
+	HeldBase  string
+	HeldUntil time.Time
 }
 
 // ExitCode is the process exit code this Result means: 0 iff the work it reports
