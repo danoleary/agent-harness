@@ -31,8 +31,12 @@ and a red base holds the ticket without launching one.**
   carrying the `base-gates-red` finding key all skip the check.
 - **Verdict per base SHA.** The result is recorded under
   `.agent-harness/locks/base-gates/<sha>`, shared by the loop instances of one
-  Consumer. A green verdict holds for the life of its SHA. A red one holds for
-  30 minutes, since a red Gate can be a flake. A Gate that failed environmentally
+  Consumer. A red run is confirmed before it is recorded: the Gates run once
+  more over the same base (`basegate-confirm-<name>`), and the base is red only
+  if that re-run is red too. A pass on the re-run records the base green and
+  the ticket dispatches (#189). A green verdict needs no confirming, since a
+  flake can only make a base look red, and holds for the life of its SHA. A red
+  one holds for 30 minutes, since a Gate can flake on both runs. A Gate that failed environmentally
   (an OOM-kill or failed launch through its retries, or its cap) records nothing,
   and the ticket dispatches.
 - **Hold.** On a red base the stage discards the untouched worktree and branch,
@@ -70,5 +74,9 @@ and a red base holds the ticket without launching one.**
   the first.
 - While `main` is red the loop dispatches nothing. That is the point, but it
   depends on a human seeing the finding.
+- A red base costs two Gate runs before its hold, so a single flaky Gate step
+  does not hold every ticket on a green `main` for 30 minutes and file a
+  finding for it (#189). A re-run that fails environmentally leaves the red
+  unconfirmed, records nothing, and the ticket dispatches.
 - Two instances that reach an ungated base at the same time both gate it. The
   gate slots bound how many gate at once.
