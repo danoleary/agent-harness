@@ -41,6 +41,12 @@ var ErrWedgedReadyForMergeQueue = errors.New("ci ready for merge queue (real gat
 // pass; the poll returns it wrapped with the SHA so the reason says why (#101).
 var ErrNoCIApplies = errors.New("no CI workflow applies to this diff")
 
+// maxTransientPolls is how many `gh pr checks` calls in a row may fail with a network
+// error (errPollTransient) before the poll gives up and surfaces it. One blip in a
+// 15-minute window must not end the watch; a run of them means GitHub is not
+// reachable from here (#194).
+const maxTransientPolls = 5
+
 // pollConfig frames one poll: how often to re-check, the overall wall-clock cap,
 // and the no-progress (stall) window after which an unchanging-but-still-pending
 // check set is treated as wedged. A zero stall disables stall detection (budget
@@ -71,7 +77,8 @@ type pollConfig struct {
 // sleeping `interval` between pending re-checks, bounded by `budget`. It returns
 // the terminal verdict and the checks that produced it. A fetch error aborts
 // immediately (a real gh failure — auth, bad PR — not something more polling
-// fixes). If the budget is spent while still pending it returns (Pending, last
+// fixes), except a network error (errPollTransient), which is retried until
+// maxTransientPolls of them land in a row or the budget runs out (#194). If the budget is spent while still pending it returns (Pending, last
 // checks, ErrPollTimeout). The clock is injected so the timing is deterministic
 // in tests (mirrors git.withRetry).
 //
@@ -100,9 +107,25 @@ func poll(fetch func() ([]Check, error), headRuns func() (string, bool, error), 
 	var lastSig string
 	var stalledSince time.Time
 	haveSig := false
+	// transient counts consecutive network-error polls (errPollTransient); any answer
+	// from GitHub resets it (#194).
+	transient := 0
 	for {
 		checks, err := fetch()
+		if !errors.Is(err, errPollTransient) {
+			transient = 0
+		}
 		switch {
+		case errors.Is(err, errPollTransient):
+			// The poll never reached GitHub, so it says nothing about CI. Back off and
+			// poll again like the no-checks-yet window; only a run of them in a row, or
+			// a budget spent while GitHub is unreachable, surfaces the error (#194).
+			transient++
+			if transient >= maxTransientPolls || !now().Add(cfg.interval).Before(hardDeadline) {
+				return Pending, nil, err
+			}
+			sleep(cfg.interval)
+			continue
 		case err == nil:
 			sawChecks = true
 			if v := Classify(checks); v != Pending {

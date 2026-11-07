@@ -32,6 +32,43 @@ var errChecksUnobservable = errors.New("CI checks not observable with this token
 // (leave the open PR for a human) rather than report "CI did not go green".
 var errChecksUnauthenticated = errors.New("CI checks not readable: gh not authenticated (HTTP 401 / bad credentials) — PR was pushed, check CI manually")
 
+// errPollTransient marks a `gh pr checks` call that failed at the transport layer:
+// a TCP dial or read timed out, the connection was reset, DNS failed, or GitHub's
+// edge answered 502/503/504. The poll never reached CI, so it says nothing about
+// whether a check failed. The poller retries it, and only a run of them in a row
+// ends the watch, failing soft to "CI watch unavailable" (#194).
+var errPollTransient = errors.New("CI checks poll could not reach GitHub (network error)")
+
+// transientSignatures are lower-cased fragments of gh's stderr that mark a network
+// failure rather than an answer from GitHub (#194).
+var transientSignatures = []string{
+	"dial tcp",
+	"i/o timeout",
+	"operation timed out",
+	"connection reset",
+	"tls handshake timeout",
+	"no such host",
+	"http 502",
+	"http 503",
+	"http 504",
+}
+
+// isTransientErr reports whether a failed gh call never got an answer from GitHub:
+// its stderr carries a transport-level failure, or the call hung past its timeout
+// (proc.ErrTimeout) — a stalled connection, not a verdict.
+func isTransientErr(stderr string, runErr error) bool {
+	if errors.Is(runErr, proc.ErrTimeout) {
+		return true
+	}
+	s := strings.ToLower(stderr)
+	for _, sig := range transientSignatures {
+		if strings.Contains(s, sig) {
+			return true
+		}
+	}
+	return false
+}
+
 // isUnobservableErr reports whether gh's stderr carries GitHub's permission-denied
 // signature for the Checks API. GitHub returns "Resource not accessible by …" for
 // a token lacking the permission — distinct from "authentication required" / "Bad
@@ -118,6 +155,11 @@ type GhDriver struct {
 	// like diffEmpty; powers the docs-only watch short-circuit (BEH-687).
 	docsOnly func() bool
 
+	// runChecks runs `gh pr checks <branch> --json …`, returning its stdout, stderr
+	// and error. Injected so the poll's classification and retry are testable
+	// against scripted gh output without shelling out.
+	runChecks func() (stdout, stderr []byte, err error)
+
 	// fetchRunLog fetches one failing run's log (`gh run view <id> --log-failed`).
 	// Injected so the log-availability logic is unit-testable without shelling out.
 	fetchRunLog func(id string) ([]byte, error)
@@ -144,6 +186,9 @@ func NewGhDriver(herdPath, branch string, cfg Config, ghTimeout time.Duration, r
 		sleep:        time.Sleep,
 		now:          time.Now,
 	}
+	d.runChecks = func() ([]byte, []byte, error) {
+		return proc.OutputInDir(d.ghTimeout, d.herdPath, "gh", "pr", "checks", d.branch, "--json", checksJSONFields)
+	}
 	d.fetchRunLog = func(id string) ([]byte, error) {
 		stdout, _, err := proc.OutputInDir(d.ghTimeout, d.herdPath, "gh", "run", "view", id, "--log-failed")
 		return stdout, err
@@ -157,8 +202,7 @@ func NewGhDriver(herdPath, branch string, cfg Config, ghTimeout time.Duration, r
 // Actions started any run for the head; none means no workflow applies (#101).
 func (d *GhDriver) Poll() (Verdict, []Check, error) {
 	fetch := func() ([]Check, error) {
-		stdout, stderr, err := proc.OutputInDir(d.ghTimeout, d.herdPath, "gh", "pr", "checks", d.branch, "--json", checksJSONFields)
-		return interpretChecksOutput(stdout, stderr, err)
+		return interpretChecksOutput(d.runChecks())
 	}
 	headRuns := func() (string, bool, error) {
 		head, err := d.branchHead()
@@ -315,6 +359,14 @@ func interpretChecksOutput(stdout, stderr []byte, runErr error) ([]Check, error)
 		// than report the pushed, gate-green PR as a CI failure.
 		if isUnauthenticatedErr(s) {
 			return nil, errChecksUnauthenticated
+		}
+		// A transport-level failure (dial/read timeout, reset, DNS, a 502/503/504
+		// from GitHub's edge) never reached CI — the poller retries it (#194).
+		if isTransientErr(s, runErr) {
+			if s != "" {
+				return nil, fmt.Errorf("%w: %s", errPollTransient, s)
+			}
+			return nil, fmt.Errorf("%w: %v", errPollTransient, runErr)
 		}
 		if s != "" {
 			return nil, fmt.Errorf("gh pr checks failed: %w: %s", runErr, s)

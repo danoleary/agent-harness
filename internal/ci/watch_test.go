@@ -684,3 +684,72 @@ func TestWatchNoCIAppliesStillGatesOnMergeConflict(t *testing.T) {
 		t.Fatalf("a no-CI PR with a genuine merge conflict is not shippable; got %+v", out)
 	}
 }
+
+// ghPollDriver runs the production GhDriver.Poll (classification + poll loop) over a
+// scripted `gh pr checks` runner, with fakeDriver's scripted effects for the rest.
+type ghPollDriver struct {
+	*fakeDriver
+	gh *GhDriver
+}
+
+func (d ghPollDriver) Poll() (Verdict, []Check, error) { return d.gh.Poll() }
+
+// scriptedChecksRunner returns a `gh pr checks` runner that fails with the #194
+// incident's dial timeout for the first n calls (n < 0: forever), then prints green
+// checks JSON.
+func scriptedChecksRunner(n int) func() ([]byte, []byte, error) {
+	calls := 0
+	return func() ([]byte, []byte, error) {
+		calls++
+		if n < 0 || calls <= n {
+			return nil, []byte(`Post "https://api.github.com/graphql": dial tcp 140.82.112.6:443: connect: operation timed out`), errors.New("exit status 1")
+		}
+		return []byte(`[{"name":"check","bucket":"pass","state":"SUCCESS","link":""}]`), nil, nil
+	}
+}
+
+func newGhPollDriver(runChecks func() ([]byte, []byte, error)) ghPollDriver {
+	clock := newFakeClock()
+	return ghPollDriver{
+		fakeDriver: &fakeDriver{mergeState: MergeClean},
+		gh: &GhDriver{
+			pollCfg:   pollConfig{interval: 30 * time.Second, budget: 15 * time.Minute},
+			runChecks: runChecks,
+			sleep:     clock.sleep,
+			now:       clock.now,
+		},
+	}
+}
+
+func TestWatchRetriesADialTimeoutThenPassesOnGreen(t *testing.T) {
+	// #194: one `gh pr checks` poll timed out dialling GitHub, then CI answered
+	// green. The blip must not end the watch as "CI did not go green".
+	d := newGhPollDriver(scriptedChecksRunner(1))
+	out := WatchAndFix(d, testWatchCfg(), newFakeClock().now)
+	if !out.OK || out.Reason != "CI is green" {
+		t.Fatalf("outcome = %+v, want OK with \"CI is green\"", out)
+	}
+	if d.reruns != 0 || d.fixes != 0 {
+		t.Fatalf("a network blip must not trigger rerun/fix; got rerun=%d fix=%d", d.reruns, d.fixes)
+	}
+}
+
+func TestWatchFailsSoftWhenGitHubStaysUnreachable(t *testing.T) {
+	// The network errors never clear. The PR is pushed and gate-green and no check
+	// was seen to fail, so fail soft like the 401 degrade: OK, no rerun/fix, and a
+	// reason that says CI could not be reached rather than that it went red.
+	d := newGhPollDriver(scriptedChecksRunner(-1))
+	out := WatchAndFix(d, testWatchCfg(), newFakeClock().now)
+	if !out.OK {
+		t.Fatalf("expected OK (PR pushed, GitHub unreachable), got %+v", out)
+	}
+	if d.reruns != 0 || d.fixes != 0 {
+		t.Fatalf("unreachable CI must not trigger rerun/fix; got rerun=%d fix=%d", d.reruns, d.fixes)
+	}
+	if !strings.HasPrefix(out.Reason, "CI watch unavailable: network errors reaching GitHub") {
+		t.Fatalf("reason %q should say CI watch is unavailable over network errors", out.Reason)
+	}
+	if !strings.Contains(out.Reason, "operation timed out") {
+		t.Fatalf("reason %q should carry the last network error", out.Reason)
+	}
+}
