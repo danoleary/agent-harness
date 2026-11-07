@@ -300,3 +300,24 @@ but the daemon's own stream lines were still written for tickets.
   Source says what happens to a PR: `PR-1312 pushed nothing; releasing its
   in-progress label`, naming the lease label it is configured with.
 - The breadcrumb bodies stay in the daemon. Only the ticket Source posts them.
+
+## Amendment, 2026-11-07: a branch another worktree has checked out is skipped, not attempted (#192)
+
+On herd PR #1375 a Claude Code worktree had `feat/beh-1298` checked out. git
+refuses to check a branch out in a second worktree, so `checkout_pr` failed in
+seconds, three times in 30 seconds. Each attempt had already been recorded when
+the PR was selected, so the PR spent its whole budget and was labelled `blocked`
+before any session ran. It stayed blocked after the worktree was removed.
+
+- **The Source reads `git worktree list --porcelain` on every poll** and skips a
+  PR whose head branch a worktree other than the loop's own `pr-<n>` has checked
+  out: `branch checked out in worktree <path>`. Like the ticket loop's hold, the
+  skip comes before any GitHub read, takes no lease, records no attempt and hands
+  nothing off, so `--dry-run` shows it and the budget is untouched. The PR is
+  judged afresh on the first poll after the worktree is gone.
+- **The main checkout counts as a worktree.** git refuses its branch the same
+  way, and so does a prunable worktree's until it is pruned.
+- **The loop never removes or reuses a worktree it did not create.** Someone may
+  be working in it.
+- A failed worktree list fails the poll, as a failed read of the ticket loop's
+  holds does: a guess would spend an attempt on a checkout git refuses.

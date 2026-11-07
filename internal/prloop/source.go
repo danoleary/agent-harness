@@ -16,6 +16,7 @@ package prloop
 
 import (
 	"fmt"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -186,8 +187,15 @@ type Source struct {
 	// held under): the ticket loop's In Progress tickets. The lease is keyed on the
 	// branch, so the PR loop skips a branch whose ticket is still being worked.
 	held func() (map[string]string, error)
-	log  loop.Narrator
-	now  func() time.Time
+	// checkedOut lists the branches the checkout's worktrees have checked out
+	// (branch → worktree path), and own is the path of the loop's own worktree for
+	// a PR. git refuses to check out a branch another worktree holds, so the loop
+	// skips that PR rather than spend an attempt on a checkout that cannot succeed
+	// (#192).
+	checkedOut func() (map[string]string, error)
+	own        func(number int) string
+	log        loop.Narrator
+	now        func() time.Time
 }
 
 var _ loop.Source = (*Source)(nil)
@@ -201,6 +209,60 @@ func NewSource(gh GitHub, opts Options, held func() (map[string]string, error), 
 	return &Source{gh: gh, opts: opts, held: held, log: log, now: time.Now}
 }
 
+// WatchWorktrees turns on the worktree check (#192): a PR whose head branch a
+// worktree other than own(number) has checked out is skipped until that worktree
+// is gone. checkedOut maps each checked-out branch to its worktree's path.
+func (s *Source) WatchWorktrees(checkedOut func() (map[string]string, error), own func(number int) string) *Source {
+	s.checkedOut, s.own = checkedOut, own
+	return s
+}
+
+// holds is what keeps the loop off a PR's branch for now: the ticket loop's held
+// branches (branch → Key), and the branches the checkout's worktrees have checked
+// out (branch → worktree path).
+type holds struct {
+	tickets   map[string]string
+	worktrees map[string]string
+}
+
+// holds reads both, failing on either: a PR judged without them could be worked
+// under the ticket loop, or spend an attempt on a checkout git refuses.
+func (s *Source) holds() (holds, error) {
+	var h holds
+	var err error
+	if h.tickets, err = s.held(); err != nil {
+		return h, fmt.Errorf("could not read which branches the ticket loop holds: %w", err)
+	}
+	if s.checkedOut != nil {
+		if h.worktrees, err = s.checkedOut(); err != nil {
+			return h, fmt.Errorf("could not list the checkout's worktrees: %w", err)
+		}
+	}
+	return h, nil
+}
+
+// foreignWorktree is the worktree, other than the loop's own for pr, that has pr's
+// head branch checked out, or "".
+func (s *Source) foreignWorktree(pr github.PullRequest, h holds) string {
+	path, ok := h.worktrees[pr.HeadBranch]
+	if !ok || (s.own != nil && samePath(path, s.own(pr.Number))) {
+		return ""
+	}
+	return path
+}
+
+// samePath reports whether two paths name one directory. git lists a worktree by
+// its real path, which a checkout reached through a symlink does not spell the
+// same way.
+func samePath(a, b string) bool {
+	if filepath.Clean(a) == filepath.Clean(b) {
+		return true
+	}
+	ra, errA := filepath.EvalSymlinks(a)
+	rb, errB := filepath.EvalSymlinks(b)
+	return errA == nil && errB == nil && ra == rb
+}
+
 // CheckAccess proves the GitHub credential can read the PRs, once at startup.
 func (s *Source) CheckAccess() error {
 	if _, err := s.gh.OpenPRs(); err != nil {
@@ -212,15 +274,16 @@ func (s *Source) CheckAccess() error {
 // Plan judges every open PR without changing anything: it is what Next acts on,
 // and what `loop <name> --dry-run` prints. A PR whose state cannot be read is
 // skipped with the error, so one bad PR never stalls the poll; a failed list read,
-// or not knowing which branches another loop holds, fails the whole poll.
+// or not knowing which branches another loop or worktree holds, fails the whole
+// poll.
 func (s *Source) Plan() ([]Candidate, error) {
 	prs, err := s.gh.OpenPRs()
 	if err != nil {
 		return nil, err
 	}
-	held, err := s.held()
+	held, err := s.holds()
 	if err != nil {
-		return nil, fmt.Errorf("could not read which branches the ticket loop holds: %w", err)
+		return nil, err
 	}
 	out := make([]Candidate, 0, len(prs))
 	for _, pr := range prs {
@@ -231,9 +294,10 @@ func (s *Source) Plan() ([]Candidate, error) {
 
 // judge decides one PR, cheapest checks first: labels and branch before any read,
 // the merge state and checks before the comment history.
-func (s *Source) judge(pr github.PullRequest, held map[string]string) Candidate {
+func (s *Source) judge(pr github.PullRequest, held holds) Candidate {
 	c := Candidate{Item: Item{PR: pr, Harness: strings.HasPrefix(pr.HeadBranch, s.opts.BranchPrefix+"/")}}
 	skip := func(format string, a ...any) Candidate { c.Skip = fmt.Sprintf(format, a...); return c }
+	worktree := s.foreignWorktree(pr, held)
 	switch {
 	case pr.Fork:
 		return skip("fork — the harness cannot push to it")
@@ -245,8 +309,12 @@ func (s *Source) judge(pr github.PullRequest, held map[string]string) Candidate 
 		return skip("not opted in (not on %s/ and no %s label)", s.opts.BranchPrefix, s.opts.OptInLabel)
 	case pr.HasLabel(s.opts.HeldLabel):
 		return skip("held (labelled %s)", s.opts.HeldLabel)
-	case held[pr.HeadBranch] != "":
-		return skip("branch held by %s in the ticket loop", held[pr.HeadBranch])
+	case held.tickets[pr.HeadBranch] != "":
+		return skip("branch held by %s in the ticket loop", held.tickets[pr.HeadBranch])
+	case worktree != "":
+		// Not an attempt: the checkout cannot succeed, so the budget is not spent on
+		// it, and the PR is judged afresh once the worktree is gone (#192).
+		return skip("branch checked out in worktree %s", worktree)
 	}
 
 	merge, err := s.gh.MergeState(pr.Number)
@@ -355,7 +423,7 @@ func (s *Source) settle(c Candidate) {
 	if err != nil {
 		return
 	}
-	held, err := s.held()
+	held, err := s.holds()
 	if err != nil {
 		return
 	}

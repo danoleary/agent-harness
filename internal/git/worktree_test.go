@@ -185,3 +185,41 @@ func TestCommitsAheadReadsFromTheCheckoutAndFailsToZero(t *testing.T) {
 		t.Errorf("CommitsAhead = %d for unparseable output, want 0 — never a count the push gate would trust", got)
 	}
 }
+
+// CheckedOutBranches reads every worktree off the main checkout, so the PR loop
+// can tell a head branch it cannot check out because another worktree holds it
+// (#192). A detached or bare worktree holds no branch.
+func TestCheckedOutBranchesMapsEachBranchToItsWorktree(t *testing.T) {
+	var argv []string
+	out := func(name string, args ...string) ([]byte, error) {
+		argv = append([]string{name}, args...)
+		return []byte("worktree /herd\nHEAD 1111111\nbranch refs/heads/main\n\n" +
+			"worktree /herd/.claude/worktrees/beh-1298\nHEAD 2222222\nbranch refs/heads/feat/beh-1298\n\n" +
+			"worktree /herd/.claude/worktrees/scratch\nHEAD 3333333\ndetached\n\n" +
+			"worktree /herd/.claude/worktrees/gone\nHEAD 4444444\nbranch refs/heads/alice/widget\nprunable gitdir file points to non-existent location\n\n" +
+			"worktree /herd.git\nbare\n\n"), nil
+	}
+	got, err := fakeCheckout(runners{output: out}).CheckedOutBranches()
+	if err != nil {
+		t.Fatalf("CheckedOutBranches: %v", err)
+	}
+	want := map[string]string{
+		"main":          "/herd",
+		"feat/beh-1298": "/herd/.claude/worktrees/beh-1298",
+		"alice/widget":  "/herd/.claude/worktrees/gone",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("branches = %v, want %v (a detached or bare worktree holds no branch; a prunable one still does, as git still refuses the branch until it is pruned)", got, want)
+	}
+	if strings.Join(argv, " ") != "git -C /herd worktree list --porcelain" {
+		t.Errorf("argv = %q, want the porcelain list from the main checkout", argv)
+	}
+}
+
+// A list git cannot produce is an error, not "no worktree holds anything".
+func TestCheckedOutBranchesReturnsTheListError(t *testing.T) {
+	out := func(string, ...string) ([]byte, error) { return nil, errors.New("not a git repository") }
+	if _, err := fakeCheckout(runners{output: out}).CheckedOutBranches(); err == nil {
+		t.Fatal("expected the list error")
+	}
+}

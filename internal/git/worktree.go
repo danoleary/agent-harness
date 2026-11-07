@@ -582,6 +582,30 @@ func (c Checkout) TrackedFiles() ([]string, error) {
 	return pathLines(out), nil
 }
 
+// CheckedOutBranches maps each branch a worktree of the checkout has checked out
+// (the main checkout included) to that worktree's path, as `git worktree list
+// --porcelain` reports it. git refuses to check a branch out a second time, so the
+// PR loop skips a PR whose head branch is here under a worktree it does not own
+// (#192). A detached or bare worktree holds no branch; a prunable one still does,
+// as git refuses its branch until the worktree is pruned.
+func (c Checkout) CheckedOutBranches() (map[string]string, error) {
+	out, err := c.output("git", "-C", c.path, "worktree", "list", "--porcelain")
+	if err != nil {
+		return nil, err
+	}
+	branches := map[string]string{}
+	path := ""
+	for _, line := range strings.Split(string(out), "\n") {
+		switch {
+		case strings.HasPrefix(line, "worktree "):
+			path = strings.TrimPrefix(line, "worktree ")
+		case strings.HasPrefix(line, "branch refs/heads/"):
+			branches[strings.TrimPrefix(line, "branch refs/heads/")] = path
+		}
+	}
+	return branches, nil
+}
+
 // pathLines is git's one-path-per-line output, blank lines dropped.
 func pathLines(out []byte) []string {
 	var paths []string
