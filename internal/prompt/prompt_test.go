@@ -147,6 +147,25 @@ func TestImplementRendersBodyTemplate(t *testing.T) {
 	}
 }
 
+// #186: `{{.Branch}}` is the branch the session's worktree is really on — the
+// Context's override when the PR loop works a branch it did not name (ADR-0019),
+// else the canonical `<BranchPrefix>/<Slug>`.
+func TestBodyBranchIsTheOverrideElseTheCanonicalBranch(t *testing.T) {
+	body := "on branch `{{.Branch}}`"
+	for _, s := range []Stage{Retrospective, Review} {
+		pr := For(s, Context{Ticket: sample, Slug: "pr-12", BranchPrefix: testPrefix, Branch: "feat/gh-7", Body: body})
+		if !strings.Contains(pr, "on branch `feat/gh-7`") || strings.Contains(pr, "feat/pr-12") {
+			t.Errorf("stage %d: prompt does not name the override branch, or names one built from the slug:\n%s", s, pr)
+		}
+	}
+	for _, s := range []Stage{Retrospective, Review, Implement} {
+		canon := For(s, Context{Ticket: sample, Slug: "beh-362", BranchPrefix: testPrefix, Body: body})
+		if !strings.Contains(canon, "on branch `feat/beh-362`") {
+			t.Errorf("stage %d: body without an override does not name the canonical branch:\n%s", s, canon)
+		}
+	}
+}
+
 // AC4 (the core guarantee): the envelope is non-overridable. Even an EMPTY body —
 // or one that says nothing about the contract — cannot drop the four contract
 // items, because the harness appends them structurally around the body.

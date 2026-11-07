@@ -1,6 +1,6 @@
 /review-worktree {{.WorktreePath}}
 
-You are reviewing the worktree on branch `{{.BranchPrefix}}/{{.Slug}}` for {{.Identifier}}.
+You are reviewing the worktree on branch `{{.Branch}}` for {{.Identifier}}.
 
 This is a COLD review. Reconstruct the intent from the branch, this ticket, and the diff ONLY. Do NOT read the implementation session's transcript — coldness is the point; an independent reviewer must not be anchored to the implementer's framing.
 
