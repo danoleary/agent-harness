@@ -110,7 +110,7 @@ others.
 | `<name>` | the loop to run (default `tickets`) |
 | `--instance <id>` | run as one of several ticket-loop daemons, with its own `STOP-<id>`, pidfile and logs |
 | `--list` | print every loop this project can run, and exit |
-| `--dry-run` | print the loop's resolved Source, Steps and limits (and, for a PR loop, the PRs it would work), and exit |
+| `--dry-run` | print the loop's resolved Source, Steps and limits (and, for a PR loop, the PRs it would work; for a security-alerts loop, the packages), and exit |
 
 **Stopping.** `touch` one of these, or send one SIGINT, and the loop finishes the
 current item, then exits:

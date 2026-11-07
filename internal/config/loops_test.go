@@ -245,6 +245,60 @@ steps = [
 	)
 }
 
+// A github_security_alerts loop resolves with its defaults filled in: the
+// critical and high alerts, two attempts per fingerprint. Its fix_alerts step
+// supplies the SecurityFix body.
+func TestAGitHubSecurityAlertsLoopResolvesWithItsDefaults(t *testing.T) {
+	dir := loopsCheckout(t, `
+[[loops]]
+name = "security-alerts"
+source = { kind = "github_security_alerts" }
+steps = [
+  { use = "new_branch" },
+  { use = "fix_alerts", prompt = "prompts/security-fix.md" },
+  { use = "gates" },
+  { use = "open_pr" },
+  { use = "watch_ci" },
+  { use = "retro" },
+]
+
+[[loops]]
+name = "everything"
+source = { kind = "github_security_alerts", severity = ["low", "medium", "high", "critical"], max_attempts = 4 }
+steps = [{ use = "new_branch" }, { use = "fix_alerts" }, { use = "gates" }, { use = "open_pr" }]
+`)
+	writePromptBody(t, dir, "security-fix", "Prefer an override.")
+	pc, err := LoadProject(dir)
+	if err != nil {
+		t.Fatalf("LoadProject: %v", err)
+	}
+	p := Project{Loops: pc.ResolvedLoops}
+	l, ok := p.LoopNamed("security-alerts")
+	if !ok {
+		t.Fatal("security-alerts is not declared")
+	}
+	want := LoopSource{Kind: SourceGitHubSecurityAlerts, Severity: []string{SeverityCritical, SeverityHigh}, MaxAttempts: 2}
+	if !reflect.DeepEqual(l.Source, want) {
+		t.Errorf("Source = %+v, want %+v", l.Source, want)
+	}
+	if got := l.StepNames(); !reflect.DeepEqual(got, []string{StepNewBranch, StepFixAlerts, StepGates, StepOpenPR, StepWatchCI, StepRetro}) {
+		t.Errorf("steps = %v", got)
+	}
+	if l.LeavesCIToPRLoop() {
+		t.Error("only a ticket loop hands its CI on")
+	}
+	var bodies PromptBodies
+	l.ApplyPrompts(&bodies)
+	if bodies.SecurityFix != "Prefer an override." || bodies.Fix != "" {
+		t.Errorf("fix_alerts supplies the SecurityFix body, got %+v", bodies)
+	}
+
+	all, _ := p.LoopNamed("everything")
+	if !reflect.DeepEqual(all.Source.Severity, []string{"low", "medium", "high", "critical"}) || all.Source.MaxAttempts != 4 {
+		t.Errorf("a loop's own severity and budget are kept, got %+v", all.Source)
+	}
+}
+
 // The rest of what a loop can get wrong, each named.
 func TestLoadProjectRejectsLoopMisconfigurations(t *testing.T) {
 	cases := []struct {
@@ -370,6 +424,102 @@ name = "a"
 source = { kind = "tracker", label = "x" }
 steps = [{ use = "implement" }, { use = "review" }]
 `, "source.label is not a tracker parameter"},
+		{"unknown source lists every kind", `
+[[loops]]
+name = "a"
+source = { kind = "jira_board" }
+steps = [{ use = "implement" }, { use = "review" }]
+`, `use "tracker", "github_prs" or "github_security_alerts"`},
+		{"security alerts take no label", `
+[[loops]]
+name = "a"
+source = { kind = "github_security_alerts", label = "x" }
+steps = [{ use = "new_branch" }, { use = "fix_alerts" }, { use = "gates" }, { use = "open_pr" }]
+`, "source.label is not a github_security_alerts parameter"},
+		{"security alerts take no scope", `
+[[loops]]
+name = "a"
+source = { kind = "github_security_alerts", scope = "all" }
+steps = [{ use = "new_branch" }, { use = "fix_alerts" }, { use = "gates" }, { use = "open_pr" }]
+`, "source.scope is not a github_security_alerts parameter"},
+		{"security alerts take no when", `
+[[loops]]
+name = "a"
+source = { kind = "github_security_alerts", when = ["conflicting"] }
+steps = [{ use = "new_branch" }, { use = "fix_alerts" }, { use = "gates" }, { use = "open_pr" }]
+`, "source.when is not a github_security_alerts parameter"},
+		{"unknown severity", `
+[[loops]]
+name = "a"
+source = { kind = "github_security_alerts", severity = ["urgent"] }
+steps = [{ use = "new_branch" }, { use = "fix_alerts" }, { use = "gates" }, { use = "open_pr" }]
+`, `unknown severity "urgent": use "critical", "high", "medium" or "low"`},
+		{"severity on a PR loop", `
+[[loops]]
+name = "a"
+source = { kind = "github_prs", when = ["conflicting"], severity = ["high"] }
+steps = [{ use = "checkout_pr" }, { use = "fix" }, { use = "gates" }, { use = "push_existing" }]
+`, "source.severity is not a github_prs parameter"},
+		{"negative security budget", `
+[[loops]]
+name = "a"
+source = { kind = "github_security_alerts", max_attempts = -1 }
+steps = [{ use = "new_branch" }, { use = "fix_alerts" }, { use = "gates" }, { use = "open_pr" }]
+`, "source.max_attempts must be positive"},
+		{"fix_alerts before new_branch", `
+[[loops]]
+name = "a"
+source = { kind = "github_security_alerts" }
+steps = [{ use = "fix_alerts" }, { use = "new_branch" }, { use = "gates" }, { use = "open_pr" }]
+`, "fix_alerts needs new_branch before it"},
+		{"gates before fix_alerts", `
+[[loops]]
+name = "a"
+source = { kind = "github_security_alerts" }
+steps = [{ use = "new_branch" }, { use = "gates" }, { use = "fix_alerts" }, { use = "open_pr" }]
+`, "gates needs fix_alerts before it"},
+		{"open_pr before gates", `
+[[loops]]
+name = "a"
+source = { kind = "github_security_alerts" }
+steps = [{ use = "new_branch" }, { use = "fix_alerts" }, { use = "open_pr" }, { use = "gates" }]
+`, "open_pr needs gates before it"},
+		{"watch_ci before open_pr", `
+[[loops]]
+name = "a"
+source = { kind = "github_security_alerts" }
+steps = [{ use = "new_branch" }, { use = "fix_alerts" }, { use = "gates" }, { use = "watch_ci" }, { use = "open_pr" }]
+`, "watch_ci needs open_pr before it"},
+		{"security retro not last", `
+[[loops]]
+name = "a"
+source = { kind = "github_security_alerts" }
+steps = [{ use = "new_branch" }, { use = "fix_alerts" }, { use = "gates" }, { use = "retro" }, { use = "open_pr" }]
+`, "retro must be the last step"},
+		{"security loop without open_pr", `
+[[loops]]
+name = "a"
+source = { kind = "github_security_alerts" }
+steps = [{ use = "new_branch" }, { use = "fix_alerts" }, { use = "gates" }]
+`, "a github_security_alerts loop needs a open_pr step"},
+		{"a PR loop's fix on a security loop", `
+[[loops]]
+name = "a"
+source = { kind = "github_security_alerts" }
+steps = [{ use = "new_branch" }, { use = "fix" }, { use = "fix_alerts" }, { use = "gates" }, { use = "open_pr" }]
+`, "fix does not run on a github_security_alerts source"},
+		{"new_branch on a tracker", `
+[[loops]]
+name = "a"
+source = { kind = "tracker" }
+steps = [{ use = "new_branch" }, { use = "implement" }, { use = "review" }]
+`, "new_branch does not run on a tracker source"},
+		{"open_pr takes no prompt", `
+[[loops]]
+name = "a"
+source = { kind = "github_security_alerts" }
+steps = [{ use = "new_branch" }, { use = "fix_alerts" }, { use = "gates" }, { use = "open_pr", prompt = "prompts/x.md" }]
+`, "open_pr takes no prompt"},
 		{"prompt escapes the directory", `
 [[loops]]
 name = "a"

@@ -150,3 +150,35 @@ steps = [
 - **Claims** are the open PRs on `sec-` branches that carry the held label, each
   timed by its Key's latest `started` line. A labelled PR the ledger never
   started is left out, as in #196. Release takes the label off.
+
+## Amendment, 2026-11-07: the loop as config declares it (#201)
+
+The loader accepts the Source and `agent-harness loop <name> --dry-run` prints
+its plan. A real run is refused as not yet runnable until the Pipeline lands.
+The config differs from the Decision's example in three ways:
+
+- **The Source key is `severity`**, not `severities`. It takes `critical`,
+  `high`, `medium` and `low`, and defaults to `[critical, high]`.
+  `max_attempts` is the per-fingerprint budget and defaults to 2, not
+  `PR_LOOP_MAX_ATTEMPTS`: a fingerprint is a package's whole alert set, not a PR.
+  `label`, `scope` and `when` are `github_prs` parameters and are rejected.
+- **The Steps have their own names.** `new_branch` cuts the branch fresh
+  (decision 3). `fix_alerts` runs the SecurityFix session and takes its prompt.
+  `open_pr` is the Landing as a new PR. Reusing `fix` and `ship` would have given
+  one step name two checks, depending on the Source.
+- **The order is fixed:** `new_branch`, `fix_alerts`, `gates`, `open_pr`, then
+  optionally `watch_ci` and `retro`. The first four are required.
+
+```toml
+[[loops]]
+name = "security-alerts"
+source = { kind = "github_security_alerts", severity = ["critical", "high"] }
+steps = [
+  { use = "new_branch" },
+  { use = "fix_alerts", prompt = "prompts/security-fix.md" },
+  { use = "gates" },
+  { use = "open_pr" },
+  { use = "watch_ci" },
+  { use = "retro" },
+]
+```

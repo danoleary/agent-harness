@@ -23,7 +23,13 @@ const (
 	// SourceGitHubPRs is the open PRs that conflict with main or have red CI: the
 	// PR loop.
 	SourceGitHubPRs = "github_prs"
+	// SourceGitHubSecurityAlerts is the repository's open Dependabot alerts, one
+	// Work item per vulnerable package: the security-alerts loop (ADR-0040).
+	SourceGitHubSecurityAlerts = "github_security_alerts"
 )
+
+// sourceKinds lists every Source kind, as the loader names them in an error.
+var sourceKinds = fmt.Sprintf("%q, %q or %q", SourceTracker, SourceGitHubPRs, SourceGitHubSecurityAlerts)
 
 // The Steps a loop's Pipeline is made of.
 const (
@@ -48,6 +54,15 @@ const (
 	// whose committed fix must pass every Gate before it is pushed. On a ticket
 	// loop the review stage runs it over the PR it just opened.
 	StepWatchCI = "watch_ci"
+	// StepNewBranch cuts a package's branch fresh from origin/main, resetting one a
+	// failed attempt left behind.
+	StepNewBranch = "new_branch"
+	// StepFixAlerts runs the SecurityFix session over the package's alerts, checked
+	// by the dependency-files-only diff and the lockfile ground truth.
+	StepFixAlerts = "fix_alerts"
+	// StepOpenPR lands the gate-green branch as a new PR carrying the fingerprint
+	// marker and the held label.
+	StepOpenPR = "open_pr"
 )
 
 // What a github_prs Source yields ("when").
@@ -55,6 +70,20 @@ const (
 	WhenConflicting = "conflicting"
 	WhenCIFailing   = "ci_failing"
 )
+
+// The alert severities a github_security_alerts Source can work.
+const (
+	SeverityCritical = "critical"
+	SeverityHigh     = "high"
+	SeverityMedium   = "medium"
+	SeverityLow      = "low"
+)
+
+// The github_security_alerts Source's defaults: the alerts worth an unattended
+// fix, and the attempts each fingerprint gets before a human is handed it.
+var defaultSeverity = []string{SeverityCritical, SeverityHigh}
+
+const defaultSecurityMaxAttempts = 2
 
 // The built-in loops' names. DefaultLoopName is what a bare `agent-harness loop`
 // runs.
@@ -90,6 +119,7 @@ type SourceConfig struct {
 	Label       string   `toml:"label"`
 	Scope       string   `toml:"scope"`
 	When        []string `toml:"when"`
+	Severity    []string `toml:"severity"`
 	MaxAttempts int      `toml:"max_attempts"`
 }
 
@@ -125,7 +155,10 @@ type LoopSource struct {
 	Scope string
 	// When is what a github_prs Source yields: conflicting PRs, PRs with red CI.
 	When []string
-	// MaxAttempts is the github_prs per-PR attempt budget.
+	// Severity is the alert severities a github_security_alerts Source works.
+	Severity []string
+	// MaxAttempts is the github_prs per-PR attempt budget, or the
+	// github_security_alerts per-fingerprint one.
 	MaxAttempts int
 }
 
@@ -277,6 +310,8 @@ func (l Loop) ApplyPrompts(p *PromptBodies) {
 			p.Retro = s.Prompt
 		case StepFix:
 			p.Fix = s.Prompt
+		case StepFixAlerts:
+			p.SecurityFix = s.Prompt
 		}
 	}
 }
@@ -391,29 +426,38 @@ type prereq struct {
 }
 
 var stepSpecs = map[string]stepSpec{
-	StepImplement:    {on: map[string]prereq{SourceTracker: {}}, prompt: true},
-	StepReview:       {on: map[string]prereq{SourceTracker: {StepImplement, "it reviews the branch implement committed"}}, prompt: true},
-	StepCheckoutPR:   {on: map[string]prereq{SourceGitHubPRs: {}}},
-	StepFix:          {on: map[string]prereq{SourceGitHubPRs: {StepCheckoutPR, "it fixes the worktree checkout_pr makes"}}, prompt: true},
-	StepGates:        {on: map[string]prereq{SourceGitHubPRs: {StepFix, "it checks the tree fix committed"}}},
+	StepImplement:  {on: map[string]prereq{SourceTracker: {}}, prompt: true},
+	StepReview:     {on: map[string]prereq{SourceTracker: {StepImplement, "it reviews the branch implement committed"}}, prompt: true},
+	StepCheckoutPR: {on: map[string]prereq{SourceGitHubPRs: {}}},
+	StepFix:        {on: map[string]prereq{SourceGitHubPRs: {StepCheckoutPR, "it fixes the worktree checkout_pr makes"}}, prompt: true},
+	StepNewBranch:  {on: map[string]prereq{SourceGitHubSecurityAlerts: {}}},
+	StepFixAlerts:  {on: map[string]prereq{SourceGitHubSecurityAlerts: {StepNewBranch, "it fixes the worktree new_branch cuts"}}, prompt: true},
+	StepGates: {on: map[string]prereq{
+		SourceGitHubPRs:            {StepFix, "it checks the tree fix committed"},
+		SourceGitHubSecurityAlerts: {StepFixAlerts, "it checks the tree fix_alerts committed"},
+	}},
 	StepPushExisting: {on: map[string]prereq{SourceGitHubPRs: {StepGates, "it pushes only a committed, gate-green tree"}}},
+	StepOpenPR:       {on: map[string]prereq{SourceGitHubSecurityAlerts: {StepGates, "it opens a PR only for a committed, gate-green tree"}}},
 	// On a ticket loop, watch_ci keeps the review stage on its PR's CI to a verdict;
 	// a ticket loop without it leaves red CI to a PR loop (#110).
 	StepWatchCI: {on: map[string]prereq{
-		SourceTracker:   {StepReview, "it watches the CI of the PR review opens"},
-		SourceGitHubPRs: {StepPushExisting, "it watches the CI of a pushed head"},
+		SourceTracker:              {StepReview, "it watches the CI of the PR review opens"},
+		SourceGitHubPRs:            {StepPushExisting, "it watches the CI of a pushed head"},
+		SourceGitHubSecurityAlerts: {StepOpenPR, "it watches the CI of the PR open_pr opens"},
 	}},
 	StepRetro: {prompt: true, last: true},
 }
 
 // stepOrder lists the steps in the order the loader names them in an error.
-var stepOrder = []string{StepImplement, StepReview, StepCheckoutPR, StepFix, StepGates, StepPushExisting, StepWatchCI, StepRetro}
+var stepOrder = []string{StepImplement, StepReview, StepCheckoutPR, StepFix, StepNewBranch, StepFixAlerts, StepGates, StepPushExisting, StepOpenPR, StepWatchCI, StepRetro}
 
 // requiredSteps are the steps without which a Source's loop would do nothing
-// worth a sandbox: a ticket loop that never lands, a PR loop that never pushes.
+// worth a sandbox: a ticket loop that never lands, a PR loop that never pushes,
+// a security loop that never opens its PR.
 var requiredSteps = map[string][]string{
-	SourceTracker:   {StepImplement, StepReview},
-	SourceGitHubPRs: {StepCheckoutPR, StepFix, StepGates, StepPushExisting},
+	SourceTracker:              {StepImplement, StepReview},
+	SourceGitHubPRs:            {StepCheckoutPR, StepFix, StepGates, StepPushExisting},
+	SourceGitHubSecurityAlerts: {StepNewBranch, StepFixAlerts, StepGates, StepOpenPR},
 }
 
 var loopNameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
@@ -460,11 +504,14 @@ func resolveLoops(loops []LoopConfig, dir string, at positions) ([]Loop, []strin
 		l := Loop{Name: lc.Name}
 		l.Limits = resolveLimits(lc, path, add)
 
-		l.Source = LoopSource{Kind: lc.Source.Kind, Label: lc.Source.Label, Scope: lc.Source.Scope, When: lc.Source.When, MaxAttempts: lc.Source.MaxAttempts}
+		l.Source = LoopSource{Kind: lc.Source.Kind, Label: lc.Source.Label, Scope: lc.Source.Scope, When: lc.Source.When, Severity: lc.Source.Severity, MaxAttempts: lc.Source.MaxAttempts}
 		src := path + ".source"
+		if len(lc.Source.Severity) > 0 && lc.Source.Kind != SourceGitHubSecurityAlerts && lc.Source.Kind != "" {
+			add(src+".severity", "source.severity is not a %s parameter", lc.Source.Kind)
+		}
 		switch lc.Source.Kind {
 		case "":
-			add(path, "source.kind is required: %q or %q", SourceTracker, SourceGitHubPRs)
+			add(path, "source.kind is required: %s", sourceKinds)
 		case SourceTracker:
 			if lc.Source.Label != "" {
 				add(src+".label", "source.label is not a tracker parameter: the ticket queue is set under [tracker]")
@@ -504,8 +551,33 @@ func resolveLoops(loops []LoopConfig, dir string, at positions) ([]Loop, []strin
 			default:
 				add(src+".scope", "unknown scope %q: use %q or %q", lc.Source.Scope, ScopeOptedIn, ScopeAll)
 			}
+		case SourceGitHubSecurityAlerts:
+			for _, p := range []struct {
+				key string
+				set bool
+			}{{"label", lc.Source.Label != ""}, {"scope", lc.Source.Scope != ""}, {"when", len(lc.Source.When) > 0}} {
+				if p.set {
+					add(src+"."+p.key, "source.%s is not a %s parameter", p.key, SourceGitHubSecurityAlerts)
+				}
+			}
+			if len(l.Source.Severity) == 0 {
+				l.Source.Severity = append([]string(nil), defaultSeverity...)
+			}
+			for _, sev := range l.Source.Severity {
+				switch sev {
+				case SeverityCritical, SeverityHigh, SeverityMedium, SeverityLow:
+				default:
+					add(src+".severity", "unknown severity %q: use %q, %q, %q or %q", sev, SeverityCritical, SeverityHigh, SeverityMedium, SeverityLow)
+				}
+			}
+			switch {
+			case lc.Source.MaxAttempts < 0:
+				add(src+".max_attempts", "source.max_attempts must be positive, got %d", lc.Source.MaxAttempts)
+			case lc.Source.MaxAttempts == 0:
+				l.Source.MaxAttempts = defaultSecurityMaxAttempts
+			}
 		default:
-			add(src+".kind", "unknown source kind %q: use %q or %q", lc.Source.Kind, SourceTracker, SourceGitHubPRs)
+			add(src+".kind", "unknown source kind %q: use %s", lc.Source.Kind, sourceKinds)
 		}
 
 		l.Steps = resolveSteps(lc, l.Source, path, dir, add)
@@ -551,7 +623,7 @@ func resolveSteps(lc LoopConfig, src LoopSource, path, dir string, add func(key,
 		add(path, "at least one step is required")
 		return nil
 	}
-	known := src.Kind == SourceTracker || src.Kind == SourceGitHubPRs
+	_, known := requiredSteps[src.Kind]
 	var steps []Step
 	before := map[string]bool{}
 	for j, sc := range lc.Steps {
