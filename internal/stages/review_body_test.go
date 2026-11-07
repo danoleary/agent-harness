@@ -1050,3 +1050,27 @@ func TestReviewPromptPromisesARedGateComesBackOnce(t *testing.T) {
 		t.Errorf("the review envelope must promise the red-gate re-launch; prompt:\n%s", h.Agents[0].Prompt)
 	}
 }
+
+// #176, replayed: a guard script prints its diagnostic to stdout, so the gate's
+// stderr tail is only make's exit summary. The run log names the step log and
+// carries its tail, so the reader sees why the gate is red without opening it.
+func TestReviewRedGateNarratesTheStepLogTailAndPath(t *testing.T) {
+	h, _ := handedOff(t, "PROJ-76")
+	log := stageLog(t, "PROJ-76")
+	h.AgentOutcome = session.Outcome{ReviewVerdictEmitted: true}
+	stdout := "check-adr: ADR-0041 is referenced in internal/stages/review.go but docs/adr/ has no 0041-*.md\n-- step exited 2 --\n"
+	h.ShellFn = redFirstGate(log, session.Outcome{ExitCode: 2, StderrTail: "make: *** [Makefile:41: check-adr] Error 1"}, stdout)
+
+	Review(h, stageCfg(), log, Args{Identifier: "PROJ-76"})
+
+	said := narration(t, log)
+	for _, want := range []string{
+		"docs/adr/ has no 0041-*.md",
+		"make: *** [Makefile:41: check-adr] Error 1",
+		filepath.Join(log.Dir, gateStep+"-check.log"),
+	} {
+		if !strings.Contains(said, want) {
+			t.Errorf("run.jsonl should carry %q; got %s", want, said)
+		}
+	}
+}

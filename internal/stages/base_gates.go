@@ -161,8 +161,10 @@ func baseIsRed(h hostio.Host, cfg config.Config, log *runlog.Logger, t ticket.Ti
 		return false
 	}
 	log.Event(fmt.Sprintf("tdd ⏸ base %s fails gate %q (exit %d) before any change — holding %s until main moves; no session launched (#125)", short, res.FailedGate, res.Outcome.ExitCode, t.Identifier))
-	if res.Outcome.StderrTail != "" {
-		log.Event("tdd · base gate stderr tail:\n" + res.Outcome.StderrTail)
+	// What the gate printed, and where its step log is, so the reader can tell
+	// why main is red without opening a second file (#176).
+	if s := redGateNarration(log.Dir, res); s != "" {
+		log.Event("tdd · base " + s)
 	}
 	fileBaseRed(h, log, t, sha, res, findingsDir)
 	return true

@@ -309,7 +309,9 @@ loop:
     "No such file or directory" report for the command in its stderr tail — make wraps a recipe's 127 as
     exit 2) is reported as `gate re-run could not execute … (environment, not code)`, NOT "gate re-run is
     red"; if the review session reached a clear verdict running the gates in its own container, the reason
-    names the session/gate-runner shell/PATH difference. The gate's stderr tail is logged on any red (#46).
+    names the session/gate-runner shell/PATH difference. Any red logs the gate's stderr tail (#46) and,
+    with it, its step log's path and last lines: a guard that reports on stdout leaves stderr only
+    make's `Error 1` (#176).
   if review has NO verdict but exited CLEANLY (code 0, not an OOM/cap-abort) over a clean,
      gate-green worktree (BEH-624): the diff is byte-identical and already verified — the review
      just stopped a turn short of printing its verdict. Re-launch the review session in-stage,

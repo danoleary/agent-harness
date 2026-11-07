@@ -1,6 +1,8 @@
 package stages
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -201,5 +203,38 @@ func TestBaseVerdictsExpireRedButNotGreen(t *testing.T) {
 	}
 	if got, ok := v.read("bbb"); !ok || !got.Green() {
 		t.Errorf("read(bbb) = %+v, %v; a green verdict does not expire", got, ok)
+	}
+}
+
+// #176: a red base gate's narration carries its step log's tail and path, not just
+// the stderr tail, which for a guard that reports on stdout is only make's summary.
+func TestImplementationRedBaseNarratesTheStepLogTailAndPath(t *testing.T) {
+	repo := gittest.New(t)
+	h := hostio.NewFake(repo.Checkout(), ticket.Slug("PROJ-30"))
+	log := stageLog(t, "PROJ-30")
+	h.ShellFn = func(_ int, run hostio.ShellRun) session.Outcome {
+		if strings.HasPrefix(run.Label, baseGateStep) {
+			_ = os.WriteFile(filepath.Join(log.Dir, run.Label+".log"), []byte("check-exec: raw exec.Command(\"gh\") in internal/ci/watch.go:88\n"), 0o644)
+			return session.Outcome{ExitCode: 2, StderrTail: "make: *** [Makefile:30: check-exec] Error 1"}
+		}
+		return session.Outcome{}
+	}
+
+	if res := Implementation(h, sharedCfg(t), log, Args{Identifier: "PROJ-30"}); res.Disposition != BaseRed {
+		t.Fatalf("want the ticket held on the red base, got %+v", res)
+	}
+
+	said := narration(t, log)
+	for _, want := range []string{
+		`raw exec.Command(\"gh\") in internal/ci/watch.go:88`,
+		"make: *** [Makefile:30: check-exec] Error 1",
+		filepath.Join(log.Dir, baseGateLabel+".log"),
+	} {
+		if !strings.Contains(said, want) {
+			t.Errorf("run.jsonl should carry %q; got %s", want, said)
+		}
+	}
+	if len(h.Filed) != 1 {
+		t.Fatalf("filed = %v, want the red-base finding", h.Filed)
 	}
 }
