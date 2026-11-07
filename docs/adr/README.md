@@ -7,7 +7,7 @@ the last line below (check `origin/main`, not local main), write
 same number then conflict here, before either reaches main.
 
 - [ADR-0001](0001-harness-owns-linear-integration.md): The harness owns all Linear I/O; nothing Linear enters the sandbox
-- [ADR-0002](0002-harness-owns-remote-io.md): The harness owns all remote I/O; the sandbox is air-gapped except for Anthropic; the checkout is mounted at its real host path
+- [ADR-0002](0002-harness-owns-remote-io.md): The harness owns all remote I/O; the sandbox holds no credential but Anthropic's and reaches no remote the harness owns; the checkout is mounted at its real host path
 - [ADR-0003](0003-claim-on-select.md): `--next` claims the ticket during selection, before Docker preflight
 - [ADR-0004](0004-loop-is-a-long-running-daemon.md): The autonomous loop is a long-running daemon, not drain-and-exit + cron
 - [ADR-0005](0005-loop-viewer-is-a-separate-reader-over-a-structured-stream.md): The loop viewer is a separate read-only reader over a structured event stream
@@ -45,3 +45,4 @@ same number then conflict here, before either reaches main.
 - [ADR-0037](0037-a-replay-git-could-not-run-is-retried-not-resolved.md): A replay git could not run is retried, not resolved
 - [ADR-0038](0038-a-finding-with-no-ticket-files-into-the-trackers-findings-team.md): A finding with no ticket files into the tracker's findings team
 - [ADR-0039](0039-the-loop-idles-on-a-held-red-base-instead-of-reselecting.md): The loop idles on a held red base instead of re-selecting
+- [ADR-0040](0040-open-security-alerts-are-fixed-by-a-loop-that-opens-its-own-pr.md): Open security alerts are fixed by a loop that opens its own PR

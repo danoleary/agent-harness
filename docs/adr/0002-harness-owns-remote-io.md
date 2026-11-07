@@ -1,4 +1,4 @@
-# ADR-0002: The harness owns all remote I/O; the sandbox is air-gapped except for Anthropic; the checkout is mounted at its real host path
+# ADR-0002: The harness owns all remote I/O; the sandbox holds no credential but Anthropic's and reaches no remote the harness owns; the checkout is mounted at its real host path
 
 - Status: Accepted
 - Date: 2026-06-11
@@ -33,8 +33,8 @@ has to gate it.
 
 ## Decision
 
-**The harness performs every remote interaction itself; the sandbox can reach
-only Anthropic.** Concretely:
+**The harness performs every remote interaction itself; the sandbox holds no
+credential but Anthropic's.** Concretely:
 
 - **No `GH_TOKEN` in the container.** It is dropped from `sandbox.SecretEnv` and
   the `entrypoint.sh` HTTPS-push wiring is removed. Agents **commit locally only**,
@@ -96,3 +96,19 @@ remote I/O — Linear and git — and the sandbox holds only the Claude credenti
   decision otherwise stands.
 - `GH_TOKEN` is still required on the host (`config.go`) for the harness's push +
   `gh pr create`.
+
+## Amendment, 2026-11-07: the sandbox is not air-gapped (#197)
+
+This ADR said the sandbox "is air-gapped except for Anthropic" and "can reach
+only Anthropic". That was never accurate. No container runs with its network
+restricted. `post_create` runs in the Consumer's sandbox image and installs the
+toolchain from the package registry, and a session can do the same.
+
+- **The rule is about credentials and the remotes the harness owns.** The
+  sandbox holds only the Claude credential, so it cannot push, open a PR, or read
+  or write the tracker. Every interaction with those remotes runs on the host.
+- **The sandbox can reach the package registry**, as `post_create` always has.
+  ADR-0040's SecurityFix session relies on this to regenerate a lockfile. Its
+  result is checked on the host before anything ships, as every session's is.
+- The title and the first sentence of the Decision are reworded to match. The
+  rest of the Decision stands.

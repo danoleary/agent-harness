@@ -854,9 +854,10 @@ shared        : STOP (every loop), STOP-tickets (every instance), locks/claim.lo
 - **The harness owns all remote I/O — Linear ([ADR-0001](https://github.com/danoleary/agent-harness/blob/main/docs/adr/0001-harness-owns-linear-integration.md))
   *and* git push / PR ([ADR-0002](https://github.com/danoleary/agent-harness/blob/main/docs/adr/0002-harness-owns-remote-io.md)).** Agents
   commit only into the local shared `.git`; the harness pushes (via the main
-  checkout) and opens the PR host-side. The sandbox is air-gapped except for
-  Anthropic: the **only** secret in the container is the Claude credential
-  (`ANTHROPIC_API_KEY` *or* `CLAUDE_CODE_OAUTH_TOKEN`). No `GH_TOKEN`, no Linear.
+  checkout) and opens the PR host-side. The **only** secret in the container is
+  the Claude credential (`ANTHROPIC_API_KEY` *or* `CLAUDE_CODE_OAUTH_TOKEN`). No
+  `GH_TOKEN`, no Linear. The sandbox is not air-gapped: it reaches the package
+  registry, as `post_create` does, but no remote the harness owns.
 - **Failure never mutates Linear state and never deletes a worktree** — with one
   narrow exception: an implementation crash that left **no worktree at all** releases
   the claim back to Todo (BEH-543 above), because there is no recoverable artifact to
