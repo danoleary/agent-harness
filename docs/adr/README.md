@@ -51,3 +51,4 @@ catches a duplicate there.
 - [ADR-0041](0041-the-host-fetches-the-sentry-issues-a-ticket-cites-into-the-prompt.md): The host fetches the Sentry issues a ticket cites into the prompt
 - [ADR-0042](0042-the-committed-fix-recovery-lands-only-a-tip-the-review-cleared.md): The committed-fix recovery lands only a tip the review cleared
 - [ADR-0043](0043-a-branch-is-held-by-a-live-run-not-by-a-leftover-worktree.md): A branch is held by a live run, not by a leftover worktree
+- [ADR-0044](0044-a-sandboxed-session-reaps-a-leftover-browser-before-a-story-run.md): A sandboxed session reaps a leftover browser before a story run

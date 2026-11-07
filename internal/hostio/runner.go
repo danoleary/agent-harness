@@ -185,6 +185,7 @@ func (r *Runner) agentArgs(name string, a AgentRun) []string {
 		Prompt:         a.Prompt,
 		Model:          a.Model,
 		ContainerName:  name,
+		NoMCP:          a.NoMCP,
 	})
 }
 
