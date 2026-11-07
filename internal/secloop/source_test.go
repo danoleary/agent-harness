@@ -23,11 +23,12 @@ type fakeGitHub struct {
 	open     []github.PullRequest
 
 	branchReads []string
+	added       map[int][]string
 	removed     map[int][]string
 }
 
 func newFakeGitHub(alerts ...github.Alert) *fakeGitHub {
-	return &fakeGitHub{alerts: alerts, branches: map[string][]github.BranchPR{}, removed: map[int][]string{}}
+	return &fakeGitHub{alerts: alerts, branches: map[string][]github.BranchPR{}, added: map[int][]string{}, removed: map[int][]string{}}
 }
 
 func (f *fakeGitHub) DependabotAlerts([]string) ([]github.Alert, error) { return f.alerts, f.alertErr }
@@ -38,6 +39,11 @@ func (f *fakeGitHub) PRsForBranch(branch string) ([]github.BranchPR, error) {
 }
 
 func (f *fakeGitHub) OpenPRs() ([]github.PullRequest, error) { return f.open, nil }
+
+func (f *fakeGitHub) AddLabel(n int, label string) error {
+	f.added[n] = append(f.added[n], label)
+	return nil
+}
 
 func (f *fakeGitHub) RemoveLabel(n int, label string) error {
 	f.removed[n] = append(f.removed[n], label)
@@ -426,5 +432,22 @@ func TestCommentIsANoOpAndHasRemoteBranchIsFalse(t *testing.T) {
 	}
 	if f.src.HasRemoteBranch("SEC-npm-lodash") {
 		t.Error("HasRemoteBranch = true, want false")
+	}
+}
+
+// Blocking an item labels its open PR blocked and touches no other PR.
+func TestBlockLabelsTheItemsOpenPR(t *testing.T) {
+	f := newFixture(t)
+	f.gh.open = []github.PullRequest{
+		{Number: 50, HeadBranch: "feat/sec-npm-lodash"},
+		{Number: 51, HeadBranch: "feat/sec-npm-qs"},
+	}
+
+	if err := f.src.Block("SEC-npm-lodash"); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(f.gh.added) != 1 || strings.Join(f.gh.added[50], ",") != "blocked" {
+		t.Errorf("added = %v, want only the blocked label on #50", f.gh.added)
 	}
 }

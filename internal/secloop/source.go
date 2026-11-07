@@ -33,6 +33,7 @@ type GitHub interface {
 	DependabotAlerts(severity []string) ([]github.Alert, error)
 	PRsForBranch(branch string) ([]github.BranchPR, error)
 	OpenPRs() ([]github.PullRequest, error)
+	AddLabel(number int, label string) error
 	RemoveLabel(number int, label string) error
 }
 
@@ -397,6 +398,21 @@ func (s *Source) Release(key string) error {
 	for _, pr := range prs {
 		if pr.HeadBranch == s.Branch(key) && pr.HasLabel(s.opts.HeldLabel) {
 			return s.gh.RemoveLabel(pr.Number, s.opts.HeldLabel)
+		}
+	}
+	return nil
+}
+
+// Block labels the open PR on key's branch blocked, if it has one, so Plan skips
+// the package until a human removes the label (#230).
+func (s *Source) Block(key string) error {
+	prs, err := s.gh.OpenPRs()
+	if err != nil {
+		return err
+	}
+	for _, pr := range prs {
+		if pr.HeadBranch == s.Branch(key) {
+			return s.gh.AddLabel(pr.Number, s.opts.BlockedLabel)
 		}
 	}
 	return nil
