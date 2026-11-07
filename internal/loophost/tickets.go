@@ -165,6 +165,9 @@ func (s *TicketSource) inFlight() ([]overlap.Work, error) {
 // Release returns a stale claim to Todo.
 func (s *TicketSource) Release(key string) error { return s.client.ReleaseToTodo(key) }
 
+// Block labels the ticket blocked for a human (#230).
+func (s *TicketSource) Block(key string) error { return s.client.MarkBlocked(key) }
+
 // Comment posts a breadcrumb on the ticket.
 func (s *TicketSource) Comment(key, body string) error { return s.client.AddComment(key, body) }
 
@@ -298,18 +301,28 @@ func ticketDeps(l config.Loop, cfg config.Config, log *runlog.Logger, runID stri
 
 // Recover finishes a branch a previous run left committed, gate-green and
 // unpushed (BEH-713). The policy is ship.Recover — the same host-side "finish a
-// branch" the review stage ends on — run over a Host bound to this ticket. A setup
-// failure means there is nothing to recover: fall through to the normal release.
+// branch" the review stage ends on — run over a Host bound to this ticket, with the
+// push gate the review stage last recorded in the ticket's log dir. A tip the review
+// refused comes back NeedsHuman with the reason (#230). A setup failure means there
+// is nothing to recover: fall through to the normal release.
 func (p *TicketPipeline) Recover(item loop.WorkItem) (stages.Result, bool) {
 	cfg, log, runID, err := p.setup(item.Key)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		return stages.Result{}, false
 	}
-	rec := ship.Recover(hostio.New(cfg, log, runID, false, ticket.Slug(item.Key)), p.log, item.Key)
-	out := stages.Result{}
-	if rec.Shipped {
-		out = stages.Result{OK: true, Disposition: stages.Shipped}
+	rec := ship.Recover(hostio.New(cfg, log, runID, false, ticket.Slug(item.Key)), p.log, item.Key, stages.LastPushGate(log.Dir))
+	return recovered(rec), rec.Attempted
+}
+
+// recovered maps a committed-fix recovery onto the Result the loop branches on.
+func recovered(rec ship.Recovery) stages.Result {
+	switch {
+	case rec.Shipped:
+		return stages.Result{OK: true, Disposition: stages.Shipped}
+	case rec.Refused != "":
+		return stages.Result{Disposition: stages.NeedsHuman, Refusal: rec.Refused}
+	default:
+		return stages.Result{}
 	}
-	return out, rec.Attempted
 }

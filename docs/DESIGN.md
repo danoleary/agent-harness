@@ -540,8 +540,16 @@ loop:
   // A completion that ships also reaps the worktree (#184): the slice's retrospective kept it
   // only for this recovery, and none follows, so left checked out it would hold the branch
   // against pr-doctor for as long as the ticket stays In Progress.
+  // The recovery lands only a tip the review stage CLEARED (#230, ADR-0042). The review records
+  // its push gate in the ticket's log dir: the HEAD its host Gate re-run covered, that re-run's
+  // exit and failing Gate, and the verdict. If no recorded Gate re-run covers the tip, there is
+  // nothing to finish and the ticket is released. If the review refused the tip (a blocked
+  // verdict or a red Gate), the run becomes NeedsHuman.
   if Disposition == NoPR and there IS a committed-but-unpushed fix:
-    complete it host-side (rebase + push + PR); on success reap the worktree and the run becomes Shipped
+    if the recorded push gate covers its tip and is blocked or red:
+      the run becomes NeedsHuman (nothing pushed, worktree kept)
+    else if it covers its tip with green Gates and no blocked verdict:
+      complete it host-side (rebase + push + PR); on success reap the worktree and the run becomes Shipped
 
   // RELEASE-ON-NO-PR (BEH-590): any non-cap run that did NOT reach a pushed PR — OOM,
   // sandbox crash, a review stage that died before pushing, an empty-diff verification
@@ -558,6 +566,9 @@ loop:
     close ticket -> Canceled  // terminal; superseded/duplicate. Falls back to keeping In Progress
                               // if no closer is wired or the close fails (best-effort, never fatal)
     comment on ticket: empty diff, closed as duplicate/superseded (breadcrumb, BEH-682)
+  else if Disposition == NeedsHuman:
+    label ticket blocked              // selection screens it out until a person removes the label
+    comment on ticket: the refusal's reason (breadcrumb, #230) // the claim is KEPT, never released
   else if Disposition == NoPR:
     release ticket -> Todo            // don't strand it In Progress; a later run re-grabs it
     comment on ticket: run produced no PR, released to Todo (breadcrumb, BEH-590)
@@ -565,7 +576,7 @@ loop:
   // breaker signal = the run's Disposition, NOT the pipeline exit code
   if Disposition == Shipped    -> reset consecutive-failure counter to 0
   else if Disposition in {CapAborted, PreflightAborted, RecommendClose, Interrupted, BaseRed} -> neutral (neither increment nor reset)
-  else /* NoPR */              -> increment consecutive-failure counter
+  else /* NoPR, NeedsHuman */  -> increment consecutive-failure counter
   // a retrospective-only failure (PR shipped) and a CI-red-after-budget (a reviewable PR
   // exists) do NOT count as failures; only "never produced a PR" does.
   // a recommend-close (BEH-603) is a correct terminal no-op — neutral, like a cap abort.

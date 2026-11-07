@@ -55,6 +55,18 @@ func recoverable(t *testing.T) scene {
 	return s
 }
 
+// cleared is the push gate a review whose Gates were green and which declared no
+// blocked Disposition leaves over the branch's current tip: the one record that
+// lets a recovery land it.
+func cleared(t *testing.T, s scene) *ship.PushGate {
+	t.Helper()
+	head, err := s.wt.HeadSHA()
+	if err != nil {
+		t.Fatalf("HeadSHA: %v", err)
+	}
+	return &ship.PushGate{Head: head, Disposition: "Disposition: clear — no findings", GateRan: true}
+}
+
 func calls(h *hostio.Fake) string { return strings.Join(h.Calls, " ") }
 
 // --- Land -------------------------------------------------------------------
@@ -315,11 +327,113 @@ func TestRecoverDeclinesWhenThereIsNothingToFinish(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			h, log := tc.scene(t), &sink{}
 
-			if got := ship.Recover(h, log, "PROJ-1"); got.Attempted || got.Shipped {
+			if got := ship.Recover(h, log, "PROJ-1", nil); got.Attempted || got.Shipped {
 				t.Fatalf("Recover() = %+v, want the zero Recovery (the daemon releases as before)", got)
 			}
 			if c := calls(h); strings.Contains(c, "push") || strings.Contains(c, "create-pr") {
 				t.Errorf("calls = %v, want no push/PR for a branch with nothing to finish", h.Calls)
+			}
+		})
+	}
+}
+
+// A committed tip no host gate covers is not the gate-green state the recovery
+// exists to finish: the review never ran over it (a checkpoint commit after a
+// killed review, a run from before the push gate was recorded), so a later run must
+// review it. Recovery declines and the daemon releases as before, touching no
+// remote.
+func TestRecoverDeclinesATipNoGateCovers(t *testing.T) {
+	cases := []struct {
+		name string
+		gate func(t *testing.T, s scene) *ship.PushGate
+	}{
+		{"no push gate recorded", func(*testing.T, scene) *ship.PushGate { return nil }},
+		{"the gate covered an earlier tip", func(t *testing.T, s scene) *ship.PushGate {
+			g := cleared(t, s)
+			g.Head = s.repo.Git(s.repo.Dir, "rev-parse", gitpkg.BaseRef)
+			return g
+		}},
+		{"a verdict with no gate run", func(t *testing.T, s scene) *ship.PushGate {
+			g := cleared(t, s)
+			g.GateRan = false
+			return g
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s, log := recoverable(t), &sink{}
+
+			got := ship.Recover(s.h, log, "PROJ-1", tc.gate(t, s))
+
+			if got != (ship.Recovery{}) {
+				t.Fatalf("Recover() = %+v, want the zero Recovery (the daemon releases as before)", got)
+			}
+			if c := calls(s.h); strings.Contains(c, "push") || strings.Contains(c, "create-pr") {
+				t.Errorf("calls = %v, want no push/PR for a tip no gate covers", s.h.Calls)
+			}
+			if !log.saw("no host gate covers") {
+				t.Errorf("events = %v, want the uncovered tip narrated", log.events)
+			}
+		})
+	}
+}
+
+// The two herd incidents behind #230, replayed: a review that refused to ship left a
+// clean, committed worktree with no PR, and the recovery pushed it anyway a minute
+// later. A push gate that was blocked or red over the very tip the recovery would
+// land is a refusal, not a stranded fix: nothing is pushed, the worktree is kept for
+// the human, and the reason comes back for the daemon to hand the ticket over with.
+func TestRecoverRefusesABranchReviewDidNotClear(t *testing.T) {
+	cases := []struct {
+		name   string
+		gate   func(g *ship.PushGate)
+		reason []string
+	}{
+		// BEH-1305: review wrote Disposition: blocked, and the unit gate was red.
+		{"blocked verdict (BEH-1305)", func(g *ship.PushGate) {
+			g.Disposition = "Disposition: blocked — the sandbox cannot regenerate database.types.ts, so a human must"
+			g.Blocked = true
+			g.GateExit = 1
+			g.FailedGate = "unit"
+		}, []string{"blocked", "database.types.ts", `"unit"`}},
+		// BEH-1198: review stopped on a red storybook gate and emitted no verdict.
+		{"red gate (BEH-1198)", func(g *ship.PushGate) {
+			g.Disposition = ""
+			g.GateExit = 2
+			g.FailedGate = "storybook"
+		}, []string{`"storybook"`, "red"}},
+		{"red gate that could not name itself", func(g *ship.PushGate) {
+			g.GateExit = 127
+			g.FailedGate = ""
+		}, []string{"exit 127"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s, log := recoverable(t), &sink{}
+			g := cleared(t, s)
+			tc.gate(g)
+
+			got := ship.Recover(s.h, log, "PROJ-1", g)
+
+			if !got.Attempted || got.Shipped || got.Refused == "" {
+				t.Fatalf("Recover() = %+v, want an attempted recovery that refused", got)
+			}
+			for _, want := range tc.reason {
+				if !strings.Contains(got.Refused, want) {
+					t.Errorf("Refused = %q, want it to name %q", got.Refused, want)
+				}
+			}
+			if c := calls(s.h); strings.Contains(c, "push") || strings.Contains(c, "create-pr") {
+				t.Errorf("calls = %v, want nothing pushed and no PR for a branch review did not clear", s.h.Calls)
+			}
+			if s.repo.OnOrigin("feat/proj-1") != "" {
+				t.Error("a refused branch must not reach origin")
+			}
+			if !s.wt.Exists() {
+				t.Error("a refused recovery must keep the worktree for the human")
+			}
+			if !log.saw("refusing to land") {
+				t.Errorf("events = %v, want the refusal narrated", log.events)
 			}
 		})
 	}
@@ -334,7 +448,7 @@ func TestRecoverCompletesACommittedUnpushedFix(t *testing.T) {
 	s, log := recoverable(t), &sink{}
 	s.repo.Merge("other.txt", "unrelated\n", "a sibling merged")
 
-	got := ship.Recover(s.h, log, "PROJ-1")
+	got := ship.Recover(s.h, log, "PROJ-1", cleared(t, s))
 
 	if !got.Attempted || !got.Shipped {
 		t.Fatalf("Recover() = %+v, want an attempted recovery that shipped", got)
@@ -365,7 +479,7 @@ func TestRecoverAbortsOnARebaseConflict(t *testing.T) {
 	s.repo.Conflict("proj-1")
 	before, _ := s.wt.HeadSHA()
 
-	got := ship.Recover(s.h, log, "PROJ-1")
+	got := ship.Recover(s.h, log, "PROJ-1", cleared(t, s))
 
 	if !got.Attempted || got.Shipped {
 		t.Fatalf("Recover() = %+v, want attempted but not shipped", got)
@@ -387,7 +501,7 @@ func TestRecoverNamesADisjointBranch(t *testing.T) {
 	s, log := recoverable(t), &sink{}
 	s.repo.Disjoint(s.wt)
 
-	got := ship.Recover(s.h, log, "PROJ-1")
+	got := ship.Recover(s.h, log, "PROJ-1", cleared(t, s))
 
 	if !got.Attempted || got.Shipped {
 		t.Fatalf("Recover() = %+v, want attempted but not shipped", got)
@@ -409,7 +523,7 @@ func TestRecoverStopsWhenTheRebaseEmptiesTheBranch(t *testing.T) {
 	s.repo.Supersede("proj-1")
 	s.repo.Merge("other.txt", "unrelated\n", "main moved on")
 
-	got := ship.Recover(s.h, log, "PROJ-1")
+	got := ship.Recover(s.h, log, "PROJ-1", cleared(t, s))
 
 	if !got.Attempted || got.Shipped {
 		t.Fatalf("Recover() = %+v, want attempted but not shipped", got)
@@ -429,7 +543,7 @@ func TestRecoverDoesNotPushWhenTheTicketCannotBeFetched(t *testing.T) {
 	s, log := recoverable(t), &sink{}
 	s.h.Trk.FetchErr = errors.New("linear boom")
 
-	got := ship.Recover(s.h, log, "PROJ-1")
+	got := ship.Recover(s.h, log, "PROJ-1", cleared(t, s))
 
 	if !got.Attempted || got.Shipped {
 		t.Fatalf("Recover() = %+v, want attempted but not shipped", got)
@@ -460,7 +574,7 @@ func TestRecoverFallsThroughWhenShippingFails(t *testing.T) {
 			s, log := recoverable(t), &sink{}
 			tc.scene(s.h)
 
-			got := ship.Recover(s.h, log, "PROJ-1")
+			got := ship.Recover(s.h, log, "PROJ-1", cleared(t, s))
 
 			if !got.Attempted || got.Shipped {
 				t.Fatalf("Recover() = %+v, want attempted but not shipped", got)
@@ -478,7 +592,7 @@ func TestRecoverShipsThroughAFailedFetch(t *testing.T) {
 	s, log := recoverable(t), &sink{}
 	s.h.FetchErr = errors.New("network down")
 
-	if got := ship.Recover(s.h, log, "PROJ-1"); !got.Shipped {
+	if got := ship.Recover(s.h, log, "PROJ-1", cleared(t, s)); !got.Shipped {
 		t.Fatalf("Recover() = %+v, want the fix shipped despite the fetch warning", got)
 	}
 	if !log.saw("could not fetch origin/main") {

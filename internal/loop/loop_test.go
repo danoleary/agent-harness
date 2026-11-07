@@ -2056,6 +2056,85 @@ func TestFailedCompletionFallsThroughToRelease(t *testing.T) {
 	}
 }
 
+// TestRefusedRecoveryHandsTheTicketToAHuman is #230: the recovery found the
+// committed-but-unpushed state, but the review had refused that very tip — a
+// blocked verdict, a red Gate — so it would not land it. Releasing the ticket to Todo
+// would re-run it to the same refusal, and pr-doctor cannot fix a red CI that needs
+// a human, so the loop keeps the claim, labels the ticket blocked and says why on it.
+func TestRefusedRecoveryHandsTheTicketToAHuman(t *testing.T) {
+	r := &recorder{}
+	var released, blocked, comments []string
+	why := `the review declared a blocked Disposition (Disposition: blocked — the sandbox cannot regenerate database.types.ts, so a human must) and the host gate "unit" was red (exit 1)`
+	code := Run(Deps{
+		Host: &fakeHost{stopRequested: stopAfter(1)},
+		Source: &fakeSource{
+			next:    func() (string, bool) { return "BEH-1305", true },
+			release: func(id string) error { released = append(released, id); return nil },
+			block:   func(id string) error { blocked = append(blocked, id); return nil },
+			comment: func(id, body string) error { comments = append(comments, id+": "+body); return nil },
+		},
+		Pipeline: &fakePipeline{
+			run: func(string) stages.Result { return stages.Result{Disposition: stages.NoPR} },
+			recover: func(string) (stages.Result, bool) {
+				return stages.Result{Disposition: stages.NeedsHuman, Refusal: why}, true
+			},
+		},
+		Limits: Limits{PollInterval: time.Minute, TickInterval: 2 * time.Second, MaxConsecutiveFailures: 3},
+		Clock:  testClock{sleep: func(time.Duration) {}},
+		Log:    r,
+	})
+	if code != 0 {
+		t.Errorf("exit code = %d, want 0", code)
+	}
+	if len(released) != 0 {
+		t.Errorf("released = %v, want none (a refused branch must not go back to Todo)", released)
+	}
+	if want := []string{"BEH-1305"}; !reflect.DeepEqual(blocked, want) {
+		t.Errorf("blocked = %v, want %v (a refused branch is labelled blocked for a human)", blocked, want)
+	}
+	if len(comments) != 1 || !strings.Contains(comments[0], why) || strings.Contains(comments[0], "released back to Todo") {
+		t.Errorf("comments = %q, want one breadcrumb carrying the refusal %q", comments, why)
+	}
+	if !r.saw("handing it to a human") {
+		t.Errorf("events = %v, want the hand-off narrated", r.events)
+	}
+}
+
+// A ticket the tracker would not label blocked is still not released: the claim
+// and the breadcrumb are what keep it from being re-run, and the failed label is
+// narrated and named in the breadcrumb so the human knows to apply it.
+func TestRefusedRecoveryKeepsTheClaimWhenTheBlockedLabelFails(t *testing.T) {
+	r := &recorder{}
+	var released, comments []string
+	Run(Deps{
+		Host: &fakeHost{stopRequested: stopAfter(1)},
+		Source: &fakeSource{
+			next:    func() (string, bool) { return "BEH-1198", true },
+			release: func(id string) error { released = append(released, id); return nil },
+			block:   func(string) error { return errors.New("no blocked_label configured") },
+			comment: func(id, body string) error { comments = append(comments, body); return nil },
+		},
+		Pipeline: &fakePipeline{
+			run: func(string) stages.Result { return stages.Result{Disposition: stages.NoPR} },
+			recover: func(string) (stages.Result, bool) {
+				return stages.Result{Disposition: stages.NeedsHuman, Refusal: `the host gate "storybook" was red (exit 1)`}, true
+			},
+		},
+		Limits: Limits{PollInterval: time.Minute, TickInterval: 2 * time.Second},
+		Clock:  testClock{sleep: func(time.Duration) {}},
+		Log:    r,
+	})
+	if len(released) != 0 {
+		t.Errorf("released = %v, want none", released)
+	}
+	if !r.saw("could not label BEH-1198 blocked") {
+		t.Errorf("events = %v, want the failed label narrated", r.events)
+	}
+	if len(comments) != 1 || !strings.Contains(comments[0], "could not be labelled blocked") {
+		t.Errorf("comments = %q, want the breadcrumb to say the label is missing", comments)
+	}
+}
+
 // TestRepeatedCommittedFixCompletionsNeverTripBreaker is the BEH-713 regression for the
 // exact BEH-649 loop state: a ticket that keeps arriving committed-but-unpushed with no
 // PR. Before this fix the loop released it every time and, after three consecutive no-PR

@@ -259,6 +259,13 @@ const (
 	// not the ticket's fault: the stage has already released the claim, the loop
 	// backs off and re-polls until main moves, and the breaker stays blind to it.
 	BaseRed
+	// NeedsHuman — the committed-fix recovery found the run's branch committed and
+	// unpushed but refused to land it, because the review stage had refused that very
+	// tip: a blocked verdict or a red Gate (#230). Only the recovery produces it, and
+	// Refusal says why. Releasing it would re-run it to the same refusal, so the loop
+	// keeps the claim, labels the ticket blocked and leaves the reason on it. The
+	// breaker counts it as a failure to ship, as the no-PR run it is.
+	NeedsHuman
 )
 
 func (d Disposition) String() string {
@@ -275,6 +282,8 @@ func (d Disposition) String() string {
 		return "interrupted"
 	case BaseRed:
 		return "base-red"
+	case NeedsHuman:
+		return "needs-human"
 	default:
 		return "no-pr"
 	}
@@ -316,6 +325,9 @@ type Result struct {
 	// (#190). Zero otherwise.
 	HeldBase  string
 	HeldUntil time.Time
+	// Refusal says why the committed-fix recovery would not land the branch when
+	// Disposition is NeedsHuman (#230); empty otherwise.
+	Refusal string
 }
 
 // ExitCode is the process exit code this Result means: 0 iff the work it reports

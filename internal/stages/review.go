@@ -269,15 +269,27 @@ func Review(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Res
 		result = verify.Review(wt, gateRes.Outcome, reviewOutcome)
 	}
 
-	// Record the verdict and the HEAD it covered for a re-run (#44). Only a clean
-	// tree is recorded: uncommitted edits are not part of any HEAD the verdict names.
+	// Record the push decision over HEAD — the verdict for a re-run (#44), and the
+	// host Gate re-run beside it for the committed-fix recovery, which must not land
+	// a tip this review refused (#230). It is recorded with or without a verdict: a
+	// review that stopped short of one over green Gates is the BEH-713 state the
+	// recovery finishes. Only a clean tree is recorded: uncommitted edits are not
+	// part of any HEAD the verdict or the Gates cover.
 	rememberVerdict := func() {
 		head, err := wt.HeadSHA()
-		if err != nil || reviewOutcome.ReviewDisposition == "" || !wt.Clean() {
+		if err != nil || !wt.Clean() {
 			return
 		}
-		if err := recordReview(log.Dir, head, reviewOutcome.ReviewDisposition); err != nil {
-			log.Event("review … warning: could not record the review verdict for a re-run: " + err.Error())
+		gate := ship.PushGate{
+			Head:        head,
+			Disposition: reviewOutcome.ReviewDisposition,
+			Blocked:     reviewOutcome.ReviewBlocked,
+			GateRan:     true,
+			GateExit:    gateExit,
+			FailedGate:  gateRes.FailedGate,
+		}
+		if err := recordPushGate(log.Dir, gate); err != nil {
+			log.Event("review … warning: could not record the push decision for a re-run: " + err.Error())
 		}
 	}
 	rememberVerdict()
@@ -429,9 +441,14 @@ func Review(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Res
 		return Result{OK: false, Disposition: RecommendClose}
 	case ship.PushFailed:
 		log.Event("review ✗ push failed: " + landing.Err.Error() + " — keeping worktree")
+		// The replay may have rewritten the cleared commits' SHAs: re-record the push
+		// gate over the tip left behind, so the committed-fix recovery still finishes
+		// this cleared branch rather than declining it as unreviewed (#230, BEH-713).
+		rememberVerdict()
 		return Result{OK: false}
 	case ship.PRFailed:
 		log.Event("review ✗ gh pr create failed: " + landing.Err.Error() + " — branch pushed, open the PR manually")
+		rememberVerdict()
 		return Result{OK: false}
 	}
 	log.Structured(loopstream.Record{Kind: loopstream.KindPROpened, Ticket: args.Identifier, Stage: "review", Message: "review ✓ PR opened: " + landing.URL})

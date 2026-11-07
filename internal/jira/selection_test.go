@@ -1,6 +1,9 @@
 package jira
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // selectOpts is the selection surface the selection + claim tests share.
 var selectOpts = Options{
@@ -205,5 +208,46 @@ func TestSelectNextTicketPassesOverSkippedKeys(t *testing.T) {
 	}
 	if got.Identifier != "PROJ-10" || !got.HasLabel("parallel-ok") {
 		t.Errorf("selected = %+v, want PROJ-10 labelled parallel-ok", got)
+	}
+}
+
+// TestMarkBlockedAddsTheBlockedLabel hands a ticket to a human (#230) by adding the
+// configured blocked label through an update, leaving the issue's status and its
+// other labels alone. A ready_jql that excludes the label keeps it out of the queue.
+func TestMarkBlockedAddsTheBlockedLabel(t *testing.T) {
+	opts := selectOpts
+	opts.Blocked = "blocked"
+	tr, calls := fakeTransport(map[string]any{
+		"PUT /rest/api/2/issue/PROJ-9": map[string]any{},
+	})
+	c := NewClient(tr, baseURL, opts)
+
+	if err := c.MarkBlocked("PROJ-9"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(*calls) != 1 || (*calls)[0].method != "PUT" {
+		t.Fatalf("calls = %+v, want the one PUT", *calls)
+	}
+	m, _ := (*calls)[0].body.(map[string]any)
+	update, _ := m["update"].(map[string]any)
+	ops, _ := update["labels"].([]any)
+	if len(ops) != 1 {
+		t.Fatalf("PUT body = %+v, want one label operation", m)
+	}
+	if op, _ := ops[0].(map[string]any); op["add"] != "blocked" {
+		t.Errorf("label operation = %+v, want add=blocked", ops[0])
+	}
+}
+
+// TestMarkBlockedWithoutABlockedLabelErrors: nothing is configured to mark it with.
+func TestMarkBlockedWithoutABlockedLabelErrors(t *testing.T) {
+	tr, calls := fakeTransport(map[string]any{})
+	c := NewClient(tr, baseURL, selectOpts)
+
+	if err := c.MarkBlocked("PROJ-9"); err == nil || !strings.Contains(err.Error(), "blocked_label") {
+		t.Errorf("err = %v, want one naming the unset blocked_label", err)
+	}
+	if len(*calls) != 0 {
+		t.Errorf("calls = %+v, want none", *calls)
 	}
 }

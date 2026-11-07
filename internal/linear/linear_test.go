@@ -746,3 +746,75 @@ func TestSearchFindingsWithNoLabelConfiguredReturnsNothing(t *testing.T) {
 		t.Errorf("an unscoped dedup search must not query Linear at all, saw %d call(s)", len(*calls))
 	}
 }
+
+// MarkBlocked hands a ticket to a human (#230): it resolves the configured blocked
+// label by name — a team label first, else a workspace one — and adds it to the
+// issue, which selection then screens out. The issue's state is left alone.
+func TestMarkBlocked(t *testing.T) {
+	cases := []struct {
+		name      string
+		team      []any
+		workspace []any
+		want      string
+	}{
+		{"team label", []any{map[string]any{"id": "team-blocked"}}, []any{map[string]any{"id": "ws-blocked"}}, "team-blocked"},
+		{"workspace label", []any{}, []any{map[string]any{"id": "ws-blocked"}}, "ws-blocked"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls []call
+			tr := func(query string, variables map[string]any) (json.RawMessage, error) {
+				calls = append(calls, call{query: query, variables: variables})
+				if strings.Contains(query, "issueAddLabel") {
+					return json.Marshal(map[string]any{"issueAddLabel": map[string]any{"success": true}})
+				}
+				return json.Marshal(map[string]any{
+					"issue":       map[string]any{"id": "issue-uuid", "team": map[string]any{"labels": map[string]any{"nodes": tc.team}}},
+					"issueLabels": map[string]any{"nodes": tc.workspace},
+				})
+			}
+
+			if err := NewClient(tr, testOptions()).MarkBlocked("BEH-1305"); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(calls) != 2 || calls[0].variables["name"] != "Blocked" {
+				t.Fatalf("calls = %+v, want the label lookup by the configured name, then the add", calls)
+			}
+			add := calls[1]
+			if !strings.Contains(add.query, "issueAddLabel") || add.variables["id"] != "issue-uuid" || add.variables["labelId"] != tc.want {
+				t.Errorf("add = %+v, want issueAddLabel(issue-uuid, %s)", add, tc.want)
+			}
+			for _, c := range calls {
+				if strings.Contains(c.query, "issueUpdate") {
+					t.Error("marking a ticket blocked must not move its state")
+				}
+			}
+		})
+	}
+}
+
+// A blocked label that is unconfigured, or that names no label Linear has, is an
+// error, and nothing is added.
+func TestMarkBlockedWithNoLabelToAddErrors(t *testing.T) {
+	var calls []call
+	tr := func(query string, variables map[string]any) (json.RawMessage, error) {
+		calls = append(calls, call{query: query, variables: variables})
+		return json.Marshal(map[string]any{
+			"issue":       map[string]any{"id": "issue-uuid", "team": map[string]any{"labels": map[string]any{"nodes": []any{}}}},
+			"issueLabels": map[string]any{"nodes": []any{}},
+		})
+	}
+	if err := NewClient(tr, testOptions()).MarkBlocked("BEH-1"); err == nil || !strings.Contains(err.Error(), `"Blocked"`) {
+		t.Errorf("err = %v, want one naming the missing label", err)
+	}
+	opts := testOptions()
+	opts.Blocked = ""
+	if err := NewClient(tr, opts).MarkBlocked("BEH-1"); err == nil || !strings.Contains(err.Error(), "blocked_label") {
+		t.Errorf("err = %v, want one naming the unset blocked_label", err)
+	}
+	for _, c := range calls {
+		if strings.Contains(c.query, "issueAddLabel") {
+			t.Error("no label may be added when there is none to add")
+		}
+	}
+}

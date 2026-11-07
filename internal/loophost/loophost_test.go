@@ -303,8 +303,9 @@ func TestClaimsSurfacesTheError(t *testing.T) {
 	}
 }
 
-// The three ticket mutations are the daemon's whole write surface on the board:
-// the reaper's release, and the close and comment it settles a run with.
+// The four ticket mutations are the daemon's whole write surface on the board:
+// the reaper's release, and the close, the blocked label and the comment it
+// settles a run with.
 func TestTicketMutationsReachTheTracker(t *testing.T) {
 	trk := newQueueTracker()
 	trk.next, trk.nextOK = ticket.Ticket{Identifier: "PROJ-2"}, true
@@ -319,6 +320,12 @@ func TestTicketMutationsReachTheTracker(t *testing.T) {
 	}
 	if err := h.Comment("PROJ-3", "breadcrumb"); err != nil {
 		t.Fatalf("Comment() = %v", err)
+	}
+	if err := h.Block("PROJ-4"); err != nil {
+		t.Fatalf("Block() = %v", err)
+	}
+	if len(trk.Blocked) != 1 || trk.Blocked[0] != "PROJ-4" {
+		t.Errorf("blocked %v, want [PROJ-4]", trk.Blocked)
 	}
 	if len(trk.Released) != 1 || trk.Released[0] != "PROJ-1" {
 		t.Errorf("released %v, want [PROJ-1]", trk.Released)
@@ -487,7 +494,8 @@ func TestARecoveredTicketNoLongerHoldsItsBranch(t *testing.T) {
 
 	h := hostio.NewFake(repo.Checkout(), "gh-174")
 	h.OpenPRThere = false
-	if rec := ship.Recover(h, &narrator{}, "#174"); !rec.Shipped {
+	tip, _ := h.Worktree().HeadSHA()
+	if rec := ship.Recover(h, &narrator{}, "#174", &ship.PushGate{Head: tip, GateRan: true}); !rec.Shipped {
 		t.Fatalf("Recover() = %+v, want the committed fix shipped", rec)
 	}
 	trk.claims[0].HasLinkedPR = true
@@ -498,6 +506,25 @@ func TestARecoveredTicketNoLongerHoldsItsBranch(t *testing.T) {
 	}
 	if by, ok := held["feat/gh-174"]; ok {
 		t.Errorf("feat/gh-174 still held by %s after recovery opened its PR, so the PR loop skips it forever", by)
+	}
+}
+
+// The ticket Pipeline maps a committed-fix recovery onto the Disposition the loop
+// branches on: a landed branch is Shipped, a refused one NeedsHuman with the reason
+// (#230), and one that could not land the plain no-PR the release handles.
+func TestRecoveredMapsTheRecoveryOntoADisposition(t *testing.T) {
+	cases := []struct {
+		rec  ship.Recovery
+		want stages.Result
+	}{
+		{ship.Recovery{Attempted: true, Shipped: true}, stages.Result{OK: true, Disposition: stages.Shipped}},
+		{ship.Recovery{Attempted: true, Refused: `the host gate "unit" was red (exit 1)`}, stages.Result{Disposition: stages.NeedsHuman, Refusal: `the host gate "unit" was red (exit 1)`}},
+		{ship.Recovery{Attempted: true}, stages.Result{}},
+	}
+	for _, tc := range cases {
+		if got := recovered(tc.rec); got != tc.want {
+			t.Errorf("recovered(%+v) = %+v, want %+v", tc.rec, got, tc.want)
+		}
 	}
 }
 
