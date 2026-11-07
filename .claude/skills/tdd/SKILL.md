@@ -101,6 +101,8 @@ harness has to spend a whole extra cycle recovering the diff (#224).
 1. Update docs the change makes stale (README, `docs/DESIGN.md`, an ADR).
    Before numbering a new ADR, check `origin/main`'s `docs/adr/` (`git fetch`
    first), not local main, and expect a sibling branch may take the same number.
+   A number the ticket gives a new ADR is a guess from when it was drafted: use
+   the next free one anyway, and say in the commit body which number shipped.
    Append the new ADR's line to the end of `docs/adr/README.md`: a sibling that
    took the same number then conflicts with yours there (ADR-0034), and
    `make check` (`scripts/check-adr-numbers.sh`) fails on a collision as the

@@ -1044,3 +1044,37 @@ func TestRetrospectiveAsksForNeedsHuman(t *testing.T) {
 		t.Error("prompt must say what counts as needing a human")
 	}
 }
+
+// #197 asked for docs/adr/0039-<slug>.md, but origin/main had taken ADR-0039 by
+// the time it ran (#228). The envelope says the number is the next free one on
+// origin/main, whatever the ticket wrote, and asks the session to say which
+// number shipped.
+func TestImplementTreatsATicketsADRNumberAsAGuess(t *testing.T) {
+	adrTicket := ticket.Ticket{
+		Identifier:  "#197",
+		Title:       "Decide how open security alerts get fixed",
+		Description: "Write the decision up as docs/adr/0039-<slug>.md. Check origin/main for the next free number first.",
+	}
+	p := bImpl(t, adrTicket, "gh-197")
+
+	for _, want := range []string{"`docs/adr/0039-<slug>.md`", "next free", "origin/main", "ADR-0034", "commit body"} {
+		if !strings.Contains(p, want) {
+			t.Errorf("prompt missing %q:\n%s", want, p)
+		}
+	}
+}
+
+func TestImplementWithNoADRFilenameSaysNothingAboutADRNumbers(t *testing.T) {
+	if p := bImpl(t, sample, "beh-362"); strings.Contains(p, "ADR-0034") {
+		t.Errorf("prompt carries the ADR-number steer for a ticket that names no ADR file:\n%s", p)
+	}
+}
+
+// A finding is drafted into a ticket that may wait a while in the queue, so it
+// names a new ADR by its slug and leaves the number to whoever writes it (#228).
+func TestRetrospectiveLeavesANewADRsNumberToTheImplementer(t *testing.T) {
+	p := bRetro(t, sample, "beh-362", nil)
+	if !regexp.MustCompile(`(?i)new ADR.*slug.*never.*number.*next free`).MatchString(p) {
+		t.Errorf("prompt does not tell a finding to name a new ADR by slug, not number:\n%s", p)
+	}
+}
