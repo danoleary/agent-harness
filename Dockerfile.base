@@ -14,7 +14,9 @@
 #
 # node is the base because the claude CLI ships as an npm package; it is a
 # transport detail, NOT an invitation to treat this as a Node image.
-FROM node:25-bookworm
+# Use an even-numbered (LTS) Node major. An odd major reaches end of life after
+# six months. Dependabot ignores Node majors, so a major bump is a deliberate edit.
+FROM node:26-bookworm
 
 # The claude CLI is PINNED, never floated to latest: the harness's steering, its
 # stream parsing, and its exit-code contract are all written against a known CLI.

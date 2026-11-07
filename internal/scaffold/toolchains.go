@@ -89,11 +89,14 @@ ENV PATH=/usr/local/go/bin:/go/bin:$PATH \
 			Cache:             CacheSpec{Suffix: "pnpm", Path: "/pnpm-store", Prune: "pnpm store prune"},
 			Layer: `# node is already in the base. pnpm comes through corepack, at the version
 # package.json's "packageManager" field pins; COREPACK_HOME is baked, so it is
-# listed in HARNESS_CHOWN_PATHS below.
+# listed in HARNESS_CHOWN_PATHS below. Node 25 and later do not bundle
+# corepack, so install a pinned copy from npm.
+ARG COREPACK_VERSION=0.36.0
 ENV COREPACK_HOME=/opt/corepack \
 	COREPACK_ENABLE_DOWNLOAD_PROMPT=0 \
 	npm_config_store_dir=/pnpm-store
-RUN mkdir -p /opt/corepack && corepack enable pnpm
+RUN npm install -g --no-audit --no-fund "corepack@${COREPACK_VERSION}" \
+	&& mkdir -p /opt/corepack && corepack enable pnpm
 `,
 			ChownPaths: "/opt/corepack",
 			markers:    []string{"pnpm-lock.yaml", "pnpm-workspace.yaml"},
