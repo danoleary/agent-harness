@@ -57,3 +57,27 @@ branch, not on main.
   `origin/main` anyway.
 - The guard catches only ADR numbers. Other values that parallel branches can
   each take independently are not covered by this.
+
+## Amendment, 2026-11-07: a local replay unions the index (#235)
+
+The conflict this ADR relies on was also hit by tickets whose numbers did not
+clash. #211 added ADR-0041 while #197's ADR-0040 had just landed. Landing's
+replay stopped on the index, and a resolution session plus a second Gate run did
+the only thing there was to do: keep both lines in order. As the loop runs more
+tickets in parallel, more ADR tickets land while another is in flight.
+
+The root `.gitattributes` marks `docs/adr/README.md` `merge=union`. git's
+built-in union driver keeps both sides' added lines in a local merge,
+cherry-pick or rebase, so Landing's replay and the PR loop's rebase go through
+without a resolution session.
+
+- **GitHub's merge ignores `.gitattributes`.** Two open PRs that took the same
+  number still conflict there once the first merges, so the guarantee in the
+  Decision stands: main does not go red from two branches that were each green.
+- **A same-number collision now surfaces in the gate, not in the replay.** A
+  branch replayed onto a main that already has its number keeps both lines and
+  both files, and `check-adr` fails on the duplicate in the PR's CI. The fix
+  is still to renumber on that branch.
+- **The union keeps main's lines first.** A branch whose ADR has a *lower*
+  number than one main just landed comes out of the replay out of order, and
+  `check-adr` fails on that too.
