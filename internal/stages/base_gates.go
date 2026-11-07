@@ -20,6 +20,11 @@ import (
 // before the implementation session launches (#125).
 const baseGateStep = "basegate"
 
+// baseConfirmStep labels the containers that re-run the Gates over a base that
+// just went red, so one flaky Gate step cannot hold every ticket on a green main
+// for baseRedRecheck (#189).
+const baseConfirmStep = "basegate-confirm"
+
 // baseRedFindingKey is the dedup key of the finding a red base files. One key for
 // every red base, not one per SHA: while one repair issue is open, a main that moves
 // but stays red records a recurrence on it rather than filing another. A ticket
@@ -27,7 +32,7 @@ const baseGateStep = "basegate"
 const baseRedFindingKey = "base-gates-red"
 
 // baseRedRecheck is how long a red base verdict is trusted. A red Gate can be a
-// flake, and a flaky red that held for the life of its SHA would hold every ticket
+// flake that failed its confirming re-run too (#189), and a flaky red that held for the life of its SHA would hold every ticket
 // until someone merged to main; a green verdict needs no expiry, because a flake
 // can only make a base look red.
 const baseRedRecheck = 30 * time.Minute
@@ -114,6 +119,11 @@ func (v baseVerdicts) write(sha string, verdict baseVerdict) error {
 // through its retries, or killed at its cap — says nothing about the base, so it
 // records nothing and the ticket dispatches.
 //
+// A red counts only if it is red twice: the Gates run once more over the same
+// base before the verdict is written, and a pass on that re-run records the base
+// green (#189). A green verdict needs no confirming, since a flake can only make
+// a base look red.
+//
 // On the first red verdict for a base it files one finding, through findingsDir,
 // so a human learns main is red rather than finding an idle loop.
 func baseIsRed(h hostio.Host, cfg config.Config, log *runlog.Logger, t ticket.Ticket, force bool, findingsDir string) bool {
@@ -151,6 +161,18 @@ func baseIsRed(h hostio.Host, cfg config.Config, log *runlog.Logger, t ticket.Ti
 	if res.Outcome.Retryable() || res.Outcome.CapKilled {
 		log.Event(fmt.Sprintf("⚠ base gate %q failed environmentally (exit %d: an OOM-kill, a failed launch or its cap) — that says nothing about the base; dispatching", res.FailedGate, res.Outcome.ExitCode))
 		return false
+	}
+	if !res.Green() {
+		log.Event(fmt.Sprintf("tdd ↻ base gate %q is red (exit %d) — re-running the gates once before the base counts as red (#189)", res.FailedGate, res.Outcome.ExitCode))
+		first := res
+		res = fix.Env{Host: h, Cfg: cfg, Log: log, Who: "tdd"}.Gates(baseConfirmStep)
+		if res.Outcome.Retryable() || res.Outcome.CapKilled {
+			log.Event(fmt.Sprintf("⚠ base gate %q failed environmentally on its re-run (exit %d) — the red is unconfirmed; dispatching", res.FailedGate, res.Outcome.ExitCode))
+			return false
+		}
+		if res.Green() {
+			log.Event(fmt.Sprintf("tdd · base gate %q flaked: red (exit %d), then green on its re-run — recording the base green (#189)", first.FailedGate, first.Outcome.ExitCode))
+		}
 	}
 	verdict := baseVerdict{Gate: res.FailedGate}
 	if err := verdicts.write(sha, verdict); err != nil {
