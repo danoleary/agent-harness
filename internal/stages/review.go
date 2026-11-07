@@ -55,6 +55,10 @@ const reviewVerdictMaxAttempts = 2
 // is handed (#111): enough for a test runner's failure report, not the whole run.
 const gateLogTailLines = 80
 
+// gateNarrationTailLines bounds how much of a red gate's step log the run log
+// carries (#176): enough to say why the gate is red, the rest is in the step log.
+const gateNarrationTailLines = 20
+
 // Review runs the second stage: over the worktree implementation left behind, run
 // a *cold* /review-worktree session (fixes committed locally only), then —
 // host-side, holding GH_TOKEN — independently re-run the quality gates in a
@@ -345,10 +349,11 @@ func Review(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Res
 			gateClause = fmt.Sprintf(" [gate %q]", gateRes.FailedGate)
 		}
 		log.Event(fmt.Sprintf("review ✗ %s (gate exit %d)%s — keeping worktree, nothing pushed", result.Reason, gateExit, gateClause))
-		// The gate's stderr tail goes in the run log, so a gate that could not run its
-		// tool reads as PATH without opening the step log (#46).
-		if gateExit != 0 && gateRes.Outcome.StderrTail != "" {
-			log.Event("review · gate stderr tail:\n" + gateRes.Outcome.StderrTail)
+		// What the gate printed goes in the run log, so a gate that could not run its
+		// tool reads as PATH (#46), and a guard that reports on stdout reads as its
+		// own diagnostic rather than make's exit summary (#176).
+		if s := redGateNarration(log.Dir, gateRes); gateExit != 0 && s != "" {
+			log.Event("review · " + s)
 		}
 		return capFailure(reviewOutcome)
 	}
@@ -506,16 +511,48 @@ func Review(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Res
 // logDir, for the review re-launched over it (#111). A log the harness cannot read
 // falls back to the stderr tail the gate's outcome carries.
 func gateLogTail(logDir string, g fix.GateResult) string {
-	raw, err := os.ReadFile(filepath.Join(logDir, g.Log))
-	if g.Log == "" || err != nil || strings.TrimSpace(string(raw)) == "" {
-		if g.Outcome.StderrTail != "" {
-			return g.Outcome.StderrTail
+	if tail := stepLogTail(logDir, g.Log, gateLogTailLines); tail != "" {
+		return tail
+	}
+	if g.Outcome.StderrTail != "" {
+		return g.Outcome.StderrTail
+	}
+	return "(the gate's log could not be read)"
+}
+
+// redGateNarration is what the run log says a red gate printed (#176): the path
+// of its step log and that log's tail — the tool's stdout, where a guard script
+// reports — then its stderr tail, which is often only the task runner's exit
+// summary. Empty when the gate left neither.
+func redGateNarration(logDir string, g fix.GateResult) string {
+	var parts []string
+	if g.Log != "" {
+		path := filepath.Join(logDir, g.Log)
+		if tail := stepLogTail(logDir, g.Log, gateNarrationTailLines); tail != "" {
+			parts = append(parts, fmt.Sprintf("gate step log %s, last %d lines:\n%s", path, gateNarrationTailLines, tail))
+		} else {
+			parts = append(parts, "gate step log "+path+" (empty or unreadable)")
 		}
-		return "(the gate's log could not be read)"
+	}
+	if g.Outcome.StderrTail != "" {
+		parts = append(parts, "gate stderr tail:\n"+g.Outcome.StderrTail)
+	}
+	return strings.Join(parts, "\n")
+}
+
+// stepLogTail is the last n lines of the step log name under logDir; "" when
+// there is none, it cannot be read, or it is blank.
+func stepLogTail(logDir, name string, n int) string {
+	if name == "" {
+		return ""
+	}
+	raw, err := os.ReadFile(filepath.Join(logDir, name))
+	if err != nil || strings.TrimSpace(string(raw)) == "" {
+		return ""
 	}
 	lines := strings.Split(strings.TrimRight(string(raw), "\n"), "\n")
-	if len(lines) > gateLogTailLines {
-		lines = lines[len(lines)-gateLogTailLines:]
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
 	}
 	return strings.Join(lines, "\n")
 }
