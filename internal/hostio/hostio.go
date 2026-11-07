@@ -55,6 +55,9 @@ type AgentRun struct {
 	FindingsDir string
 	Cap         time.Duration
 	Retry       Retry
+	// NoMCP starts the session without the MCP servers the Consumer's project
+	// config declares: only the stages that drive a browser need them (#248).
+	NoMCP bool
 }
 
 // ShellRun describes one secret-free throwaway container that runs a shell

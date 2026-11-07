@@ -217,6 +217,10 @@ type Config struct {
 	// ContainerName is an optional `--name` so the harness can `docker kill` the
 	// container on timeout.
 	ContainerName string
+	// NoMCP starts the session with no MCP servers, ignoring those the Consumer's
+	// project config declares. A session that drives no browser (a CI fix) would
+	// otherwise idle the browser-verification servers beside its test runs (#248).
+	NoMCP bool
 }
 
 // BuildDockerRunArgs builds the argv (everything after `docker`) to run one
@@ -301,10 +305,15 @@ func BuildDockerRunArgs(c Config) []string {
 		"--dangerously-skip-permissions",
 		"--output-format", "stream-json",
 		"--verbose",
+		"--settings", sessionSettings(),
 	)
 
 	if c.Model != "" {
 		args = append(args, "--model", c.Model)
+	}
+	// --strict-mcp-config with no --mcp-config: only servers named there, so none.
+	if c.NoMCP {
+		args = append(args, "--strict-mcp-config")
 	}
 
 	return args

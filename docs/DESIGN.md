@@ -1122,6 +1122,15 @@ specific:
 
 `gh` is **not** in the image — push/PR are host-side (ADR-0002).
 
+The launcher also hands every session a `--settings` JSON on its command line,
+so it reaches the next session without a base-image release. Its one PreToolUse
+hook on Bash kills any `chrome-headless-shell` or vitest process left in the
+container before a command that runs vitest or Storybook: an outer `timeout`
+around a hung story run kills the package manager but not its browser, and the
+browser left behind blocks the next run. A CI-fix session also starts with
+`--strict-mcp-config`, so none of the MCP servers the Consumer's project config
+declares (a browser-verification server, say) idle beside it (ADR-0044, #248).
+
 ### Consumer image composition (build-or-pull)
 
 A Consumer declares its sandbox image in `.agent-harness/config.toml` one of two
