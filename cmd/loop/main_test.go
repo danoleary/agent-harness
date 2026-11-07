@@ -1,11 +1,14 @@
 package main
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/danoleary/agent-harness/internal/config"
+	"github.com/danoleary/agent-harness/internal/github"
+	"github.com/danoleary/agent-harness/internal/secloop"
 )
 
 // `loop` runs the ticket loop, `loop <name>` the named loop, and --list and
@@ -137,5 +140,70 @@ func TestDescribeLoopNamesTheInstancesOwnSentinelAndStream(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Errorf("--dry-run missing %q:\n%s", want, got)
 		}
+	}
+}
+
+// securityLoop is a github_security_alerts loop as the loader resolves it.
+func securityLoop() config.Loop {
+	return config.Loop{
+		Name:   "security-alerts",
+		Source: config.LoopSource{Kind: config.SourceGitHubSecurityAlerts, Severity: []string{config.SeverityCritical, config.SeverityHigh}, MaxAttempts: 2},
+		Steps: []config.Step{
+			{Use: config.StepNewBranch}, {Use: config.StepFixAlerts, PromptPath: "prompts/security-fix.md", Prompt: "x"},
+			{Use: config.StepGates}, {Use: config.StepOpenPR}, {Use: config.StepWatchCI}, {Use: config.StepRetro},
+		},
+	}
+}
+
+// A security-alerts loop's dry run names its Source with the severities and budget
+// in force, and says what each of its new Steps does.
+func TestDescribeLoopPrintsASecurityAlertsLoop(t *testing.T) {
+	cfg := config.Config{Host: config.Host{ProjectPath: "/src/app"}, Project: config.Project{BranchPrefix: "feat"}}
+	l := securityLoop()
+
+	got := describeLoop(cfg, l, limitsFrom(cfg, l))
+
+	for _, want := range []string{
+		"loop security-alerts",
+		"source: github_security_alerts", "severity critical, high", "feat/sec-", "2 attempts per fingerprint",
+		"1. new_branch", "fresh from origin/main",
+		"2. fix_alerts", "SecurityFix session", "body prompts/security-fix.md",
+		"3. gates", "4. open_pr", "5. watch_ci", "6. retro",
+		"/src/app/.agent-harness/logs/loops/security-alerts/loop.jsonl",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("--dry-run missing %q:\n%s", want, got)
+		}
+	}
+}
+
+type fakePlanner struct {
+	cands []secloop.Candidate
+	err   error
+}
+
+func (p fakePlanner) Plan() ([]secloop.Candidate, error) { return p.cands, p.err }
+
+// `loop security-alerts --dry-run` prints the Source's plan; a plan that cannot be
+// read fails the dry run rather than printing an empty one.
+func TestSecurityDryRunRendersTheSourcesPlan(t *testing.T) {
+	l := securityLoop()
+	c := secloop.Candidate{Item: secloop.Item{Group: secloop.Group{Ecosystem: "npm", Package: "lodash", Alerts: []github.Alert{{Number: 1, Patched: "4.17.21"}}}, Branch: "feat/sec-npm-lodash", Fingerprint: "abc"}}
+
+	got, err := securityDryRun(l, fakePlanner{cands: []secloop.Candidate{c}})
+
+	if err != nil || !strings.Contains(got, "SEC-npm-lodash  feat/sec-npm-lodash") || !strings.Contains(got, "work: attempt 1 of 2") {
+		t.Errorf("securityDryRun = %q, %v", got, err)
+	}
+	if _, err := securityDryRun(l, fakePlanner{err: errors.New("403")}); err == nil || !strings.Contains(err.Error(), "403") {
+		t.Errorf("a failed plan fails the dry run, got %v", err)
+	}
+}
+
+// A real run of a security-alerts loop is refused, never handed to the ticket
+// loop: its Pipeline does not exist yet.
+func TestASecurityAlertsLoopIsNotYetRunnable(t *testing.T) {
+	if code := runSecurityLoop(config.Config{}, securityLoop(), false); code == 0 {
+		t.Error("a real run must be refused")
 	}
 }

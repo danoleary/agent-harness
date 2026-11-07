@@ -73,6 +73,31 @@ steps = [{ use = "implement" }, { use = "review" }, { use = "retro" }]
 
 Without a running PR loop, red CI on those PRs then waits for a human.
 
+## Declare a security-alerts loop
+
+A `github_security_alerts` loop works the repository's open Dependabot alerts,
+one Work item per vulnerable package, and lands each fix as a new PR (ADR-0040).
+It is not built in, and it is not yet runnable: `--dry-run` prints the packages
+it would work, and why it skips the rest, but a real run is refused.
+
+```toml
+[[loops]]
+name = "security-alerts"
+source = { kind = "github_security_alerts", severity = ["critical", "high"], max_attempts = 2 }   # these are the defaults
+steps = [
+  { use = "new_branch" },
+  { use = "fix_alerts", prompt = "prompts/security-fix.md" },
+  { use = "gates" },
+  { use = "open_pr" },
+  { use = "watch_ci" },
+  { use = "retro" },
+]
+```
+
+```bash
+agent-harness loop security-alerts --dry-run
+```
+
 ## Stop and watch a loop
 
 Each loop has its own sentinel, `.agent-harness/STOP-<name>`; `touch` it to wind
