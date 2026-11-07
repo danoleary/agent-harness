@@ -53,3 +53,7 @@ expires, and idles until one of them changes.**
   at most 30 minutes. A human can still dispatch the repair by hand.
 - Each loop instance keeps its own record, so another instance on the same
   Consumer runs one full cycle before it holds.
+- The record is in memory, so deleting a verdict under
+  `.agent-harness/locks/base-gates/` no longer re-gates the base on a running
+  loop's next poll: that loop idles until the re-check time unless it is
+  restarted.
