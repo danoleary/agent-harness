@@ -53,7 +53,9 @@ _Avoid_: queue, feed (a queue is one kind of Source).
 One unit of work a **Source** yields (`loop.WorkItem`): a **Key** and the branch
 the **Pipeline** will push. For a ticket, the Key is the tracker Key and the
 branch is `<branch_prefix>/<slug>`. For an open PR (the **PR loop**), the Key is
-`PR-<number>` and the branch is the PR's head branch.
+`PR-<number>` and the branch is the PR's head branch. For a vulnerable package
+(the security-alerts Source, ADR-0040), the Key is `SEC-<ecosystem>-<package>`
+and the branch is `<branch_prefix>/<slug>`.
 _Avoid_: job, task, ticket (a ticket is one kind of Work item).
 
 **Pipeline** (of a loop):
