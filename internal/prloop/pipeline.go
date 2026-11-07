@@ -1,6 +1,7 @@
 package prloop
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -8,6 +9,7 @@ import (
 
 	"github.com/danoleary/agent-harness/internal/config"
 	"github.com/danoleary/agent-harness/internal/fix"
+	"github.com/danoleary/agent-harness/internal/git"
 	"github.com/danoleary/agent-harness/internal/github"
 	"github.com/danoleary/agent-harness/internal/hostio"
 	"github.com/danoleary/agent-harness/internal/lease"
@@ -34,6 +36,9 @@ func LogsRoot(cfg config.Config, l config.Loop) string {
 // run id.
 type Pipeline struct {
 	Loop config.Loop
+	// Source is the loop's Source, which takes back the attempt it recorded when
+	// git refuses the checkout on local state (#247). Nil leaves the attempt spent.
+	Source *Source
 }
 
 var _ loop.Pipeline = Pipeline{}
@@ -59,7 +64,12 @@ func (p Pipeline) Run(item loop.WorkItem, claim *lease.Lease) stages.Result {
 		return stages.Result{}
 	}
 	h := hostio.NewOnBranch(cfg, log, runlog.MakeRunID(time.Now()), false, ticket.Slug(item.Key), item.Branch)
-	return Fix(h, cfg, log, it, p.Loop)
+	out := Fix(h, cfg, log, it, p.Loop)
+	// Before the deferred release, so settling the lease sees the PR handed off.
+	if out.Disposition == stages.CheckoutBlocked && p.Source != nil {
+		p.Source.Withdraw(it, out.Err)
+	}
+	return out
 }
 
 // Recover finds nothing to recover: a PR run either pushed or left the branch as
@@ -103,6 +113,12 @@ func Fix(h hostio.Host, cfg config.Config, log *runlog.Logger, it Item, l config
 	wt := h.Worktree()
 	if err := wt.CheckoutRemote(); err != nil {
 		log.Event(fmt.Sprintf("%s ✗ could not check out %s: %v — nothing pushed", who, it.PR.HeadBranch, err))
+		// git refused on the host's local state, before any session: not the PR's
+		// failure, and no attempt (#247). A fetch that failed after its retries is.
+		var local *git.LocalStateError
+		if errors.As(err, &local) {
+			return stages.Result{Err: err, Disposition: stages.CheckoutBlocked}
+		}
 		return stages.Result{}
 	}
 	r := run{h: h, cfg: cfg, log: log, fixes: fixes, target: target, it: it, watchCI: l.Has(config.StepWatchCI)}
@@ -250,7 +266,8 @@ func (r *run) watch() stages.Result {
 
 // cleanup removes the PR's worktree once it is clean: the branch on origin is the
 // record, and the next run checks it out afresh. A worktree left dirty is kept for
-// a look, and the next CheckoutBranch refuses to drop it.
+// a look: the next checkout refuses to drop it, and the PR is handed to a human
+// without spending an attempt (#247).
 func (r *run) cleanup() {
 	wt := r.h.Worktree()
 	if !wt.Clean() {

@@ -575,7 +575,7 @@ loop:
 
   // breaker signal = the run's Disposition, NOT the pipeline exit code
   if Disposition == Shipped    -> reset consecutive-failure counter to 0
-  else if Disposition in {CapAborted, PreflightAborted, RecommendClose, Interrupted, BaseRed} -> neutral (neither increment nor reset)
+  else if Disposition in {CapAborted, PreflightAborted, RecommendClose, Interrupted, BaseRed, CheckoutBlocked} -> neutral (neither increment nor reset)
   else /* NoPR, NeedsHuman */  -> increment consecutive-failure counter
   // a retrospective-only failure (PR shipped) and a CI-red-after-budget (a reviewable PR
   // exists) do NOT count as failures; only "never produced a PR" does.
@@ -613,6 +613,8 @@ poll (Source github_prs, read-only judgement — also what --dry-run prints):
 
 pipeline (one PR, worktree .claude/worktrees/pr-<n> on the PR's head branch):
   preflight; fetch main; fetch the branch, worktree add -B at origin's tip
+    git refuses on local state (dirty/locked worktree, branch held) -> CheckoutBlocked:  // #247
+      void marker takes the attempt back, label blocked + comment naming the worktree and git's error
   head != the polled sha -> stop (the next poll sees the new head)
   post_create (warn-only; 127/126 stops)
   conflict: RebaseFix session            // internal/fix, shared with review
@@ -632,7 +634,8 @@ pipeline (one PR, worktree .claude/worktrees/pr-<n> on the PR's head branch):
 It writes its own stream (`logs/loops/pr-doctor/loop.jsonl`, per-PR logs under
 `logs/loops/pr-doctor/pr-<n>/`) and has its own sentinel (`STOP-pr-doctor`), so it
 runs beside the ticket loop. A push is **Shipped** for the breaker, as a ticket's PR
-is; nothing pushed is **NoPR**. The reaper releases an `in-progress` label older
+is; nothing pushed is **NoPR**, except a checkout git refused on local state, which
+is **CheckoutBlocked** and breaker-neutral. The reaper releases an `in-progress` label older
 than the claim TTL (timed by its attempt marker): the reaper runs only between
 this daemon's own items, so one PR loop per checkout. A held PR with no attempt
 marker is not its claim (a human's label, or another loop's hold), so the reaper

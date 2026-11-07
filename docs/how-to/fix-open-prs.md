@@ -95,6 +95,12 @@ Any new push is a new attempt too. After `source.max_attempts` attempts (else
 `PR_LOOP_MAX_ATTEMPTS`, default 3), the loop comments on the PR with what it tried
 and labels it `blocked`. Remove the label to give it a fresh budget.
 
+If git refuses to check the branch out because of the state of your checkout (a
+worktree an earlier run left with uncommitted changes, say), no session runs and
+the attempt does not count. The loop labels the PR `blocked` and comments with the
+worktree and git's error. Clean that worktree up, then remove the label; the PR
+keeps the attempts it had left.
+
 A run of failed attempts on one PR also counts towards the loop's circuit breaker
 (`max_consecutive_failures`, default 3), which can stop the daemon after the
 hand-off. Set the loop's `max_consecutive_failures` above its `max_attempts` if

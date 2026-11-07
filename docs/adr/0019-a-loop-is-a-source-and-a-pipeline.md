@@ -333,3 +333,32 @@ the first loop whose Work item has neither a ticket nor a PR. Its Pipeline cuts
 a fresh branch from `origin/main`, lands it as a new PR with `ship`, and keys its
 lease on that branch as decision 2 requires: the claim lock until the PR exists,
 then the `in-progress` label on the PR.
+
+## Amendment, 2026-11-07: a checkout refused on local state is not an attempt (#247)
+
+On herd PR-1384 the first fix attempt left its worktree dirty, and the loop kept
+it for a look. The next two selections each recorded an attempt, then failed in
+seconds in `CheckoutRemote`, because git refused to drop that worktree. Neither
+run launched a session, but both counted against the PR's budget and the
+breaker's streak. The breaker reported `PR-1384 failed 3×` and stopped the loop,
+so no other PR got service. The #192 skip did not apply: the worktree was the
+loop's own.
+
+- **`CheckoutRemote` reports a refusal after the fetch as a
+  `git.LocalStateError`** naming the worktree and carrying git's error: a dirty
+  or locked worktree, the branch held by another worktree, a path in the way. A
+  fetch that fails after its retries is the remote's failure and stays **NoPR**.
+- **A new Disposition, CheckoutBlocked.** The PR Pipeline returns it on a
+  local-state refusal. Like **PreflightAborted** it is environmental: no session
+  ran, so the breaker stays blind to it. The loop narrates the PR and the error
+  and backs off one poll.
+- **The attempt is taken back.** Before releasing the lease, the Pipeline has
+  the Source post a `void` marker for the head and kind, which cancels the
+  latest matching attempt marker, so the budget counts only attempts that got
+  past the checkout.
+- **The PR is handed to a human.** Retrying would meet the same refusal, and the
+  loop never discards a worktree with uncommitted work. The Source labels the PR
+  `blocked` and comments with the worktree and git's error. This is not the
+  budget hand-off, so it does not reset the budget. Once someone cleans the
+  worktree up and removes the label, the PR resumes with the attempts it had
+  left.
