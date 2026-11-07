@@ -33,7 +33,6 @@ type GitHub interface {
 	DependabotAlerts(severity []string) ([]github.Alert, error)
 	PRsForBranch(branch string) ([]github.BranchPR, error)
 	OpenPRs() ([]github.PullRequest, error)
-	AddLabel(number int, label string) error
 	RemoveLabel(number int, label string) error
 }
 
@@ -403,25 +402,14 @@ func (s *Source) Release(key string) error {
 	return nil
 }
 
-// Block labels the open PR on key's branch blocked, if it has one, so Plan skips
-// the package until a human removes the label (#230).
-func (s *Source) Block(key string) error {
-	prs, err := s.gh.OpenPRs()
-	if err != nil {
-		return err
-	}
-	for _, pr := range prs {
-		if pr.HeadBranch == s.Branch(key) {
-			return s.gh.AddLabel(pr.Number, s.opts.BlockedLabel)
-		}
-	}
-	return nil
-}
-
 // Comment posts nothing. The daemon's breadcrumbs are worded for tickets ("released
 // back to Todo"), and before ship there is nowhere to post them; the loop's record
 // is the ledger.
 func (s *Source) Comment(string, string) error { return nil }
+
+// Block labels nothing. Only the committed-fix recovery hands an item over
+// blocked (#230), and this loop has no Pipeline to recover a branch yet.
+func (s *Source) Block(string) error { return nil }
 
 // Releasing narrates the lease coming off a package: there is no Todo to go back
 // to, and a run that ships nothing leaves only its started line.

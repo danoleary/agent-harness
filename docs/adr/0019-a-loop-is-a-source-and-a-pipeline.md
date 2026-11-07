@@ -320,7 +320,9 @@ before any session ran. It stayed blocked after the worktree was removed.
 - **The main checkout counts as a worktree.** git refuses its branch the same
   way, and so does a prunable worktree's until it is pruned.
 - **The loop never removes or reuses a worktree it did not create.** Someone may
-  be working in it.
+  be working in it. (Superseded by ADR-0043: a clean worktree that holds nothing
+  origin lacks, with no live run in it, is removed; any other is reported in the
+  stream.)
 - A failed worktree list fails the poll, as a failed read of the ticket loop's
   holds does: a guess would spend an attempt on a checkout git refuses.
 

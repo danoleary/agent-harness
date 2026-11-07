@@ -28,6 +28,9 @@ func RenderPlan(cands []Candidate) string {
 	b.WriteString("PR loop dry-run — nothing below was changed.\n")
 	for _, c := range cands {
 		fmt.Fprintf(&b, "\nPR #%d  %s @ %s  %s\n", c.PR.Number, c.PR.HeadBranch, short(c.PR.HeadSHA), c.PR.Title)
+		if c.Worktree != "" {
+			fmt.Fprintf(&b, "  first remove the stale worktree %s: no live run in it, clean, nothing origin lacks\n", c.Worktree)
+		}
 		switch {
 		case c.Skip != "":
 			fmt.Fprintf(&b, "  skip: %s\n", c.Skip)

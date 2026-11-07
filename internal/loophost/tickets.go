@@ -202,14 +202,16 @@ func (s *TicketSource) Claims() ([]loop.StaleClaim, error) {
 }
 
 // HeldBranches maps each branch the ticket loop holds right now — an agent-claimed
-// In Progress ticket's `<branch_prefix>/<slug>`, while its worktree is still
-// checked out — to the ticket's Key. The PR loop skips those branches: the lease is
-// keyed on the branch, and a ticket mid-run owns its PR's branch (ADR-0019),
-// including through an in-stage CI watch. A shipped ticket stays In Progress until
-// its PR merges, but the retrospective — or, for a ticket the committed-fix recovery
-// shipped, the recovery itself (#184) — reaps its worktree once the PR is open; from
-// then on the branch is free, so the PR loop can fix CI that goes red after the
-// ticket loop moved on (#110).
+// In Progress ticket's `<branch_prefix>/<slug>`, while a run working it is live —
+// to the ticket's Key. The PR loop skips those branches: the lease is keyed on the
+// branch, and a ticket mid-run owns its PR's branch (ADR-0019), including through
+// an in-stage CI watch. A shipped ticket stays In Progress until its PR merges, so
+// the claim alone does not say a run is live; its run lock does ([HoldRun]). A
+// worktree is no signal: an older binary, a restart mid-watch or a failed removal
+// leaves one behind with no run in it, and keying on it kept the PR loop off the
+// branch forever (#231). Once the run ends the branch is free, so the PR loop can
+// fix CI that goes red after the ticket loop moved on (#110). A run lock that
+// cannot be read fails the read, as the claim list does.
 func (s *TicketSource) HeldBranches() (map[string]string, error) {
 	claims, err := s.client.ListInProgressClaims()
 	if err != nil {
@@ -217,13 +219,50 @@ func (s *TicketSource) HeldBranches() (map[string]string, error) {
 	}
 	held := make(map[string]string, len(claims))
 	for _, c := range claims {
-		wt := s.checkout().Worktree(ticket.Slug(c.Identifier))
-		if wt.Exists() {
-			held[wt.Branch()] = c.Identifier
+		slug := ticket.Slug(c.Identifier)
+		live, err := hostlock.File(config.RunLockFile(s.cfg.ProjectPath, slug)).Held()
+		if err != nil {
+			return nil, fmt.Errorf("read whether %s's run is live: %w", c.Identifier, err)
+		}
+		if live {
+			held[s.checkout().Worktree(slug).Branch()] = c.Identifier
 		}
 	}
 	return held, nil
 }
+
+// HoldRun takes the run lock on key for the run about to work it, and returns
+// the func that lets it go when the run ends. Every run of a ticket holds it — the
+// loop's Pipeline and its committed-fix recovery, and a single-shot `pipeline` —
+// so another loop can tell a live run from a worktree a dead one left (#231). The
+// lock is a signal, never a gate: if another run holds it already, or it cannot be
+// taken, the run is narrated and goes ahead without it. A taken lock is retried
+// for a moment first: the PR loop's [hostlock.File.Held] probe takes it for an
+// instant, and losing that race must not leave the whole run unheld.
+func HoldRun(cfg config.Config, key string, log loop.Narrator) (release func()) {
+	lock := hostlock.File(config.RunLockFile(cfg.ProjectPath, ticket.Slug(key)))
+	unlock, ok, err := lock.TryLock()
+	for try := 1; err == nil && !ok && try < runLockTries; try++ {
+		time.Sleep(runLockRetry)
+		unlock, ok, err = lock.TryLock()
+	}
+	switch {
+	case err != nil:
+		log.Event("loop … warning: could not take " + key + "'s run lock (#231): " + err.Error())
+		return func() {}
+	case !ok:
+		log.Event("loop … warning: another live run holds " + key + "'s run lock; running without it (#231)")
+		return func() {}
+	}
+	return unlock
+}
+
+// runLockTries and runLockRetry bound how long HoldRun waits out a held run lock:
+// long past a liveness probe, short against a run that really holds it.
+const (
+	runLockTries = 10
+	runLockRetry = 50 * time.Millisecond
+)
 
 // HasRemoteBranch reads origin's heads for a branch naming the ticket. It fails
 // SAFE toward true (see gitpkg): a flaky read must never cost a live claim.
@@ -278,6 +317,7 @@ func (p *TicketPipeline) Run(item loop.WorkItem, claim *lease.Lease) stages.Resu
 		// breaker counts it like any other failure to ship.
 		return stages.Result{}
 	}
+	defer HoldRun(cfg, item.Key, p.log)()
 	return pipeline.Run(ticketDeps(p.loop, cfg, log, runID, ticketArgs(p.loop, item.Key, claim)))
 }
 
@@ -311,6 +351,7 @@ func (p *TicketPipeline) Recover(item loop.WorkItem) (stages.Result, bool) {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		return stages.Result{}, false
 	}
+	defer HoldRun(cfg, item.Key, p.log)()
 	rec := ship.Recover(hostio.New(cfg, log, runID, false, ticket.Slug(item.Key)), p.log, item.Key, stages.LastPushGate(log.Dir))
 	return recovered(rec), rec.Attempted
 }

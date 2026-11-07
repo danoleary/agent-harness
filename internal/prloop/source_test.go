@@ -134,7 +134,7 @@ func TestNextYieldsARedCIPR(t *testing.T) {
 }
 
 // #110: a ticket loop without watch_ci moves on once its PR is open. When that PR
-// goes red, its branch is no longer held (the ticket's worktree is reaped), so it
+// goes red, its branch is no longer held (its run is over), so it
 // is a CIRed item; a ticket still in flight keeps its own branch.
 func TestNextYieldsARedPRTheTicketLoopMovedOnFrom(t *testing.T) {
 	gh := newFakeGitHub(harnessPR(13, "def5678"), harnessPR(12, "abc1234"))
@@ -594,35 +594,97 @@ func TestNextYieldsOnlyTheKindTheLoopIsFor(t *testing.T) {
 	}
 }
 
-// fakeWorktrees is the checkout's worktree list the Source reads: each checked-out
-// branch and the worktree that holds it.
+// fakeWorktrees is the checkout's worktrees the Source reads and reclaims: each
+// checked-out branch and the worktree that holds it, which worktrees are unsafe to
+// remove and why, and every removal.
 type fakeWorktrees struct {
 	branches map[string]string
 	err      error
+	// unsafe is why a worktree cannot be removed without losing work; a path not
+	// here is clean with nothing origin lacks.
+	unsafe map[string]string
+	// removeErr fails the removal of a worktree that looked safe.
+	removeErr map[string]error
+	// tips is origin's tip each safety check was asked about, by path.
+	tips    map[string]string
+	removed []string
 }
 
-func (f *fakeWorktrees) checkedOut() (map[string]string, error) { return f.branches, f.err }
+func (f *fakeWorktrees) CheckedOutBranches() (map[string]string, error) {
+	out := map[string]string{}
+	for b, p := range f.branches {
+		out[b] = p
+	}
+	return out, f.err
+}
+
+func (f *fakeWorktrees) WorktreeSafeToRemove(path, tip string) error {
+	if f.tips == nil {
+		f.tips = map[string]string{}
+	}
+	f.tips[path] = tip
+	if why := f.unsafe[path]; why != "" {
+		return errors.New(why)
+	}
+	return nil
+}
+
+func (f *fakeWorktrees) RemoveWorktree(path string) error {
+	if err := f.removeErr[path]; err != nil {
+		return err
+	}
+	f.removed = append(f.removed, path)
+	for b, p := range f.branches {
+		if p == path {
+			delete(f.branches, b)
+		}
+	}
+	return nil
+}
 
 // ownWorktree is where the PR loop checks PR n out: its own worktree.
 func ownWorktree(n int) string { return fmt.Sprintf("/herd/.claude/worktrees/pr-%d", n) }
 
+// streamLog keeps the structured records the Source put in the stream.
+type streamLog struct {
+	quietLog
+	records []loopstream.Record
+}
+
+func (l *streamLog) Structured(r loopstream.Record) {
+	l.records = append(l.records, r)
+	l.quietLog.Structured(r)
+}
+
+func (l *streamLog) skips() []loopstream.Record {
+	var out []loopstream.Record
+	for _, r := range l.records {
+		if r.Kind == loopstream.KindItemSkipped {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
 // herd PR #1375 (#192): feat/beh-1298 conflicted with main while a Claude Code
 // worktree had it checked out, so every checkout failed in seconds. The loop spent
 // all three attempts between 23:49:01Z and 23:49:30Z and labelled it blocked, and
-// no session ever ran. Replayed: the three polls skip it, naming the worktree,
-// with no lease, no attempt and no hand-off; the first poll after the worktree is
-// removed works it on attempt 1 of 3.
-func TestNextSkipsAPRWhoseBranchAnotherWorktreeHasCheckedOut(t *testing.T) {
+// no session ever ran. Replayed with the worktree holding uncommitted work, so it
+// is not the loop's to remove (#231): the three polls skip it, naming the worktree
+// and why it stays, with no lease, no attempt and no hand-off, and the skip is in
+// the stream once rather than hidden behind "queue empty". The first poll after
+// the worktree is removed works it on attempt 1 of 3.
+func TestNextSkipsAPRWhoseBranchADirtyWorktreeHasCheckedOut(t *testing.T) {
 	pr := harnessPR(1375, "5d0c1a2")
 	pr.HeadBranch = "feat/beh-1298"
 	gh := newFakeGitHub(pr)
 	gh.merge[1375] = ci.MergeConflicting
-	wts := &fakeWorktrees{branches: map[string]string{
-		"main":          "/herd",
-		"feat/beh-1298": "/herd/.claude/worktrees/beh-1298",
-	}}
-	log := &quietLog{}
-	s := NewSource(gh, testOptions, nil, log).WatchWorktrees(wts.checkedOut, ownWorktree)
+	wts := &fakeWorktrees{
+		branches: map[string]string{"main": "/herd", "feat/beh-1298": "/herd/.claude/worktrees/beh-1298"},
+		unsafe:   map[string]string{"/herd/.claude/worktrees/beh-1298": "it has uncommitted changes"},
+	}
+	log := &streamLog{}
+	s := NewSource(gh, testOptions, nil, log).WatchWorktrees(wts, ownWorktree)
 	s.now = func() time.Time { return testNow }
 
 	for poll := 1; poll <= 3; poll++ {
@@ -630,15 +692,18 @@ func TestNextSkipsAPRWhoseBranchAnotherWorktreeHasCheckedOut(t *testing.T) {
 			t.Fatalf("poll %d: Next = %+v ok %v err %v, want the PR skipped", poll, item, ok, err)
 		}
 	}
-	if len(gh.posted[1375])+len(gh.added[1375]) != 0 {
-		t.Errorf("a PR another worktree holds must not be touched; posted %v added %v", gh.posted[1375], gh.added[1375])
+	if len(gh.posted[1375])+len(gh.added[1375]) != 0 || len(wts.removed) != 0 {
+		t.Errorf("a PR a dirty worktree holds must not be touched; posted %v added %v removed %v", gh.posted[1375], gh.added[1375], wts.removed)
 	}
-	plan, _ := s.Plan()
-	if want := "branch checked out in worktree /herd/.claude/worktrees/beh-1298"; len(plan) != 1 || plan[0].Skip != want {
+	want := "branch checked out in worktree /herd/.claude/worktrees/beh-1298, which cannot be removed safely: it has uncommitted changes"
+	if plan, _ := s.Plan(); len(plan) != 1 || plan[0].Skip != want {
 		t.Errorf("plan = %+v, want the skip %q", plan, want)
 	}
-	if out := RenderPlan(plan); !strings.Contains(out, "skip: branch checked out in worktree /herd/.claude/worktrees/beh-1298") {
-		t.Errorf("the dry-run must print the skip naming the worktree; got\n%s", out)
+	if skips := log.skips(); len(skips) != 1 || skips[0].Ticket != "PR-1375" || !strings.Contains(skips[0].Message, want) {
+		t.Errorf("stream skips = %+v, want one skip record for PR-1375 saying %q", skips, want)
+	}
+	if wts.tips["/herd/.claude/worktrees/beh-1298"] != "5d0c1a2" {
+		t.Errorf("the worktree was judged against %q, want the PR's head on origin", wts.tips["/herd/.claude/worktrees/beh-1298"])
 	}
 
 	delete(wts.branches, "feat/beh-1298")
@@ -651,15 +716,176 @@ func TestNextSkipsAPRWhoseBranchAnotherWorktreeHasCheckedOut(t *testing.T) {
 	}
 }
 
+// herd, 2026-11-07 (#231): pr-doctor skipped all four open PRs, each because a
+// worktree with no run in it held its branch, and the stream said only "queue
+// empty". BEH-1305 and BEH-1198 shipped on v0.8.x minutes before v0.9.0 was
+// installed; a loop restart cut BEH-1301's CI watch (herd#1386) short, so no
+// retrospective removed its worktree; and a human's worktree held their
+// chore/trim-radix-packages (herd#1382). Each was clean at origin's tip. Three were
+// red or conflicting. Replayed: the first poll removes all four worktrees, narrates
+// each removal, and works a broken PR.
+func TestNextReclaimsTheLeftoverWorktreesHerdSkippedOn20261107(t *testing.T) {
+	trim := github.PullRequest{Number: 1382, Title: "chore: trim radix packages", HeadBranch: "chore/trim-radix-packages", HeadSHA: "a1b2c3d", BaseBranch: "main"}
+	beh1301 := github.PullRequest{Number: 1386, Title: "BEH-1301: a ticket", HeadBranch: "feat/beh-1301", HeadSHA: "b2c3d4e", BaseBranch: "main"}
+	beh1305 := github.PullRequest{Number: 1385, Title: "BEH-1305: a ticket", HeadBranch: "feat/beh-1305", HeadSHA: "c3d4e5f", BaseBranch: "main"}
+	beh1198 := github.PullRequest{Number: 1383, Title: "BEH-1198: a ticket", HeadBranch: "feat/beh-1198", HeadSHA: "d4e5f6a", BaseBranch: "main"}
+	gh := newFakeGitHub(trim, beh1301, beh1305, beh1198)
+	gh.merge[1382] = ci.MergeConflicting
+	gh.checks["b2c3d4e"] = github.ChecksRed
+	gh.checks["c3d4e5f"] = github.ChecksRed
+	leftovers := map[string]string{
+		"chore/trim-radix-packages": "/Users/someone/herd-trim-radix",
+		"feat/beh-1301":             "/herd/.claude/worktrees/beh-1301",
+		"feat/beh-1305":             "/herd/.claude/worktrees/beh-1305",
+		"feat/beh-1198":             "/herd/.claude/worktrees/beh-1198",
+	}
+	wts := &fakeWorktrees{branches: map[string]string{"main": "/herd"}}
+	for b, p := range leftovers {
+		wts.branches[b] = p
+	}
+	opts := testOptions
+	opts.AllPRs = true
+	log := &streamLog{}
+	s := NewSource(gh, opts, nil, log).WatchWorktrees(wts, ownWorktree)
+	s.now = func() time.Time { return testNow }
+
+	item, _, ok, err := s.Next()
+	if err != nil || !ok || item.Key != "PR-1382" {
+		t.Fatalf("Next = %+v ok %v err %v, want the conflicting herd#1382 worked", item, ok, err)
+	}
+	if len(wts.removed) != 4 {
+		t.Errorf("removed = %v, want all four leftover worktrees", wts.removed)
+	}
+	for branch, path := range leftovers {
+		if !containsAll(log.events, "removed", path, branch) {
+			t.Errorf("no narrated removal of %s (%s); events:\n%s", path, branch, strings.Join(log.events, "\n"))
+		}
+	}
+	if skips := log.skips(); len(skips) != 0 {
+		t.Errorf("stream skips = %+v, want none: every worktree was reclaimed", skips)
+	}
+	plan, _ := s.Plan()
+	for _, c := range plan {
+		if strings.Contains(c.Skip, "worktree") {
+			t.Errorf("PR #%d still skipped for a worktree: %s", c.PR.Number, c.Skip)
+		}
+	}
+}
+
+func containsAll(events []string, parts ...string) bool {
+	for _, e := range events {
+		hit := true
+		for _, p := range parts {
+			hit = hit && strings.Contains(e, p)
+		}
+		if hit {
+			return true
+		}
+	}
+	return false
+}
+
+// A ticket whose run is live holds its branch, worktree and all: the PR loop
+// neither works the PR nor removes the worktree the run is working in.
+func TestNextLeavesALiveTicketRunsWorktreeAlone(t *testing.T) {
+	gh := newFakeGitHub(harnessPR(12, "abc1234"))
+	gh.checks["abc1234"] = github.ChecksRed
+	wts := &fakeWorktrees{branches: map[string]string{"feat/gh-12": "/herd/.claude/worktrees/gh-12"}}
+	held := func() (map[string]string, error) { return map[string]string{"feat/gh-12": "#12"}, nil }
+	s := NewSource(gh, testOptions, held, &quietLog{}).WatchWorktrees(wts, ownWorktree)
+
+	if item, _, ok, err := s.Next(); ok || err != nil {
+		t.Fatalf("Next = %+v ok %v err %v, want the PR left to the live run", item, ok, err)
+	}
+	if len(wts.removed) != 0 || len(wts.tips) != 0 {
+		t.Errorf("a live run's worktree must not be judged or removed; judged %v removed %v", wts.tips, wts.removed)
+	}
+	if plan, _ := s.Plan(); len(plan) != 1 || plan[0].Skip != "branch held by #12 in the ticket loop" {
+		t.Errorf("plan = %+v, want the ticket loop's hold", plan)
+	}
+}
+
+// A ticket run that starts while the poll reads GitHub, after the holds were read
+// but before the stale worktree goes, keeps its worktree: the holds are read again
+// just before removing it.
+func TestNextLeavesAWorktreeWhoseRunStartedMidPoll(t *testing.T) {
+	gh := newFakeGitHub(harnessPR(12, "abc1234"))
+	gh.checks["abc1234"] = github.ChecksRed
+	wts := &fakeWorktrees{branches: map[string]string{"feat/gh-12": "/herd/.claude/worktrees/gh-12"}}
+	reads := 0
+	held := func() (map[string]string, error) {
+		reads++
+		if reads == 1 {
+			return nil, nil
+		}
+		return map[string]string{"feat/gh-12": "#12"}, nil
+	}
+	s := NewSource(gh, testOptions, held, &quietLog{}).WatchWorktrees(wts, ownWorktree)
+
+	if item, _, ok, err := s.Next(); ok || err != nil {
+		t.Fatalf("Next = %+v ok %v err %v, want the PR left to the run that started", item, ok, err)
+	}
+	if len(wts.removed) != 0 {
+		t.Errorf("removed %v from under a run that started mid-poll", wts.removed)
+	}
+}
+
+// A removal git refuses — a locked worktree, a race with a human — leaves the PR
+// skipped, and says so in the stream.
+func TestNextReportsAWorktreeItCouldNotRemove(t *testing.T) {
+	gh := newFakeGitHub(harnessPR(12, "abc1234"))
+	gh.checks["abc1234"] = github.ChecksRed
+	path := "/herd/.claude/worktrees/gh-12"
+	wts := &fakeWorktrees{
+		branches:  map[string]string{"feat/gh-12": path},
+		removeErr: map[string]error{path: errors.New("'remove' cannot be used on a locked working tree")},
+	}
+	log := &streamLog{}
+	s := NewSource(gh, testOptions, nil, log).WatchWorktrees(wts, ownWorktree)
+
+	if item, _, ok, err := s.Next(); ok || err != nil {
+		t.Fatalf("Next = %+v ok %v err %v, want the PR skipped", item, ok, err)
+	}
+	if len(gh.posted[12])+len(gh.added[12]) != 0 {
+		t.Errorf("a PR whose checkout cannot succeed must not be touched; posted %v added %v", gh.posted[12], gh.added[12])
+	}
+	if skips := log.skips(); len(skips) != 1 || !strings.Contains(skips[0].Message, "locked working tree") || !strings.Contains(skips[0].Message, path) {
+		t.Errorf("stream skips = %+v, want one naming the worktree and git's refusal", skips)
+	}
+}
+
+// The dry-run changes nothing: it says which worktree the loop would remove.
+func TestPlanOnlySaysItWouldRemoveAStaleWorktree(t *testing.T) {
+	gh := newFakeGitHub(harnessPR(12, "abc1234"))
+	gh.checks["abc1234"] = github.ChecksRed
+	path := "/herd/.claude/worktrees/gh-12"
+	wts := &fakeWorktrees{branches: map[string]string{"feat/gh-12": path}}
+	s := NewSource(gh, testOptions, nil, &quietLog{}).WatchWorktrees(wts, ownWorktree)
+
+	plan, err := s.Plan()
+	if err != nil || len(plan) != 1 || plan[0].Skip != "" || plan[0].Worktree != path {
+		t.Fatalf("plan = %+v err %v, want PR-12 worked over its stale worktree", plan, err)
+	}
+	if len(wts.removed) != 0 {
+		t.Errorf("Plan removed %v; it must change nothing", wts.removed)
+	}
+	if out := RenderPlan(plan); !strings.Contains(out, "first remove the stale worktree "+path) {
+		t.Errorf("the dry-run must name the worktree it would remove; got\n%s", out)
+	}
+}
+
 // The PR loop's own worktree for the PR is not in the way: the checkout replaces it.
 func TestNextWorksAPRWhoseBranchIsInTheLoopsOwnWorktree(t *testing.T) {
 	gh := newFakeGitHub(harnessPR(12, "abc1234"))
 	gh.merge[12] = ci.MergeConflicting
 	wts := &fakeWorktrees{branches: map[string]string{"feat/gh-12": ownWorktree(12) + "/"}}
-	s := NewSource(gh, testOptions, nil, &quietLog{}).WatchWorktrees(wts.checkedOut, ownWorktree)
+	s := NewSource(gh, testOptions, nil, &quietLog{}).WatchWorktrees(wts, ownWorktree)
 
 	if item, _, ok, err := s.Next(); err != nil || !ok || item.Key != "PR-12" {
 		t.Fatalf("Next = %+v ok %v err %v, want PR-12 worked over its own worktree", item, ok, err)
+	}
+	if len(wts.removed) != 0 {
+		t.Errorf("removed %v; the loop's own worktree is the checkout's to replace", wts.removed)
 	}
 }
 
@@ -669,7 +895,7 @@ func TestPlanFailsWhenTheWorktreesCannotBeListed(t *testing.T) {
 	gh := newFakeGitHub(harnessPR(12, "abc1234"))
 	gh.merge[12] = ci.MergeConflicting
 	wts := &fakeWorktrees{err: errors.New("not a git repository")}
-	s := NewSource(gh, testOptions, nil, &quietLog{}).WatchWorktrees(wts.checkedOut, ownWorktree)
+	s := NewSource(gh, testOptions, nil, &quietLog{}).WatchWorktrees(wts, ownWorktree)
 
 	if _, _, ok, err := s.Next(); ok || err == nil {
 		t.Fatalf("Next = ok %v err %v, want the poll to fail", ok, err)

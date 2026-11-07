@@ -41,7 +41,7 @@ func pigStateFor(r loopstream.Record) pigState {
 		return pigStopped
 	case loopstream.KindBreakerTrip, loopstream.KindCapAbort:
 		return pigHurt
-	case loopstream.KindIdle, loopstream.KindTicketReleased, loopstream.KindCapBackoff:
+	case loopstream.KindIdle, loopstream.KindTicketReleased, loopstream.KindCapBackoff, loopstream.KindItemSkipped:
 		// Backing off after a cap abort is a waiting-it-out state, like an empty queue:
 		// the daemon is alive and counting down, not working — so the pig sleeps.
 		return pigSleeping

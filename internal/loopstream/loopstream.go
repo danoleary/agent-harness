@@ -64,6 +64,10 @@ const (
 	KindBreakerTrip Kind = "breaker-trip"
 	// KindIdle — the queue was empty and the daemon is idling before re-polling.
 	KindIdle Kind = "idle"
+	// KindItemSkipped — the Source passed over a work item it would otherwise work,
+	// for a reason a human may need to clear: a worktree that holds a PR's branch and
+	// cannot be removed safely (#231). Ticket names the item; Message says why.
+	KindItemSkipped Kind = "item-skipped"
 	// KindLoopStopped — the daemon's terminal record: it has wound down and Run is
 	// returning (STOP requested, max-runtime, max-tickets, or a breaker trip). The
 	// Message carries the reason. It is the definitive "loop stopped" signal both the
@@ -89,6 +93,7 @@ func AllKinds() []Kind {
 		KindCapBackoff,
 		KindBreakerTrip,
 		KindIdle,
+		KindItemSkipped,
 		KindLoopStopped,
 	}
 }
