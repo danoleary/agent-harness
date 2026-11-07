@@ -102,6 +102,25 @@ Opt-in upstreaming of Harness findings to the public harness repo (ADR-0011). Se
 | `findings_label` | none | Label applied to upstreamed issues, and the scope dedup searches. |
 | `project` | the ticket Key | The reporting project's name, stamped on each filing. |
 
+## `[sentry]`
+
+Optional. With it, the harness reads on the host the Sentry issues a ticket
+body cites and puts them into the implementation and review prompts (ADR-0041).
+The token is the `SENTRY_AUTH_TOKEN` [environment variable](env.md). See
+[give sessions the Sentry issues a ticket cites](../how-to/sentry.md).
+
+| Key | Default | Notes |
+|---|---|---|
+| `org` | — | Required. The organization slug, as in `https://<org>.sentry.io`. |
+| `projects` | — | Required. The upper-case short-ID prefixes to look for, e.g. `["HERD"]` for `HERD-3P`. A tracker Key such as `BEH-1148` matches only if you list its prefix. |
+| `base_url` | `"https://sentry.io"` | The Sentry site. Set it for a self-hosted Sentry. |
+
+```toml
+[sentry]
+org = "acme"
+projects = ["HERD"]
+```
+
 ## `[[loops]]`
 
 Optional. An entry with a built-in loop's name (`tickets`, `pr-doctor`) replaces

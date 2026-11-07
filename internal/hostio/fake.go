@@ -7,6 +7,7 @@ import (
 	"github.com/danoleary/agent-harness/internal/filing"
 	"github.com/danoleary/agent-harness/internal/findings"
 	gitpkg "github.com/danoleary/agent-harness/internal/git"
+	"github.com/danoleary/agent-harness/internal/sentry"
 	"github.com/danoleary/agent-harness/internal/session"
 	"github.com/danoleary/agent-harness/internal/ticket"
 	"github.com/danoleary/agent-harness/internal/tracker"
@@ -80,6 +81,11 @@ type Fake struct {
 	// CIFn, when set, is called with the watch so a test can drive the Fix
 	// callback (the sandboxed auto-fix session) and return a scripted outcome.
 	CIFn func(CIWatch) ci.Outcome
+	// SentryIssues are the Sentry issues SentryIssue answers, keyed by the ref's
+	// String (`HERD-3P`, `issue 4504`); an unlisted ref is a 404. SentryErr, when
+	// set, fails every read, as a missing token does.
+	SentryIssues map[string]sentry.Issue
+	SentryErr    error
 
 	// --- tracker ---
 
@@ -218,6 +224,18 @@ func (f *Fake) WatchCI(w CIWatch) ci.Outcome {
 }
 
 // --- tracker + findings ---
+
+func (f *Fake) SentryIssue(r sentry.Ref) (sentry.Issue, error) {
+	f.record("sentry %s", r)
+	if f.SentryErr != nil {
+		return sentry.Issue{}, f.SentryErr
+	}
+	i, ok := f.SentryIssues[r.String()]
+	if !ok {
+		return sentry.Issue{}, fmt.Errorf("Sentry answered HTTP 404 for %s", r)
+	}
+	return i, nil
+}
 
 func (f *Fake) Tracker() (tracker.Tracker, error) {
 	if f.TrackerErr != nil {

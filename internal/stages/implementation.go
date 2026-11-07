@@ -252,6 +252,7 @@ func Implementation(h hostio.Host, cfg config.Config, log *runlog.Logger, args A
 		resume = prompt.ResumedBranch
 	}
 	subject := NewSubject(h, args.Identifier, log.Dir, t)
+	subject.Sentry = f.sentry(cfg, t)
 	sessionRun := implementationRun(cfg, subject, resume)
 	findingsDir := sessionRun.FindingsDir
 	// This runs before the claim, so a full disk leaves nothing stranded (BEH-540).

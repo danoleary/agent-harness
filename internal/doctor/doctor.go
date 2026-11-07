@@ -138,6 +138,9 @@ func Run(p Probes) []Result {
 	proj := loadProject(p)
 	results = append(results, proj.configResult, proj.promptsResult)
 	results = append(results, checkTracker(p, proj), checkImage(p, proj, daemonUp))
+	if r, ok := checkSentry(p, proj); ok {
+		results = append(results, r)
+	}
 	return results
 }
 

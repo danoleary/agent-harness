@@ -17,6 +17,7 @@ import (
 	"strings"
 	"text/template"
 
+	"github.com/danoleary/agent-harness/internal/sentry"
 	"github.com/danoleary/agent-harness/internal/ticket"
 )
 
@@ -102,6 +103,11 @@ type Context struct {
 	// Retrospective envelope lists so a Consumer body cannot point it elsewhere (#185).
 	LogDir      string
 	Transcripts []string
+
+	// Sentry is what the host fetched of the Sentry issues the ticket cites (#211,
+	// ADR-0041). The Implement and Review envelopes carry it after the ticket
+	// context; nil (no `[sentry]` table) leaves the prompt as it was.
+	Sentry *sentry.Snapshot
 
 	// Resume selects the Implement variant.
 	Resume Resume
@@ -350,6 +356,7 @@ func implement(c Context) string {
 		renderBody(c),
 		worktreeState,
 		ticketContext(c.Ticket),
+		sentrySection(c.Sentry),
 		prerequisitesSection(c.Ticket.Prerequisites),
 		openQuestionsSection(c.Ticket.OpenQuestions()),
 		"---",
@@ -612,6 +619,7 @@ func review(c Context) string {
 	return join(
 		renderBody(c),
 		ticketContext(c.Ticket),
+		sentrySection(c.Sentry),
 		branchBaseSection(c.Base),
 		priorReviewSection(c.PriorReview),
 		redGateSection(c.RedGate),

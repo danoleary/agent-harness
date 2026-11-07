@@ -82,6 +82,14 @@ command = "dotnet test"
 name = "format"
 command = "dotnet format --verify-no-changes"
 
+# Sentry issues a ticket cites (HERD-3P, or an issue URL) are read on the host and
+# put into the implementation and review prompts, scrubbed of user data. The token
+# is the host env's SENTRY_AUTH_TOKEN (ADR-0041). Uncomment to turn it on.
+# [sentry]
+# org = "acme"
+# projects = ["HERD"]
+# base_url = "https://sentry.io"
+
 # Optional: the loops `agent-harness loop <name>` runs (ADR-0019). Without any
 # [[loops]], two built-in loops stand: "tickets", which a bare `agent-harness
 # loop` runs, and "pr-doctor", which fixes open PRs that conflict with main or
