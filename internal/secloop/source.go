@@ -407,6 +407,10 @@ func (s *Source) Release(key string) error {
 // is the ledger.
 func (s *Source) Comment(string, string) error { return nil }
 
+// Block labels nothing. Only the committed-fix recovery hands an item over
+// blocked (#230), and this loop has no Pipeline to recover a branch yet.
+func (s *Source) Block(string) error { return nil }
+
 // Releasing narrates the lease coming off a package: there is no Todo to go back
 // to, and a run that ships nothing leaves only its started line.
 func (s *Source) Releasing(why loop.ReleaseReason, key string) string {

@@ -12,6 +12,7 @@ import (
 	"github.com/danoleary/agent-harness/internal/config"
 	"github.com/danoleary/agent-harness/internal/gittest"
 	"github.com/danoleary/agent-harness/internal/hostio"
+	"github.com/danoleary/agent-harness/internal/hostlock"
 	"github.com/danoleary/agent-harness/internal/loop"
 	"github.com/danoleary/agent-harness/internal/loopstream"
 	"github.com/danoleary/agent-harness/internal/ship"
@@ -451,17 +452,20 @@ func TestPruneMergedWorktreesSurfacesAMissingScript(t *testing.T) {
 
 // The PR loop keys its lease on the branch (ADR-0019), so it asks the ticket loop
 // which branches it holds: the slugged branch of every agent-claimed In Progress
-// ticket the ticket loop still has checked out. A ticket stays In Progress once its
-// PR is open, but the retrospective reaps its worktree, and from then on its red CI
-// is the PR loop's (#110).
-func TestHeldBranchesMapsEachCheckedOutClaimToItsBranch(t *testing.T) {
+// ticket whose run is live, holding its run lock (#231). A ticket stays In
+// Progress once its PR is open, but from the moment its run ends its red CI is the
+// PR loop's (#110), whether or not a worktree was left behind.
+func TestHeldBranchesMapsEachLiveClaimToItsBranch(t *testing.T) {
 	trk := newQueueTracker()
 	trk.claims = []tracker.InProgressClaim{{Identifier: "#7"}, {Identifier: "PROJ-2"}, {Identifier: "PROJ-3", HasLinkedPR: true}}
 	h := sourceFor(t, config.Config{Project: config.Project{BranchPrefix: "feat"}}, trk)
-	for _, slug := range []string{"gh-7", "proj-2"} {
+	for _, slug := range []string{"gh-7", "proj-2", "proj-3"} {
 		if err := os.MkdirAll(filepath.Join(h.cfg.ProjectPath, ".claude", "worktrees", slug), 0o755); err != nil {
 			t.Fatal(err)
 		}
+	}
+	for _, key := range []string{"#7", "PROJ-2"} {
+		defer HoldRun(h.cfg, key, &narrator{})()
 	}
 
 	got, err := h.HeldBranches()
@@ -469,7 +473,7 @@ func TestHeldBranchesMapsEachCheckedOutClaimToItsBranch(t *testing.T) {
 		t.Fatalf("HeldBranches() error = %v", err)
 	}
 	if len(got) != 2 || got["feat/gh-7"] != "#7" || got["feat/proj-2"] != "PROJ-2" {
-		t.Errorf("held = %v, want feat/gh-7 → #7 and feat/proj-2 → PROJ-2, and not the shipped PROJ-3 whose worktree is gone", got)
+		t.Errorf("held = %v, want feat/gh-7 → #7 and feat/proj-2 → PROJ-2, and not PROJ-3, whose run is over though its worktree is left", got)
 	}
 
 	trk.claimsErr = errors.New("tracker down")
@@ -478,34 +482,45 @@ func TestHeldBranchesMapsEachCheckedOutClaimToItsBranch(t *testing.T) {
 	}
 }
 
-// #184, replaying #174: the slice left a clean, committed feat/gh-174 with no PR,
-// so its retrospective kept the worktree for the committed-fix recovery. Recovery
-// then pushed it and opened PR #178, and the ticket stayed In Progress until that PR
-// merges. The branch must be free from then on, or the PR loop skips #178 forever.
-func TestARecoveredTicketNoLongerHoldsItsBranch(t *testing.T) {
+// #231, replaying herd BEH-1301 / herd#1386: a loop restart interrupted the review
+// stage's CI watch, so no retrospective ran and the worktree stayed, clean, with
+// the ticket In Progress. The run that held the branch is dead, so the branch is
+// free for the PR loop, which reclaims the worktree.
+func TestARunThatEndedNoLongerHoldsItsBranch(t *testing.T) {
 	repo := gittest.New(t)
-	repo.Handoff("gh-174")
+	repo.Handoff("beh-1301")
 	trk := newQueueTracker()
-	trk.claims = []tracker.InProgressClaim{{Identifier: "#174"}}
+	trk.claims = []tracker.InProgressClaim{{Identifier: "BEH-1301", HasLinkedPR: true}}
 	src := sourceFor(t, config.Config{Project: config.Project{BranchPrefix: gittest.Prefix}, Host: config.Host{ProjectPath: repo.Dir}}, trk)
-	if held, _ := src.HeldBranches(); held["feat/gh-174"] != "#174" {
-		t.Fatalf("held = %v, want feat/gh-174 held by #174 while its slice runs", held)
-	}
 
-	h := hostio.NewFake(repo.Checkout(), "gh-174")
-	h.OpenPRThere = false
-	tip, _ := h.Worktree().HeadSHA()
-	if rec := ship.Recover(h, &narrator{}, "#174", &ship.PushGate{Head: tip, GateRan: true}); !rec.Shipped {
-		t.Fatalf("Recover() = %+v, want the committed fix shipped", rec)
+	release := HoldRun(src.cfg, "BEH-1301", &narrator{})
+	if held, _ := src.HeldBranches(); held["feat/beh-1301"] != "BEH-1301" {
+		t.Fatalf("held = %v, want feat/beh-1301 held by BEH-1301 while its run is live", held)
 	}
-	trk.claims[0].HasLinkedPR = true
+	release()
 
 	held, err := src.HeldBranches()
 	if err != nil {
 		t.Fatalf("HeldBranches() error = %v", err)
 	}
-	if by, ok := held["feat/gh-174"]; ok {
-		t.Errorf("feat/gh-174 still held by %s after recovery opened its PR, so the PR loop skips it forever", by)
+	if by, ok := held["feat/beh-1301"]; ok {
+		t.Errorf("feat/beh-1301 still held by %s after its run ended, so the PR loop skips herd#1386 forever", by)
+	}
+}
+
+// A second run of a ticket whose run lock is taken still runs: the lock is a
+// liveness signal for other loops, not a gate on this one, and the live holder
+// keeps the branch held.
+func TestHoldRunNarratesAndRunsWhenTheLockIsTaken(t *testing.T) {
+	cfg := withProject(t, config.Config{})
+	defer HoldRun(cfg, "BEH-1", &narrator{})()
+	log := &narrator{}
+	HoldRun(cfg, "BEH-1", log)()
+	if len(log.events) != 1 || !strings.Contains(log.events[0], "BEH-1") {
+		t.Errorf("events = %v, want one warning naming BEH-1", log.events)
+	}
+	if held, _ := hostlock.File(config.RunLockFile(cfg.ProjectPath, "beh-1")).Held(); !held {
+		t.Error("the first run's lock must survive the second run letting go of nothing")
 	}
 }
 

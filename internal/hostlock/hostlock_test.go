@@ -123,3 +123,27 @@ func TestSlotsReleaseFreesTheSlot(t *testing.T) {
 		t.Fatal("Acquire after a release did not return")
 	}
 }
+
+// A run holds its run lock for as long as it works its ticket, so another loop
+// can ask whether that run is live (#231). The lock is the liveness: once the
+// holder lets go — or dies, and the kernel drops it — nothing holds it.
+func TestFileHeldReportsALiveHolder(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "runs", "beh-1301.lock")
+	if held, err := File(path).Held(); err != nil || held {
+		t.Fatalf("Held() before any run = %v, %v; want false — and no error for a file no run has made", held, err)
+	}
+	unlock, ok, err := File(path).TryLock()
+	if err != nil || !ok {
+		t.Fatalf("TryLock() = ok %v err %v, want the free lock taken", ok, err)
+	}
+	if held, err := File(path).Held(); err != nil || !held {
+		t.Errorf("Held() while a run holds it = %v, %v; want true", held, err)
+	}
+	if _, ok, _ := File(path).TryLock(); ok {
+		t.Error("TryLock() took a lock another run holds")
+	}
+	unlock()
+	if held, err := File(path).Held(); err != nil || held {
+		t.Errorf("Held() after the run let go = %v, %v; want false", held, err)
+	}
+}

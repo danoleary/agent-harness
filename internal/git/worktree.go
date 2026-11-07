@@ -628,6 +628,69 @@ func (c Checkout) CheckedOutBranches() (map[string]string, error) {
 	return branches, nil
 }
 
+// WorktreeSafeToRemove reports why removing the worktree at path would lose work,
+// or nil when it would not: its tree is clean (the readiness sentinel aside) and
+// origin's tip for its branch, tip, already contains its HEAD. A worktree left
+// holding a PR's branch blocks the PR loop's checkout of it, and one that passes
+// here is reclaimed rather than skipped forever (#231). A worktree whose directory
+// is gone holds the branch only in git's records, and is safe. The main checkout
+// never is.
+func (c Checkout) WorktreeSafeToRemove(path, tip string) error {
+	if samePath(path, c.path) {
+		return fmt.Errorf("it is the main checkout")
+	}
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return nil
+	}
+	status, err := c.output("git", "-C", path, "status", "--porcelain")
+	if err != nil {
+		return fmt.Errorf("could not read its status: %w", err)
+	}
+	if porcelainHasRealChanges(string(status)) {
+		return fmt.Errorf("it has uncommitted changes")
+	}
+	out, err := c.output("git", "-C", path, "rev-parse", "HEAD")
+	if err != nil {
+		return fmt.Errorf("could not read its HEAD: %w", err)
+	}
+	head := strings.TrimSpace(string(out))
+	if tip == "" || (head != tip && c.run("git", "-C", c.path, "merge-base", "--is-ancestor", head, tip) != nil) {
+		return fmt.Errorf("its HEAD %s is not on origin (origin's tip is %s): it has commits origin lacks, or the tip is not fetched", shortSHA(head), shortSHA(tip))
+	}
+	return nil
+}
+
+// RemoveWorktree removes the worktree at path, which [Checkout.WorktreeSafeToRemove]
+// passed, so its branch can be checked out elsewhere. Like [Worktree.Remove] it is
+// not forced: git still refuses a worktree with untracked work. One whose directory
+// is gone is pruned from git's records instead.
+func (c Checkout) RemoveWorktree(path string) error {
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return c.run("git", "-C", c.path, "worktree", "prune")
+	}
+	_ = os.Remove(filepath.Join(path, WorktreeReadySentinel))
+	return c.run("git", "-C", c.path, "worktree", "remove", path)
+}
+
+// samePath reports whether two paths name one directory: git lists a worktree by
+// its real path, which a checkout reached through a symlink does not spell the
+// same way.
+func samePath(a, b string) bool {
+	if filepath.Clean(a) == filepath.Clean(b) {
+		return true
+	}
+	ra, errA := filepath.EvalSymlinks(a)
+	rb, errB := filepath.EvalSymlinks(b)
+	return errA == nil && errB == nil && ra == rb
+}
+
+func shortSHA(sha string) string {
+	if len(sha) > 7 {
+		return sha[:7]
+	}
+	return sha
+}
+
 // pathLines is git's one-path-per-line output, blank lines dropped.
 func pathLines(out []byte) []string {
 	var paths []string
