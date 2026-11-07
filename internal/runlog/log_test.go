@@ -155,3 +155,24 @@ func readFile(t *testing.T, path string) string {
 	}
 	return string(b)
 }
+
+// A Logger whose Console is set narrates there instead of stdout, so a test can
+// keep a fake run's narration beside its own failure rather than in the package's
+// stdout (#225). run.jsonl is mirrored either way.
+func TestEventNarratesToTheLoggersConsole(t *testing.T) {
+	log, err := New(t.TempDir(), "BEH-3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var console strings.Builder
+	log.Console = &console
+
+	log.Event("gate \"build\": make")
+
+	if !strings.HasSuffix(console.String(), "  gate \"build\": make\n") {
+		t.Errorf("console = %q, want the timestamped narration line", console.String())
+	}
+	if run := readFile(t, filepath.Join(log.Dir, "run.jsonl")); !strings.Contains(run, `gate \"build\": make`) {
+		t.Errorf("run.jsonl = %q, want the line mirrored", run)
+	}
+}

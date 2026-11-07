@@ -9,7 +9,6 @@ import (
 	"github.com/danoleary/agent-harness/internal/config"
 	"github.com/danoleary/agent-harness/internal/gittest"
 	"github.com/danoleary/agent-harness/internal/hostio"
-	"github.com/danoleary/agent-harness/internal/runlog"
 	"github.com/danoleary/agent-harness/internal/session"
 )
 
@@ -24,10 +23,7 @@ func conflictEnv(t *testing.T, resolve func(*gittest.Repo, *hostio.Fake)) (Env, 
 		resolve(repo, h)
 		return session.Outcome{}
 	}
-	log, err := runlog.New(t.TempDir(), "PROJ-1")
-	if err != nil {
-		t.Fatal(err)
-	}
+	log := testLog(t)
 	cfg := config.Config{}
 	cfg.GateLockDir = t.TempDir()
 	return Env{Host: h, Cfg: cfg, Log: log, Who: "review"}, repo
