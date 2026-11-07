@@ -12,12 +12,17 @@ import (
 	"github.com/danoleary/agent-harness/internal/gittest"
 	"github.com/danoleary/agent-harness/internal/hostio"
 	"github.com/danoleary/agent-harness/internal/lease"
+	"github.com/danoleary/agent-harness/internal/runlog"
 	"github.com/danoleary/agent-harness/internal/session"
 	"github.com/danoleary/agent-harness/internal/ticket"
 )
 
-// baseGateLabel is the container the base check runs the stageCfg "check" Gate in.
-const baseGateLabel = baseGateStep + "-check"
+// baseGateLabel is the container the base check runs the stageCfg "check" Gate in,
+// and baseConfirmLabel the one its re-run over a red base runs it in (#189).
+const (
+	baseGateLabel    = baseGateStep + "-check"
+	baseConfirmLabel = baseConfirmStep + "-check"
+)
 
 func gateRuns(h *hostio.Fake, label string) int {
 	n := 0
@@ -87,7 +92,10 @@ func TestImplementationHoldsEveryTicketOnARedBase(t *testing.T) {
 	if got := gateRuns(first, baseGateLabel); got != 1 {
 		t.Errorf("first run gated the base %d times, want once", got)
 	}
-	if got := gateRuns(second, baseGateLabel); got != 0 {
+	if got := gateRuns(first, baseConfirmLabel); got != 1 {
+		t.Errorf("first run re-ran the red base gate %d times, want once to confirm it (#189)", got)
+	}
+	if got := gateRuns(second, baseGateLabel) + gateRuns(second, baseConfirmLabel); got != 0 {
 		t.Errorf("second run gated the same base %d times, want 0 — the verdict is keyed by base SHA and shared", got)
 	}
 	if len(first.Filed) != 1 || len(second.Filed) != 0 {
@@ -228,7 +236,7 @@ func TestImplementationRedBaseNarratesTheStepLogTailAndPath(t *testing.T) {
 	for _, want := range []string{
 		`raw exec.Command(\"gh\") in internal/ci/watch.go:88`,
 		"make: *** [Makefile:30: check-exec] Error 1",
-		filepath.Join(log.Dir, baseGateLabel+".log"),
+		filepath.Join(log.Dir, baseConfirmLabel+".log"),
 	} {
 		if !strings.Contains(said, want) {
 			t.Errorf("run.jsonl should carry %q; got %s", want, said)
@@ -236,5 +244,81 @@ func TestImplementationRedBaseNarratesTheStepLogTailAndPath(t *testing.T) {
 	}
 	if len(h.Filed) != 1 {
 		t.Fatalf("filed = %v, want the red-base finding", h.Filed)
+	}
+}
+
+// #189, replayed: a flaky gate step went red once on an untouched, green base.
+// Before, that one red run was the base's verdict: the ticket was held, a
+// base-gates-red finding was filed, and every ticket on the base waited out
+// baseRedRecheck until the same SHA was gated again and passed. Now the red is
+// re-run once before it counts; the re-run passes, so the base is recorded green,
+// the ticket dispatches, nothing is filed, and the next ticket trusts the green.
+func TestImplementationDispatchesWhenARedBaseGateFlakes(t *testing.T) {
+	repo := gittest.New(t)
+	cfg := sharedCfg(t)
+
+	h := hostio.NewFake(repo.Checkout(), ticket.Slug("#187"))
+	h.ShellFn = func(_ int, run hostio.ShellRun) session.Outcome {
+		if run.Label == baseGateLabel {
+			return session.Outcome{ExitCode: 2, StderrTail: "--- FAIL: TestSlotWaitNarration (0.21s)"}
+		}
+		return session.Outcome{}
+	}
+	h.AgentFn = commitsHandoff(h, repo)
+	log := stageLog(t, "#187")
+	res := Implementation(h, cfg, log, Args{Identifier: "#187"})
+
+	if !res.OK || res.Disposition == BaseRed {
+		t.Fatalf("a base gate that passes its re-run must dispatch, got %+v", res)
+	}
+	if len(h.Agents) != 1 {
+		t.Errorf("agent runs = %v, want the /tdd session", labels(h.Agents))
+	}
+	if got := gateRuns(h, baseConfirmLabel); got != 1 {
+		t.Errorf("re-ran the red base gate %d times, want once", got)
+	}
+	// The session files its own dropbox after it runs; a flake must add nothing to it.
+	dropbox, _ := os.ReadFile(filepath.Join(runlog.FindingsDir(log.Dir, implementationSession), "out.json"))
+	if strings.Contains(string(dropbox), baseRedFindingKey) {
+		t.Errorf("findings dropbox = %s, want no %s finding for a flake", dropbox, baseRedFindingKey)
+	}
+	if said := narration(t, log); !strings.Contains(said, "flaked") {
+		t.Errorf("run.jsonl should say the base gate flaked; got %s", said)
+	}
+
+	next := hostio.NewFake(repo.Checkout(), ticket.Slug("#188"))
+	redOnBase(next)
+	next.AgentFn = commitsHandoff(next, repo)
+	if res := Implementation(next, cfg, stageLog(t, "#188"), Args{Identifier: "#188"}); !res.OK {
+		t.Fatalf("the next ticket must trust the base's green verdict, got %+v", res)
+	}
+	if got := gateRuns(next, baseGateLabel) + gateRuns(next, baseConfirmLabel); got != 0 {
+		t.Errorf("next ticket gated the base %d times, want 0 — the flake's re-run recorded it green", got)
+	}
+}
+
+// A re-run that fails environmentally confirms nothing: the base records no
+// verdict, the ticket dispatches, and the next ticket gates the base afresh.
+func TestImplementationDispatchesWhenARedBaseGateReRunFailsEnvironmentally(t *testing.T) {
+	repo := gittest.New(t)
+	cfg := sharedCfg(t)
+
+	h := hostio.NewFake(repo.Checkout(), ticket.Slug("PROJ-40"))
+	h.ShellFn = func(_ int, run hostio.ShellRun) session.Outcome {
+		switch run.Label {
+		case baseGateLabel:
+			return session.Outcome{ExitCode: 1}
+		case baseConfirmLabel:
+			return session.Outcome{ExitCode: 137}
+		}
+		return session.Outcome{}
+	}
+	h.AgentFn = commitsHandoff(h, repo)
+	if res := Implementation(h, cfg, stageLog(t, "PROJ-40"), Args{Identifier: "PROJ-40"}); !res.OK || res.Disposition == BaseRed {
+		t.Fatalf("an unconfirmed red must dispatch, got %+v", res)
+	}
+
+	if recorded, _ := os.ReadDir(config.BaseVerdictsDir(cfg.ProjectPath)); len(recorded) != 0 {
+		t.Errorf("recorded %d base verdicts, want none for an unconfirmed red", len(recorded))
 	}
 }

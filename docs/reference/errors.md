@@ -81,7 +81,9 @@ Exit 137 (SIGKILL) is not an interruption — it is an OOM-kill or the session c
 
 `⏸ base <sha> fails gate "…" before any change — holding <KEY>` means `main`
 itself fails a gate. After `post_create`, the implementation stage runs the gates
-once over the untouched base, keyed by its SHA. If they fail, no session
+over the untouched base, keyed by its SHA. A red run is re-run once
+(`basegate-confirm-<name>`), and a pass there records the base green and
+dispatches, logged as `base gate "…" flaked`. If they fail twice, no session
 launches: the ticket goes back to Todo, its empty worktree and branch are
 removed, and the run ends **BaseRed** (ADR-0036). The loop refetches `main` and
 backs off, and every ticket cut from the same base is held without gating it
@@ -91,7 +93,7 @@ again. The circuit breaker doesn't count it. The harness files one finding,
 Fix: repair `main`. Or dispatch the finding's issue by hand
 (`agent-harness pipeline <KEY>`), since an issue carrying that finding key is
 exempt from the hold. `--force` also skips the check. A red verdict is trusted
-for 30 minutes, so a flaky gate is re-run after that. The verdicts live under
+for 30 minutes, so a gate that flaked on both runs is gated again after that. The verdicts live under
 `.agent-harness/locks/base-gates/`; delete one to re-gate its base now.
 
 ## Worktree setup and gates
