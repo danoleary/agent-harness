@@ -236,9 +236,16 @@ func (s *TicketSource) HeldBranches() (map[string]string, error) {
 // loop's Pipeline and its committed-fix recovery, and a single-shot `pipeline` —
 // so another loop can tell a live run from a worktree a dead one left (#231). The
 // lock is a signal, never a gate: if another run holds it already, or it cannot be
-// taken, the run is narrated and goes ahead without it.
+// taken, the run is narrated and goes ahead without it. A taken lock is retried
+// for a moment first: the PR loop's [hostlock.File.Held] probe takes it for an
+// instant, and losing that race must not leave the whole run unheld.
 func HoldRun(cfg config.Config, key string, log loop.Narrator) (release func()) {
-	unlock, ok, err := hostlock.File(config.RunLockFile(cfg.ProjectPath, ticket.Slug(key))).TryLock()
+	lock := hostlock.File(config.RunLockFile(cfg.ProjectPath, ticket.Slug(key)))
+	unlock, ok, err := lock.TryLock()
+	for try := 1; err == nil && !ok && try < runLockTries; try++ {
+		time.Sleep(runLockRetry)
+		unlock, ok, err = lock.TryLock()
+	}
 	switch {
 	case err != nil:
 		log.Event("loop … warning: could not take " + key + "'s run lock (#231): " + err.Error())
@@ -249,6 +256,13 @@ func HoldRun(cfg config.Config, key string, log loop.Narrator) (release func()) 
 	}
 	return unlock
 }
+
+// runLockTries and runLockRetry bound how long HoldRun waits out a held run lock:
+// long past a liveness probe, short against a run that really holds it.
+const (
+	runLockTries = 10
+	runLockRetry = 50 * time.Millisecond
+)
 
 // HasRemoteBranch reads origin's heads for a branch naming the ticket. It fails
 // SAFE toward true (see gitpkg): a flaky read must never cost a live claim.

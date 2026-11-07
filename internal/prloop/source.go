@@ -392,9 +392,24 @@ func (s *Source) Next() (loop.WorkItem, *lease.Lease, bool, error) {
 		return loop.WorkItem{}, nil, false, err
 	}
 	// Reclaim every stale worktree first, whether or not its PR is worked now: a
-	// green PR that goes red later must not find its branch still held (#231).
+	// green PR that goes red later must not find its branch still held (#231). A
+	// run may have started in the GitHub reads since Plan read the holds, so they
+	// are read again first: the loop never removes a worktree a live run is in.
+	var live map[string]string
 	for i, c := range cands {
 		if c.Worktree == "" {
+			continue
+		}
+		if live == nil {
+			if live, err = s.held(); err != nil {
+				return loop.WorkItem{}, nil, false, fmt.Errorf("could not read which branches the ticket loop holds: %w", err)
+			}
+			if live == nil {
+				live = map[string]string{}
+			}
+		}
+		if by := live[c.PR.HeadBranch]; by != "" {
+			cands[i].Skip = fmt.Sprintf("branch held by %s in the ticket loop", by)
 			continue
 		}
 		if err := s.worktrees.RemoveWorktree(c.Worktree); err != nil {

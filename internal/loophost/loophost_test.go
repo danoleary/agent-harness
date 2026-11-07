@@ -508,6 +508,27 @@ func TestARunThatEndedNoLongerHoldsItsBranch(t *testing.T) {
 	}
 }
 
+// The PR loop's liveness probe takes the run lock for an instant. A run that
+// starts in that instant waits it out and holds the lock, rather than running its
+// whole length unheld for the PR loop to mistake for dead.
+func TestHoldRunWaitsOutALivenessProbe(t *testing.T) {
+	cfg := withProject(t, config.Config{})
+	probe, ok, err := hostlock.File(config.RunLockFile(cfg.ProjectPath, "beh-2")).TryLock()
+	if err != nil || !ok {
+		t.Fatalf("TryLock() = ok %v err %v", ok, err)
+	}
+	go func() { time.Sleep(20 * time.Millisecond); probe() }()
+	log := &narrator{}
+	release := HoldRun(cfg, "BEH-2", log)
+	defer release()
+	if len(log.events) != 0 {
+		t.Errorf("events = %v, want the run lock taken once the probe let go", log.events)
+	}
+	if held, _ := hostlock.File(config.RunLockFile(cfg.ProjectPath, "beh-2")).Held(); !held {
+		t.Error("the run must hold its lock after a probe let go")
+	}
+}
+
 // A second run of a ticket whose run lock is taken still runs: the lock is a
 // liveness signal for other loops, not a gate on this one, and the live holder
 // keeps the branch held.

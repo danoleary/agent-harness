@@ -804,6 +804,31 @@ func TestNextLeavesALiveTicketRunsWorktreeAlone(t *testing.T) {
 	}
 }
 
+// A ticket run that starts while the poll reads GitHub, after the holds were read
+// but before the stale worktree goes, keeps its worktree: the holds are read again
+// just before removing it.
+func TestNextLeavesAWorktreeWhoseRunStartedMidPoll(t *testing.T) {
+	gh := newFakeGitHub(harnessPR(12, "abc1234"))
+	gh.checks["abc1234"] = github.ChecksRed
+	wts := &fakeWorktrees{branches: map[string]string{"feat/gh-12": "/herd/.claude/worktrees/gh-12"}}
+	reads := 0
+	held := func() (map[string]string, error) {
+		reads++
+		if reads == 1 {
+			return nil, nil
+		}
+		return map[string]string{"feat/gh-12": "#12"}, nil
+	}
+	s := NewSource(gh, testOptions, held, &quietLog{}).WatchWorktrees(wts, ownWorktree)
+
+	if item, _, ok, err := s.Next(); ok || err != nil {
+		t.Fatalf("Next = %+v ok %v err %v, want the PR left to the run that started", item, ok, err)
+	}
+	if len(wts.removed) != 0 {
+		t.Errorf("removed %v from under a run that started mid-poll", wts.removed)
+	}
+}
+
 // A removal git refuses — a locked worktree, a race with a human — leaves the PR
 // skipped, and says so in the stream.
 func TestNextReportsAWorktreeItCouldNotRemove(t *testing.T) {
