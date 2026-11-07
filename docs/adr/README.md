@@ -4,7 +4,9 @@ One file per decision. This index lists every ADR in ascending order, and
 `make check` fails if it doesn't (ADR-0034). To add one, take the number after
 the last line below (check `origin/main`, not local main), write
 `NNNN-<slug>.md`, and append its line at the end. Two branches that take the
-same number then conflict here, before either reaches main.
+same number then conflict here on GitHub, before either reaches main. A local
+replay keeps both lines (`merge=union` in `.gitattributes`), and `check-adr`
+catches a duplicate there.
 
 - [ADR-0001](0001-harness-owns-linear-integration.md): The harness owns all Linear I/O; nothing Linear enters the sandbox
 - [ADR-0002](0002-harness-owns-remote-io.md): The harness owns all remote I/O; the sandbox holds no credential but Anthropic's and reaches no remote the harness owns; the checkout is mounted at its real host path
