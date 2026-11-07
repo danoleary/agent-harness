@@ -88,6 +88,18 @@ func TestSecurityFixOverridesEachVulnerableMajor(t *testing.T) {
 	}
 }
 
+// A patch that is a major's first release does not name the vulnerable major, so
+// the override keeps the placeholder rather than keying the patched major, which
+// would leave every vulnerable version in place.
+func TestSecurityFixDoesNotKeyAnOverrideOnANewMajor(t *testing.T) {
+	c := securityFixContext()
+	c.Alerts = []github.Alert{{Number: 1, Package: "tar", VulnerableRange: "< 7.0.0", Patched: "7.0.0"}}
+	p := For(SecurityFix, c)
+	if !strings.Contains(p, "`\"tar@<vulnerable major>\": \"^7.0.0\"`") || strings.Contains(p, "tar@7") {
+		t.Errorf("want the placeholder key, got:\n%s", lineWith(p, "For these alerts"))
+	}
+}
+
 // The session may change dependency files only, commits nothing when no fix
 // works, and is told the host checks both.
 func TestSecurityFixLimitsTheDiffAndAllowsNoCommit(t *testing.T) {

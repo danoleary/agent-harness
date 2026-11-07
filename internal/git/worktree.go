@@ -580,12 +580,13 @@ func (w Worktree) DocsOnly(excludedRoots []string) bool {
 // main gained since the branch was cut is not the branch's work. A worktree that
 // does not exist has changed nothing. Untracked files are not listed: a session
 // commits before it hands off, and an edit to a file that exists is the case that
-// conflicts.
+// conflicts. A rename lists both its paths (--no-renames): a file moved away is a
+// file the branch changed, which the SecurityFix check must see (ADR-0040).
 func (w Worktree) ChangedFiles() ([]string, error) {
 	if !w.Exists() {
 		return nil, nil
 	}
-	out, err := w.output("git", "-C", w.path, "diff", "--name-only", "--merge-base", "origin/main")
+	out, err := w.output("git", "-C", w.path, "diff", "--name-only", "--no-renames", "--merge-base", "origin/main")
 	if err != nil {
 		return nil, err
 	}

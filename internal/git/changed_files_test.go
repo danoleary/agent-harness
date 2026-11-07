@@ -30,6 +30,24 @@ func TestChangedFilesIsTheWorktreesOwnWork(t *testing.T) {
 	}
 }
 
+// A rename is both of its paths: a source file moved to package.json is a source
+// file the branch changed, not a manifest edit alone (ADR-0040).
+func TestChangedFilesListsBothPathsOfARename(t *testing.T) {
+	repo := gittest.New(t)
+	wt := repo.Handoff("gh-1") // commits gh-1.txt
+	repo.Git(repo.Dir, "fetch", "-q", "origin")
+	repo.Git(wt.Path(), "mv", "README.md", "package.json")
+	repo.Git(wt.Path(), "commit", "-q", "-m", "move")
+
+	got, err := wt.ChangedFiles()
+	if err != nil {
+		t.Fatalf("ChangedFiles: %v", err)
+	}
+	if want := []string{"README.md", "gh-1.txt", "package.json"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("ChangedFiles = %v, want %v", got, want)
+	}
+}
+
 // A worktree that does not exist has changed nothing.
 func TestChangedFilesOfAMissingWorktreeIsEmpty(t *testing.T) {
 	got, err := gittest.New(t).Worktree("gh-2").ChangedFiles()

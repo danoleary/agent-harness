@@ -102,8 +102,10 @@ func outOfScope(alerts []github.Alert) string {
 // overrides renders the narrowest override for the patched alerts: one key per
 // vulnerable major, pinned to the highest first-patched version among them, since
 // one key cannot hold two. The vulnerable major is read as the major the patch
-// landed in; a patched version that is not semver keeps the placeholder for the
-// session to fill.
+// landed in, unless the patch is that major's first release (`X.0.0`): then the
+// vulnerable versions sit in an earlier major the patch does not name, so, like a
+// patched version that is not semver, it keeps the placeholder for the session to
+// fill.
 func overrides(alerts []github.Alert) string {
 	var keys []string
 	pin := map[string]string{}
@@ -114,7 +116,7 @@ func overrides(alerts []github.Alert) string {
 		}
 		key, patched := a.Package+"@<vulnerable major>", a.Patched
 		v, err := depcheck.ParseVersion(a.Patched)
-		if err == nil {
+		if err == nil && (v.Minor != 0 || v.Patch != 0 || len(v.Pre) > 0) {
 			key = fmt.Sprintf("%s@%d", a.Package, v.Major)
 			if b, ok := best[key]; ok && depcheck.Compare(v, b) <= 0 {
 				continue
