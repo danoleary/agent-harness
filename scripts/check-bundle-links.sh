@@ -33,8 +33,10 @@ docs=$(AGENT_HARNESS_SOURCE_ONLY=1 sh -c '. "$1" && printf "%s\n" $DOCS' sh "$RO
 
 violations=0
 
+# A here-string, not `printf | grep -q`: grep -q exits on its first match, and
+# under pipefail the writer's SIGPIPE read as "not shipped" (#177).
 shipped() {
-    printf '%s\n' "$docs" | grep -qxF -- "$1"
+    grep -qxF -- "$1" <<< "$docs"
 }
 
 # 1. Every shipped doc exists.

@@ -48,7 +48,9 @@ for f in "${prod[@]+"${prod[@]}"}"; do
 	test_file="${dir}/test-$(basename "$f")"
 	if [ -f "$test_file" ]; then
 		# Sibling test exists at the tip — it must also appear in the diff.
-		if ! printf '%s\n' "$changed" | grep -qxF "$test_file"; then
+		# A here-string, not `printf | grep -q`: grep -q exits on its first
+		# match, and under pipefail the writer's SIGPIPE read as "untouched" (#177).
+		if ! grep -qxF -- "$test_file" <<<"$changed"; then
 			violations+=("$f changed, but $test_file was not — add/extend a failing case for the new behavior.")
 		fi
 	elif git cat-file -e "$base:$test_file" 2>/dev/null; then
