@@ -232,10 +232,12 @@ const (
 	// re-polls, and the breaker stays blind to it.
 	CapAborted
 	// PreflightAborted — the Docker sandbox preflight refused before any work began
-	// (a full host disk, an unreachable daemon). Only the implementation stage can
-	// produce it (it owns the preflight). Like a cap abort it is environmental: the
-	// loop reclaims disk and backs off, and the breaker stays blind to it so a
-	// poison top-of-queue ticket can't rack up identical 2s failures and trip it.
+	// (a full host disk, an unreachable daemon, an image that would not build). The
+	// implementation stage and the PR Pipeline produce it, and Err carries the
+	// preflight's error. Like a cap abort it is environmental: it spends none of a
+	// PR's attempts (#232), the loop reclaims disk and backs off, and the breaker
+	// stays blind to it so a poison top-of-queue ticket can't rack up identical 2s
+	// failures and trip it.
 	PreflightAborted
 	// RecommendClose — the branch makes zero net change against origin/main, so the
 	// review stage declined to open an empty-commit PR and recommends the ticket be

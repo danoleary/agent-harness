@@ -496,11 +496,13 @@ loop:
     continue                          // auto-resume: re-poll after the cap window resets
 
   // DOCKER-PREFLIGHT ABORT is likewise environmental, NOT a ticket failure: the host
-  // couldn't launch a sandbox (full disk / daemon down) BEFORE any work began.
+  // couldn't launch a sandbox (full disk / daemon down / image won't build) BEFORE any work began.
   if Disposition == PreflightAborted:
-    // ticket was already released -> Todo by the impl stage, through the run's lease (ADR-0003)
+    // ticket was already released -> Todo by the impl stage, through the run's lease (ADR-0003);
+    // the PR loop's Pipeline already voided the attempt it recorded on the PR (#232)
+    record ticket-released with the preflight error in detail
     reclaim disk (incl. the Docker prune) // the usual cause — clear the floor for the retry
-    short backoff sleep (interruptible by STOP; = pollInterval)   // don't spin re-selecting the same top-of-queue ticket
+    backoff sleep (interruptible by STOP; pollInterval, doubling per abort in a row up to 16×)   // don't rebuild a broken image every poll
     do NOT touch the breaker counter  // breaker stays blind; otherwise 3 identical ~2s preflight failures trip it in seconds
     continue
 
@@ -580,7 +582,7 @@ loop:
   // a retrospective-only failure (PR shipped) and a CI-red-after-budget (a reviewable PR
   // exists) do NOT count as failures; only "never produced a PR" does.
   // a recommend-close (BEH-603) is a correct terminal no-op — neutral, like a cap abort.
-  // a Docker-preflight abort (full disk / daemon down before any work) is environmental — neutral, like a cap abort.
+  // a Docker-preflight abort (full disk / daemon down / image won't build, before any work) is environmental — neutral, like a cap abort.
   // an idle/empty-queue tick is neutral — it neither increments nor resets.
   if 3 consecutive ticket failures -> exit + loud report (circuit breaker)
 ```

@@ -510,6 +510,21 @@ func (s *Source) Withdraw(it Item, err error) {
 	}
 }
 
+// TakeBack takes back the attempt Next recorded on it.PR when the Docker sandbox
+// preflight refused before any session ran (#232): a full disk, a daemon down, an
+// image that would not build. No attempt was made, so none is spent, and the PR is
+// left unlabelled: the fault is the host's, and the loop backs off and works the PR
+// again once the sandbox starts. Call it before the lease is released, so settling
+// the lease does not count the attempt. Best-effort: a failure is narrated, and an
+// attempt it could not take back stays spent.
+func (s *Source) TakeBack(it Item, err error) {
+	body := fmt.Sprintf("%s\nagent-harness could not start its sandbox, so no session ran and this does not count as an attempt:\n\n```\n%v\n```\n",
+		voidMarker(it.PR.HeadSHA, it.Kind), err)
+	if err := s.gh.Comment(it.PR.Number, body); err != nil {
+		s.log.Event("loop … warning: could not take back the attempt on " + Key(it.PR.Number) + ": " + err.Error())
+	}
+}
+
 // settle runs as the lease on c's PR is released, after the run that worked it. A
 // run that spent the PR's last attempt and left it failing hands it to a human
 // now, not on the next poll: the daemon's breaker may stop it before then, and the
@@ -675,7 +690,7 @@ func attemptMarker(sha string, k Kind) string {
 }
 
 // voidMarker takes back the latest attempt at sha for k: one whose checkout git
-// refused before any session ran (#247).
+// refused (#247), or whose sandbox preflight refused (#232), before any session ran.
 func voidMarker(sha string, k Kind) string {
 	return fmt.Sprintf("%svoid sha=%s kind=%s -->", markerPrefix, sha, k)
 }

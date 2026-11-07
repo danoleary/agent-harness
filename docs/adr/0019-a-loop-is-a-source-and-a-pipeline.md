@@ -362,3 +362,27 @@ loop's own.
   budget hand-off, so it does not reset the budget. Once someone cleans the
   worktree up and removes the label, the PR resumes with the attempts it had
   left.
+
+## Amendment, 2026-11-07: a preflight abort is not an attempt (#232)
+
+In herd, a base-image bump dropped `corepack`, so the sandbox image would not
+build and every run ended in a Docker preflight abort. The PR Source had
+already posted its attempt marker at selection, so herd#1384 and herd#1385 each
+went from attempt 1 to `blocked` in about three minutes without running a
+session. The loop's record said `environmental: full disk / daemon down` and
+dropped the build error.
+
+- **The attempt is taken back.** On **PreflightAborted** the PR Pipeline has the
+  Source post the same `void` marker a refused checkout gets, before the lease
+  is released, so the budget counts only attempts that got past preflight. The
+  comment carries the preflight error. Unlike a refused checkout, the PR is not
+  labelled `blocked`: the fault is the host's, and the PR is worked again once
+  the sandbox starts. The ticket loop keeps no attempt budget (the
+  implementation stage releases the ticket to Todo), so it needs no change.
+- **The record carries the real error.** The `ticket-released` record for a
+  preflight abort puts the preflight's error in `detail` instead of guessing at
+  the cause.
+- **Aborts in a row back off longer.** The first waits one `poll_interval`, and
+  each abort after it doubles the wait, up to 16 poll intervals. Any other
+  outcome resets it. The loop counts aborts in a row rather than comparing
+  errors, because a failed build's output carries step timings.
