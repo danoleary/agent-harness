@@ -559,3 +559,88 @@ func TestNextYieldsOnlyTheKindTheLoopIsFor(t *testing.T) {
 		t.Error("a PR of the other kind must not be touched")
 	}
 }
+
+// fakeWorktrees is the checkout's worktree list the Source reads: each checked-out
+// branch and the worktree that holds it.
+type fakeWorktrees struct {
+	branches map[string]string
+	err      error
+}
+
+func (f *fakeWorktrees) checkedOut() (map[string]string, error) { return f.branches, f.err }
+
+// ownWorktree is where the PR loop checks PR n out: its own worktree.
+func ownWorktree(n int) string { return fmt.Sprintf("/herd/.claude/worktrees/pr-%d", n) }
+
+// herd PR #1375 (#192): feat/beh-1298 conflicted with main while a Claude Code
+// worktree had it checked out, so every checkout failed in seconds. The loop spent
+// all three attempts between 23:49:01Z and 23:49:30Z and labelled it blocked, and
+// no session ever ran. Replayed: the three polls skip it, naming the worktree,
+// with no lease, no attempt and no hand-off; the first poll after the worktree is
+// removed works it on attempt 1 of 3.
+func TestNextSkipsAPRWhoseBranchAnotherWorktreeHasCheckedOut(t *testing.T) {
+	pr := harnessPR(1375, "5d0c1a2")
+	pr.HeadBranch = "feat/beh-1298"
+	gh := newFakeGitHub(pr)
+	gh.merge[1375] = ci.MergeConflicting
+	wts := &fakeWorktrees{branches: map[string]string{
+		"main":          "/herd",
+		"feat/beh-1298": "/herd/.claude/worktrees/beh-1298",
+	}}
+	log := &quietLog{}
+	s := NewSource(gh, testOptions, nil, log).WatchWorktrees(wts.checkedOut, ownWorktree)
+	s.now = func() time.Time { return testNow }
+
+	for poll := 1; poll <= 3; poll++ {
+		if item, _, ok, err := s.Next(); ok || err != nil {
+			t.Fatalf("poll %d: Next = %+v ok %v err %v, want the PR skipped", poll, item, ok, err)
+		}
+	}
+	if len(gh.posted[1375])+len(gh.added[1375]) != 0 {
+		t.Errorf("a PR another worktree holds must not be touched; posted %v added %v", gh.posted[1375], gh.added[1375])
+	}
+	plan, _ := s.Plan()
+	if want := "branch checked out in worktree /herd/.claude/worktrees/beh-1298"; len(plan) != 1 || plan[0].Skip != want {
+		t.Errorf("plan = %+v, want the skip %q", plan, want)
+	}
+	if out := RenderPlan(plan); !strings.Contains(out, "skip: branch checked out in worktree /herd/.claude/worktrees/beh-1298") {
+		t.Errorf("the dry-run must print the skip naming the worktree; got\n%s", out)
+	}
+
+	delete(wts.branches, "feat/beh-1298")
+	item, _, ok, err := s.Next()
+	if err != nil || !ok || item.Key != "PR-1375" {
+		t.Fatalf("Next = %+v ok %v err %v, want PR-1375 once the worktree is gone", item, ok, err)
+	}
+	if len(gh.posted[1375]) != 1 || !strings.Contains(gh.posted[1375][0], "attempt 1 of 3") {
+		t.Errorf("posted = %v, want the first attempt of a full budget", gh.posted[1375])
+	}
+}
+
+// The PR loop's own worktree for the PR is not in the way: the checkout replaces it.
+func TestNextWorksAPRWhoseBranchIsInTheLoopsOwnWorktree(t *testing.T) {
+	gh := newFakeGitHub(harnessPR(12, "abc1234"))
+	gh.merge[12] = ci.MergeConflicting
+	wts := &fakeWorktrees{branches: map[string]string{"feat/gh-12": ownWorktree(12) + "/"}}
+	s := NewSource(gh, testOptions, nil, &quietLog{}).WatchWorktrees(wts.checkedOut, ownWorktree)
+
+	if item, _, ok, err := s.Next(); err != nil || !ok || item.Key != "PR-12" {
+		t.Fatalf("Next = %+v ok %v err %v, want PR-12 worked over its own worktree", item, ok, err)
+	}
+}
+
+// Not knowing which worktrees hold which branches fails the poll, as not knowing
+// the ticket loop's holds does: a guess would spend an attempt on a doomed checkout.
+func TestPlanFailsWhenTheWorktreesCannotBeListed(t *testing.T) {
+	gh := newFakeGitHub(harnessPR(12, "abc1234"))
+	gh.merge[12] = ci.MergeConflicting
+	wts := &fakeWorktrees{err: errors.New("not a git repository")}
+	s := NewSource(gh, testOptions, nil, &quietLog{}).WatchWorktrees(wts.checkedOut, ownWorktree)
+
+	if _, _, ok, err := s.Next(); ok || err == nil {
+		t.Fatalf("Next = ok %v err %v, want the poll to fail", ok, err)
+	}
+	if len(gh.posted[12])+len(gh.added[12]) != 0 {
+		t.Errorf("a failed poll must touch nothing; posted %v added %v", gh.posted[12], gh.added[12])
+	}
+}

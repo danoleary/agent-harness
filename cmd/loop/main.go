@@ -36,12 +36,14 @@ import (
 	"time"
 
 	"github.com/danoleary/agent-harness/internal/config"
+	gitpkg "github.com/danoleary/agent-harness/internal/git"
 	"github.com/danoleary/agent-harness/internal/loop"
 	"github.com/danoleary/agent-harness/internal/loophost"
 	"github.com/danoleary/agent-harness/internal/loopstream"
 	"github.com/danoleary/agent-harness/internal/prloop"
 	"github.com/danoleary/agent-harness/internal/runlog"
 	"github.com/danoleary/agent-harness/internal/stages"
+	"github.com/danoleary/agent-harness/internal/ticket"
 	"github.com/danoleary/agent-harness/internal/trackers"
 	"github.com/danoleary/agent-harness/internal/version"
 )
@@ -261,7 +263,7 @@ func runPRLoop(cfg config.Config, l config.Loop, dryRun bool) int {
 	if dryRun {
 		quiet := runlog.NewConsole(loopstream.NewStream(os.DevNull))
 		tickets := loophost.NewTicketSource(cfg, quiet, client)
-		plan, err := prloop.NewSource(pulls, prloop.OptionsFrom(cfg, l), tickets.HeldBranches, quiet).Plan()
+		plan, err := prSource(cfg, l, pulls, tickets.HeldBranches, quiet).Plan()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "loop %s --dry-run: %v\n", l.Name, err)
 			return 1
@@ -272,7 +274,7 @@ func runPRLoop(cfg config.Config, l config.Loop, dryRun bool) int {
 
 	log := openStream(cfg, l)
 	tickets := loophost.NewTicketSource(cfg, log, client)
-	source := prloop.NewSource(pulls, prloop.OptionsFrom(cfg, l), tickets.HeldBranches, log)
+	source := prSource(cfg, l, pulls, tickets.HeldBranches, log)
 	host := loophost.NewDaemon(cfg, l, source.CheckAccess)
 	installSignalHandler(host, log)
 	return loop.Run(loop.Deps{
@@ -283,6 +285,15 @@ func runPRLoop(cfg config.Config, l config.Loop, dryRun bool) int {
 		Clock:    loop.SystemClock{},
 		Log:      log,
 	})
+}
+
+// prSource is the github_prs Source over the Consumer's checkout. It skips a
+// branch the ticket loop holds, and a branch a worktree other than the loop's own
+// has checked out, which git would refuse to check out again (#192).
+func prSource(cfg config.Config, l config.Loop, pulls prloop.GitHub, held func() (map[string]string, error), log loop.Narrator) *prloop.Source {
+	co := gitpkg.Open(cfg.ProjectPath, cfg.BranchPrefix)
+	own := func(n int) string { return co.Worktree(ticket.Slug(prloop.Key(n))).Path() }
+	return prloop.NewSource(pulls, prloop.OptionsFrom(cfg, l), held, log).WatchWorktrees(co.CheckedOutBranches, own)
 }
 
 // limitsFrom maps the Consumer's config onto the daemon's knobs: the LOOP_* env

@@ -560,6 +560,7 @@ poll (Source github_prs, read-only judgement — also what --dry-run prints):
       whose worktree is still checked out: a shipped ticket's is reaped
       by its retrospective, or by the committed-fix recovery that shipped
       it, so its later red CI is this loop's, #110, #184)
+    skip if a worktree other than pr-<n>'s has the branch checked out      // git refuses it: no attempt spent, #192
     kind = conflict if mergeable=CONFLICTING/DIRTY, else ci if a check is red, else skip
     skip if source.when leaves the kind out
     attempts since the last hand-off >= source.max_attempts | PR_LOOP_MAX_ATTEMPTS

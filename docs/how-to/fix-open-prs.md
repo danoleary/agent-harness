@@ -41,6 +41,11 @@ or `PR_LOOP_LABEL` to change it. Setting `source.label` alone also selects
   `in-progress` label or because the ticket loop holds that branch's ticket In
   Progress with its worktree still checked out (a shipped ticket's worktree is
   removed by its retrospective, which frees the branch);
+- a PR whose head branch is checked out in another worktree of your checkout
+  (say, one you opened in your editor or a Claude Code session), because git
+  will not check out a branch twice. The skip names the worktree, it spends none
+  of the PR's attempts, and the PR is worked on the first poll after you remove
+  that worktree. The harness never touches a worktree it did not create;
 - a PR failing in a way its `source.when` leaves out.
 
 When your tracker is GitHub Issues, the loop uses your `in_progress_label` and
