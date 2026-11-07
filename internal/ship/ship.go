@@ -190,16 +190,35 @@ type Resolution struct {
 	Note string
 }
 
-// Land takes a clean, committed branch to an open pull request on the latest base:
-// refetch origin/main, replay onto it, stop on a disjoint history or a replay git
-// could not run, hand a content conflict to resolve (nil means abort), stop if the
-// replay collapsed the branch to nothing, then push and open the PR from the ticket.
+// Opening is the pull request a landing opens: its title, and its body built from
+// the branch's commit subjects (as the replay left them) and the conflict hook's
+// note. A ticket's comes from the tracker ([Land]); a security-alerts landing has
+// no ticket and describes its own (ADR-0040).
+type Opening struct {
+	Title string
+	Body  func(subjects []string, note string) string
+}
+
+// Land is [LandAs] with the ticket's PR: the templated title and body
+// (internal/pr).
+func Land(h Port, log EventSink, t ticket.Ticket, resolve Resolve) Landing {
+	return LandAs(h, log, Opening{
+		Title: pr.BuildTitle(t),
+		Body:  func(subjects []string, note string) string { return pr.BuildBody(t, subjects, note) },
+	}, resolve)
+}
+
+// LandAs takes a clean, committed branch to an open pull request on the latest
+// base: refetch origin/main, replay onto it, stop on a disjoint history or a replay
+// git could not run, hand a content conflict to resolve (nil means abort), stop if
+// the replay collapsed the branch to nothing, then push and open the PR as opening
+// describes it.
 //
 // The refetch is deliberate even when the caller fetched moments ago: a sibling PR
 // can merge during a multi-minute gate, and replaying onto the pre-gate ref would
 // still open a stale-base PR (BEH-570). A failed fetch is a warning — the replay
 // goes onto the ref we have, and the CI watch's reactive rebase is the backstop.
-func Land(h Port, log EventSink, t ticket.Ticket, resolve Resolve) Landing {
+func LandAs(h Port, log EventSink, opening Opening, resolve Resolve) Landing {
 	if err := h.FetchMain(); err != nil {
 		log.Event("ship … warning: could not fetch origin/main before rebase: " + err.Error())
 	}
@@ -227,11 +246,11 @@ func Land(h Port, log EventSink, t ticket.Ticket, resolve Resolve) Landing {
 	if verify.PostRebasePush(h.Worktree()).RecommendClose {
 		return Landing{Verdict: Collapsed}
 	}
-	return finish(h, log, t, note)
+	return finish(h, log, opening, note)
 }
 
-// finish pushes the ticket's branch and opens its PR from the templated title and
-// body (internal/pr) over the branch's commit subjects and the conflict hook's note.
+// finish pushes the branch and opens its PR from opening, over the branch's commit
+// subjects and the conflict hook's note.
 //
 // The push is force-with-lease, never a plain push: the branch was just replayed
 // onto the latest main, so on any branch already on the remote every SHA has been
@@ -241,13 +260,13 @@ func Land(h Port, log EventSink, t ticket.Ticket, resolve Resolve) Landing {
 // again, and rejected again, forever. The lease keeps the force safe: it refuses
 // to clobber remote commits the harness has not observed, and the harness owns
 // this branch outright.
-func finish(h Port, log EventSink, t ticket.Ticket, note string) Landing {
+func finish(h Port, log EventSink, opening Opening, note string) Landing {
 	if err := h.PushForceWithLease(); err != nil {
 		return Landing{Verdict: PushFailed, Err: err}
 	}
 	log.Event("pushed " + h.Worktree().Branch() + " to origin")
 
-	url, err := h.CreatePR(pr.BuildTitle(t), pr.BuildBody(t, h.Worktree().CommitSubjects(), note))
+	url, err := h.CreatePR(opening.Title, opening.Body(h.Worktree().CommitSubjects(), note))
 	if err != nil {
 		return Landing{Verdict: PRFailed, Err: err}
 	}

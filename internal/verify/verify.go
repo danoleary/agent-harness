@@ -56,6 +56,8 @@ type GroundTruth interface {
 	BranchPushed() bool
 	// IsRebasedOnto reports whether ref is an ancestor of the branch tip.
 	IsRebasedOnto(ref string) bool
+	// ChangedFiles lists the paths the branch changed since it left origin/main.
+	ChangedFiles() ([]string, error)
 }
 
 // baseRef is the base every decision here measures a branch against.

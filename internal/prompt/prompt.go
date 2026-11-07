@@ -17,6 +17,7 @@ import (
 	"strings"
 	"text/template"
 
+	"github.com/danoleary/agent-harness/internal/github"
 	"github.com/danoleary/agent-harness/internal/sentry"
 	"github.com/danoleary/agent-harness/internal/ticket"
 )
@@ -58,6 +59,9 @@ const (
 	CIFix
 	// RebaseFix resolves a genuine conflict in the pre-push rebase (BEH-581).
 	RebaseFix
+	// SecurityFix moves a package's open Dependabot alerts to a patched version
+	// in a fresh branch (ADR-0040).
+	SecurityFix
 )
 
 // Resume says how an Implement session enters its worktree. The host picks it;
@@ -137,6 +141,10 @@ type Context struct {
 	// instead of replaying it, for a branch a human opted in: its history must not
 	// be rewritten (ADR-0019).
 	Merge bool
+
+	// Alerts are the open Dependabot alerts on one package that a SecurityFix
+	// session fixes together (ADR-0040, decision 1).
+	Alerts []github.Alert
 }
 
 // branch is the branch the session's worktree is on: the override, else the
@@ -162,6 +170,8 @@ func For(s Stage, ctx Context) string {
 		return ciFix(ctx)
 	case RebaseFix:
 		return rebaseFix(ctx)
+	case SecurityFix:
+		return securityFix(ctx)
 	}
 	panic(fmt.Sprintf("prompt: unknown stage %d", s))
 }

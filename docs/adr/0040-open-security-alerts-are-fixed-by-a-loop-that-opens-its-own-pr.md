@@ -54,12 +54,17 @@ steps = [
    SecurityFix session in its worktree. The session gets the SecurityFix
    envelope (ADR-0009) with the alerts' package, vulnerable ranges and patched
    versions, plus the Consumer's body. It commits locally, as every session does.
+   The branch is reset to `origin/main` even when a failed attempt left one of
+   that name (`Worktree.CreateFresh`): the ticket loop's re-attach would bring
+   that attempt's commits back.
 4. **The host checks the result before any Gate runs.** The session's
    self-report is not trusted (ADR-0016). The branch must have a committed diff,
    and the diff may touch only dependency files: manifests, lockfiles, and the
-   workspace file that holds overrides. The lockfile must no longer resolve any
-   version of the package inside any of the item's alerts' vulnerable ranges. A
-   result that fails either check pushes nothing.
+   workspace file that holds overrides. For pnpm these are `package.json` (at
+   any depth), `pnpm-lock.yaml` and `pnpm-workspace.yaml` (`verify.SecurityFix`).
+   The lockfile must no longer resolve any version of the package inside any of
+   the item's alerts' vulnerable ranges. A result that fails either check pushes
+   nothing.
 5. **Then the shared Steps run:** the Gates, Landing with `ship` as a new PR
    (ADR-0017), the CI watch, and the retrospective, as in the ticket pipeline.
 6. **Attempts are recorded where they can be found again.** A pushed attempt
@@ -95,8 +100,10 @@ steps = [
 ## Consequences
 
 - A third built-in Source, and two new Steps: `fix` with the SecurityFix envelope
-  on this Source, and `ship`. `ship` reuses `ship.Land`; the Steps after it are
-  the existing `gates`, `watch_ci` and `retro`.
+  on this Source, and `ship`. `ship` reuses the Landing through `ship.LandAs`,
+  which takes the PR's title and body from its caller, since there is no ticket
+  to build them from; the Steps after it are the existing `gates`, `watch_ci`
+  and `retro`.
 - The host check needs a lockfile reader for each package ecosystem it supports.
   pnpm's comes first. A Source configured for an ecosystem with no reader fails at
   load, not at the first alert.

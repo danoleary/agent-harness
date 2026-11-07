@@ -115,14 +115,35 @@ func (w Worktree) Create() error {
 	if w.run("git", "-C", w.repo, "rev-parse", "--verify", "-q", "refs/heads/"+w.branch) == nil {
 		return w.run("git", "-C", w.repo, "worktree", "add", w.path, w.branch)
 	}
-	// Fresh branch: root it at current origin/main. Best-effort refresh — an
-	// offline/blipping remote just means we branch off whatever ref we already have.
-	_ = w.run("git", "-C", w.repo, "fetch", "-q", "origin", "main")
-	base := "main"
-	if w.run("git", "-C", w.repo, "rev-parse", "--verify", "-q", "refs/remotes/origin/main") == nil {
-		base = "refs/remotes/origin/main"
+	return w.run("git", "-C", w.repo, "worktree", "add", "-b", w.branch, w.path, w.freshBase())
+}
+
+// CreateFresh is [Worktree.Create] with no resume path: it cuts the branch from
+// current origin/main even when a local branch of that name already exists, so a
+// failed attempt's commits never come back (ADR-0040, decision 3). Like
+// CheckoutRemote it drops a worktree a previous run left at the path, unforced —
+// one still holding uncommitted work makes git refuse and the caller fail — and
+// adds the new one with -B, which resets the old branch rather than reusing it.
+func (w Worktree) CreateFresh() error {
+	base := w.freshBase()
+	if w.Exists() {
+		if err := w.Remove(); err != nil {
+			return fmt.Errorf("remove the previous worktree at %s: %w", w.path, err)
+		}
 	}
-	return w.run("git", "-C", w.repo, "worktree", "add", "-b", w.branch, w.path, base)
+	return w.run("git", "-C", w.repo, "worktree", "add", "-B", w.branch, w.path, base)
+}
+
+// freshBase refreshes origin/main and names the ref a new branch is cut from:
+// origin/main, or local `main` when the remote-tracking ref doesn't resolve. The
+// refresh is best-effort — an offline/blipping remote just means we branch off
+// whatever ref we already have.
+func (w Worktree) freshBase() string {
+	_ = w.run("git", "-C", w.repo, "fetch", "-q", "origin", "main")
+	if w.run("git", "-C", w.repo, "rev-parse", "--verify", "-q", "refs/remotes/origin/main") == nil {
+		return "refs/remotes/origin/main"
+	}
+	return "main"
 }
 
 // CheckoutRemote checks the worktree out on its branch's tip as origin has it — the
@@ -559,12 +580,13 @@ func (w Worktree) DocsOnly(excludedRoots []string) bool {
 // main gained since the branch was cut is not the branch's work. A worktree that
 // does not exist has changed nothing. Untracked files are not listed: a session
 // commits before it hands off, and an edit to a file that exists is the case that
-// conflicts.
+// conflicts. A rename lists both its paths (--no-renames): a file moved away is a
+// file the branch changed, which the SecurityFix check must see (ADR-0040).
 func (w Worktree) ChangedFiles() ([]string, error) {
 	if !w.Exists() {
 		return nil, nil
 	}
-	out, err := w.output("git", "-C", w.path, "diff", "--name-only", "--merge-base", "origin/main")
+	out, err := w.output("git", "-C", w.path, "diff", "--name-only", "--no-renames", "--merge-base", "origin/main")
 	if err != nil {
 		return nil, err
 	}
