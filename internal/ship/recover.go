@@ -1,5 +1,7 @@
 package ship
 
+import gitpkg "github.com/danoleary/agent-harness/internal/git"
+
 // Recovery is what the committed-fix recovery learned about one ticket.
 // Attempted is the "was there anything to finish?" signal the daemon branches on:
 // false means this was a genuine no-PR run (an OOM, a crash, an empty diff) that
@@ -29,7 +31,7 @@ type Recovery struct {
 // content conflict needs the review stage's sandboxed session, not the daemon. Any
 // verdict but Landed returns Attempted=true with Shipped=false, so the daemon falls
 // through to its normal release and a later run re-grabs it — an attempt is never
-// worse than no attempt. Opening a PR is safe recovery, not a merge: CI and human
+// worse than no attempt. A Landed branch has its worktree reaped (see reap). Opening a PR is safe recovery, not a merge: CI and human
 // review still gate that.
 func Recover(h Port, log EventSink, key string) Recovery {
 	wt := h.Worktree()
@@ -74,6 +76,7 @@ func Recover(h Port, log EventSink, key string) Recovery {
 	landing := Land(h, log, t, nil)
 	switch landing.Verdict {
 	case Landed:
+		reap(wt, log, key)
 		return Recovery{Attempted: true, Shipped: true}
 	case Disjoint:
 		log.Event("loop … " + key + " committed-fix recovery: branch has a disjoint history from main (BEH-597) — cannot auto-complete")
@@ -89,4 +92,18 @@ func Recover(h Port, log EventSink, key string) Recovery {
 		log.Event("loop … " + key + " committed-fix recovery: gh pr create failed: " + landing.Err.Error())
 	}
 	return Recovery{Attempted: true}
+}
+
+// reap tears down a recovered ticket's worktree once its PR is open (#184). The
+// slice's retrospective already ran and kept the worktree only because the branch
+// had no PR — the committed-fix recovery needed it (verify.WorktreeReap) — and no
+// retrospective follows a recovery. Left checked out, the ticket loop would hold the
+// branch for as long as the ticket stays In Progress, so the PR loop could never fix
+// the PR. A failed removal is narrated, not fatal: the PR is open either way.
+func reap(wt gitpkg.Worktree, log EventSink, key string) {
+	if err := wt.Remove(); err != nil {
+		log.Event("loop … " + key + " committed-fix recovery: worktree kept — removal failed: " + err.Error())
+		return
+	}
+	log.Event("loop — " + key + " committed-fix recovery: worktree removed — PR open, branch free for the PR loop (#184)")
 }

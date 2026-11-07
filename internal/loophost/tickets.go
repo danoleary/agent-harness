@@ -203,7 +203,8 @@ func (s *TicketSource) Claims() ([]loop.StaleClaim, error) {
 // checked out — to the ticket's Key. The PR loop skips those branches: the lease is
 // keyed on the branch, and a ticket mid-run owns its PR's branch (ADR-0019),
 // including through an in-stage CI watch. A shipped ticket stays In Progress until
-// its PR merges, but the retrospective reaps its worktree once the PR is open; from
+// its PR merges, but the retrospective — or, for a ticket the committed-fix recovery
+// shipped, the recovery itself (#184) — reaps its worktree once the PR is open; from
 // then on the branch is free, so the PR loop can fix CI that goes red after the
 // ticket loop moved on (#110).
 func (s *TicketSource) HeldBranches() (map[string]string, error) {

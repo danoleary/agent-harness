@@ -10,9 +10,11 @@ import (
 	"time"
 
 	"github.com/danoleary/agent-harness/internal/config"
+	"github.com/danoleary/agent-harness/internal/gittest"
 	"github.com/danoleary/agent-harness/internal/hostio"
 	"github.com/danoleary/agent-harness/internal/loop"
 	"github.com/danoleary/agent-harness/internal/loopstream"
+	"github.com/danoleary/agent-harness/internal/ship"
 	"github.com/danoleary/agent-harness/internal/stages"
 	"github.com/danoleary/agent-harness/internal/ticket"
 	"github.com/danoleary/agent-harness/internal/tracker"
@@ -466,6 +468,36 @@ func TestHeldBranchesMapsEachCheckedOutClaimToItsBranch(t *testing.T) {
 	trk.claimsErr = errors.New("tracker down")
 	if _, err := h.HeldBranches(); err == nil {
 		t.Error("a failed claim read must be returned, not read as nothing held")
+	}
+}
+
+// #184, replaying #174: the slice left a clean, committed feat/gh-174 with no PR,
+// so its retrospective kept the worktree for the committed-fix recovery. Recovery
+// then pushed it and opened PR #178, and the ticket stayed In Progress until that PR
+// merges. The branch must be free from then on, or the PR loop skips #178 forever.
+func TestARecoveredTicketNoLongerHoldsItsBranch(t *testing.T) {
+	repo := gittest.New(t)
+	repo.Handoff("gh-174")
+	trk := newQueueTracker()
+	trk.claims = []tracker.InProgressClaim{{Identifier: "#174"}}
+	src := sourceFor(t, config.Config{Project: config.Project{BranchPrefix: gittest.Prefix}, Host: config.Host{ProjectPath: repo.Dir}}, trk)
+	if held, _ := src.HeldBranches(); held["feat/gh-174"] != "#174" {
+		t.Fatalf("held = %v, want feat/gh-174 held by #174 while its slice runs", held)
+	}
+
+	h := hostio.NewFake(repo.Checkout(), "gh-174")
+	h.OpenPRThere = false
+	if rec := ship.Recover(h, &narrator{}, "#174"); !rec.Shipped {
+		t.Fatalf("Recover() = %+v, want the committed fix shipped", rec)
+	}
+	trk.claims[0].HasLinkedPR = true
+
+	held, err := src.HeldBranches()
+	if err != nil {
+		t.Fatalf("HeldBranches() error = %v", err)
+	}
+	if by, ok := held["feat/gh-174"]; ok {
+		t.Errorf("feat/gh-174 still held by %s after recovery opened its PR, so the PR loop skips it forever", by)
 	}
 }
 

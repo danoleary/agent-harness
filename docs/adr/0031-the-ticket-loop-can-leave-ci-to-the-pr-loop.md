@@ -43,7 +43,12 @@ branch only while it has the branch checked out.**
    Progress ticket whose worktree still exists in the checkout. That covers the
    whole run, including an in-stage CI watch and a kept worktree after red CI past
    the budget. It ends when the retrospective reaps the worktree, so a PR that goes
-   red after the ticket loop moved on is the PR loop's `CIRed` item.
+   red after the ticket loop moved on is the PR loop's `CIRed` item. A ticket the
+   committed-fix recovery ships (BEH-713) gets no retrospective after the push: the
+   slice's own retrospective already ran and kept the worktree because the branch
+   had no PR yet. So the recovery reaps the worktree itself once the PR is open
+   (#184). Otherwise the hold would last until the PR merged, and the PR loop would
+   never work that PR.
 
 The breaker is unchanged: a pushed PR was already a success (DESIGN.md §Circuit
 breaker).
