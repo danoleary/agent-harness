@@ -142,3 +142,20 @@ spending-cap abort, and a gate the shell could not run. None of those is a defec
 the session can fix in its own commit. Skipping the host gate when the session
 reports the same gates green at the same HEAD was rejected, because it trusts a
 self-report.
+
+## Amendment, 2026-11-07: the retrospective envelope names the run's logs
+
+Every retrospective body named the ticket pipeline's log layout:
+`.agent-harness/logs/<Identifier>/` and its `implementation-*`/`review-*`
+streams. A PR loop's run writes neither. Its logs sit under the loop's own dir,
+`.agent-harness/logs/loops/<loop>/<Identifier>/`, and its sessions are
+`rebasefix-*`/`cifix-*`. A retrospective over such a run was handed a path that
+did not exist. It had to search for the real one, or it wrote `[]` over "no
+transcripts" and the run's friction went unexamined.
+
+**The retrospective envelope names the run's log dir, relative to the checkout,
+and lists every file the run left there except the retrospective's own
+transcripts** (#185). The stage runner fills both in, because it knows where the
+run logged. A body can interpolate the dir as `{{.LogDir}}`. The list sits in the
+envelope, not the body, so a body that names a different layout cannot keep the
+session from the real files.

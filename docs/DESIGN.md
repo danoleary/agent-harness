@@ -922,7 +922,10 @@ the *sessions*, not just the code, so it needs what happened during them. With t
 real-path mount, the ticket-keyed transcripts at
 `$PROJECT_PATH/.agent-harness/logs/BEH-NNN/` are already visible inside the container
 at their natural path — no extra mount. Retrospective reads **every** prior
-transcript for the ticket (implementation *and* review) plus the diff.
+transcript for the ticket (implementation *and* review) plus the diff. A PR loop's
+run logs under its loop's dir (`logs/loops/<loop>/<Identifier>/`) with
+`rebasefix`/`cifix` streams instead, so the envelope names the run's own log dir
+and lists the files in it rather than leaving the body to name one layout (#185).
 
 **Precondition — those inputs are also a launch gate (BEH-553).** The `out.json`
 post-check tells "ran, found nothing" (`[]`) apart from "never wrote" — but it

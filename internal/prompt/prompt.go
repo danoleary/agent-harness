@@ -96,6 +96,13 @@ type Context struct {
 	// envelopes scope the diff to it (#86); empty falls back to origin/main.
 	Base string
 
+	// LogDir is the run's log dir as the session reads it, relative to the checkout
+	// (`.agent-harness/logs/<Identifier>` for a ticket, the loop's own dir for a PR
+	// loop's run). Transcripts names the files the run left there, which the
+	// Retrospective envelope lists so a Consumer body cannot point it elsewhere (#185).
+	LogDir      string
+	Transcripts []string
+
 	// Resume selects the Implement variant.
 	Resume Resume
 	// Filed lists the finding classes already filed, for a Retrospective re-run.
@@ -162,6 +169,7 @@ type bodyData struct {
 	Slug         string
 	BranchPrefix string
 	WorktreePath string
+	LogDir       string
 }
 
 // renderBody interpolates the Consumer body's `{{.Field}}` placeholders against
@@ -180,6 +188,7 @@ func renderBody(c Context) string {
 		Slug:         c.Slug,
 		BranchPrefix: c.BranchPrefix,
 		WorktreePath: c.WorktreePath,
+		LogDir:       c.LogDir,
 	}
 	var b strings.Builder
 	if err := tmpl.Execute(&b, d); err != nil {
@@ -501,6 +510,7 @@ func retroContractSteer(kind string) string {
 func retrospective(c Context) string {
 	return join(
 		renderBody(c),
+		transcriptsSection(c.LogDir, c.Transcripts),
 		retroFindingsProtocol,
 		retroAudienceContract,
 		branchBaseSection(c.Base),
@@ -508,6 +518,29 @@ func retrospective(c Context) string {
 		alreadyFiledSection(c.Filed),
 		bashQuirkSteer,
 	)
+}
+
+// transcriptsSection names where the run's transcripts are and which files they
+// are (#185). The harness knows both — a ticket's logs sit under
+// logs/<Identifier>, a PR loop's under logs/loops/<loop>/<Identifier>, and their
+// sessions are named differently — so the envelope says it rather than leave a
+// Consumer body to hard-code one layout. A session handed a dir that does not
+// exist either searches for the real one or writes [] over no transcripts. With
+// nothing listed (a dry-run plan) it names the streams to read by pattern.
+func transcriptsSection(logDir string, transcripts []string) string {
+	if logDir == "" {
+		return ""
+	}
+	dir := "`" + strings.TrimSuffix(logDir, "/") + "/`"
+	if len(transcripts) == 0 {
+		return "This run's logs are under " + dir + ": read every `*.jsonl` stream there except your own `retrospective-*` one, and the `*.log` step logs beside them."
+	}
+	var b strings.Builder
+	b.WriteString("This run's logs are under " + dir + ". Read every one of them (your own `retrospective-*` transcript is left out):")
+	for _, name := range transcripts {
+		b.WriteString("\n  - `" + name + "`")
+	}
+	return b.String()
 }
 
 // branchBaseSection scopes a Review or Retrospective session's view of the branch
