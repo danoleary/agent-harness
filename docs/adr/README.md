@@ -4,7 +4,9 @@ One file per decision. This index lists every ADR in ascending order, and
 `make check` fails if it doesn't (ADR-0034). To add one, take the number after
 the last line below (check `origin/main`, not local main), write
 `NNNN-<slug>.md`, and append its line at the end. Two branches that take the
-same number then conflict here, before either reaches main.
+same number then conflict here on GitHub, before either reaches main. A local
+replay keeps both lines (`merge=union` in `.gitattributes`), and `check-adr`
+catches a duplicate there.
 
 - [ADR-0001](0001-harness-owns-linear-integration.md): The harness owns all Linear I/O; nothing Linear enters the sandbox
 - [ADR-0002](0002-harness-owns-remote-io.md): The harness owns all remote I/O; the sandbox holds no credential but Anthropic's and reaches no remote the harness owns; the checkout is mounted at its real host path
@@ -49,4 +51,5 @@ same number then conflict here, before either reaches main.
 - [ADR-0041](0041-the-host-fetches-the-sentry-issues-a-ticket-cites-into-the-prompt.md): The host fetches the Sentry issues a ticket cites into the prompt
 - [ADR-0042](0042-the-committed-fix-recovery-lands-only-a-tip-the-review-cleared.md): The committed-fix recovery lands only a tip the review cleared
 - [ADR-0043](0043-a-branch-is-held-by-a-live-run-not-by-a-leftover-worktree.md): A branch is held by a live run, not by a leftover worktree
-- [ADR-0044](0044-a-triage-loop-moves-agent-ready-tickets-into-the-ready-queue.md): A triage loop moves agent-ready tickets into the ready queue
+- [ADR-0044](0044-a-sandboxed-session-reaps-a-leftover-browser-before-a-story-run.md): A sandboxed session reaps a leftover browser before a story run
+- [ADR-0045](0045-a-triage-loop-moves-agent-ready-tickets-into-the-ready-queue.md): A triage loop moves agent-ready tickets into the ready queue

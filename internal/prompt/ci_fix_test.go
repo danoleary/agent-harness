@@ -248,3 +248,31 @@ func TestCIFixOffersNoOpEscapeHatch(t *testing.T) {
 		t.Error("prompt does not say the harness re-triggers CI on a no-op")
 	}
 }
+
+// #248, replayed: a CI-fix session for a red Storybook story re-ran the story
+// file under `timeout 500` and then in the background with a poll loop, waited
+// on a fix that made the story hang, and was killed by the session cap with
+// nothing committed. The envelope must steer off each of those moves.
+func TestCIFixSteersABrowserTestRunOffTheMovesThatBurnedTheCap(t *testing.T) {
+	for _, available := range []bool{true, false} {
+		p := For(CIFix, Context{Ticket: sample, Slug: "beh-362", BranchPrefix: "feat", WorktreePath: sampleWorktree, CILogs: sampleCILogs, CILogAvailable: available})
+
+		for _, want := range []*regexp.Regexp{
+			regexp.MustCompile(`(?i)once, in the foreground`),
+			regexp.MustCompile("(?i)no outer `timeout`"),
+			regexp.MustCompile(`(?i)no poll loop`),
+			regexp.MustCompile(`(?i)commit the candidate fix.{0,80}before the run that verifies it`),
+			regexp.MustCompile(`(?i)no progress for a few minutes is a failed fix`),
+			regexp.MustCompile(`(?i)try another approach`),
+		} {
+			if !want.MatchString(p) {
+				t.Errorf("log available=%v: ci-fix prompt missing the steer %q", available, want)
+			}
+		}
+		// The candidate commit comes before verification, so the escape hatch must
+		// no longer demand that every commit be verified first.
+		if strings.Contains(p, "locally-verified fix") {
+			t.Errorf("log available=%v: escape hatch still forbids committing before verification", available)
+		}
+	}
+}

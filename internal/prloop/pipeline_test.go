@@ -503,3 +503,33 @@ func TestFixRunsTheRetrospectiveWhenTheTrackerIsUnresolvable(t *testing.T) {
 		t.Errorf("agents %v routed into teams %q, want a retrospective with no team", agentLabels(h), h.RoutedTeams)
 	}
 }
+
+// #247, replaying herd PR-1384 on 2026-11-07: the first attempt left its worktree
+// dirty, so git refused to drop it on the next checkout. That refusal is the host's
+// local state: no session launches, nothing is pushed, and the run is
+// CheckoutBlocked, carrying the worktree and git's error, not a failure to ship.
+func TestFixOverADirtyWorktreeIsCheckoutBlocked(t *testing.T) {
+	h, it, repo := prHost(t, harnessItem(CIRed))
+	wt := h.Worktree()
+	if err := wt.CheckoutRemote(); err != nil {
+		t.Fatalf("the first attempt's checkout: %v", err)
+	}
+	repo.Dirty(wt)
+
+	res := Fix(h, pipelineCfg(), pipelineLog(t), it, prDoctor())
+
+	var local *gitpkg.LocalStateError
+	if res.Disposition != stages.CheckoutBlocked || !errors.As(res.Err, &local) || local.Path != wt.Path() {
+		t.Fatalf("a refused checkout is CheckoutBlocked on %s, got %+v", wt.Path(), res)
+	}
+	if !strings.Contains(res.Err.Error(), "modified or untracked files") {
+		t.Errorf("the result must carry git's error: %v", res.Err)
+	}
+	if len(h.Agents) != 0 {
+		t.Errorf("no session may launch, got %v", agentLabels(h))
+	}
+	assertNothingPushed(t, h, repo, it.PR.HeadBranch, it.PR.HeadSHA)
+	if !wt.Exists() {
+		t.Error("the dirty worktree must be left for a human to look at")
+	}
+}

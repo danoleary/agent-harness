@@ -232,10 +232,12 @@ const (
 	// re-polls, and the breaker stays blind to it.
 	CapAborted
 	// PreflightAborted — the Docker sandbox preflight refused before any work began
-	// (a full host disk, an unreachable daemon). Only the implementation stage can
-	// produce it (it owns the preflight). Like a cap abort it is environmental: the
-	// loop reclaims disk and backs off, and the breaker stays blind to it so a
-	// poison top-of-queue ticket can't rack up identical 2s failures and trip it.
+	// (a full host disk, an unreachable daemon, an image that would not build). The
+	// implementation stage and the PR Pipeline produce it, and Err carries the
+	// preflight's error. Like a cap abort it is environmental: it spends none of a
+	// PR's attempts (#232), the loop reclaims disk and backs off, and the breaker
+	// stays blind to it so a poison top-of-queue ticket can't rack up identical 2s
+	// failures and trip it.
 	PreflightAborted
 	// RecommendClose — the branch makes zero net change against origin/main, so the
 	// review stage declined to open an empty-commit PR and recommends the ticket be
@@ -266,6 +268,14 @@ const (
 	// keeps the claim, labels the ticket blocked and leaves the reason on it. The
 	// breaker counts it as a failure to ship, as the no-PR run it is.
 	NeedsHuman
+	// CheckoutBlocked — git refused the checkout because of local state on the
+	// host (a worktree a previous run left dirty or locked, the branch held by
+	// another worktree), before any session launched (#247). Only the PR loop's
+	// checkout produces it. Like a preflight abort it is environmental, not the
+	// item's fault: it spends none of the PR's attempts, the Source hands the PR to
+	// a human so it is not selected into the same refusal again, the loop backs off
+	// one poll, and the breaker stays blind to it.
+	CheckoutBlocked
 )
 
 func (d Disposition) String() string {
@@ -284,6 +294,8 @@ func (d Disposition) String() string {
 		return "base-red"
 	case NeedsHuman:
 		return "needs-human"
+	case CheckoutBlocked:
+		return "checkout-blocked"
 	default:
 		return "no-pr"
 	}

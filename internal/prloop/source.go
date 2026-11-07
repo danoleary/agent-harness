@@ -489,6 +489,42 @@ func (s *Source) handOff(c Candidate) {
 	}
 }
 
+// Withdraw takes back the attempt Next recorded on it.PR when git refused the
+// checkout on the host's local state before any session ran (#247): a worktree a
+// previous run left dirty or locked, or the branch held by another worktree. No
+// attempt was made, so none is spent. Retrying would meet the same refusal, so the
+// PR is handed to a human with the blocked label, naming the worktree and git's
+// error, and the budget it keeps waits for the label to come off. Call it before
+// the lease is released, so settling the lease sees the PR blocked. Best-effort:
+// a failure is narrated, and an attempt it could not take back stays spent.
+func (s *Source) Withdraw(it Item, err error) {
+	key := Key(it.PR.Number)
+	s.log.Structured(loopstream.Record{Kind: loopstream.KindTicketReleased, Ticket: key, Message: fmt.Sprintf("loop — %s: could not check out %s because of local state on the host (%v); not counted as an attempt — handing it to a human (labelling %s)", key, it.PR.HeadBranch, err, s.opts.BlockedLabel)})
+	body := fmt.Sprintf("%s\nagent-harness could not check out `%s` because of local state on its host, so no session ran and this does not count as an attempt:\n\n```\n%v\n```\n\nIt is handing the PR to a human. Clean that worktree up, then remove the `%s` label to have the loop work it again.\n",
+		voidMarker(it.PR.HeadSHA, it.Kind), it.PR.HeadBranch, err, s.opts.BlockedLabel)
+	if err := s.gh.Comment(it.PR.Number, body); err != nil {
+		s.log.Event("loop … warning: could not take back the attempt on " + key + ": " + err.Error())
+	}
+	if err := s.gh.AddLabel(it.PR.Number, s.opts.BlockedLabel); err != nil {
+		s.log.Event("loop … warning: could not label " + key + " " + s.opts.BlockedLabel + ": " + err.Error())
+	}
+}
+
+// TakeBack takes back the attempt Next recorded on it.PR when the Docker sandbox
+// preflight refused before any session ran (#232): a full disk, a daemon down, an
+// image that would not build. No attempt was made, so none is spent, and the PR is
+// left unlabelled: the fault is the host's, and the loop backs off and works the PR
+// again once the sandbox starts. Call it before the lease is released, so settling
+// the lease does not count the attempt. Best-effort: a failure is narrated, and an
+// attempt it could not take back stays spent.
+func (s *Source) TakeBack(it Item, err error) {
+	body := fmt.Sprintf("%s\nagent-harness could not start its sandbox, so no session ran and this does not count as an attempt:\n\n```\n%v\n```\n",
+		voidMarker(it.PR.HeadSHA, it.Kind), err)
+	if err := s.gh.Comment(it.PR.Number, body); err != nil {
+		s.log.Event("loop … warning: could not take back the attempt on " + Key(it.PR.Number) + ": " + err.Error())
+	}
+}
+
 // settle runs as the lease on c's PR is released, after the run that worked it. A
 // run that spent the PR's last attempt and left it failing hands it to a human
 // now, not on the next poll: the daemon's breaker may stop it before then, and the
@@ -644,27 +680,45 @@ const (
 	blockedMarker = markerPrefix + "blocked -->"
 )
 
-var attemptRE = regexp.MustCompile(`<!-- agent-harness:pr-fix attempt sha=([0-9a-fA-F]+) kind=(\w+) -->`)
+var (
+	attemptRE = regexp.MustCompile(`<!-- agent-harness:pr-fix attempt sha=([0-9a-fA-F]+) kind=(\w+) -->`)
+	voidRE    = regexp.MustCompile(`<!-- agent-harness:pr-fix void sha=([0-9a-fA-F]+) kind=(\w+) -->`)
+)
 
 func attemptMarker(sha string, k Kind) string {
 	return fmt.Sprintf("%sattempt sha=%s kind=%s -->", markerPrefix, sha, k)
 }
 
-// attempts reads the attempt record off a PR's comments: every attempt, and how
-// many of them came after the last hand-off to a human (which a human answers by
-// removing the blocked label, granting a fresh budget).
+// voidMarker takes back the latest attempt at sha for k: one whose checkout git
+// refused (#247), or whose sandbox preflight refused (#232), before any session ran.
+func voidMarker(sha string, k Kind) string {
+	return fmt.Sprintf("%svoid sha=%s kind=%s -->", markerPrefix, sha, k)
+}
+
+// attempts reads the attempt record off a PR's comments: every attempt not taken
+// back, and how many of them came after the last hand-off to a human (which a
+// human answers by removing the blocked label, granting a fresh budget).
 func attempts(comments []github.PRComment) (tried []Attempt, sinceHandOff int) {
+	handedOff := 0 // how many of tried came before the last hand-off
 	for _, c := range comments {
 		if strings.Contains(c.Body, blockedMarker) {
-			sinceHandOff = 0
+			handedOff = len(tried)
+			continue
+		}
+		if m := voidRE.FindStringSubmatch(c.Body); m != nil {
+			for i := len(tried) - 1; i >= handedOff; i-- {
+				if tried[i].SHA == m[1] && tried[i].Kind == Kind(m[2]) {
+					tried = append(tried[:i], tried[i+1:]...)
+					break
+				}
+			}
 			continue
 		}
 		if m := attemptRE.FindStringSubmatch(c.Body); m != nil {
 			tried = append(tried, Attempt{SHA: m[1], Kind: Kind(m[2]), At: c.CreatedAt})
-			sinceHandOff++
 		}
 	}
-	return tried, sinceHandOff
+	return tried, len(tried) - handedOff
 }
 
 func (s *Source) attemptComment(c Candidate) string {

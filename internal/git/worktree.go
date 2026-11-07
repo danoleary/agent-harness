@@ -154,6 +154,10 @@ func (w Worktree) freshBase() string {
 // the same name is reset to the fetched tip rather than reused. Dropping the old
 // worktree is not forced: one still holding uncommitted work makes git refuse, and
 // the caller fails rather than discard it.
+//
+// A refusal after the fetch — a worktree holding uncommitted work, a locked one,
+// the branch held by another worktree — is the host's local state, not the
+// remote's, and comes back as a [*LocalStateError] (#247).
 func (w Worktree) CheckoutRemote() error {
 	tracking := "refs/remotes/origin/" + w.branch
 	if err := w.withRetry(func() error {
@@ -163,11 +167,33 @@ func (w Worktree) CheckoutRemote() error {
 	}
 	if w.Exists() {
 		if err := w.Remove(); err != nil {
-			return fmt.Errorf("remove the previous worktree at %s: %w", w.path, err)
+			return &LocalStateError{Path: w.path, Op: "remove the previous worktree", Err: err}
 		}
 	}
-	return w.run("git", "-C", w.repo, "worktree", "add", "-B", w.branch, w.path, tracking)
+	if err := w.run("git", "-C", w.repo, "worktree", "add", "-B", w.branch, w.path, tracking); err != nil {
+		return &LocalStateError{Path: w.path, Op: "add the worktree on " + w.branch, Err: err}
+	}
+	return nil
 }
+
+// LocalStateError is a checkout git refused because of local state on the host —
+// the worktree at Path holds uncommitted work or is locked, or another worktree
+// holds the branch — rather than anything the remote did (#247). Retrying cannot
+// clear it and no session caused it: someone has to look at the worktree.
+type LocalStateError struct {
+	// Path is the worktree the checkout was for.
+	Path string
+	// Op is the step git refused.
+	Op string
+	// Err is git's own error.
+	Err error
+}
+
+func (e *LocalStateError) Error() string {
+	return fmt.Sprintf("worktree %s: %s: %v", e.Path, e.Op, e.Err)
+}
+
+func (e *LocalStateError) Unwrap() error { return e.Err }
 
 // Remove tears down the worktree at `.claude/worktrees/<slug>` from the main
 // checkout. The real-path bind mount (ADR-0002) makes the worktree's absolute

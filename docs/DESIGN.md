@@ -496,11 +496,13 @@ loop:
     continue                          // auto-resume: re-poll after the cap window resets
 
   // DOCKER-PREFLIGHT ABORT is likewise environmental, NOT a ticket failure: the host
-  // couldn't launch a sandbox (full disk / daemon down) BEFORE any work began.
+  // couldn't launch a sandbox (full disk / daemon down / image won't build) BEFORE any work began.
   if Disposition == PreflightAborted:
-    // ticket was already released -> Todo by the impl stage, through the run's lease (ADR-0003)
+    // ticket was already released -> Todo by the impl stage, through the run's lease (ADR-0003);
+    // the PR loop's Pipeline already voided the attempt it recorded on the PR (#232)
+    record ticket-released with the preflight error in detail
     reclaim disk (incl. the Docker prune) // the usual cause — clear the floor for the retry
-    short backoff sleep (interruptible by STOP; = pollInterval)   // don't spin re-selecting the same top-of-queue ticket
+    backoff sleep (interruptible by STOP; pollInterval, doubling per abort in a row up to 16×)   // don't rebuild a broken image every poll
     do NOT touch the breaker counter  // breaker stays blind; otherwise 3 identical ~2s preflight failures trip it in seconds
     continue
 
@@ -575,12 +577,12 @@ loop:
 
   // breaker signal = the run's Disposition, NOT the pipeline exit code
   if Disposition == Shipped    -> reset consecutive-failure counter to 0
-  else if Disposition in {CapAborted, PreflightAborted, RecommendClose, Interrupted, BaseRed} -> neutral (neither increment nor reset)
+  else if Disposition in {CapAborted, PreflightAborted, RecommendClose, Interrupted, BaseRed, CheckoutBlocked} -> neutral (neither increment nor reset)
   else /* NoPR, NeedsHuman */  -> increment consecutive-failure counter
   // a retrospective-only failure (PR shipped) and a CI-red-after-budget (a reviewable PR
   // exists) do NOT count as failures; only "never produced a PR" does.
   // a recommend-close (BEH-603) is a correct terminal no-op — neutral, like a cap abort.
-  // a Docker-preflight abort (full disk / daemon down before any work) is environmental — neutral, like a cap abort.
+  // a Docker-preflight abort (full disk / daemon down / image won't build, before any work) is environmental — neutral, like a cap abort.
   // an idle/empty-queue tick is neutral — it neither increments nor resets.
   if 3 consecutive ticket failures -> exit + loud report (circuit breaker)
 ```
@@ -613,6 +615,8 @@ poll (Source github_prs, read-only judgement — also what --dry-run prints):
 
 pipeline (one PR, worktree .claude/worktrees/pr-<n> on the PR's head branch):
   preflight; fetch main; fetch the branch, worktree add -B at origin's tip
+    git refuses on local state (dirty/locked worktree, branch held) -> CheckoutBlocked:  // #247
+      void marker takes the attempt back, label blocked + comment naming the worktree and git's error
   head != the polled sha -> stop (the next poll sees the new head)
   post_create (warn-only; 127/126 stops)
   conflict: RebaseFix session            // internal/fix, shared with review
@@ -632,7 +636,8 @@ pipeline (one PR, worktree .claude/worktrees/pr-<n> on the PR's head branch):
 It writes its own stream (`logs/loops/pr-doctor/loop.jsonl`, per-PR logs under
 `logs/loops/pr-doctor/pr-<n>/`) and has its own sentinel (`STOP-pr-doctor`), so it
 runs beside the ticket loop. A push is **Shipped** for the breaker, as a ticket's PR
-is; nothing pushed is **NoPR**. The reaper releases an `in-progress` label older
+is; nothing pushed is **NoPR**, except a checkout git refused on local state, which
+is **CheckoutBlocked** and breaker-neutral. The reaper releases an `in-progress` label older
 than the claim TTL (timed by its attempt marker): the reaper runs only between
 this daemon's own items, so one PR loop per checkout. A held PR with no attempt
 marker is not its claim (a human's label, or another loop's hold), so the reaper
@@ -1118,6 +1123,15 @@ specific:
   dirty, and a rebase refuses with phantom local changes (#151).
 
 `gh` is **not** in the image — push/PR are host-side (ADR-0002).
+
+The launcher also hands every session a `--settings` JSON on its command line,
+so it reaches the next session without a base-image release. Its one PreToolUse
+hook on Bash kills any `chrome-headless-shell` or vitest process left in the
+container before a command that runs vitest or Storybook: an outer `timeout`
+around a hung story run kills the package manager but not its browser, and the
+browser left behind blocks the next run. A CI-fix session also starts with
+`--strict-mcp-config`, so none of the MCP servers the Consumer's project config
+declares (a browser-verification server, say) idle beside it (ADR-0044, #248).
 
 ### Consumer image composition (build-or-pull)
 

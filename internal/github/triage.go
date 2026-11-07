@@ -25,7 +25,7 @@ func (c *Client) untriagedQuery() string {
 }
 
 // Untriaged lists the open, unassigned issues that carry none of the ready,
-// in-progress and blocked labels (ADR-0044): the tickets a triage loop judges.
+// in-progress and blocked labels (ADR-0045): the tickets a triage loop judges.
 // Pull requests, which the issues API also returns, are dropped. GitHub has no
 // priority, so the order is oldest first, as in selection.
 func (c *Client) Untriaged() ([]ticket.Ticket, error) {

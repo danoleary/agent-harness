@@ -96,13 +96,20 @@ Its **Lease** is the `in-progress` label on the PR, keyed on the branch.
 _Avoid_: babysitter. ("pr-doctor" is the built-in loop's name, not the concept.)
 
 **Triage loop**:
-A loop whose **Source** is `backlog` (ADR-0044); the built-in one is `triage`.
+A loop whose **Source** is `backlog` (ADR-0045); the built-in one is `triage`.
 The Source is the tracker's open, unassigned tickets that carry neither the ready
 nor the blocked label. Its Pipeline runs one read-only Triage session per ticket,
 whose **Verdict** is ready or not ready with questions for a human, and acts on
 it: the ready label (on Linear, Backlog → Todo too), or one comment with the
 questions. It holds no **Lease**: it never claims the ticket.
 _Avoid_: groomer, labeller.
+
+**Security-alerts loop**:
+A loop whose **Source** is `github_security_alerts` (ADR-0040): the open
+Dependabot alerts at the configured severities, one **Work item** per vulnerable
+package. Its Steps are `new_branch`, `fix_alerts` (the SecurityFix session),
+`gates` and `open_pr`, which lands the fix as a new PR. None is built in, and
+for now only `--dry-run` runs.
 
 ### Prompts
 
@@ -143,7 +150,8 @@ base, clean tree) the harness verifies independently of what the sandbox reporte
 
 **Disposition**:
 A run's one terminal verdict — **Shipped**, **RecommendClose**, **CapAborted**,
-**PreflightAborted**, **Interrupted**, **BaseRed**, **NeedsHuman** or **NoPR** (`stages.Disposition`). Exactly
+**PreflightAborted**, **Interrupted**, **BaseRed**, **NeedsHuman**, **CheckoutBlocked**
+or **NoPR** (`stages.Disposition`). Exactly
 one holds per stage and, folded across the three, per ticket; it is the only thing
 the loop branches on and the breaker counts. Distinct from a Stage's **OK**, which
 asks only "did this stage do its job?" — a Shipped run can be not-OK (CI red after
@@ -158,6 +166,9 @@ selects nothing while origin/main stays on that base and its red verdict is fres
 unpushed but refused to land it, because the review refused that same tip with a
 blocked verdict or a red **Gate**. The loop labels the ticket blocked, comments the
 reason and keeps the claim. It does not release the ticket (ADR-0042).
+**CheckoutBlocked** means git refused a PR loop's checkout because of local state
+on the host, such as a worktree left dirty, before any session launched. It spends
+none of the PR's attempts: the PR is handed to a human (ADR-0019, #247).
 _Avoid_: outcome, signal, status.
 
 **Landing**:

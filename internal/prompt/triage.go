@@ -1,7 +1,7 @@
 package prompt
 
 // TriageVerdictFile is where a Triage session writes its verdict, under the
-// /findings dropbox the host mounts for it (ADR-0044). The host reads it back.
+// /findings dropbox the host mounts for it (ADR-0045). The host reads it back.
 const TriageVerdictFile = "verdict.json"
 
 // triageBar is the envelope's default bar for "ready for an agent". It leans
@@ -27,7 +27,7 @@ func triageContract(kind string) string {
 }
 
 // triage builds the `-p` prompt for the sandboxed Triage session over one backlog
-// ticket (ADR-0044). The Consumer body, when the loop's assess step supplies one,
+// ticket (ADR-0045). The Consumer body, when the loop's assess step supplies one,
 // leads with the project's own bar; the envelope always carries the default bar,
 // the ticket, the verdict contract and the read-only steer.
 func triage(c Context) string {

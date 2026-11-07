@@ -42,6 +42,7 @@ import (
 	"github.com/danoleary/agent-harness/internal/loopstream"
 	"github.com/danoleary/agent-harness/internal/prloop"
 	"github.com/danoleary/agent-harness/internal/runlog"
+	"github.com/danoleary/agent-harness/internal/secloop"
 	"github.com/danoleary/agent-harness/internal/stages"
 	"github.com/danoleary/agent-harness/internal/ticket"
 	"github.com/danoleary/agent-harness/internal/trackers"
@@ -81,7 +82,8 @@ declares its own loops, or re-parameterises these two, as [[loops]] in
               slots and the plain STOP are shared with every other instance
   --list      print every loop this project can run, and exit
   --dry-run   print the named loop's resolved Source, Steps and limits, and for a
-              PR or triage loop the items it would work; change nothing
+              PR, security-alerts or triage loop the PRs, packages or tickets it
+              would work and how; change nothing
 
 Configuration is read from the environment, filled in from the first of:
   $HARNESS_ENV_FILE
@@ -199,6 +201,9 @@ func main() {
 		os.Exit(runPRLoop(cfg, l, f.dryRun))
 	case config.SourceBacklog:
 		os.Exit(runTriageLoop(cfg, l, f.dryRun))
+	case config.SourceGitHubSecurityAlerts:
+		// Without its own case a security loop would fall to the ticket loop below.
+		os.Exit(runSecurityLoop(cfg, l, f.dryRun))
 	default:
 		os.Exit(runTicketLoop(cfg, l, f.dryRun))
 	}
@@ -283,7 +288,7 @@ func runPRLoop(cfg config.Config, l config.Loop, dryRun bool) int {
 	installSignalHandler(host, log)
 	return loop.Run(loop.Deps{
 		Source:   source,
-		Pipeline: prloop.Pipeline{Loop: l},
+		Pipeline: prloop.Pipeline{Loop: l, Source: source},
 		Host:     host,
 		Limits:   limitsFrom(cfg, l),
 		Clock:    loop.SystemClock{},
@@ -291,7 +296,7 @@ func runPRLoop(cfg config.Config, l config.Loop, dryRun bool) int {
 	})
 }
 
-// runTriageLoop is the composition root of a triage loop (ADR-0044): the backlog
+// runTriageLoop is the composition root of a triage loop (ADR-0045): the backlog
 // Source over the tracker's untriaged tickets, and the Pipeline that judges one
 // per poll and acts on the verdict. --dry-run prints the tickets it would judge,
 // in order, and changes nothing.
@@ -329,6 +334,39 @@ func runTriageLoop(cfg config.Config, l config.Loop, dryRun bool) int {
 		Clock:    loop.SystemClock{},
 		Log:      log,
 	})
+}
+
+// runSecurityLoop is the composition root of a security-alerts loop (ADR-0040):
+// the github_security_alerts Source over the repository's Dependabot alerts.
+// --dry-run prints the Source's plan and changes nothing. A real run is refused
+// until the loop has a Pipeline to run its Steps.
+func runSecurityLoop(cfg config.Config, l config.Loop, dryRun bool) int {
+	if !dryRun {
+		fmt.Fprintf(os.Stderr, "loop %s: a %s loop is not yet runnable: its Steps have no Pipeline yet. Run `agent-harness loop %s --dry-run` to see what it would work.\n", l.Name, config.SourceGitHubSecurityAlerts, l.Name)
+		return 2
+	}
+	quiet := runlog.NewConsole(loopstream.NewStream(os.DevNull))
+	co := gitpkg.Open(cfg.ProjectPath, cfg.BranchPrefix)
+	src := secloop.NewSource(loophost.RepoPRs(cfg), secloop.OptionsFrom(cfg, l), co.MainSHA, quiet)
+	plan, err := securityDryRun(l, src)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "loop %s --dry-run: %v\n", l.Name, err)
+		return 1
+	}
+	fmt.Print("\n" + plan)
+	return 0
+}
+
+// securityDryRun renders the security Source's plan: every vulnerable package, and
+// what the loop would do with it. It reads origin/main as last fetched.
+func securityDryRun(l config.Loop, src interface {
+	Plan() ([]secloop.Candidate, error)
+}) (string, error) {
+	cands, err := src.Plan()
+	if err != nil {
+		return "", err
+	}
+	return secloop.RenderPlan(cands, l.Source.MaxAttempts), nil
 }
 
 // prSource is the github_prs Source over the Consumer's checkout. It skips a

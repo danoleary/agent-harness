@@ -129,7 +129,7 @@ type Tracker interface {
 	AddComment(key Key, body string) error
 }
 
-// Backlog is the triage layer (ADR-0044): the tickets a human has not yet marked
+// Backlog is the triage layer (ADR-0045): the tickets a human has not yet marked
 // ready for an agent, and the one write that marks one. It is a capability apart
 // from [Tracker] rather than a fourth layer of it, because only the trackers whose
 // readiness is a label have it: Linear and GitHub Issues. Jira's ready queue is a

@@ -221,6 +221,8 @@ func (e Env) CI(t Target) func(ciLogs string, logAvailable bool) error {
 			Model:  e.Cfg.ReviewModel,
 			Prompt: prompt.For(prompt.CIFix, pctx),
 			Cap:    e.Cfg.ReviewTimeout,
+			// A CI fix reproduces a gate; it drives no browser by hand (#248).
+			NoMCP: true,
 		})
 		if err := sessionError(res.Outcome, attempt); err != nil {
 			return err

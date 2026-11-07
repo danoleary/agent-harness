@@ -1,0 +1,6 @@
+# The ADR index is append-only, one line per ADR (ADR-0034). Two branches that
+# each add an ADR append at the same spot; a local merge, cherry-pick or rebase
+# (Landing's replay) keeps both lines instead of stopping on a conflict (#235).
+# GitHub's merge ignores this, so same-number ADRs still conflict there, and
+# check-adr catches a duplicate or out-of-order line the union leaves.
+docs/adr/README.md merge=union

@@ -144,8 +144,9 @@ it; any other name adds a loop. See
 | `kind` | Parameters |
 |---|---|
 | `tracker` | none: the queue is the one `[tracker]` describes |
-| `backlog` | none: the tickets that are open, unassigned, and carry neither `ready_label` nor `blocked_label` (on GitHub, nor `in_progress_label`); on Linear, those in a backlog or unstarted state of `team_key`. Linear and GitHub only (ADR-0044) |
+| `backlog` | none: the tickets that are open, unassigned, and carry neither `ready_label` nor `blocked_label` (on GitHub, nor `in_progress_label`); on Linear, those in a backlog or unstarted state of `team_key`. Linear and GitHub only (ADR-0045) |
 | `github_prs` | `scope` (`"all"`: every open PR; `"opted_in"`: PRs on `branch_prefix` or with the label; default `"all"`, or `"opted_in"` when `label` is set), `label` (default `PR_LOOP_LABEL`; not allowed with `scope = "all"`), `when` (`"conflicting"`, `"ci_failing"`; default both), `max_attempts` (default `PR_LOOP_MAX_ATTEMPTS`) |
+| `github_security_alerts` | `severity` (any of `"critical"`, `"high"`, `"medium"`, `"low"`; default `["critical", "high"]`), `max_attempts` per alert-set fingerprint (default `2`). Not yet runnable: `--dry-run` prints the packages it would work, and a real run is refused |
 
 ### `steps`
 
@@ -158,16 +159,21 @@ Each step is `{ use = "<step>" }`, plus `prompt = "<path>"` (relative to
 | `review` | `tracker` | `implement` | replaces `prompts/review.md` | every Gate green before the Landing |
 | `checkout_pr` | `github_prs` | (first) | not accepted | the branch is at the polled head |
 | `fix` | `github_prs` | `checkout_pr` | leads the RebaseFix and CIFix prompts | a clean tree with `origin/main` in its history |
-| `gates` | `github_prs` | `fix` | not accepted | every Gate green over the fixed tree |
+| `new_branch` | `github_security_alerts` | (first) | not accepted | the package's branch is cut fresh from `origin/main` |
+| `fix_alerts` | `github_security_alerts` | `new_branch` | leads the SecurityFix prompt | a diff touching only dependency files, and a lockfile that resolves no vulnerable version |
+| `gates` | `github_prs`, `github_security_alerts` | `fix` on `github_prs`; `fix_alerts` on `github_security_alerts` | not accepted | every Gate green over the fixed tree |
 | `push_existing` | `github_prs` | `gates` | not accepted | pushes only a committed, gate-green tree |
-| `watch_ci` | `tracker`, `github_prs` | `review` on `tracker`; `push_existing` on `github_prs` | not accepted | a CI fix must pass every Gate before it is pushed |
+| `open_pr` | `github_security_alerts` | `gates` | not accepted | opens a new PR only for a committed, gate-green tree |
+| `watch_ci` | `tracker`, `github_prs`, `github_security_alerts` | `review` on `tracker`; `push_existing` on `github_prs`; `open_pr` on `github_security_alerts` | not accepted | a CI fix must pass every Gate before it is pushed |
 | `assess` | `backlog` | (first) | leads the Triage prompt with the project's own bar for "ready" | a verdict file: ready, or not ready with questions for a human |
 | `apply` | `backlog` | `assess` | not accepted | a ready ticket gets `ready_label` (on Linear, Backlog → Todo too); one that is not gets a comment with the questions |
-| `retro` | `tracker`, `github_prs` | any step; must be last | replaces `prompts/retro.md` | files the run's Findings |
+| `retro` | `tracker`, `github_prs`, `github_security_alerts` | any step; must be last | replaces `prompts/retro.md` | files the run's Findings |
 
 A `tracker` loop needs `implement` and `review`. A `github_prs` loop needs
 `checkout_pr`, `fix`, `gates` and `push_existing`; `when = ["ci_failing"]` also
-needs `watch_ci`, because a red check is fixed inside the CI watch. A `tracker`
+needs `watch_ci`, because a red check is fixed inside the CI watch. A
+`github_security_alerts` loop needs `new_branch`, `fix_alerts`, `gates` and
+`open_pr`. A `tracker`
 loop without `watch_ci` stops its review stage once the PR is open and leaves red
 CI to a PR loop (ADR-0031); the built-in `tickets` loop has it. Without
 `retro`, nothing files Findings. A `backlog` loop needs `assess`; without

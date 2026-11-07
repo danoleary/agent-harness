@@ -12,7 +12,7 @@ import (
 var _ tracker.Backlog = (*Client)(nil)
 
 // Untriaged lists the team's unassigned issues in a backlog or unstarted state
-// that carry neither the ready label nor the blocked one (ADR-0044): the tickets a
+// that carry neither the ready label nor the blocked one (ADR-0045): the tickets a
 // triage loop judges. It reads with the selection query, so each issue arrives
 // with the same fields and is ordered as selection orders the ready queue:
 // priority, then board order, then age.
@@ -49,7 +49,7 @@ func (c *Client) Untriaged() ([]ticket.Ticket, error) {
 	return out, nil
 }
 
-// MarkReady puts a ticket in the ready queue (ADR-0044). A ticket in a backlog
+// MarkReady puts a ticket in the ready queue (ADR-0045). A ticket in a backlog
 // state moves to the team's unstarted "Todo" state first, then gets the ready
 // label. In that order, a failed label leaves an unlabelled Todo ticket, which
 // Untriaged still lists, so the next pass finishes the job; the other order would

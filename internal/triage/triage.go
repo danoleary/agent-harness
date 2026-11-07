@@ -1,4 +1,4 @@
-// Package triage is the triage loop (ADR-0044): a [loop.Source] over the tracker
+// Package triage is the triage loop (ADR-0045): a [loop.Source] over the tracker
 // tickets nobody has marked ready for an agent yet, and a [loop.Pipeline] that
 // runs one read-only Triage session per ticket and acts on its verdict. A ready
 // ticket gets the ready label, and on Linear moves from Backlog to Todo, which puts
@@ -34,7 +34,7 @@ type Backlog interface {
 }
 
 // AsBacklog returns the tracker as a Backlog, or an error naming why the tracker
-// cannot be triaged: only trackers whose readiness is a label can (ADR-0044).
+// cannot be triaged: only trackers whose readiness is a label can (ADR-0045).
 func AsBacklog(t tracker.Tracker, kind string) (Backlog, error) {
 	b, ok := t.(Backlog)
 	if !ok {

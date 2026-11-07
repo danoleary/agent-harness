@@ -8,6 +8,8 @@ import (
 
 	"github.com/danoleary/agent-harness/internal/ci"
 	"github.com/danoleary/agent-harness/internal/config"
+	"github.com/danoleary/agent-harness/internal/gittest"
+	"github.com/danoleary/agent-harness/internal/hostio"
 	"github.com/danoleary/agent-harness/internal/session"
 )
 
@@ -108,5 +110,23 @@ func TestRunGatesReportsLaterFailingGateByName(t *testing.T) {
 	})
 	if res.FailedGate != "typecheck" {
 		t.Errorf("the failing gate (typecheck) must be reported by name, got %q", res.FailedGate)
+	}
+}
+
+// #248: a CI-fix session never drives a browser, so it starts without the
+// browser-verification MCP servers a Consumer's project config declares. In the
+// incident the Playwright and Chrome DevTools servers idled in the sandbox for
+// the whole session.
+func TestTheCIFixSessionStartsWithoutMCPServers(t *testing.T) {
+	e, _ := conflictEnv(t, func(*gittest.Repo, *hostio.Fake) {})
+
+	_ = e.CI(Target{})("FAIL src/Swatch.stories.tsx", true)
+
+	h := e.Host.(*hostio.Fake)
+	if len(h.Agents) != 1 {
+		t.Fatalf("want one CI-fix session, got %d", len(h.Agents))
+	}
+	if !h.Agents[0].NoMCP {
+		t.Error("the CI-fix session must start with no MCP servers")
 	}
 }

@@ -315,6 +315,7 @@ func Run(d Deps) int {
 	b := newBreaker(d.Limits.MaxConsecutiveFailures)
 	attempted := 0
 	var hold baseHold
+	preflightAborts := 0 // consecutive, for the preflight backoff (#232)
 	for {
 		// Stop only ever lands BETWEEN items — a graceful, per-item checkpoint
 		// (DESIGN.md "Stop control"): stopping mid-item would strand a worktree.
@@ -383,6 +384,9 @@ func Run(d Deps) int {
 		key := item.Key
 		outcome := d.Pipeline.Run(item, claim)
 		attempted++
+		if outcome.Disposition != stages.PreflightAborted {
+			preflightAborts = 0
+		}
 
 		// A spending-cap abort is a control-flow signal, NOT a ticket verdict
 		// (DESIGN.md §Spending-cap abort backoff): an external Anthropic cap aborted
@@ -403,19 +407,29 @@ func Run(d Deps) int {
 		}
 
 		// A Docker-preflight abort is environmental, NOT a ticket verdict: the host
-		// couldn't launch a sandbox (full disk / daemon down) before any work began, so
-		// no progress was made and it is not the diff's fault. The implementation stage
-		// already released the selected ticket back to Todo through the run's lease
-		// (ADR-0003), so here we only reclaim disk (the usual cause — now including the
-		// Docker build-cache/image prune) and back off briefly before re-polling. The
-		// breaker stays blind to it (breaker.record), so a poison top-of-queue ticket
-		// can't rack up identical ~2s preflight failures and trip the breaker in seconds
-		// — the pattern that was stopping the daemon and forcing a manual relaunch. Like
-		// a cap abort, the disposition already settles that nothing shipped.
+		// couldn't launch a sandbox (a full disk, a daemon down, an image that would
+		// not build) before any work began, so no progress was made and it is not the
+		// diff's fault. The implementation stage already released the selected ticket
+		// back to Todo through the run's lease (ADR-0003), and the PR loop's Pipeline
+		// took back the attempt it recorded (#232), so here we only reclaim disk (the
+		// usual cause — now including the Docker build-cache/image prune) and back off
+		// before re-polling. The breaker stays blind to it (breaker.record), so a poison
+		// top-of-queue ticket can't rack up identical ~2s preflight failures and trip
+		// the breaker in seconds — the pattern that was stopping the daemon and forcing
+		// a manual relaunch. The record names the preflight's own error rather than
+		// guess at it, and each abort in a row doubles the backoff, so a broken image
+		// is not rebuilt every poll (#232). Like a cap abort, the disposition already
+		// settles that nothing shipped.
 		if outcome.Disposition == stages.PreflightAborted {
-			d.Log.Structured(loopstream.Record{Kind: loopstream.KindTicketReleased, Ticket: key, Message: "loop — Docker preflight abort on " + key + " (environmental: full disk / daemon down); reclaiming disk and backing off before re-poll — breaker-neutral"})
+			preflightAborts++
+			wait := preflightBackoff(d.Limits.PollInterval, preflightAborts)
+			rec := loopstream.Record{Kind: loopstream.KindTicketReleased, Ticket: key, Message: fmt.Sprintf("loop — Docker preflight abort on %s (%d in a row); reclaiming disk and backing off %s before re-poll — breaker-neutral", key, preflightAborts, wait)}
+			if outcome.Err != nil {
+				rec.Detail = outcome.Err.Error()
+			}
+			d.Log.Structured(rec)
 			d.reclaimDisk()
-			d.interruptibleSleep(d.Limits.PollInterval)
+			d.interruptibleSleep(wait)
 			continue
 		}
 
@@ -444,6 +458,22 @@ func Run(d Deps) int {
 		if outcome.Disposition == stages.BaseRed {
 			d.Log.Structured(loopstream.Record{Kind: loopstream.KindTicketReleased, Ticket: key, Message: "loop ⏸ " + key + " held — the base fails its gates; backing off until main moves — breaker-neutral (#125)"})
 			hold = baseHold{sha: outcome.HeldBase, until: outcome.HeldUntil}
+			d.interruptibleSleep(d.Limits.PollInterval)
+			continue
+		}
+
+		// A checkout git refused on the host's local state is not a verdict on the item
+		// either (#247): a worktree a previous run left dirty or locked, or the branch
+		// held by another worktree, stopped the run before any session launched. The
+		// Source has already taken the attempt back and handed the item to a human, so
+		// it is not selected into the same refusal again. Give the claim back if the
+		// Pipeline has not, name the item, the worktree and git's error, and back off
+		// one poll. Breaker-neutral: the next refusal would be the same host state.
+		if outcome.Disposition == stages.CheckoutBlocked {
+			d.Log.Structured(loopstream.Record{Kind: loopstream.KindTicketReleased, Ticket: key, Message: fmt.Sprintf("loop ⏸ %s checkout blocked by local state on the host: %v — not an attempt; breaker-neutral (#247)", key, outcome.Err)})
+			if err := claim.Release(); err != nil {
+				d.Log.Event("loop … warning: could not release " + key + " after a blocked checkout: " + err.Error())
+			}
 			d.interruptibleSleep(d.Limits.PollInterval)
 			continue
 		}
@@ -863,6 +893,21 @@ func (d Deps) capBackoffDuration(now, resetTime time.Time) time.Duration {
 		return d.Limits.CapBackoff
 	}
 	return wait
+}
+
+// maxPreflightBackoff caps the preflight backoff, in poll intervals.
+const maxPreflightBackoff = 16
+
+// preflightBackoff is how long to back off after the nth preflight abort in a row:
+// one poll interval, doubling with each abort after it up to maxPreflightBackoff
+// polls. It counts aborts in a row rather than identical errors: a failed image
+// build's output carries step timings, so no two errors need match (#232).
+func preflightBackoff(poll time.Duration, n int) time.Duration {
+	f := time.Duration(maxPreflightBackoff)
+	if n <= 4 {
+		f = 1 << (n - 1)
+	}
+	return f * poll
 }
 
 // interruptibleSleep waits out total, but breaks the wait into TickInterval chunks

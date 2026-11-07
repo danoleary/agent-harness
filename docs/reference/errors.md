@@ -56,8 +56,10 @@ Nothing restarts a stopped loop. The `loop` exit code tells a deliberate stop
 ## Sandbox preflight
 
 A preflight failure ends the run **PreflightAborted**. The ticket goes back to
-Todo, the circuit breaker doesn't count it, and the loop reclaims disk and backs
-off.
+Todo (a PR keeps its attempt: the loop takes it back), the circuit breaker
+doesn't count it, and the loop reclaims disk and backs off: one poll interval,
+doubling with each abort in a row up to 16. The `ticket-released` record in
+`loop.jsonl` carries the message below in `detail`.
 
 | Message | Fix |
 |---|---|

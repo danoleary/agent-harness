@@ -9,6 +9,7 @@ import (
 
 	"github.com/danoleary/agent-harness/internal/ci"
 	"github.com/danoleary/agent-harness/internal/config"
+	gitpkg "github.com/danoleary/agent-harness/internal/git"
 	"github.com/danoleary/agent-harness/internal/github"
 	"github.com/danoleary/agent-harness/internal/loop"
 	"github.com/danoleary/agent-harness/internal/loopstream"
@@ -901,5 +902,134 @@ func TestPlanFailsWhenTheWorktreesCannotBeListed(t *testing.T) {
 	}
 	if len(gh.posted[12])+len(gh.added[12]) != 0 {
 		t.Errorf("a failed poll must touch nothing; posted %v added %v", gh.posted[12], gh.added[12])
+	}
+}
+
+// errDirty is git refusing to drop the dirty worktree herd PR-1384's first attempt
+// left (#247), as CheckoutRemote reports it.
+var errDirty = &gitpkg.LocalStateError{
+	Path: "/herd/.claude/worktrees/pr-1384",
+	Op:   "remove the previous worktree",
+	Err:  errors.New("exit status 128: fatal: '/herd/.claude/worktrees/pr-1384' contains modified or untracked files, use --force to delete it"),
+}
+
+// #247, replaying herd PR-1384 on 2026-11-07: one real fix attempt left the
+// worktree dirty, and the next two selections each spent an attempt on a checkout
+// git refused in seconds. A refused checkout takes its attempt back and hands the
+// PR to a human, naming the PR, the worktree and git's error, so the loop does not
+// select it into the same refusal again. Once a human removes the label, the PR
+// resumes on the attempt after the one real try.
+func TestWithdrawTakesBackTheAttemptAndHandsThePRToAHuman(t *testing.T) {
+	pr := harnessPR(1384, "4e1f0c9")
+	pr.HeadBranch = "feat/beh-1301"
+	gh := newFakeGitHub(pr)
+	gh.checks["4e1f0c9"] = github.ChecksRed
+	gh.comments[1384] = []github.PRComment{{Body: attemptMarker("4e1f0c9", CIRed)}}
+	log := &quietLog{}
+	s := NewSource(gh, testOptions, nil, log)
+	s.now = func() time.Time { return testNow }
+
+	item, claim, ok, err := s.Next()
+	if !ok || err != nil {
+		t.Fatalf("Next = ok %v err %v, want PR-1384 on attempt 2", ok, err)
+	}
+	s.Withdraw(item.Context.(Item), errDirty)
+	if err := claim.Release(); err != nil {
+		t.Fatal(err)
+	}
+
+	if !strings.Contains(strings.Join(gh.added[1384], ","), "blocked") {
+		t.Errorf("added = %v, want the PR labelled blocked for a human", gh.added[1384])
+	}
+	posted := strings.Join(gh.posted[1384], "\n")
+	if strings.Contains(posted, "attempt budget") || !strings.Contains(posted, errDirty.Path) || !strings.Contains(posted, "does not count as an attempt") {
+		t.Errorf("the PR must say the checkout was refused, where, and that no attempt was spent:\n%s", posted)
+	}
+	streamed := strings.Join(log.events, "\n")
+	for _, want := range []string{"PR-1384", errDirty.Path, "contains modified or untracked files"} {
+		if !strings.Contains(streamed, want) {
+			t.Errorf("the stream must name %q; events:\n%s", want, streamed)
+		}
+	}
+	gh.prs[0].Labels = []string{"blocked"} // the label the hand-off added
+	if _, _, ok, _ := s.Next(); ok {
+		t.Fatal("a PR handed to a human must not be selected again")
+	}
+
+	gh.prs[0].Labels = nil // a human cleaned the worktree up and removed the label
+	if _, _, ok, _ := s.Next(); !ok {
+		t.Fatal("once the label is gone the PR is worked again")
+	}
+	last := gh.posted[1384][len(gh.posted[1384])-1]
+	if !strings.Contains(last, "attempt 2 of 3") {
+		t.Errorf("the refused checkout must not have spent an attempt; posted %q", last)
+	}
+}
+
+// Three refused checkouts in a row spend nothing: the PR keeps its whole budget
+// and is never handed off for using it up.
+func TestRefusedCheckoutsSpendNoAttempts(t *testing.T) {
+	gh := newFakeGitHub(harnessPR(12, "abc1234"))
+	gh.merge[12] = ci.MergeConflicting
+	s := newTestSource(gh, nil)
+
+	for try := 1; try <= 3; try++ {
+		item, claim, ok, err := s.Next()
+		if !ok || err != nil {
+			t.Fatalf("try %d: Next = ok %v err %v", try, ok, err)
+		}
+		s.Withdraw(item.Context.(Item), errDirty)
+		_ = claim.Release()
+	}
+
+	plan, _ := s.Plan()
+	if len(plan) != 1 || plan[0].Attempts != 0 || plan[0].Exhausted || len(plan[0].Tried) != 0 {
+		t.Errorf("plan = %+v, want the full budget untouched", plan)
+	}
+}
+
+// errImageBuild is the preflight error herd's PR loop met on 2026-11-07 (#232):
+// the base bump to Node 25 dropped corepack, so the sandbox image would not build.
+var errImageBuild = errors.New(`sandbox image "herd-agent:latest" is out of date with .agent-harness/Dockerfile and the rebuild failed (process "/bin/sh -c corepack enable" did not complete successfully: exit code: 127)`)
+
+// #232, replaying herd#1385 on 2026-11-07: red CI, a broken sandbox image, and
+// every run a Docker preflight abort. The PR went from attempt 1 to blocked in
+// three minutes with no session run. Three preflight aborts in a row now spend
+// nothing: the PR keeps its whole budget, is not labelled blocked, and the next
+// run is its first attempt.
+func TestPreflightAbortsSpendNoAttempts(t *testing.T) {
+	gh := newFakeGitHub(harnessPR(1385, "9c2d7e1"))
+	gh.checks["9c2d7e1"] = github.ChecksRed
+	log := &quietLog{}
+	s := NewSource(gh, testOptions, nil, log)
+	s.now = func() time.Time { return testNow }
+
+	for try := 1; try <= 3; try++ {
+		item, claim, ok, err := s.Next()
+		if !ok || err != nil {
+			t.Fatalf("try %d: Next = ok %v err %v", try, ok, err)
+		}
+		s.TakeBack(item.Context.(Item), errImageBuild)
+		if err := claim.Release(); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if strings.Contains(strings.Join(gh.added[1385], ","), "blocked") {
+		t.Errorf("added = %v, want no blocked label: no session ran", gh.added[1385])
+	}
+	plan, _ := s.Plan()
+	if len(plan) != 1 || plan[0].Attempts != 0 || plan[0].Exhausted || len(plan[0].Tried) != 0 {
+		t.Errorf("plan = %+v, want the full budget untouched", plan)
+	}
+	if _, _, ok, _ := s.Next(); !ok {
+		t.Fatal("the PR is worked again once the sandbox starts")
+	}
+	posted := gh.posted[1385]
+	if last := posted[len(posted)-1]; !strings.Contains(last, "attempt 1 of 3") {
+		t.Errorf("the preflight aborts must not have spent an attempt; posted %q", last)
+	}
+	if !strings.Contains(strings.Join(posted, "\n"), "corepack enable") {
+		t.Errorf("the PR must say why no session ran:\n%s", strings.Join(posted, "\n"))
 	}
 }

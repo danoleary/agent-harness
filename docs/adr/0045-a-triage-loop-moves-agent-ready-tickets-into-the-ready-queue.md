@@ -1,4 +1,4 @@
-# ADR-0044: A triage loop moves agent-ready tickets into the ready queue
+# ADR-0045: A triage loop moves agent-ready tickets into the ready queue
 
 - Status: Accepted
 - Date: 2026-11-08

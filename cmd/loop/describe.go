@@ -10,6 +10,7 @@ import (
 	"github.com/danoleary/agent-harness/internal/loop"
 	"github.com/danoleary/agent-harness/internal/loopstream"
 	"github.com/danoleary/agent-harness/internal/prloop"
+	"github.com/danoleary/agent-harness/internal/secloop"
 	"github.com/danoleary/agent-harness/internal/triage"
 )
 
@@ -23,6 +24,9 @@ var stepChecks = map[string]string{
 	config.StepFix:          "a RebaseFix session over a conflict; checks a clean tree with origin/main an ancestor of the tip",
 	config.StepGates:        "re-runs every gate over the fixed tree; nothing is pushed unless all are green",
 	config.StepPushExisting: "pushes to the PR's existing branch: force-with-lease after a rebase, plain after a merge",
+	config.StepNewBranch:    "cuts the package's branch fresh from origin/main, resetting one a failed attempt left",
+	config.StepFixAlerts:    "a SecurityFix session over the package's alerts; checks a diff touching only dependency files and a lockfile that resolves no vulnerable version",
+	config.StepOpenPR:       "opens a new PR for the gate-green branch, carrying the fingerprint marker and the held label",
 	config.StepWatchCI:      "watches CI to a verdict; a red check gets a CIFix session whose commit must pass every gate before it is pushed",
 	config.StepAssess:       "a read-only Triage session over the ticket; checks it left a verdict, with questions for a human when not ready",
 	config.StepApply:        "labels a ready ticket ready (on Linear, Backlog → Todo too), or comments the open questions on one that is not",
@@ -98,6 +102,10 @@ func describeSource(cfg config.Config, l config.Loop) string {
 			o.BaseBranch, o.BranchPrefix, o.OptInLabel, strings.Join(l.Source.When, ", "), o.MaxAttempts)
 	case config.SourceBacklog:
 		return fmt.Sprintf("backlog — the %s tickets that are open, unassigned, and not labelled %q or blocked; each judged once until its title or description changes", cfg.Tracker.Kind, cfg.Tracker.ReadyLabel)
+	case config.SourceGitHubSecurityAlerts:
+		o := secloop.OptionsFrom(cfg, l)
+		return fmt.Sprintf("github_security_alerts — open Dependabot alerts at severity %s, one PR per package on %s/sec-…; %d attempts per fingerprint",
+			strings.Join(o.Severities, ", "), o.BranchPrefix, o.MaxAttempts)
 	default:
 		desc := fmt.Sprintf("tracker — the %s ready queue", cfg.Tracker.Kind)
 		if hint := cfg.Tracker.QueueHint(); hint != "" {

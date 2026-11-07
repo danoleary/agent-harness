@@ -30,7 +30,7 @@ type PromptBodies struct {
 	// session invokes no skill.
 	SecurityFix string
 	// Triage is the body a triage loop's `assess` step supplies for its Triage
-	// session (ADR-0044): the project's own bar for "ready for an agent". Optional:
+	// session (ADR-0045): the project's own bar for "ready for an agent". Optional:
 	// the envelope alone states a default bar.
 	Triage string
 }
