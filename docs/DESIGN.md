@@ -609,7 +609,9 @@ It writes its own stream (`logs/loops/pr-doctor/loop.jsonl`, per-PR logs under
 runs beside the ticket loop. A push is **Shipped** for the breaker, as a ticket's PR
 is; nothing pushed is **NoPR**. The reaper releases an `in-progress` label older
 than the claim TTL (timed by its attempt marker): the reaper runs only between
-this daemon's own items, so one PR loop per checkout.
+this daemon's own items, so one PR loop per checkout. A held PR with no attempt
+marker is not its claim (a human's label, or another loop's hold), so the reaper
+leaves it alone (#196).
 
 ## Declared loops
 

@@ -177,7 +177,9 @@ decision above left open:
   hand-off comments are the record.
 - **A PR lease left by a dead daemon is reaped** once it is older than the claim
   TTL, timed by the PR's latest attempt marker. The reaper runs only between a
-  daemon's own items, so this is safe with one PR loop per checkout.
+  daemon's own items, so this is safe with one PR loop per checkout. A held PR
+  with no attempt marker is not the loop's claim and is never reaped: a human
+  set that label, or another loop holds the PR under it (#196).
 - **Findings.** The retrospective runs over the run's transcripts when a session
   ran. Project findings file only when the tracker is GitHub Issues, because a PR
   names no tracker team. Harness findings are always routed.
