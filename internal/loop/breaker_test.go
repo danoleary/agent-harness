@@ -180,3 +180,22 @@ func TestBreakerNeutralOnBaseRed(t *testing.T) {
 		t.Error("red-base holds must not advance the counter")
 	}
 }
+
+// #247, replaying herd PR-1384 on 2026-11-07: after its one real fix attempt, two
+// runs in a row failed in seconds because git refused to drop the dirty worktree
+// that attempt left. No session launched in either; the refusal is the host's
+// local state, so it is neutral — it neither extends the streak nor clears it.
+func TestBreakerNeutralOnCheckoutBlocked(t *testing.T) {
+	b := newBreaker(3)
+	b.record("PR-1384", stages.Result{})
+	b.record("PR-1384", stages.Result{Disposition: stages.CheckoutBlocked})
+	b.record("PR-1384", stages.Result{Disposition: stages.CheckoutBlocked})
+	if b.tripped() {
+		t.Fatalf("checkout refusals must not advance the streak; tripped with %v", b.streak)
+	}
+	b.record("PR-1385", stages.Result{})
+	b.record("PR-1386", stages.Result{})
+	if !b.tripped() {
+		t.Error("the real failures around the neutral refusals make 3 — must trip")
+	}
+}

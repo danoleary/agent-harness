@@ -63,3 +63,38 @@ func TestCheckoutRemoteStopsWhenTheFetchFails(t *testing.T) {
 		}
 	}
 }
+
+// The add that follows can be refused by local state too: a branch another
+// worktree holds, or a path in the way.
+func TestCheckoutRemoteNamesARefusedAdd(t *testing.T) {
+	run, _ := recordingRunner(func(args []string) error {
+		if hasArg(args, "add") {
+			return errors.New("fatal: 'alice/widget' is already used by worktree at '/elsewhere'")
+		}
+		return nil
+	})
+	wt := fakeCheckout(runners{run: run}).WorktreeOn("pr-12", "alice/widget")
+
+	var local *LocalStateError
+	if err := wt.CheckoutRemote(); !errors.As(err, &local) || local.Path != wt.Path() {
+		t.Fatalf("CheckoutRemote = %v, want a LocalStateError on %s", err, wt.Path())
+	}
+}
+
+// A fetch that fails after its retries is the remote's failure, as before.
+func TestCheckoutRemoteFetchFailureIsNotLocalState(t *testing.T) {
+	run, _ := recordingRunner(func(args []string) error {
+		if hasArg(args, "fetch") {
+			return errors.New("fatal: couldn't find remote ref refs/heads/alice/widget")
+		}
+		return nil
+	})
+	clock := time.Unix(0, 0)
+	now := func() time.Time { clock = clock.Add(time.Hour); return clock }
+	wt := fakeCheckout(runners{run: run, now: now}).WorktreeOn("pr-12", "alice/widget")
+
+	var local *LocalStateError
+	if err := wt.CheckoutRemote(); err == nil || errors.As(err, &local) {
+		t.Fatalf("CheckoutRemote = %v, want a fetch failure that is not local state", err)
+	}
+}

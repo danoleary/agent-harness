@@ -448,6 +448,22 @@ func Run(d Deps) int {
 			continue
 		}
 
+		// A checkout git refused on the host's local state is not a verdict on the item
+		// either (#247): a worktree a previous run left dirty or locked, or the branch
+		// held by another worktree, stopped the run before any session launched. The
+		// Source has already taken the attempt back and handed the item to a human, so
+		// it is not selected into the same refusal again. Give the claim back if the
+		// Pipeline has not, name the item, the worktree and git's error, and back off
+		// one poll. Breaker-neutral: the next refusal would be the same host state.
+		if outcome.Disposition == stages.CheckoutBlocked {
+			d.Log.Structured(loopstream.Record{Kind: loopstream.KindTicketReleased, Ticket: key, Message: fmt.Sprintf("loop ⏸ %s checkout blocked by local state on the host: %v — not an attempt; breaker-neutral (#247)", key, outcome.Err)})
+			if err := claim.Release(); err != nil {
+				d.Log.Event("loop … warning: could not release " + key + " after a blocked checkout: " + err.Error())
+			}
+			d.interruptibleSleep(d.Limits.PollInterval)
+			continue
+		}
+
 		// Fetch main again — "pull main after every session" keeps the next ticket's
 		// merge-base honest across the loop's long run.
 		if err := d.Host.FetchMain(); err != nil {

@@ -24,19 +24,22 @@ type breaker struct {
 func newBreaker(threshold int) *breaker { return &breaker{threshold: threshold} }
 
 // record folds one finished item into the counter, as a match on the run's one
-// Disposition. Only a no-PR run extends the streak: a ship resets it, and the four
+// Disposition. Only a no-PR run extends the streak: a ship resets it, and the
 // control signals are neutral by design — a cap abort is the backoff's business,
 // not the breaker's; a preflight abort is an environmental full-disk/daemon-down
 // refusal before any item work (so a poison top-of-queue item can't trip the
 // breaker in seconds on identical 2s failures); a recommend-close is a correct
-// terminal no-op, neither a ship nor a failure (BEH-603); and an interruption is a
+// terminal no-op, neither a ship nor a failure (BEH-603); an interruption is a
 // session a stop signal killed from outside, which says nothing about the item (#99);
-// and a red-base hold is main's fault, shared by every item cut from it (#125).
+// a red-base hold is main's fault, shared by every item cut from it (#125); and a
+// checkout git refused on the host's local state launched no session and says
+// nothing about the item (#247).
 func (b *breaker) record(key string, o stages.Result) {
 	switch o.Disposition {
 	case stages.Shipped:
 		b.streak = nil
-	case stages.CapAborted, stages.PreflightAborted, stages.RecommendClose, stages.Interrupted, stages.BaseRed:
+	case stages.CapAborted, stages.PreflightAborted, stages.RecommendClose, stages.Interrupted, stages.BaseRed,
+		stages.CheckoutBlocked:
 		// neutral — blind by design
 	default:
 		b.streak = append(b.streak, key)

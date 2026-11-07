@@ -2354,3 +2354,45 @@ func TestInterruptedRunLeavesTheClaimAndBreakerAlone(t *testing.T) {
 		t.Errorf("backoff slept %d ticks, want 5 (PollInterval/TickInterval)", len(slept))
 	}
 }
+
+// #247: three checkout refusals in a row on local state — herd PR-1384's dirty
+// worktree — leave the breaker untouched, even at threshold 1, and each names the
+// PR, the worktree and git's error in the stream. The loop backs off one poll
+// after each; the PR's Source owns keeping it from being selected again.
+func TestCheckoutBlockedThreeTimesInARowDoesNotTripTheBreaker(t *testing.T) {
+	r := &recorder{}
+	ran := 0
+	refusal := errors.New("worktree /herd/.claude/worktrees/pr-1384: remove the previous worktree: fatal: '/herd/.claude/worktrees/pr-1384' contains modified or untracked files, use --force to delete it")
+	code := Run(Deps{
+		Host: &fakeHost{
+			clearStop:     func() error { return nil },
+			stopRequested: func() bool { return ran >= 3 },
+		},
+		Source: &fakeSource{next: func() (string, bool) { return "PR-1384", true }},
+		Pipeline: &fakePipeline{
+			run: func(string) stages.Result {
+				ran++
+				return stages.Result{Err: refusal, Disposition: stages.CheckoutBlocked}
+			},
+		},
+		Limits: Limits{
+			PollInterval:           10 * time.Second,
+			TickInterval:           2 * time.Second,
+			MaxConsecutiveFailures: 1,
+		},
+		Clock: testClock{sleep: func(time.Duration) {}},
+		Log:   r,
+	})
+	if code != 0 || ran != 3 {
+		t.Errorf("code = %d, ran = %d; want three runs and a clean stop", code, ran)
+	}
+	if r.saw("circuit breaker") {
+		t.Errorf("checkout refusals must NOT trip the breaker (threshold 1); events = %v", r.events)
+	}
+	if !r.saw("PR-1384 checkout blocked by local state on the host: " + refusal.Error()) {
+		t.Errorf("the stream must name the PR, the worktree and git's error; events = %v", r.events)
+	}
+	if k, ok := r.kindFor("checkout blocked by local state"); !ok || k != loopstream.KindTicketReleased {
+		t.Errorf("record kind = %q (found=%v), want %q", k, ok, loopstream.KindTicketReleased)
+	}
+}

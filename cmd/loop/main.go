@@ -279,7 +279,7 @@ func runPRLoop(cfg config.Config, l config.Loop, dryRun bool) int {
 	installSignalHandler(host, log)
 	return loop.Run(loop.Deps{
 		Source:   source,
-		Pipeline: prloop.Pipeline{Loop: l},
+		Pipeline: prloop.Pipeline{Loop: l, Source: source},
 		Host:     host,
 		Limits:   limitsFrom(cfg, l),
 		Clock:    loop.SystemClock{},

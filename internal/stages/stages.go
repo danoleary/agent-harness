@@ -266,6 +266,14 @@ const (
 	// keeps the claim, labels the ticket blocked and leaves the reason on it. The
 	// breaker counts it as a failure to ship, as the no-PR run it is.
 	NeedsHuman
+	// CheckoutBlocked — git refused the checkout because of local state on the
+	// host (a worktree a previous run left dirty or locked, the branch held by
+	// another worktree), before any session launched (#247). Only the PR loop's
+	// checkout produces it. Like a preflight abort it is environmental, not the
+	// item's fault: it spends none of the PR's attempts, the Source hands the PR to
+	// a human so it is not selected into the same refusal again, the loop backs off
+	// one poll, and the breaker stays blind to it.
+	CheckoutBlocked
 )
 
 func (d Disposition) String() string {
@@ -284,6 +292,8 @@ func (d Disposition) String() string {
 		return "base-red"
 	case NeedsHuman:
 		return "needs-human"
+	case CheckoutBlocked:
+		return "checkout-blocked"
 	default:
 		return "no-pr"
 	}
