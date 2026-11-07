@@ -2,6 +2,7 @@ package ci
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -445,5 +446,85 @@ func TestPollKeepsWaitingWhenRunProbeErrors(t *testing.T) {
 	_, _, err := poll(noChecksFetch(-1), probe, noChecksGraceCfg(), clock.sleep, clock.now)
 	if !errors.Is(err, ErrPollTimeout) {
 		t.Fatalf("err = %v, want ErrPollTimeout on an unreadable run list", err)
+	}
+}
+
+// transientFetch returns a fetch seam that fails with errPollTransient for the
+// first n calls (n < 0: forever) and then yields the given buckets, counting calls.
+func transientFetch(n int, buckets ...string) (func() ([]Check, error), *int) {
+	calls := 0
+	return func() ([]Check, error) {
+		calls++
+		if n < 0 || calls <= n {
+			return nil, fmt.Errorf("%w: dial tcp 140.82.112.6:443: connect: operation timed out", errPollTransient)
+		}
+		i := calls - n - 1
+		if i >= len(buckets) {
+			i = len(buckets) - 1
+		}
+		return []Check{{Name: "ci", Bucket: buckets[i]}}, nil
+	}, &calls
+}
+
+func TestPollRetriesThroughTransientNetworkErrors(t *testing.T) {
+	// A poll that could not reach GitHub says nothing about CI: back off and poll
+	// again rather than abort the watch (#194).
+	clock := newFakeClock()
+	fetch, calls := transientFetch(maxTransientPolls-1, BucketPass)
+	v, _, err := poll(fetch, nil, testPollCfg(), clock.sleep, clock.now)
+	if err != nil {
+		t.Fatalf("poll: %v", err)
+	}
+	if v != Passed {
+		t.Fatalf("verdict = %v, want Passed once GitHub answered", v)
+	}
+	if *calls != maxTransientPolls {
+		t.Fatalf("fetched %d times, want %d", *calls, maxTransientPolls)
+	}
+}
+
+func TestPollSurfacesTransientErrorsAfterTooManyInARow(t *testing.T) {
+	clock := newFakeClock()
+	fetch, calls := transientFetch(-1, BucketPass)
+	_, _, err := poll(fetch, nil, testPollCfg(), clock.sleep, clock.now)
+	if !errors.Is(err, errPollTransient) {
+		t.Fatalf("err = %v, want errPollTransient", err)
+	}
+	if *calls != maxTransientPolls {
+		t.Fatalf("fetched %d times, want %d consecutive failures before giving up", *calls, maxTransientPolls)
+	}
+}
+
+func TestPollCountsOnlyConsecutiveTransientErrors(t *testing.T) {
+	// A blip, a pending answer, then another blip: GitHub was reachable between
+	// them, so the count starts over and the poll waits on to the green.
+	clock := newFakeClock()
+	calls := 0
+	fetch := func() ([]Check, error) {
+		calls++
+		switch {
+		case calls == 2*maxTransientPolls:
+			return []Check{{Name: "ci", Bucket: BucketPass}}, nil
+		case calls == maxTransientPolls:
+			return []Check{{Name: "ci", Bucket: BucketPending}}, nil
+		default:
+			return nil, errPollTransient
+		}
+	}
+	v, _, err := poll(fetch, nil, testPollCfg(), clock.sleep, clock.now)
+	if err != nil || v != Passed {
+		t.Fatalf("poll = (%v, %v), want (Passed, nil)", v, err)
+	}
+}
+
+func TestPollSurfacesTransientErrorWhenBudgetRunsOut(t *testing.T) {
+	// The budget ends while GitHub is unreachable: report the network error, not a
+	// CI that never settled, since the poll could not see CI at all.
+	clock := newFakeClock()
+	fetch, _ := transientFetch(-1, BucketPass)
+	cfg := pollConfig{interval: 30 * time.Second, budget: time.Minute}
+	_, _, err := poll(fetch, nil, cfg, clock.sleep, clock.now)
+	if !errors.Is(err, errPollTransient) {
+		t.Fatalf("err = %v, want errPollTransient", err)
 	}
 }

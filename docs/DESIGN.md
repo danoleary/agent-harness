@@ -426,6 +426,13 @@ loop:
         -> pass with "CI watch unavailable: gh not authenticated … PR was pushed OK, check CI manually and
         fix the harness gh auth" (BEH-627, the BEH-625 false-negative). A future operator seeing a 401 from
         `gh pr checks` should read it as a harness gh-auth problem, NOT a CI failure.
+  network-error retry (#194): a `gh pr checks` call that fails at the transport layer ("dial tcp",
+    "i/o timeout", "operation timed out", "connection reset", "TLS handshake timeout", "no such host",
+    HTTP 502/503/504, or the gh call hanging past its timeout) never reached CI -> errPollTransient. The
+    poll backs off one interval and polls again, like the no-checks-yet window; any answer from GitHub
+    resets the count. Only 5 in a row, or a budget spent while GitHub is unreachable, ends the poll, and
+    that fails SOFT like the 401 class: pass with "CI watch unavailable: network errors reaching GitHub,
+    check CI manually — PR was pushed OK; last error: …", not "CI did not go green".
   if green        -> confirm mergeability against base (gh pr view --json mergeable):
                        clean              -> done
                        stale-base conflict (main moved after the push) -> auto-rebase + force-with-lease

@@ -260,7 +260,7 @@ const wedgedReadyReason = "CI green on all gates that run on the PR; the only pe
 // handlePollErr routes a poll error to an outcome. The wedged-ready and no-CI sentinels are a
 // SUCCESS — route them through greenOutcome so the mergeability gate still runs before
 // declaring the PR ready (BEH-614); every other error is the failure-shaped
-// pollErrOutcome (timeout, stall, unobservable, real gh failure).
+// pollErrOutcome (timeout, stall, unobservable, unreachable, real gh failure).
 func handlePollErr(d Driver, err error, checks []Check) Outcome {
 	if errors.Is(err, ErrWedgedReadyForMergeQueue) {
 		return greenOutcome(d, wedgedReadyReason)
@@ -374,9 +374,17 @@ const unobservableReason = "CI status unobservable with this token — skipping 
 // "CI did not go green" — a human just eyeballs CI (and fixes the poll credentials).
 const unauthenticatedReason = "CI watch unavailable: gh not authenticated for the checks poll (HTTP 401 / bad credentials) — PR was pushed OK, check CI manually and fix the harness gh auth"
 
+// unreachableReason prefixes the operator-facing summary when `gh pr checks` kept
+// failing with network errors (#194). No check was seen to fail and the diff is
+// pushed and gate-green, so this fails soft like unauthenticatedReason; the last
+// network error follows it for diagnosis.
+const unreachableReason = "CI watch unavailable: network errors reaching GitHub, check CI manually — PR was pushed OK; last error: "
+
 // pollErrOutcome turns a poll error into an outcome. An unobservable-checks error
 // is a *success* that degrades — the PR shipped, the token just can't read CI, so
-// leave it for a human rather than abort or auto-fix. A timeout means CI never
+// leave it for a human rather than abort or auto-fix. A bad-credentials error and
+// a run of network errors (errPollTransient, #194) degrade the same way: the harness
+// could not read CI, and no check was seen to fail. A timeout means CI never
 // settled (report the still-non-green checks); any other error is a real gh
 // failure surfaced verbatim.
 func pollErrOutcome(err error, checks []Check) Outcome {
@@ -385,6 +393,9 @@ func pollErrOutcome(err error, checks []Check) Outcome {
 	}
 	if errors.Is(err, errChecksUnauthenticated) {
 		return Outcome{OK: true, Reason: unauthenticatedReason}
+	}
+	if errors.Is(err, errPollTransient) {
+		return Outcome{OK: true, Reason: unreachableReason + err.Error()}
 	}
 	if errors.Is(err, ErrPollStalled) {
 		return Outcome{

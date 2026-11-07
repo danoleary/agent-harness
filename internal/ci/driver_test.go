@@ -2,9 +2,12 @@ package ci
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/danoleary/agent-harness/internal/proc"
 )
 
 func TestRerunWithoutActionsRunsDoesNotWait(t *testing.T) {
@@ -247,5 +250,50 @@ func TestTruncateLogsNoticeUsesMarkerConstants(t *testing.T) {
 	}
 	if !strings.Contains(got, TruncationWord) {
 		t.Fatalf("truncation notice missing TruncationWord %q: %q", TruncationWord, got)
+	}
+}
+
+func TestInterpretChecksOutputFlagsNetworkFailuresAsTransient(t *testing.T) {
+	// A `gh pr checks` poll that failed at the transport layer never reached GitHub,
+	// so it says nothing about CI. It must surface as errPollTransient so the poll
+	// retries it, not as the catch-all "gh pr checks failed" that ends the watch as
+	// "CI did not go green" (#194). The first case is the incident's own stderr.
+	cases := map[string]struct {
+		stderr string
+		runErr error
+	}{
+		"incident dial timeout": {`Post "https://api.github.com/graphql": dial tcp 140.82.112.6:443: connect: operation timed out`, errors.New("exit status 1")},
+		"i/o timeout":           {`Post "https://api.github.com/graphql": read tcp 10.0.0.2:50122->140.82.112.6:443: i/o timeout`, errors.New("exit status 1")},
+		"connection reset":      {`Post "https://api.github.com/graphql": read tcp 10.0.0.2:50122->140.82.112.6:443: read: connection reset by peer`, errors.New("exit status 1")},
+		"tls handshake":         {`Post "https://api.github.com/graphql": net/http: TLS handshake timeout`, errors.New("exit status 1")},
+		"no such host":          {`Post "https://api.github.com/graphql": dial tcp: lookup api.github.com: no such host`, errors.New("exit status 1")},
+		"http 502":              {`HTTP 502: Bad Gateway (https://api.github.com/graphql)`, errors.New("exit status 1")},
+		"http 503":              {`HTTP 503: Service Unavailable (https://api.github.com/graphql)`, errors.New("exit status 1")},
+		"http 504":              {`HTTP 504: Gateway Timeout (https://api.github.com/graphql)`, errors.New("exit status 1")},
+		"gh call hung":          {"", fmt.Errorf(`"gh" did not respond within 1m0s: %w`, proc.ErrTimeout)},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, err := interpretChecksOutput([]byte(""), []byte(tc.stderr), tc.runErr)
+			if !errors.Is(err, errPollTransient) {
+				t.Fatalf("err = %v, want errPollTransient", err)
+			}
+			if tc.stderr != "" && !strings.Contains(err.Error(), tc.stderr) {
+				t.Fatalf("err %q should carry gh's stderr for the operator", err.Error())
+			}
+		})
+	}
+}
+
+func TestInterpretChecksOutputKeepsRealFailuresNonTransient(t *testing.T) {
+	// A 500 or a bad branch is not a network blip; it stays a real gh failure.
+	for _, stderr := range []string{
+		"HTTP 500: Internal Server Error (https://api.github.com/graphql)",
+		"no pull requests found for branch \"feat/x\"",
+	} {
+		_, err := interpretChecksOutput([]byte(""), []byte(stderr), errors.New("exit status 1"))
+		if err == nil || errors.Is(err, errPollTransient) {
+			t.Fatalf("stderr %q: err = %v, want a non-transient gh failure", stderr, err)
+		}
 	}
 }
