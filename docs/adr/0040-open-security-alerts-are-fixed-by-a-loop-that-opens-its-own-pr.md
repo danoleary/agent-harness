@@ -109,3 +109,37 @@ steps = [
   human merges or closes it; the next poll sees no alert and yields nothing.
 - Glossary terms (the Source, the SecurityFix session) go in CONTEXT.md once the
   code lands, as ADR-0019's did.
+
+## Amendment, 2026-11-07: the Source's skips, fingerprint and ledger (#200)
+
+`internal/secloop` implements the Source. It pins down decisions 1, 6, 7 and 8:
+
+- **The Work item.** The Key is `SEC-<ecosystem>-<package>`, and the branch is
+  `<branch_prefix>/<slug of the Key>`.
+- **The fingerprint** is the first 10 hex digits of a SHA-1 over the package,
+  its patched alerts' numbers in order, and each alert's first patched version.
+  Decision 7 named the vulnerable ranges. The patched version is what the fix
+  moves to, and a changed advisory moves it too.
+- **The skips, cheapest first.** The Source skips a package when:
+  - its ecosystem or a manifest has no lockfile reader;
+  - none of its alerts has a patched version;
+  - its branch has an open PR;
+  - a PR from its branch carries the `blocked` label;
+  - a human closed a PR whose body marker names this fingerprint;
+  - a PR with this fingerprint merged, and its alerts are still open. Inside a
+    grace period the Source waits for Dependabot. Past it, a human must look.
+  - this fingerprint was already handed off;
+  - an attempt at this fingerprint started at the current `origin/main` SHA.
+    It pushed nothing, or it would have a PR, so it is not retried until main
+    moves.
+
+  The dry-run prints each skip's reason.
+- **The ledger** is `<logs dir>/attempts.jsonl`. Each line has `key`, `fp`,
+  `base_sha`, `at` and `outcome`. Holding the lease writes a `started` line, which
+  is one attempt. When a fingerprint reaches `max_attempts`, the Source writes
+  one `handed_off` line and a `ticket-released` stream record, then leaves the
+  package alone until its fingerprint changes. Unlike `pr-doctor`, there is no PR
+  label for a human to remove.
+- **Claims** are the open PRs on `sec-` branches that carry the held label, each
+  timed by its Key's latest `started` line. A labelled PR the ledger never
+  started is left out, as in #196. Release takes the label off.
