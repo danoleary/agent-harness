@@ -1,0 +1,40 @@
+# Dependabot version updates.
+#
+# Schedule: Dependabot has no native fortnightly interval, so a cron on the 1st
+# and 15th of each month stands in for "every two weeks".
+#
+# Cooldown: a release must be at least 7 days old before Dependabot proposes it,
+# so a freshly published (possibly yanked or compromised) version is never pulled
+# in. Cooldown applies to version updates only; security updates still open
+# immediately.
+version: 2
+updates:
+  - package-ecosystem: "gomod"
+    directory: "/"
+    schedule:
+      interval: "cron"
+      cronjob: "0 9 1,15 * *"
+    cooldown:
+      default-days: 7
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "cron"
+      cronjob: "0 9 1,15 * *"
+    cooldown:
+      default-days: 7
+
+  # Dockerfile.base (the sandbox base image's node base), plus the harness's own
+  # sandbox image and the example Consumer image, which both pin the published
+  # agent-harness-base tag.
+  - package-ecosystem: "docker"
+    directories:
+      - "/"
+      - "/.agent-harness"
+      - "/example/.agent-harness"
+    schedule:
+      interval: "cron"
+      cronjob: "0 9 1,15 * *"
+    cooldown:
+      default-days: 7
