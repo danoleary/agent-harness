@@ -94,9 +94,11 @@ private helper is testing the wrong thing.
 
 ## Finish
 
-1. Run `gofmt -l .` and then `make check`, each as its own Bash call with
-   nothing appended. Both must be clean.
-2. Update docs the change makes stale (README, `docs/DESIGN.md`, an ADR).
+Commit before the full gate, not after it. A session that runs out of time
+inside `make check` with nothing committed leaves no handoff commit, and the
+harness has to spend a whole extra cycle recovering the diff (#224).
+
+1. Update docs the change makes stale (README, `docs/DESIGN.md`, an ADR).
    Before numbering a new ADR, check `origin/main`'s `docs/adr/` (`git fetch`
    first), not local main, and expect a sibling branch may take the same number.
    Append the new ADR's line to the end of `docs/adr/README.md`: a sibling that
@@ -105,6 +107,16 @@ private helper is testing the wrong thing.
    backstop. That fetch is read-only: do not rebase or merge `origin/main` into
    the branch, even if main has moved. The harness rebases it before push and
    resolves conflicts in its own session.
+2. Run `go test` and `go vet` on the packages the diff touches, then
+   `gofmt -l .`, each as its own Bash call with nothing appended. All must be
+   clean.
 3. Make ONE commit on the branch the prompt names. Subject: an imperative
    sentence describing the behaviour, ending with the ticket reference, e.g.
    `Give the ticket claim one owner: a per-run lease (#25)`. The body says why.
+4. Run `make check` as its own Bash call with nothing appended. Fold any fix it
+   needs into that commit with `git commit --amend`, never a second commit.
+5. If `make check` fails only in a package the diff didn't touch, re-run that
+   package alone: `go test -count=1 ./internal/<pkg>/`. If it passes, note it
+   in your summary as a suspected load flake and stop: do not re-run the full
+   `make check`. It can take as long as the first run, and the harness re-gates
+   host-side after the session anyway. If it fails alone too, treat it as real.
