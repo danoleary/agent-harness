@@ -95,6 +95,19 @@ expect_pass "non-test script" "$TEST_DIR/t6"
 echo -n "Test 7: the scripts dir itself is clean... "
 expect_pass "real scripts" "$HERE"
 
+# #177: the isolation check piped the file's code lines into `grep -q`, which
+# exits on its first match; under pipefail the writer's SIGPIPE read as "not
+# isolated". A test file past the pipe buffer, sourcing the helper up top,
+# makes that fire.
+echo -n "Test 7b: a large test that sources the helper early passes (#177)... "
+d=$(fixture t7b '. "$(dirname "$0")/lib/scratch-git.sh"' 'git init -q "$R"')
+i=1
+while [ "$i" -le 4000 ]; do
+    printf 'echo "filler line %s padding padding padding padding padding"\n' "$i" >> "$d/test-x.sh"
+    i=$((i + 1))
+done
+expect_pass "large isolated test" "$d"
+
 # The #166 incident: an operator whose global config signs commits with a key
 # the test can't reach. Without isolation, `git commit` in the scratch repo
 # fails trying to run the signing program; through the helper it must not.

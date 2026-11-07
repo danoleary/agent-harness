@@ -27,7 +27,10 @@ shopt -s nullglob
 for f in "$DIR"/test-*.sh; do
     hits=$(grep -nE "$BUILDS_REPO" "$f" | grep -vE '^[0-9]+:[[:space:]]*#' || true)
     [ -n "$hits" ] || continue
-    if grep -vE '^[[:space:]]*#' "$f" | grep -qE "$ISOLATED"; then
+    # A here-string, not a pipe into grep -q: grep -q exits on its first match,
+    # and under pipefail the writer's SIGPIPE read as "not isolated" (#177).
+    code=$(grep -vE '^[[:space:]]*#' "$f" || true)
+    if grep -qE "$ISOLATED" <<< "$code"; then
         continue
     fi
     while IFS= read -r hit; do

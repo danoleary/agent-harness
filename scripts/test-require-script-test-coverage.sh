@@ -219,6 +219,32 @@ else
 	ok "does not flag the covered script as a violation"
 fi
 
+# ---- #177: a large diff covers the test early -> gate passes ---------------
+# The membership test piped the changed list into `grep -q`, which exits on its
+# first match; under pipefail the writer's SIGPIPE read as "test untouched". A
+# list past the pipe buffer, with the test sorted early, makes that fire.
+repo="${tmp}/large"
+new_repo "$repo"
+git -C "$repo" checkout -q -b feat
+printf '#!/usr/bin/env bash\necho changed\n' >"${repo}/scripts/sample.sh"
+printf '#!/usr/bin/env bash\nexit 1\n'       >"${repo}/scripts/test-sample.sh"
+mkdir -p "${repo}/zz"
+pad="$(printf '%0240d' 0 | tr 0 x)"
+i=1
+while [ "$i" -le 600 ]; do
+	printf 'x\n' >"${repo}/zz/${i}-${pad}"
+	i=$((i + 1))
+done
+git -C "$repo" add -A
+git -C "$repo" commit -qm "change sample.sh and its test among many files"
+
+if out="$(cd "$repo" && "$script" main 2>&1)"; then
+	ok "passes a covered script in a diff past the pipe buffer"
+else
+	ng "passes a covered script in a diff past the pipe buffer"
+	printf '  got: %s\n' "$out"
+fi
+
 # ---- summary -----------------------------------------------------------------
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

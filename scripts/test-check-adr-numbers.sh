@@ -192,6 +192,24 @@ grep -v '^[<=>][<=>]*' "$R/docs/adr/README.md" > "$R/resolved" || true
 mv "$R/resolved" "$R/docs/adr/README.md"
 expect_fail "both-sides resolution" "$R" 'ADR-0030 is taken by more than one file'
 
+# The #177 incident: the index check piped the whole index into `grep -q`,
+# which exits on its first match; under pipefail the writer's SIGPIPE turned a
+# listed ADR into "not listed". An index past the pipe buffer (64KB on Linux)
+# makes that race fire every time, so this must pass.
+echo -n "Test 13b: a large index does not report a listed ADR as unlisted (#177)... "
+R="$TEST_DIR/t13b"
+mkdir -p "$R/docs/adr"
+pad=$(printf '%0240d' 0 | tr 0 x)
+printf '# Decisions\n\n' > "$R/docs/adr/README.md"
+i=1
+while [ "$i" -le 600 ]; do
+    n=$(printf '%04d' "$i")
+    printf '# ADR-%s\n' "$n" > "$R/docs/adr/$n-$pad.md"
+    printf -- '- [ADR-%s](%s-%s.md)\n' "$n" "$n" "$pad" >> "$R/docs/adr/README.md"
+    i=$((i + 1))
+done
+expect_pass "large index" "$R"
+
 echo -n "Test 14: the real harness tree passes... "
 HARNESS_DIR="$(dirname "$(dirname "$0")")"
 expect_pass "real tree" "$HARNESS_DIR"

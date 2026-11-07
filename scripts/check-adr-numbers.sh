@@ -99,7 +99,10 @@ if [ -n "$adrs" ] && [ ! -f "$INDEX" ]; then
     echo "docs/adr/README.md: missing; it must list every ADR, one '- [ADR-NNNN](NNNN-<slug>.md)' line each, in ascending order"
     violations=$((violations + 1))
 elif [ -n "$adrs" ]; then
-    indexed=""
+    # One file per line, wrapped in newlines so a whole-line match is a
+    # substring match (#177).
+    indexed="
+"
     prev=0
     while read -r line_no n file; do
         if [ ! -e "$ADR_DIR/$file" ]; then
@@ -119,11 +122,18 @@ elif [ -n "$adrs" ]; then
 "
     done < <(grep -nE '^- \[ADR-[0-9]{4}\]\([0-9]{4}-[^)]*\.md\)' "$INDEX" |
         sed -E 's/^([0-9]+):- \[ADR-([0-9]{4})\]\(([^)]*)\).*/\1 \2 \3/')
+    # A case match, not `printf | grep -q`: grep -q exits on its first match,
+    # and under pipefail the writer's SIGPIPE read as "not listed" (#177).
     for f in $adrs; do
-        if ! printf '%s' "$indexed" | grep -qxF "$f"; then
-            echo "docs/adr/README.md: ${f} is not listed; append a '- [ADR-${f%%-*}](${f})' line for it"
-            violations=$((violations + 1))
-        fi
+        case "$indexed" in
+            *"
+$f
+"*) ;;
+            *)
+                echo "docs/adr/README.md: ${f} is not listed; append a '- [ADR-${f%%-*}](${f})' line for it"
+                violations=$((violations + 1))
+                ;;
+        esac
     done
 fi
 

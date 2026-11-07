@@ -124,5 +124,21 @@ expect_fail "escaping link in a shipped doc" "$TEST_DIR/t11" 'docs/GUIDE\.md:3:.
 echo -n "Test 12: this repo's shipped docs link only to shipped docs... "
 expect_pass "the real bundle" "$REPO_DIR"
 
+# #177: shipped() piped DOCS into `grep -q`, which exits on its first match;
+# under pipefail the writer's SIGPIPE read as "not shipped". A DOCS list past
+# the pipe buffer makes that fire for a doc early on the list.
+echo -n "Test 13: a link to an early doc on a large DOCS list passes (#177)... "
+fixture "$TEST_DIR/t13" '# Readme\n\nSee [the guide](docs/GUIDE.md).\n'
+pad=$(printf '%0240d' 0 | tr 0 x)
+list="README.md docs/GUIDE.md"
+i=1
+while [ "$i" -le 600 ]; do
+    printf 'x\n' > "$TEST_DIR/t13/docs/$i-$pad.txt"
+    list="$list docs/$i-$pad.txt"
+    i=$((i + 1))
+done
+printf 'DOCS="%s"\n' "$list" > "$TEST_DIR/t13/install.sh"
+expect_pass "large DOCS list" "$TEST_DIR/t13"
+
 echo
 echo -e "${GREEN}All tests passed!${NC}"
