@@ -1,6 +1,7 @@
 package stages
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -152,5 +153,32 @@ func TestPushGateFromAnOlderRecordHasNoGate(t *testing.T) {
 	}
 	if got := LastPushGate(t.TempDir()); got != nil {
 		t.Errorf("LastPushGate over an empty dir = %+v, want nil", got)
+	}
+}
+
+// A review that cleared its tip but whose push failed after the pre-push rebase
+// left a rebased tip on the worktree — new SHAs once main moved. The push gate is
+// re-recorded over that landed tip, so the committed-fix recovery still finishes
+// it rather than declining it as unreviewed and re-running the whole ticket: the
+// flaky push BEH-713 exists to absorb.
+func TestReviewWhosePushFailedLeavesARecoveryTheRebasedTipToLand(t *testing.T) {
+	h, repo := handedOff(t, "PROJ-7")
+	h.AgentOutcome = session.Outcome{ReviewVerdictEmitted: true, ReviewDisposition: "Disposition: clear — no findings"}
+	repo.Merge("other.txt", "unrelated\n", "a sibling merged")
+	h.ForcePushErr = errors.New("remote hung up")
+	log := stageLog(t, "PROJ-7")
+
+	if res := Review(h, stageCfg(), log, Args{Identifier: "PROJ-7"}); res.Disposition == Shipped {
+		t.Fatalf("a failed push must not ship, got %+v", res)
+	}
+	tip, _ := h.Worktree().HeadSHA()
+	if got := LastPushGate(log.Dir); got == nil || got.Head != tip || !got.GateRan || got.GateExit != 0 {
+		t.Fatalf("LastPushGate = %+v, want a green gate over the rebased tip %s", got, tip)
+	}
+
+	h.ForcePushErr = nil
+	h.OpenPRThere = false
+	if rec := ship.Recover(h, log, "PROJ-7", LastPushGate(log.Dir)); !rec.Shipped {
+		t.Fatalf("Recover() = %+v, want the cleared branch shipped once the push goes through (BEH-713)", rec)
 	}
 }

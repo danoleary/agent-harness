@@ -441,9 +441,14 @@ func Review(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Res
 		return Result{OK: false, Disposition: RecommendClose}
 	case ship.PushFailed:
 		log.Event("review ✗ push failed: " + landing.Err.Error() + " — keeping worktree")
+		// The replay may have rewritten the cleared commits' SHAs: re-record the push
+		// gate over the tip left behind, so the committed-fix recovery still finishes
+		// this cleared branch rather than declining it as unreviewed (#230, BEH-713).
+		rememberVerdict()
 		return Result{OK: false}
 	case ship.PRFailed:
 		log.Event("review ✗ gh pr create failed: " + landing.Err.Error() + " — branch pushed, open the PR manually")
+		rememberVerdict()
 		return Result{OK: false}
 	}
 	log.Structured(loopstream.Record{Kind: loopstream.KindPROpened, Ticket: args.Identifier, Stage: "review", Message: "review ✓ PR opened: " + landing.URL})
