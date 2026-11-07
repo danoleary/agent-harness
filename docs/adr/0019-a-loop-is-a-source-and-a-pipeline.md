@@ -321,3 +321,11 @@ before any session ran. It stayed blocked after the worktree was removed.
   be working in it.
 - A failed worktree list fails the poll, as a failed read of the ticket loop's
   holds does: a guess would spend an attempt on a checkout git refuses.
+
+## Amendment, 2026-11-07: a third Source, open security alerts (#197)
+
+ADR-0040 adds a third loop instance, the `github_security_alerts` Source. It is
+the first loop whose Work item has neither a ticket nor a PR. Its Pipeline cuts
+a fresh branch from `origin/main`, lands it as a new PR with `ship`, and keys its
+lease on that branch as decision 2 requires: the claim lock until the PR exists,
+then the `in-progress` label on the PR.
