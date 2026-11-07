@@ -13,8 +13,9 @@ func loopsCheckout(t *testing.T, loops string) string {
 	return testCheckout(t, testConfigTOML+loops)
 }
 
-// With no [[loops]], the two built-in loops are what `loop` can run: the ticket
-// loop, which a bare `agent-harness loop` runs as it always has, and pr-doctor.
+// With no [[loops]], the three built-in loops are what `loop` can run: the ticket
+// loop, which a bare `agent-harness loop` runs as it always has, pr-doctor and
+// triage.
 func TestNoLoopsDeclaredLeavesTheBuiltIns(t *testing.T) {
 	pc, err := LoadProject(loopsCheckout(t, ""))
 	if err != nil {
@@ -22,8 +23,8 @@ func TestNoLoopsDeclaredLeavesTheBuiltIns(t *testing.T) {
 	}
 	p := Project{Loops: pc.ResolvedLoops}
 	got := p.AllLoops()
-	if len(got) != 2 || got[0].Name != DefaultLoopName || got[1].Name != PRDoctorLoopName {
-		t.Fatalf("AllLoops = %+v, want the built-in tickets and pr-doctor loops", got)
+	if len(got) != 3 || got[0].Name != DefaultLoopName || got[1].Name != PRDoctorLoopName || got[2].Name != TriageLoopName {
+		t.Fatalf("AllLoops = %+v, want the built-in tickets, pr-doctor and triage loops", got)
 	}
 	tickets, ok := p.LoopNamed("")
 	if !ok || tickets.Name != DefaultLoopName || tickets.Source.Kind != SourceTracker {
@@ -99,7 +100,7 @@ steps = [{ use = "checkout_pr" }, { use = "fix" }, { use = "gates" }, { use = "p
 	}
 }
 
-// builtInLoopsTOML writes the two built-in loops out as [[loops]] entries.
+// builtInLoopsTOML writes the three built-in loops out as [[loops]] entries.
 const builtInLoopsTOML = `
 [[loops]]
 name = "tickets"
@@ -117,6 +118,11 @@ steps = [
   { use = "watch_ci" },
   { use = "retro" },
 ]
+
+[[loops]]
+name = "triage"
+source = { kind = "backlog" }
+steps = [{ use = "assess" }, { use = "apply" }]
 `
 
 // Each built-in loop can be written out as a [[loops]] entry, and the entry
@@ -205,8 +211,8 @@ steps = [{ use = "implement", prompt = "prompts/implement-strict.md" }, { use = 
 		t.Fatalf("LoadProject: %v", err)
 	}
 	all := Project{Loops: pc.ResolvedLoops}.AllLoops()
-	if len(all) != 2 {
-		t.Fatalf("AllLoops = %+v, want tickets and the built-in pr-doctor", all)
+	if len(all) != 3 {
+		t.Fatalf("AllLoops = %+v, want tickets and the built-in pr-doctor and triage", all)
 	}
 	l, _ := Project{Loops: pc.ResolvedLoops}.LoopNamed("")
 	if l.BuiltIn || l.Has(StepRetro) || l.Prompt(StepImplement) != "/tdd, strictly" {
@@ -309,6 +315,36 @@ name = "a"
 source = { kind = "tracker", scope = "all" }
 steps = [{ use = "implement" }, { use = "review" }]
 `, "source.scope is not a tracker parameter"},
+		{"label on a backlog", `
+[[loops]]
+name = "a"
+source = { kind = "backlog", label = "x" }
+steps = [{ use = "assess" }, { use = "apply" }]
+`, "source.label is not a backlog parameter"},
+		{"apply before assess", `
+[[loops]]
+name = "a"
+source = { kind = "backlog" }
+steps = [{ use = "apply" }, { use = "assess" }]
+`, "apply needs assess before it"},
+		{"backlog without assess", `
+[[loops]]
+name = "a"
+source = { kind = "backlog" }
+steps = [{ use = "apply" }]
+`, "a backlog loop needs a assess step"},
+		{"retro on a backlog", `
+[[loops]]
+name = "a"
+source = { kind = "backlog" }
+steps = [{ use = "assess" }, { use = "retro" }]
+`, "retro does not run on a backlog source"},
+		{"ticket step on a backlog", `
+[[loops]]
+name = "a"
+source = { kind = "backlog" }
+steps = [{ use = "assess" }, { use = "implement" }]
+`, "implement does not run on a backlog source"},
 		{"negative count", `
 [[loops]]
 name = "a"

@@ -376,13 +376,16 @@ func (c *Client) MoveToCanceled(identifier string) error {
 	})
 }
 
-// blockedLabelQuery resolves the issue's UUID and the blocked label by name: the
-// issue's team's label of that name, and a workspace label (no team) of that name,
-// since an issue may carry either.
-const blockedLabelQuery = `
-	query BlockedLabel($id: String!, $name: String!) {
+// labelByNameQuery resolves the issue's UUID, its workflow state type, and a label
+// by name: the issue's team's label of that name, and a workspace label (no team)
+// of that name, since an issue may carry either.
+const labelByNameQuery = `
+	query LabelByName($id: String!, $name: String!) {
 		issue(id: $id) {
 			id
+			state {
+				type
+			}
 			team {
 				labels(filter: { name: { eq: $name } }) {
 					nodes {
@@ -407,17 +410,21 @@ const addLabelMutation = `
 	}
 `
 
-// MarkBlocked hands a ticket to a human (#230): it adds the configured blocked
-// label, which selection screens out, and leaves the ticket's state alone. The
-// label is resolved by name — the team's label first, else a workspace label —
-// because the add takes a UUID and the config names the label.
-func (c *Client) MarkBlocked(identifier string) error {
-	if c.opts.Blocked == "" {
-		return fmt.Errorf("no tracker.blocked_label is configured to mark %s with", identifier)
-	}
-	data, err := c.transport(blockedLabelQuery, map[string]any{"id": identifier, "name": c.opts.Blocked})
+// labelledIssue is an issue as labelByNameQuery read it: its UUID, its state
+// type, and the id of the named label to add to it.
+type labelledIssue struct {
+	id        string
+	stateType string
+	labelID   string
+}
+
+// resolveLabel reads the issue and the label named name — the team's label first,
+// else a workspace label — because the add takes a UUID and the config names the
+// label.
+func (c *Client) resolveLabel(identifier, name string) (labelledIssue, error) {
+	data, err := c.transport(labelByNameQuery, map[string]any{"id": identifier, "name": name})
 	if err != nil {
-		return err
+		return labelledIssue{}, err
 	}
 	type nodes struct {
 		Nodes []struct {
@@ -426,7 +433,10 @@ func (c *Client) MarkBlocked(identifier string) error {
 	}
 	var resp struct {
 		Issue *struct {
-			ID   string `json:"id"`
+			ID    string `json:"id"`
+			State *struct {
+				Type string `json:"type"`
+			} `json:"state"`
 			Team struct {
 				Labels nodes `json:"labels"`
 			} `json:"team"`
@@ -434,16 +444,33 @@ func (c *Client) MarkBlocked(identifier string) error {
 		IssueLabels nodes `json:"issueLabels"`
 	}
 	if err := json.Unmarshal(data, &resp); err != nil {
-		return err
+		return labelledIssue{}, err
 	}
 	if resp.Issue == nil {
-		return fmt.Errorf("Linear issue not found: %s", identifier)
+		return labelledIssue{}, fmt.Errorf("Linear issue not found: %s", identifier)
 	}
 	labels := append(resp.Issue.Team.Labels.Nodes, resp.IssueLabels.Nodes...)
 	if len(labels) == 0 {
-		return fmt.Errorf("no Linear label named %q for %s's team or workspace", c.opts.Blocked, identifier)
+		return labelledIssue{}, fmt.Errorf("no Linear label named %q for %s's team or workspace", name, identifier)
 	}
-	_, err = c.transport(addLabelMutation, map[string]any{"id": resp.Issue.ID, "labelId": labels[0].ID})
+	out := labelledIssue{id: resp.Issue.ID, labelID: labels[0].ID}
+	if resp.Issue.State != nil {
+		out.stateType = resp.Issue.State.Type
+	}
+	return out, nil
+}
+
+// MarkBlocked hands a ticket to a human (#230): it adds the configured blocked
+// label, which selection screens out, and leaves the ticket's state alone.
+func (c *Client) MarkBlocked(identifier string) error {
+	if c.opts.Blocked == "" {
+		return fmt.Errorf("no tracker.blocked_label is configured to mark %s with", identifier)
+	}
+	iss, err := c.resolveLabel(identifier, c.opts.Blocked)
+	if err != nil {
+		return err
+	}
+	_, err = c.transport(addLabelMutation, map[string]any{"id": iss.id, "labelId": iss.labelID})
 	return err
 }
 

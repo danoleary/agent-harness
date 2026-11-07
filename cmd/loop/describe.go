@@ -10,6 +10,7 @@ import (
 	"github.com/danoleary/agent-harness/internal/loop"
 	"github.com/danoleary/agent-harness/internal/loopstream"
 	"github.com/danoleary/agent-harness/internal/prloop"
+	"github.com/danoleary/agent-harness/internal/triage"
 )
 
 // stepChecks says, for the dry-run, what each Step does and the ground truth it
@@ -23,6 +24,8 @@ var stepChecks = map[string]string{
 	config.StepGates:        "re-runs every gate over the fixed tree; nothing is pushed unless all are green",
 	config.StepPushExisting: "pushes to the PR's existing branch: force-with-lease after a rebase, plain after a merge",
 	config.StepWatchCI:      "watches CI to a verdict; a red check gets a CIFix session whose commit must pass every gate before it is pushed",
+	config.StepAssess:       "a read-only Triage session over the ticket; checks it left a verdict, with questions for a human when not ready",
+	config.StepApply:        "labels a ready ticket ready (on Linear, Backlog → Todo too), or comments the open questions on one that is not",
 }
 
 // renderList prints every loop `agent-harness loop <name>` can run.
@@ -93,6 +96,8 @@ func describeSource(cfg config.Config, l config.Loop) string {
 		}
 		return fmt.Sprintf("github_prs — open PRs into %s on %s/ or with opt-in label %q, when %s; %d attempts per PR",
 			o.BaseBranch, o.BranchPrefix, o.OptInLabel, strings.Join(l.Source.When, ", "), o.MaxAttempts)
+	case config.SourceBacklog:
+		return fmt.Sprintf("backlog — the %s tickets that are open, unassigned, and not labelled %q or blocked; each judged once until its title or description changes", cfg.Tracker.Kind, cfg.Tracker.ReadyLabel)
 	default:
 		desc := fmt.Sprintf("tracker — the %s ready queue", cfg.Tracker.Kind)
 		if hint := cfg.Tracker.QueueHint(); hint != "" {
@@ -100,6 +105,22 @@ func describeSource(cfg config.Config, l config.Loop) string {
 		}
 		return desc
 	}
+}
+
+// renderTriagePlan lists the tickets a triage loop would judge, in order.
+func renderTriagePlan(plan []triage.Item, apply bool) string {
+	if len(plan) == 0 {
+		return "No untriaged ticket is waiting for a verdict.\n"
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "%d ticket(s) to judge, one per poll:\n", len(plan))
+	for _, it := range plan {
+		fmt.Fprintf(&b, "  %-10s %s\n", it.Ticket.Identifier, it.Ticket.Title)
+	}
+	if !apply {
+		b.WriteString("This loop has no apply step: verdicts are recorded and no ticket is changed.\n")
+	}
+	return b.String()
 }
 
 // underCheckout resolves a relative path against the checkout, as the daemon does.

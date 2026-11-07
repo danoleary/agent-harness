@@ -23,6 +23,9 @@ const (
 	// SourceGitHubPRs is the open PRs that conflict with main or have red CI: the
 	// PR loop.
 	SourceGitHubPRs = "github_prs"
+	// SourceBacklog is the tracker's tickets not yet marked ready for an agent:
+	// the triage loop (ADR-0044).
+	SourceBacklog = "backlog"
 )
 
 // The Steps a loop's Pipeline is made of.
@@ -48,6 +51,14 @@ const (
 	// whose committed fix must pass every Gate before it is pushed. On a ticket
 	// loop the review stage runs it over the PR it just opened.
 	StepWatchCI = "watch_ci"
+	// StepAssess runs a read-only Triage session over one backlog ticket, checked
+	// by the verdict it must leave: ready, or not ready with the questions a human
+	// must answer (ADR-0044).
+	StepAssess = "assess"
+	// StepApply acts on the verdict: it marks a ready ticket ready (label, and on
+	// Linear Backlog → Todo) and comments the open questions on one that is not.
+	// A triage loop without it only records its verdicts.
+	StepApply = "apply"
 )
 
 // What a github_prs Source yields ("when").
@@ -61,6 +72,7 @@ const (
 const (
 	DefaultLoopName  = "tickets"
 	PRDoctorLoopName = "pr-doctor"
+	TriageLoopName   = "triage"
 )
 
 // The github_prs source scopes. ScopeAll, the default, works every open PR the
@@ -277,6 +289,8 @@ func (l Loop) ApplyPrompts(p *PromptBodies) {
 			p.Retro = s.Prompt
 		case StepFix:
 			p.Fix = s.Prompt
+		case StepAssess:
+			p.Triage = s.Prompt
 		}
 	}
 }
@@ -301,6 +315,11 @@ func BuiltInLoops() []Loop {
 			Name: PRDoctorLoopName, BuiltIn: true,
 			Source: LoopSource{Kind: SourceGitHubPRs, Scope: ScopeAll, When: []string{WhenConflicting, WhenCIFailing}},
 			Steps:  steps(StepCheckoutPR, StepFix, StepGates, StepPushExisting, StepWatchCI, StepRetro),
+		},
+		{
+			Name: TriageLoopName, BuiltIn: true,
+			Source: LoopSource{Kind: SourceBacklog},
+			Steps:  steps(StepAssess, StepApply),
 		},
 	}
 }
@@ -403,17 +422,22 @@ var stepSpecs = map[string]stepSpec{
 		SourceTracker:   {StepReview, "it watches the CI of the PR review opens"},
 		SourceGitHubPRs: {StepPushExisting, "it watches the CI of a pushed head"},
 	}},
-	StepRetro: {prompt: true, last: true},
+	// retro mines the transcripts a ticket or PR run left; a triage run files no
+	// findings, so retro does not run there.
+	StepRetro:  {on: map[string]prereq{SourceTracker: {}, SourceGitHubPRs: {}}, prompt: true, last: true},
+	StepAssess: {on: map[string]prereq{SourceBacklog: {}}, prompt: true},
+	StepApply:  {on: map[string]prereq{SourceBacklog: {StepAssess, "it acts on the verdict assess leaves"}}},
 }
 
 // stepOrder lists the steps in the order the loader names them in an error.
-var stepOrder = []string{StepImplement, StepReview, StepCheckoutPR, StepFix, StepGates, StepPushExisting, StepWatchCI, StepRetro}
+var stepOrder = []string{StepImplement, StepReview, StepCheckoutPR, StepFix, StepGates, StepPushExisting, StepWatchCI, StepAssess, StepApply, StepRetro}
 
 // requiredSteps are the steps without which a Source's loop would do nothing
 // worth a sandbox: a ticket loop that never lands, a PR loop that never pushes.
 var requiredSteps = map[string][]string{
 	SourceTracker:   {StepImplement, StepReview},
 	SourceGitHubPRs: {StepCheckoutPR, StepFix, StepGates, StepPushExisting},
+	SourceBacklog:   {StepAssess},
 }
 
 var loopNameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
@@ -464,19 +488,20 @@ func resolveLoops(loops []LoopConfig, dir string, at positions) ([]Loop, []strin
 		src := path + ".source"
 		switch lc.Source.Kind {
 		case "":
-			add(path, "source.kind is required: %q or %q", SourceTracker, SourceGitHubPRs)
-		case SourceTracker:
+			add(path, "source.kind is required: %q, %q or %q", SourceTracker, SourceGitHubPRs, SourceBacklog)
+		case SourceTracker, SourceBacklog:
+			kind := lc.Source.Kind
 			if lc.Source.Label != "" {
-				add(src+".label", "source.label is not a tracker parameter: the ticket queue is set under [tracker]")
+				add(src+".label", "source.label is not a %s parameter: the ticket labels are set under [tracker]", kind)
 			}
 			if lc.Source.Scope != "" {
-				add(src+".scope", "source.scope is not a tracker parameter")
+				add(src+".scope", "source.scope is not a %s parameter", kind)
 			}
 			if len(lc.Source.When) > 0 {
-				add(src+".when", "source.when is not a tracker parameter")
+				add(src+".when", "source.when is not a %s parameter", kind)
 			}
 			if lc.Source.MaxAttempts != 0 {
-				add(src+".max_attempts", "source.max_attempts is not a tracker parameter")
+				add(src+".max_attempts", "source.max_attempts is not a %s parameter", kind)
 			}
 		case SourceGitHubPRs:
 			if len(l.Source.When) == 0 {
@@ -505,7 +530,7 @@ func resolveLoops(loops []LoopConfig, dir string, at positions) ([]Loop, []strin
 				add(src+".scope", "unknown scope %q: use %q or %q", lc.Source.Scope, ScopeOptedIn, ScopeAll)
 			}
 		default:
-			add(src+".kind", "unknown source kind %q: use %q or %q", lc.Source.Kind, SourceTracker, SourceGitHubPRs)
+			add(src+".kind", "unknown source kind %q: use %q, %q or %q", lc.Source.Kind, SourceTracker, SourceGitHubPRs, SourceBacklog)
 		}
 
 		l.Steps = resolveSteps(lc, l.Source, path, dir, add)
@@ -551,7 +576,7 @@ func resolveSteps(lc LoopConfig, src LoopSource, path, dir string, add func(key,
 		add(path, "at least one step is required")
 		return nil
 	}
-	known := src.Kind == SourceTracker || src.Kind == SourceGitHubPRs
+	known := src.Kind == SourceTracker || src.Kind == SourceGitHubPRs || src.Kind == SourceBacklog
 	var steps []Step
 	before := map[string]bool{}
 	for j, sc := range lc.Steps {

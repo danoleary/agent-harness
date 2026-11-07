@@ -45,6 +45,7 @@ import (
 	"github.com/danoleary/agent-harness/internal/stages"
 	"github.com/danoleary/agent-harness/internal/ticket"
 	"github.com/danoleary/agent-harness/internal/trackers"
+	"github.com/danoleary/agent-harness/internal/triage"
 	"github.com/danoleary/agent-harness/internal/version"
 )
 
@@ -69,7 +70,8 @@ const usage = `usage: loop [<name>] [--instance <id>] [--dry-run] [--list] [--he
 Runs one loop unattended until stopped: a Source polled for work, and the Steps
 run over each item it yields (ADR-0019). With no name it runs the ticket loop
 ("tickets"): implementation, review and retrospective per ready ticket, then a PR.
-"pr-doctor" fixes the open PRs that conflict with main or have red CI. A project
+"pr-doctor" fixes the open PRs that conflict with main or have red CI. "triage"
+judges the tickets not yet labelled ready, and labels the ready ones. A project
 declares its own loops, or re-parameterises these two, as [[loops]] in
 .agent-harness/config.toml.
 
@@ -79,7 +81,7 @@ declares its own loops, or re-parameterises these two, as [[loops]] in
               slots and the plain STOP are shared with every other instance
   --list      print every loop this project can run, and exit
   --dry-run   print the named loop's resolved Source, Steps and limits, and for a
-              PR loop the PRs it would work and how; change nothing
+              PR or triage loop the items it would work; change nothing
 
 Configuration is read from the environment, filled in from the first of:
   $HARNESS_ENV_FILE
@@ -195,6 +197,8 @@ func main() {
 	switch l.Source.Kind {
 	case config.SourceGitHubPRs:
 		os.Exit(runPRLoop(cfg, l, f.dryRun))
+	case config.SourceBacklog:
+		os.Exit(runTriageLoop(cfg, l, f.dryRun))
 	default:
 		os.Exit(runTicketLoop(cfg, l, f.dryRun))
 	}
@@ -280,6 +284,46 @@ func runPRLoop(cfg config.Config, l config.Loop, dryRun bool) int {
 	return loop.Run(loop.Deps{
 		Source:   source,
 		Pipeline: prloop.Pipeline{Loop: l},
+		Host:     host,
+		Limits:   limitsFrom(cfg, l),
+		Clock:    loop.SystemClock{},
+		Log:      log,
+	})
+}
+
+// runTriageLoop is the composition root of a triage loop (ADR-0044): the backlog
+// Source over the tracker's untriaged tickets, and the Pipeline that judges one
+// per poll and acts on the verdict. --dry-run prints the tickets it would judge,
+// in order, and changes nothing.
+func runTriageLoop(cfg config.Config, l config.Loop, dryRun bool) int {
+	client, err := trackers.FromConfig(cfg)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		return 1
+	}
+	backlog, err := triage.AsBacklog(client, cfg.Tracker.Kind)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "loop %s: %v\n", l.Name, err)
+		return 2
+	}
+	store := triage.StoreFor(cfg.ProjectPath)
+	source := triage.NewSource(backlog, store)
+	if dryRun {
+		plan, err := source.Plan()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "loop %s --dry-run: %v\n", l.Name, err)
+			return 1
+		}
+		fmt.Print("\n" + renderTriagePlan(plan, l.Has(config.StepApply)))
+		return 0
+	}
+
+	log := openStream(cfg, l)
+	host := loophost.NewDaemon(cfg, l, source.CheckAccess)
+	installSignalHandler(host, log)
+	return loop.Run(loop.Deps{
+		Source:   source,
+		Pipeline: triage.Pipeline{Loop: l, Cfg: cfg, Backlog: backlog, Store: store},
 		Host:     host,
 		Limits:   limitsFrom(cfg, l),
 		Clock:    loop.SystemClock{},

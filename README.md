@@ -93,7 +93,9 @@ touch .agent-harness/STOP-b         # stop instance b alone; plain STOP stops al
 
 A second loop, `pr-doctor`, fixes open PRs that went red on CI or conflict with
 `main` (set its `source.scope = "opted_in"` to limit it to harness PRs and PRs
-you label `agent-maintained`).
+you label `agent-maintained`). A third, `triage`, reads the tickets nobody has
+labelled ready yet, labels the ones an agent can start (on Linear, moving them
+from Backlog to Todo), and comments its questions on the rest.
 `--dry-run` prints the loop and what it would do; `--list` names every loop. A
 project can change these loops or add its own as `[[loops]]` in `config.toml`. See
 [fix open PRs](docs/how-to/fix-open-prs.md) and
