@@ -74,6 +74,37 @@ func hasUpstreamTranscripts(logDir string) bool {
 	return false
 }
 
+// runLogs names the files a run left in its log dir — the session transcripts,
+// run.jsonl and the step logs — for the retrospective to mine (#185). The run, not
+// a fixed layout, decides what is there: a ticket leaves implementation/review
+// streams, a PR loop rebasefix/cifix ones. The retrospective's own transcripts are
+// left out, as hasUpstreamTranscripts leaves them out, and so are dirs (the
+// findings dropboxes). An unreadable dir lists nothing.
+func runLogs(logDir string) []string {
+	entries, err := os.ReadDir(logDir)
+	if err != nil {
+		return nil
+	}
+	var names []string
+	for _, e := range entries {
+		if e.IsDir() || strings.HasPrefix(e.Name(), retrospectiveSession+"-") {
+			continue
+		}
+		names = append(names, e.Name())
+	}
+	return names
+}
+
+// checkoutRelative is path as a session in the checkout names it: relative to the
+// checkout when it lies under it, as the prompts' other paths are, else as given.
+func checkoutRelative(checkout, path string) string {
+	rel, err := filepath.Rel(checkout, path)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return path
+	}
+	return rel
+}
+
 // Args is the parsed CLI surface shared by all three tools and the pipeline:
 // a ticket identifier plus the universal flags. Force overrides the
 // already-merged-on-main dispatch guard (BEH-528) and is only consulted by the

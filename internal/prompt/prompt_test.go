@@ -60,7 +60,7 @@ func bReview(t *testing.T, tk ticket.Ticket, slug, worktree string) string {
 }
 
 func bRetro(t *testing.T, tk ticket.Ticket, slug string, filed []FiledFinding) string {
-	return For(Retrospective, Context{Ticket: tk, Slug: slug, Filed: filed, BranchPrefix: testPrefix, Body: exampleBody(t, "retro")})
+	return For(Retrospective, Context{Ticket: tk, Slug: slug, Filed: filed, BranchPrefix: testPrefix, Body: exampleBody(t, "retro"), LogDir: ".agent-harness/logs/" + tk.Identifier})
 }
 
 func TestImplementInvokesSkillOnTicketAndSlug(t *testing.T) {
@@ -503,6 +503,45 @@ func TestRetrospectivePointsAtTranscriptsAndDiff(t *testing.T) {
 	}
 	if !regexp.MustCompile(`(?i)diff`).MatchString(p) {
 		t.Error("prompt does not mention the diff")
+	}
+}
+
+// #185: a PR loop's run keeps its logs under the loop's own dir, and its sessions
+// are rebasefix/cifix, not implementation/review. The retrospective is pointed at
+// the dir the run really wrote and the files it really left there, so it never
+// has to hunt for them, or write [] over a path that does not exist.
+func TestRetrospectiveOverAPRLoopRunNamesTheLoopLogDir(t *testing.T) {
+	pr := ticket.Ticket{Identifier: "PR-178", Title: "Fix the thing"}
+	p := For(Retrospective, Context{
+		Ticket: pr, Slug: "pr-178", BranchPrefix: testPrefix, Body: exampleBody(t, "retro"),
+		LogDir:      ".agent-harness/logs/loops/pr-fix/PR-178",
+		Transcripts: []string{"gate-check-20261101-200412.log", "rebasefix-20261101-200412.jsonl", "run.jsonl"},
+	})
+
+	for _, want := range []string{
+		"`.agent-harness/logs/loops/pr-fix/PR-178/`",
+		"rebasefix-20261101-200412.jsonl",
+		"gate-check-20261101-200412.log",
+		"run.jsonl",
+	} {
+		if !strings.Contains(p, want) {
+			t.Errorf("prompt missing %q:\n%s", want, p)
+		}
+	}
+	for _, stale := range []string{"logs/PR-178/", "implementation-*", "review-*"} {
+		if strings.Contains(p, stale) {
+			t.Errorf("prompt still names the ticket-pipeline layout %q", stale)
+		}
+	}
+}
+
+// With nothing listed (a dry-run plan, before any session wrote one) the envelope
+// still names the dir and says which streams to read there.
+func TestRetrospectiveWithNoListedTranscriptsStillNamesTheLogDir(t *testing.T) {
+	p := For(Retrospective, Context{Ticket: sample, Slug: "beh-362", BranchPrefix: testPrefix, LogDir: ".agent-harness/logs/BEH-362"})
+
+	if !strings.Contains(p, "`.agent-harness/logs/BEH-362/`") || !strings.Contains(p, "retrospective-*") {
+		t.Errorf("prompt does not name the log dir and its own excluded stream:\n%s", p)
 	}
 }
 

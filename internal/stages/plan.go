@@ -213,6 +213,7 @@ func retrospectiveRun(cfg config.Config, s Subject, filed []prompt.FiledFinding)
 		Model: cfg.RetrospectiveModel,
 		Prompt: prompt.For(prompt.Retrospective, prompt.Context{
 			Ticket: s.Ticket, Slug: s.Slug, BranchPrefix: cfg.BranchPrefix, Tracker: cfg.Tracker.Kind, Body: cfg.Prompts.Retro, Filed: filed, Base: s.Base,
+			LogDir: checkoutRelative(cfg.ProjectPath, s.LogDir), Transcripts: runLogs(s.LogDir),
 		}),
 		FindingsDir: runlog.FindingsDir(s.LogDir, retrospectiveSession),
 		Cap:         cfg.RetrospectiveTimeout,

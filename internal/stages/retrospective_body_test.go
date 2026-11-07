@@ -9,8 +9,10 @@ import (
 	"github.com/danoleary/agent-harness/internal/ci"
 	"github.com/danoleary/agent-harness/internal/filing"
 	"github.com/danoleary/agent-harness/internal/hostio"
+	"github.com/danoleary/agent-harness/internal/runlog"
 	"github.com/danoleary/agent-harness/internal/sandbox"
 	"github.com/danoleary/agent-harness/internal/session"
+	"github.com/danoleary/agent-harness/internal/ticket"
 )
 
 // The retrospective's body was 11.5% covered, and the one test that reached it
@@ -194,5 +196,62 @@ func TestRetrospectiveAfterCIIsLeftToThePRLoopNeedsNoCIResult(t *testing.T) {
 	}
 	if h.Worktree().Exists() {
 		t.Error("the worktree is reaped once the PR is open; the PR loop does not need it")
+	}
+}
+
+// #185, replayed: a PR loop's conflict-resolution run left its logs under the
+// loop's own dir — a rebasefix transcript, the prep and gate step logs, run.jsonl
+// and a prior retrospective's transcript. The prompt must name that dir, relative
+// to the checkout the session works in, and every file the run left there but the
+// retrospective's own.
+func TestRetrospectiveOverAPRLoopRunListsTheLoopsOwnTranscripts(t *testing.T) {
+	h := shipped(t, "PR-178")
+	cfg := stageCfg()
+	cfg.ProjectPath = t.TempDir()
+	logDir := filepath.Join(cfg.ProjectPath, ".agent-harness", "logs", "loops", "pr-fix", "PR-178")
+	left := []string{
+		"gate-build-20261101-200412.log",
+		"gate-check-20261101-200412.log",
+		"prep-20261101-200412.log",
+		"rebasefix-20261101-200412.jsonl",
+		"run.jsonl",
+	}
+	if err := os.MkdirAll(filepath.Join(logDir, "findings"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range append(left, "retrospective-20261101-190000.jsonl") {
+		if err := os.WriteFile(filepath.Join(logDir, name), []byte("{}\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var prompt string
+	h.AgentFn = func(i int, run hostio.AgentRun) session.Outcome {
+		prompt = run.Prompt
+		return writesDropbox("[]")(i, run)
+	}
+	cfg.Prompts.Retro = "/retrospective for {{.Identifier}}: read every transcript under `{{.LogDir}}/`."
+	log, err := runlog.New(filepath.Dir(logDir), "PR-178")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	res := RetrospectiveOver(h, cfg, log, Subject{Ticket: ticket.Ticket{Identifier: "PR-178"}, Slug: "pr-178", LogDir: logDir}, false)
+
+	if !res.OK {
+		t.Fatalf("res = %+v", res)
+	}
+	if want := "under `.agent-harness/logs/loops/pr-fix/PR-178/`"; !strings.Contains(prompt, want) {
+		t.Errorf("prompt does not name the loop's log dir %q:\n%s", want, prompt)
+	}
+	for _, name := range left {
+		if !strings.Contains(prompt, "`"+name+"`") {
+			t.Errorf("prompt does not list %s", name)
+		}
+	}
+	if strings.Contains(prompt, "retrospective-20261101-190000.jsonl") {
+		t.Error("the retrospective's own stream is not one to mine")
+	}
+	if strings.Contains(prompt, "`findings`") {
+		t.Error("the findings dir is not a transcript")
 	}
 }
