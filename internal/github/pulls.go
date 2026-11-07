@@ -12,7 +12,9 @@ import (
 
 // Pulls is the host-side read/write surface the PR loop needs from GitHub
 // (ADR-0019): the open PRs, a PR's mergeability, its head commit's checks, and the
-// comments and labels the loop keeps its lease and its attempt record in. It is
+// comments and labels the loop keeps its lease and its attempt record in — and,
+// for the security-alerts loop (ADR-0040), the open Dependabot alerts and every PR
+// from a branch (alerts.go). It is
 // separate from [Client] because it is not a Tracker: it works whatever repository
 // the Consumer's checkout pushes to, whichever tracker holds its tickets.
 type Pulls struct {
