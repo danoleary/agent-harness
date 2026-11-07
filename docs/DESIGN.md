@@ -96,6 +96,13 @@ runnable by hand against a ticket id before the next is added:
    section that names them and tells the session not to answer them silently:
    leave a question open if the work does not need it, otherwise decide, record
    and flag the decision for review in the handoff.
+   With a `[sentry]` table (#211,
+   [ADR-0041](https://github.com/danoleary/agent-harness/blob/main/docs/adr/0041-the-host-fetches-the-sentry-issues-a-ticket-cites-into-the-prompt.md)),
+   the host also reads the Sentry issues the body cites (`HERD-3P`, or an issue
+   URL) with `SENTRY_AUTH_TOKEN`. It scrubs them of user data and credentials and the
+   implementation and review envelopes carry them after the ticket context, as a
+   snapshot. An issue it can't read is logged and named in the envelope as not
+   fetched, and dispatch goes ahead.
 2. **`review BEH-NNN`** — run `/review-worktree` over the existing worktree, then
    host-side re-run the gates and, if green, push + open the PR.
 3. **`retrospective BEH-NNN`** — run `/retrospective` over the ticket's

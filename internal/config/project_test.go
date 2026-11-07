@@ -818,3 +818,72 @@ func TestLoadProjectMissingConfigFile(t *testing.T) {
 	_, err := LoadProject(dir)
 	assertMentions(t, err, "config.toml does not exist", "Fix: run `agent-harness init` in "+dir, "example/.agent-harness/config.toml")
 }
+
+// The `[sentry]` table turns on the host-side Sentry fetch (#211). Absent, the
+// feature is off and Sentry is nil; present, base_url defaults to the SaaS site
+// and the token comes from the host environment, never the committed file.
+func TestLoadSurfacesSentryConfig(t *testing.T) {
+	checkout := testCheckout(t, testConfigTOML+`
+[sentry]
+org = "acme"
+projects = ["HERD"]
+`)
+	cfg, err := Load(envAt(checkout, map[string]string{"SENTRY_AUTH_TOKEN": "sntrys_tok"}))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want := SentryConfig{Org: "acme", Projects: []string{"HERD"}, BaseURL: "https://sentry.io"}
+	if cfg.Sentry == nil || cfg.Sentry.Org != want.Org || strings.Join(cfg.Sentry.Projects, ",") != "HERD" || cfg.Sentry.BaseURL != want.BaseURL {
+		t.Errorf("Sentry = %+v, want %+v", cfg.Sentry, want)
+	}
+	if cfg.SentryAuthToken != "sntrys_tok" {
+		t.Errorf("SentryAuthToken = %q, want the host env value", cfg.SentryAuthToken)
+	}
+}
+
+func TestLoadSentryIsOffWithoutTheTable(t *testing.T) {
+	cfg, err := Load(fullEnv(t, map[string]string{"SENTRY_AUTH_TOKEN": "sntrys_tok"}))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Sentry != nil {
+		t.Errorf("Sentry = %+v, want nil without a [sentry] table", cfg.Sentry)
+	}
+}
+
+func TestLoadProjectSentryKeepsAnExplicitBaseURL(t *testing.T) {
+	dir := t.TempDir()
+	writeProjectConfig(t, dir, testConfigTOML+`
+[sentry]
+org = "acme"
+projects = ["HERD", "API"]
+base_url = "https://sentry.acme.dev/"
+`)
+	pc, err := LoadProject(dir)
+	if err != nil {
+		t.Fatalf("LoadProject: %v", err)
+	}
+	if pc.Sentry.BaseURL != "https://sentry.acme.dev/" || len(pc.Sentry.Projects) != 2 {
+		t.Errorf("Sentry = %+v", pc.Sentry)
+	}
+}
+
+func TestLoadProjectSentryValidation(t *testing.T) {
+	cases := map[string]string{
+		"no org":             "[sentry]\nprojects = [\"HERD\"]\n",
+		"no projects":        "[sentry]\norg = \"acme\"\n",
+		"a blank project":    "[sentry]\norg = \"acme\"\nprojects = [\"\"]\n",
+		"a lowercase prefix": "[sentry]\norg = \"acme\"\nprojects = [\"herd\"]\n",
+		"a relative url":     "[sentry]\norg = \"acme\"\nprojects = [\"HERD\"]\nbase_url = \"sentry.io\"\n",
+	}
+	for name, table := range cases {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeProjectConfig(t, dir, testConfigTOML+table)
+			_, err := LoadProject(dir)
+			if err == nil || !strings.Contains(err.Error(), "sentry.") {
+				t.Errorf("want a sentry.* error for %s, got %v", name, err)
+			}
+		})
+	}
+}

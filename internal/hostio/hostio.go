@@ -34,6 +34,7 @@ import (
 	"github.com/danoleary/agent-harness/internal/ci"
 	"github.com/danoleary/agent-harness/internal/filing"
 	gitpkg "github.com/danoleary/agent-harness/internal/git"
+	"github.com/danoleary/agent-harness/internal/sentry"
 	"github.com/danoleary/agent-harness/internal/session"
 	"github.com/danoleary/agent-harness/internal/ship"
 	"github.com/danoleary/agent-harness/internal/tracker"
@@ -156,10 +157,10 @@ type Repo interface {
 	ResolvedAdvisory(key, description string) string
 }
 
-// Remote is the network-facing half: the origin fetch, the two push shapes, and
-// everything that speaks to GitHub through `gh`. The pushes are the worktree's
-// own (ADR-0015) but go through here, so a test can fail one without a remote that
-// really refuses it.
+// Remote is the network-facing half: the origin fetch, the two push shapes,
+// everything that speaks to GitHub through `gh`, and the read of a Sentry issue a
+// ticket cites. The pushes are the worktree's own (ADR-0015) but go through here,
+// so a test can fail one without a remote that really refuses it.
 type Remote interface {
 	FetchMain() error
 	Push() error
@@ -169,6 +170,9 @@ type Remote interface {
 	OpenPRExists() bool
 	ChecksReadable() (bool, string)
 	WatchCI(CIWatch) ci.Outcome
+	// SentryIssue reads one cited Sentry issue and its recommended event with the
+	// host's SENTRY_AUTH_TOKEN, which never enters the sandbox (ADR-0041).
+	SentryIssue(sentry.Ref) (sentry.Issue, error)
 }
 
 // Findings is the tracker port plus the three findings-dropbox operations that

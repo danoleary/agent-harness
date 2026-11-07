@@ -23,6 +23,9 @@ type world struct {
 	srv     *httptest.Server
 	wd      string
 	offline bool
+	// sentry, when set, is a `[sentry]` table appended to the project config once
+	// the server is up; a %s in it is the server's URL, for base_url.
+	sentry string
 }
 
 type cmdResult struct {
@@ -87,6 +90,9 @@ func (w *world) run() []Result {
 	// The Jira site is the operator's own, so its URL comes from the environment
 	// rather than a fixed API base. A non-jira world never reads it.
 	w.env["JIRA_BASE_URL"] = w.srv.URL
+	if w.sentry != "" {
+		writeProject(w.t, w.env["PROJECT_PATH"], githubConfig+strings.ReplaceAll(w.sentry, "%s", w.srv.URL))
+	}
 	return Run(Probes{
 		Getenv:     func(k string) string { return w.env[k] },
 		WorkingDir: w.wd,
@@ -610,5 +616,57 @@ func TestRenderPrintsAChecklistWithFixes(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Errorf("render missing %q:\n%s", want, got)
 		}
+	}
+}
+
+// #211: with a `[sentry]` table, doctor checks the token is set and that Sentry
+// accepts it with one cheap read of the org. Without one there is no Sentry line.
+func TestSentryChecksTheTokenWhenConfigured(t *testing.T) {
+	const table = "\n[sentry]\norg = \"acme\"\nprojects = [\"HERD\"]\nbase_url = \"%s\"\n"
+	good := func(w *world) {
+		w.routes["GET /api/0/organizations/acme/{$}"] = func(rw http.ResponseWriter, r *http.Request) {
+			if r.Header.Get("Authorization") != "Bearer sntrys_good" {
+				rw.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			_, _ = rw.Write([]byte(`{"slug":"acme"}`))
+		}
+	}
+
+	off := newWorld(t).run()
+	for _, r := range off {
+		if r.Name == "Sentry" {
+			t.Errorf("a Sentry line without [sentry]: %+v", r)
+		}
+	}
+
+	for _, tc := range []struct {
+		name    string
+		token   string
+		offline bool
+		want    Status
+		detail  string
+	}{
+		{"accepted", "sntrys_good", false, OK, "acme"},
+		{"unset", "", false, Fail, "SENTRY_AUTH_TOKEN is not set"},
+		{"rejected", "sntrys_bad", false, Fail, "HTTP 401"},
+		{"offline", "sntrys_good", true, Skip, "--offline"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := newWorld(t)
+			good(w)
+			w.sentry = table
+			w.offline = tc.offline
+			if tc.token != "" {
+				w.env["SENTRY_AUTH_TOKEN"] = tc.token
+			}
+			r := find(t, w.run(), "Sentry")
+			if r.Status != tc.want || !strings.Contains(r.Detail, tc.detail) {
+				t.Errorf("Sentry = %s %q, want %s naming %q", r.Status, r.Detail, tc.want, tc.detail)
+			}
+			if tc.want == Fail && !strings.Contains(r.Fix, "event:read") {
+				t.Errorf("fix %q does not name the scopes", r.Fix)
+			}
+		})
 	}
 }
