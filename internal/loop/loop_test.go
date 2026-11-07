@@ -781,17 +781,16 @@ func TestPreflightAbortReclaimsBacksOffAndLeavesBreakerNeutral(t *testing.T) {
 	}
 }
 
-// A red-base hold (#125) backs off one poll and refetches origin/main, so the
-// next attempt sees a repair the moment it merges. The stage already released the
-// claim, so the loop must not release it again, and the breaker stays blind.
-func TestBaseRedHoldRefetchesMainBacksOffAndLeavesBreakerNeutral(t *testing.T) {
+// A red-base hold (#125) backs off one poll. The stage already released the
+// claim, so the loop must not release it again, and the breaker stays blind. The
+// polls that follow it are basehold_test.go's (#190).
+func TestBaseRedHoldBacksOffAndLeavesBreakerNeutral(t *testing.T) {
 	r := &recorder{}
-	var ran, fetches int
+	var ran int
 	var slept []time.Duration
 	code := Run(Deps{
 		Host: &fakeHost{
 			clearStop:     func() error { return nil },
-			fetchMain:     func() error { fetches++; return nil },
 			stopRequested: stopAfter(6),
 		},
 		Source: &fakeSource{
@@ -820,9 +819,6 @@ func TestBaseRedHoldRefetchesMainBacksOffAndLeavesBreakerNeutral(t *testing.T) {
 	}
 	if r.saw("circuit breaker") {
 		t.Errorf("a red-base hold must NOT trip the breaker (threshold 1); events = %v", r.events)
-	}
-	if fetches == 0 {
-		t.Error("a red-base hold must refetch origin/main before the next attempt")
 	}
 	if len(slept) != 5 {
 		t.Errorf("backoff slept %d ticks, want 5 (PollInterval/TickInterval)", len(slept))

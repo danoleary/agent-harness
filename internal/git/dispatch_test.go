@@ -167,3 +167,26 @@ func TestTicketAlreadyOnMainFailsOpenWhenGitErrors(t *testing.T) {
 		t.Fatalf("a git failure must fail open (false), never block dispatch")
 	}
 }
+
+// MainSHA is what the loop compares a red-base hold against (#190): the commit
+// origin/main points at as of the last FetchMain, so it moves when a fetch brings
+// in a merge and not before.
+func TestMainSHAFollowsTheLastFetch(t *testing.T) {
+	author, host := newSharedRemote(t)
+	c := Open(host, testPrefix)
+	before, err := c.MainSHA()
+	if err != nil || len(before) != 40 {
+		t.Fatalf("MainSHA() = %q, %v; want origin/main's commit", before, err)
+	}
+
+	commitAndPush(t, author, "fix: repair main")
+	if got, _ := c.MainSHA(); got != before {
+		t.Errorf("MainSHA() = %q before a fetch, want it unmoved at %q", got, before)
+	}
+	if err := c.FetchMain(); err != nil {
+		t.Fatalf("FetchMain: %v", err)
+	}
+	if got, _ := c.MainSHA(); got == before {
+		t.Errorf("MainSHA() = %q after fetching a merge, want it moved", got)
+	}
+}

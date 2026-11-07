@@ -336,12 +336,12 @@ func Implementation(h hostio.Host, cfg config.Config, log *runlog.Logger, args A
 	// install, not the base: it dispatches unchecked, as before.
 	if !provisioned {
 		log.Event("tdd · post_create did not succeed, so the base's gates would judge the install, not the base — not gating the base (#125)")
-	} else if baseIsRed(h, cfg, log, t, args.Force, findingsDir) {
+	} else if held, red := baseIsRed(h, cfg, log, t, args.Force, findingsDir); red {
 		if err := wt.Discard(); err != nil {
 			log.Event("⚠ could not discard the untouched worktree on the red base (" + err.Error() + ") — the next attempt may reuse it at this base")
 		}
 		releaseClaim(claim, "the base fails its gates, so no session launched (#125)", log)
-		return Result{OK: false, Disposition: BaseRed}
+		return held
 	}
 
 	// The tdd session runs at most twice. A terminal usage-policy refusal is a

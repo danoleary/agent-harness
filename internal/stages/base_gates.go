@@ -47,6 +47,9 @@ type baseVerdict struct {
 // Green reports whether every Gate passed on the base.
 func (v baseVerdict) Green() bool { return v.Gate == "" }
 
+// recheckAt is when a red verdict stops being trusted and its base is gated again.
+func (v baseVerdict) recheckAt() time.Time { return v.At.Add(baseRedRecheck) }
+
 // baseVerdicts is the per-SHA record of base verdicts every loop instance of one
 // Consumer shares (config.BaseVerdictsDir), so a base is gated once, not once per
 // ticket cut from it. Two instances that reach an ungated base together both gate
@@ -77,31 +80,32 @@ func (v baseVerdicts) read(sha string) (baseVerdict, bool) {
 	return got, true
 }
 
-// write records verdict for sha, stamped now. The rename makes it atomic, so a
-// concurrent reader sees the old verdict or the new one, never half of one.
-func (v baseVerdicts) write(sha string, verdict baseVerdict) error {
+// write records verdict for sha, stamped now, and returns it as stamped. The
+// rename makes it atomic, so a concurrent reader sees the old verdict or the new
+// one, never half of one.
+func (v baseVerdicts) write(sha string, verdict baseVerdict) (baseVerdict, error) {
 	verdict.At = v.now()
 	raw, err := json.Marshal(verdict)
 	if err != nil {
-		return err
+		return verdict, err
 	}
 	if err := os.MkdirAll(v.dir, 0o755); err != nil {
-		return err
+		return verdict, err
 	}
 	tmp, err := os.CreateTemp(v.dir, sha+".*.tmp")
 	if err != nil {
-		return err
+		return verdict, err
 	}
 	if _, err := tmp.Write(raw); err != nil {
 		tmp.Close()
 		os.Remove(tmp.Name())
-		return err
+		return verdict, err
 	}
 	if err := tmp.Close(); err != nil {
 		os.Remove(tmp.Name())
-		return err
+		return verdict, err
 	}
-	return os.Rename(tmp.Name(), filepath.Join(v.dir, sha))
+	return verdict, os.Rename(tmp.Name(), filepath.Join(v.dir, sha))
 }
 
 // baseIsRed runs the Gates over the worktree the stage just cut and provisioned,
@@ -126,21 +130,28 @@ func (v baseVerdicts) write(sha string, verdict baseVerdict) error {
 //
 // On the first red verdict for a base it files one finding, through findingsDir,
 // so a human learns main is red rather than finding an idle loop.
-func baseIsRed(h hostio.Host, cfg config.Config, log *runlog.Logger, t ticket.Ticket, force bool, findingsDir string) bool {
+//
+// A red base returns the BaseRed Result the stage ends on, naming the base and
+// when its verdict expires so the loop can idle on it (#190); red is false
+// otherwise.
+func baseIsRed(h hostio.Host, cfg config.Config, log *runlog.Logger, t ticket.Ticket, force bool, findingsDir string) (held Result, red bool) {
 	wt := h.Worktree()
 	switch {
 	case force, len(cfg.Gates) == 0:
-		return false
+		return Result{}, false
 	case findings.ExtractKey(t.Description) == baseRedFindingKey:
 		log.Event("tdd · " + t.Identifier + " repairs a red base — not gating the base first (#125)")
-		return false
+		return Result{}, false
 	case wt.CommitsAhead() > 0 || !wt.Clean():
-		return false
+		return Result{}, false
 	}
 	sha, err := wt.HeadSHA()
 	if err != nil {
 		log.Event("⚠ could not read the base SHA (" + err.Error() + ") — dispatching without gating the base")
-		return false
+		return Result{}, false
+	}
+	hold := func(v baseVerdict) (Result, bool) {
+		return Result{OK: false, Disposition: BaseRed, HeldBase: sha, HeldUntil: v.recheckAt()}, true
 	}
 	short := sha
 	if len(short) > 12 {
@@ -150,17 +161,17 @@ func baseIsRed(h hostio.Host, cfg config.Config, log *runlog.Logger, t ticket.Ti
 	if v, ok := verdicts.read(sha); ok {
 		if v.Green() {
 			log.Event("tdd · base " + short + " passed its gates already — not gating it again (#125)")
-			return false
+			return Result{}, false
 		}
 		log.Event(fmt.Sprintf("tdd ⏸ base %s failed gate %q at %s — holding %s until main moves; no session launched (#125)", short, v.Gate, v.At.Format(time.RFC3339), t.Identifier))
-		return true
+		return hold(v)
 	}
 
 	log.Event("tdd · gating the untouched base " + short + " before the session, so a red main is not repaired in every branch cut from it (#125)")
 	res := fix.Env{Host: h, Cfg: cfg, Log: log, Who: "tdd"}.Gates(baseGateStep)
 	if res.Outcome.Retryable() || res.Outcome.CapKilled {
 		log.Event(fmt.Sprintf("⚠ base gate %q failed environmentally (exit %d: an OOM-kill, a failed launch or its cap) — that says nothing about the base; dispatching", res.FailedGate, res.Outcome.ExitCode))
-		return false
+		return Result{}, false
 	}
 	if !res.Green() {
 		log.Event(fmt.Sprintf("tdd ↻ base gate %q is red (exit %d) — re-running the gates once before the base counts as red (#189)", res.FailedGate, res.Outcome.ExitCode))
@@ -168,19 +179,19 @@ func baseIsRed(h hostio.Host, cfg config.Config, log *runlog.Logger, t ticket.Ti
 		res = fix.Env{Host: h, Cfg: cfg, Log: log, Who: "tdd"}.Gates(baseConfirmStep)
 		if res.Outcome.Retryable() || res.Outcome.CapKilled {
 			log.Event(fmt.Sprintf("⚠ base gate %q failed environmentally on its re-run (exit %d) — the red is unconfirmed; dispatching", res.FailedGate, res.Outcome.ExitCode))
-			return false
+			return Result{}, false
 		}
 		if res.Green() {
 			log.Event(fmt.Sprintf("tdd · base gate %q flaked: red (exit %d), then green on its re-run — recording the base green (#189)", first.FailedGate, first.Outcome.ExitCode))
 		}
 	}
-	verdict := baseVerdict{Gate: res.FailedGate}
-	if err := verdicts.write(sha, verdict); err != nil {
+	verdict, err := verdicts.write(sha, baseVerdict{Gate: res.FailedGate})
+	if err != nil {
 		log.Event("⚠ could not record the base verdict (" + err.Error() + ") — the next ticket on this base gates it again")
 	}
 	if verdict.Green() {
 		log.Event("tdd ✓ base " + short + " passes its gates")
-		return false
+		return Result{}, false
 	}
 	log.Event(fmt.Sprintf("tdd ⏸ base %s fails gate %q (exit %d) before any change — holding %s until main moves; no session launched (#125)", short, res.FailedGate, res.Outcome.ExitCode, t.Identifier))
 	// What the gate printed, and where its step log is, so the reader can tell
@@ -189,7 +200,7 @@ func baseIsRed(h hostio.Host, cfg config.Config, log *runlog.Logger, t ticket.Ti
 		log.Event("tdd · base " + s)
 	}
 	fileBaseRed(h, log, t, sha, res, findingsDir)
-	return true
+	return hold(verdict)
 }
 
 // fileBaseRed files the finding a red base raises. It needs a human: the loop

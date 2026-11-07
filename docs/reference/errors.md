@@ -85,16 +85,23 @@ over the untouched base, keyed by its SHA. A red run is re-run once
 (`basegate-confirm-<name>`), and a pass there records the base green and
 dispatches, logged as `base gate "…" flaked`. If they fail twice, no session
 launches: the ticket goes back to Todo, its empty worktree and branch are
-removed, and the run ends **BaseRed** (ADR-0036). The loop refetches `main` and
-backs off, and every ticket cut from the same base is held without gating it
-again. The circuit breaker doesn't count it. The harness files one finding,
-`base-gates-red`, for a human.
+removed, and the run ends **BaseRed** (ADR-0036). Every ticket cut from the same
+base is held without gating it again. The circuit breaker doesn't count it. The
+harness files one finding, `base-gates-red`, for a human.
+
+`loop ⏸ still held on <sha>, re-check at HH:MMZ` then follows once a poll: the
+loop refetches `main` and, while it is still on the held base and the red verdict
+has not expired, selects nothing, so no claim, worktree or `post_create` is spent
+(ADR-0039). It selects again on the first poll after `main` moves, or at the
+re-check time.
 
 Fix: repair `main`. Or dispatch the finding's issue by hand
 (`agent-harness pipeline <KEY>`), since an issue carrying that finding key is
 exempt from the hold. `--force` also skips the check. A red verdict is trusted
 for 30 minutes, so a gate that flaked on both runs is gated again after that. The verdicts live under
-`.agent-harness/locks/base-gates/`; delete one to re-gate its base now.
+`.agent-harness/locks/base-gates/`; delete one to re-gate its base now. A
+running loop keeps idling on the hold it recorded until the re-check time, so
+restart it too.
 
 ## Worktree setup and gates
 

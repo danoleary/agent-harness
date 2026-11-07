@@ -843,6 +843,17 @@ func (c Checkout) FetchMain() error {
 	})
 }
 
+// MainSHA returns the commit origin/main points at in the primary checkout, as of
+// the last FetchMain. The loop compares it with the base a red-base hold was on
+// (#190); it reads the local ref only, so it makes no network call.
+func (c Checkout) MainSHA() (string, error) {
+	out, err := c.output("git", "-C", c.path, "rev-parse", "--verify", "refs/remotes/"+BaseRef)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
 // TicketAlreadyOnMain reports whether the ticket Key already appears in recent
 // origin/main history — i.e. its work merged, so dispatching a fresh tdd session
 // would burn a whole worktree + install only to discover an empty diff and raise

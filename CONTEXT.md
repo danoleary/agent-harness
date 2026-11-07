@@ -140,7 +140,9 @@ the auto-fix budget) and an OK implementation is still NoPR (it never pushes).
 **Interrupted** means a stop signal killed a session from outside (exit 128+N): the
 run was cut short, not broken, so it is never called a failure (ADR-0030).
 **BaseRed** means the base the worktree was cut from already fails a **Gate**, so no
-session launched and the ticket is held until main moves (ADR-0036).
+session launched and the ticket is held until main moves (ADR-0036). The loop then
+selects nothing while origin/main stays on that base and its red verdict is fresh
+(ADR-0039).
 _Avoid_: outcome, signal, status.
 
 **Landing**:

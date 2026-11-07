@@ -21,6 +21,7 @@ type fakeHost struct {
 	checkAccess    func() error
 	stopRequested  func() bool
 	fetchMain      func() error
+	mainSHA        func() (string, error)
 	freeDisk       func() (uint64, error)
 	pruneWorktrees func() (int, error)
 	cachePrune     func() error
@@ -55,6 +56,13 @@ func (h *fakeHost) FetchMain() error {
 		return nil
 	}
 	return h.fetchMain()
+}
+
+func (h *fakeHost) MainSHA() (string, error) {
+	if h.mainSHA == nil {
+		return "", nil
+	}
+	return h.mainSHA()
 }
 
 func (h *fakeHost) FreeDisk() (uint64, error) {

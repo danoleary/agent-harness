@@ -63,6 +63,7 @@ func TestImplementationHoldsEveryTicketOnARedBase(t *testing.T) {
 	repo := gittest.New(t)
 	cfg := sharedCfg(t)
 
+	before := time.Now()
 	first := hostio.NewFake(repo.Checkout(), ticket.Slug("#115"))
 	redOnBase(first)
 	firstRes := Implementation(first, cfg, stageLog(t, "#115"), Args{Identifier: "#115", Lease: lease.Held(first.Trk, "#115")})
@@ -88,6 +89,19 @@ func TestImplementationHoldsEveryTicketOnARedBase(t *testing.T) {
 		if run.h.Worktree().Exists() || run.h.Worktree().BranchExists() {
 			t.Errorf("%s: the empty worktree and branch must go, so the next attempt is cut from the new base", run.key)
 		}
+	}
+	// The loop idles on the held base until main moves or the verdict expires
+	// (#190), so both holds name the base and the first verdict's expiry: the
+	// second read it, it did not restart the clock.
+	base := repo.OnOrigin("main")
+	if firstRes.HeldBase != base || secondRes.HeldBase != base {
+		t.Errorf("held bases = %q / %q, want origin/main %q", firstRes.HeldBase, secondRes.HeldBase, base)
+	}
+	if until := firstRes.HeldUntil; until.Before(before.Add(baseRedRecheck)) || until.After(time.Now().Add(baseRedRecheck)) {
+		t.Errorf("held until %v, want baseRedRecheck past the verdict", until)
+	}
+	if !secondRes.HeldUntil.Equal(firstRes.HeldUntil) {
+		t.Errorf("second hold until %v, want the recorded verdict's expiry %v", secondRes.HeldUntil, firstRes.HeldUntil)
 	}
 	if got := gateRuns(first, baseGateLabel); got != 1 {
 		t.Errorf("first run gated the base %d times, want once", got)

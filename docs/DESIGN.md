@@ -248,6 +248,15 @@ loop:
     narrate "reclaimed …, freed X" only if it acted
     # non-fatal: a failed prune (gh down / ENOSPC / daemon down) is logged and the loop continues — NOT a ticket outcome, never touches the breaker
 
+  --- red-base hold (ADR-0039) ---
+  if the last ticket was held on a red base:
+    fetch origin/main
+    if origin/main is still the held base AND its red verdict has not expired:
+      log "still held on <sha>, re-check at HH:MM"   // one line, not a select→claim→provision→release cycle
+      sleep pollInterval in short ticks, checking stop each tick
+      continue                              // no tracker call, no worktree, no post_create
+    forget the hold                         // main moved, the verdict expired, or main is unreadable: select again
+
   ticket = selectNextTicket()               // Linear GraphQL, harness-owned
   if no ticket:                             // daemon: empty queue is IDLE, not done
     log "queue empty — idle, will re-poll"
@@ -480,7 +489,7 @@ loop:
   // The verdict is recorded per base SHA, so every other ticket on that base is held at no gate cost.
   if Disposition == BaseRed:
     // ticket was already released -> Todo and its untouched worktree + branch discarded by the impl stage
-    fetch origin/main                 // the next attempt sees a repair the moment it merges
+    remember the held base SHA + when its red verdict expires   // the next polls idle on it (ADR-0039)
     short backoff sleep (interruptible by STOP; = pollInterval)
     do NOT touch the breaker counter  // main's state, shared by every ticket on it
     continue

@@ -44,3 +44,4 @@ same number then conflict here, before either reaches main.
 - [ADR-0036](0036-a-red-base-holds-dispatch-instead-of-being-repaired-in-every-branch.md): A red base holds dispatch instead of being repaired in every branch
 - [ADR-0037](0037-a-replay-git-could-not-run-is-retried-not-resolved.md): A replay git could not run is retried, not resolved
 - [ADR-0038](0038-a-finding-with-no-ticket-files-into-the-trackers-findings-team.md): A finding with no ticket files into the tracker's findings team
+- [ADR-0039](0039-the-loop-idles-on-a-held-red-base-instead-of-reselecting.md): The loop idles on a held red base instead of re-selecting
