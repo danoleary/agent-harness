@@ -38,3 +38,8 @@ updates:
       cronjob: "0 9 1,15 * *"
     cooldown:
       default-days: 7
+    # A Node major is a deliberate base release. Dependabot moved the base to
+    # Node 25, an odd major that lost corepack and reached end of life (#213).
+    ignore:
+      - dependency-name: "node"
+        update-types: ["version-update:semver-major"]
