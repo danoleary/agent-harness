@@ -987,3 +987,49 @@ func TestRefusedCheckoutsSpendNoAttempts(t *testing.T) {
 		t.Errorf("plan = %+v, want the full budget untouched", plan)
 	}
 }
+
+// errImageBuild is the preflight error herd's PR loop met on 2026-11-07 (#232):
+// the base bump to Node 25 dropped corepack, so the sandbox image would not build.
+var errImageBuild = errors.New(`sandbox image "herd-agent:latest" is out of date with .agent-harness/Dockerfile and the rebuild failed (process "/bin/sh -c corepack enable" did not complete successfully: exit code: 127)`)
+
+// #232, replaying herd#1385 on 2026-11-07: red CI, a broken sandbox image, and
+// every run a Docker preflight abort. The PR went from attempt 1 to blocked in
+// three minutes with no session run. Three preflight aborts in a row now spend
+// nothing: the PR keeps its whole budget, is not labelled blocked, and the next
+// run is its first attempt.
+func TestPreflightAbortsSpendNoAttempts(t *testing.T) {
+	gh := newFakeGitHub(harnessPR(1385, "9c2d7e1"))
+	gh.checks["9c2d7e1"] = github.ChecksRed
+	log := &quietLog{}
+	s := NewSource(gh, testOptions, nil, log)
+	s.now = func() time.Time { return testNow }
+
+	for try := 1; try <= 3; try++ {
+		item, claim, ok, err := s.Next()
+		if !ok || err != nil {
+			t.Fatalf("try %d: Next = ok %v err %v", try, ok, err)
+		}
+		s.TakeBack(item.Context.(Item), errImageBuild)
+		if err := claim.Release(); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if strings.Contains(strings.Join(gh.added[1385], ","), "blocked") {
+		t.Errorf("added = %v, want no blocked label: no session ran", gh.added[1385])
+	}
+	plan, _ := s.Plan()
+	if len(plan) != 1 || plan[0].Attempts != 0 || plan[0].Exhausted || len(plan[0].Tried) != 0 {
+		t.Errorf("plan = %+v, want the full budget untouched", plan)
+	}
+	if _, _, ok, _ := s.Next(); !ok {
+		t.Fatal("the PR is worked again once the sandbox starts")
+	}
+	posted := gh.posted[1385]
+	if last := posted[len(posted)-1]; !strings.Contains(last, "attempt 1 of 3") {
+		t.Errorf("the preflight aborts must not have spent an attempt; posted %q", last)
+	}
+	if !strings.Contains(strings.Join(posted, "\n"), "corepack enable") {
+		t.Errorf("the PR must say why no session ran:\n%s", strings.Join(posted, "\n"))
+	}
+}

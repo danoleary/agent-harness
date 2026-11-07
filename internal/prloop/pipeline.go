@@ -37,7 +37,8 @@ func LogsRoot(cfg config.Config, l config.Loop) string {
 type Pipeline struct {
 	Loop config.Loop
 	// Source is the loop's Source, which takes back the attempt it recorded when
-	// git refuses the checkout on local state (#247). Nil leaves the attempt spent.
+	// git refuses the checkout on local state (#247) or the sandbox preflight
+	// refuses (#232). Nil leaves the attempt spent.
 	Source *Source
 }
 
@@ -66,8 +67,13 @@ func (p Pipeline) Run(item loop.WorkItem, claim *lease.Lease) stages.Result {
 	h := hostio.NewOnBranch(cfg, log, runlog.MakeRunID(time.Now()), false, ticket.Slug(item.Key), item.Branch)
 	out := Fix(h, cfg, log, it, p.Loop)
 	// Before the deferred release, so settling the lease sees the PR handed off.
-	if out.Disposition == stages.CheckoutBlocked && p.Source != nil {
-		p.Source.Withdraw(it, out.Err)
+	if p.Source != nil {
+		switch out.Disposition {
+		case stages.CheckoutBlocked:
+			p.Source.Withdraw(it, out.Err)
+		case stages.PreflightAborted:
+			p.Source.TakeBack(it, out.Err)
+		}
 	}
 	return out
 }
