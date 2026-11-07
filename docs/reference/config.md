@@ -145,7 +145,7 @@ it; any other name adds a loop. See
 |---|---|
 | `tracker` | none: the queue is the one `[tracker]` describes |
 | `github_prs` | `scope` (`"all"`: every open PR; `"opted_in"`: PRs on `branch_prefix` or with the label; default `"all"`, or `"opted_in"` when `label` is set), `label` (default `PR_LOOP_LABEL`; not allowed with `scope = "all"`), `when` (`"conflicting"`, `"ci_failing"`; default both), `max_attempts` (default `PR_LOOP_MAX_ATTEMPTS`) |
-| `github_security_alerts` | `severity` (any of `"critical"`, `"high"`, `"medium"`, `"low"`; default `["critical", "high"]`), `max_attempts` per alert-set fingerprint (default `2`). Not yet runnable: `--dry-run` prints the packages it would work, and a real run is refused |
+| `github_security_alerts` | `severity` (any of `"critical"`, `"high"`, `"medium"`, `"low"`; default `["critical", "high"]`), `max_attempts` per alert-set fingerprint (default `2`) |
 
 ### `steps`
 
@@ -163,7 +163,7 @@ Each step is `{ use = "<step>" }`, plus `prompt = "<path>"` (relative to
 | `gates` | `github_prs`, `github_security_alerts` | `fix` on `github_prs`; `fix_alerts` on `github_security_alerts` | not accepted | every Gate green over the fixed tree |
 | `push_existing` | `github_prs` | `gates` | not accepted | pushes only a committed, gate-green tree |
 | `open_pr` | `github_security_alerts` | `gates` | not accepted | opens a new PR only for a committed, gate-green tree |
-| `watch_ci` | any | `review` on `tracker`; `push_existing` on `github_prs`; `open_pr` on `github_security_alerts` | not accepted | a CI fix must pass every Gate before it is pushed |
+| `watch_ci` | any | `review` on `tracker`; `push_existing` on `github_prs`; `open_pr` on `github_security_alerts` | not accepted | a CI fix must pass every Gate before it is pushed; on `github_security_alerts` the watch fixes nothing, and a red check is left to `pr-doctor` |
 | `retro` | any | any step; must be last | replaces `prompts/retro.md` | files the run's Findings |
 
 A `tracker` loop needs `implement` and `review`. A `github_prs` loop needs

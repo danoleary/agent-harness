@@ -325,6 +325,30 @@ func TestNextHandsOffAnExhaustedFingerprint(t *testing.T) {
 	}
 }
 
+// A fix whose landing collapsed (main already fixed the package) is recorded
+// resolved: the Source waits for Dependabot to close the alerts, even after main
+// moves, and past the grace period hands them to a human.
+func TestPlanWaitsOnAFingerprintMainAlreadyFixed(t *testing.T) {
+	f := newFixture(t, lodash(7))
+	c := f.only(t)
+	if err := appendLedger(filepath.Join(f.dir, LedgerFile), Entry{Key: c.Key(), FP: c.Fingerprint, BaseSHA: f.base, At: testNow.Add(-time.Hour), Outcome: OutcomeResolved}); err != nil {
+		t.Fatal(err)
+	}
+	f.base = "base999"
+
+	if c := f.only(t); !strings.Contains(c.Skip, "waiting for Dependabot") {
+		t.Errorf("skip = %q, want a wait for Dependabot", c.Skip)
+	}
+	f.src.now = func() time.Time { return testNow.Add(48 * time.Hour) }
+	if c := f.only(t); !strings.Contains(c.Skip, "a human must look") {
+		t.Errorf("skip past the grace = %q, want it handed to a human", c.Skip)
+	}
+	f.gh.alerts = append(f.gh.alerts, lodash(8))
+	if c := f.only(t); c.Skip != "" {
+		t.Errorf("a new fingerprint is worked afresh, got skip %q", c.Skip)
+	}
+}
+
 // A new alert changes the fingerprint and starts a fresh budget.
 func TestANewFingerprintStartsAFreshBudget(t *testing.T) {
 	f := newFixture(t, lodash(7))

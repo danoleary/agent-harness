@@ -18,7 +18,6 @@ import (
 	"github.com/danoleary/agent-harness/internal/runlog"
 	"github.com/danoleary/agent-harness/internal/stages"
 	"github.com/danoleary/agent-harness/internal/ticket"
-	"github.com/danoleary/agent-harness/internal/verify"
 )
 
 // who is the name the PR loop's narration speaks in.
@@ -136,7 +135,7 @@ func Fix(h hostio.Host, cfg config.Config, log *runlog.Logger, it Item, l config
 		log.Event(fmt.Sprintf("%s ⊘ %s moved since the poll (now %s, polled %s) — leaving it to the next poll", who, it.PR.HeadBranch, short(head), short(it.PR.HeadSHA)))
 		return stages.Result{}
 	}
-	if !r.provision() {
+	if !fixes.Provision() {
 		return stages.Result{}
 	}
 
@@ -167,25 +166,6 @@ type run struct {
 	sessions bool
 	// pushed marks a run that changed the branch on origin.
 	pushed bool
-}
-
-// provision runs the Consumer's post_create in the fresh worktree, so the sessions
-// and the gates open onto installed dependencies. A failed install only warns (a
-// session can install in-session), unless the shell could not run the command at
-// all, which no session can fix (#46).
-func (r *run) provision() bool {
-	if r.cfg.PostCreate == "" {
-		return true
-	}
-	res := r.h.Shell(hostio.ShellRun{Label: "prep", Command: r.cfg.PostCreate, WorktreePath: r.h.Worktree().Path(), Cap: r.cfg.ReviewTimeout})
-	if missing, ok := verify.CommandUnrunnable(res.Outcome); ok {
-		r.log.Event(fmt.Sprintf("%s ✗ post_create could not run (%q, exit %d) — fix the sandbox image's PATH; nothing pushed", who, missing, res.ExitCode))
-		return false
-	}
-	if res.ExitCode != 0 {
-		r.log.Event(fmt.Sprintf("%s … warning: post_create exited %d — sessions will provision in-session if needed", who, res.ExitCode))
-	}
-	return true
 }
 
 // repair fixes what is wrong with the PR and watches CI to a verdict.

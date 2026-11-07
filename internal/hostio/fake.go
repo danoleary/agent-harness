@@ -73,6 +73,7 @@ type Fake struct {
 	ForcePushErr error
 	PRURL        string
 	CreatePRErr  error
+	LabelErr     error
 	PRThere      bool
 	OpenPRThere  bool
 	ChecksOK     bool
@@ -105,6 +106,8 @@ type Fake struct {
 	Calls       []string
 	// PRBodies are the bodies of every `gh pr create`, in order.
 	PRBodies []string
+	// PRLabels are the labels LabelPR added, in order.
+	PRLabels []string
 }
 
 var _ Host = (*Fake)(nil)
@@ -208,6 +211,15 @@ func (f *Fake) CreatePR(title, body string) (string, error) {
 		return "", f.CreatePRErr
 	}
 	return f.PRURL, nil
+}
+
+func (f *Fake) LabelPR(url, label string) error {
+	f.record("label-pr %s", label)
+	if f.LabelErr != nil {
+		return f.LabelErr
+	}
+	f.PRLabels = append(f.PRLabels, label)
+	return nil
 }
 
 func (f *Fake) PRExists() bool                 { f.record("pr-exists"); return f.PRThere }

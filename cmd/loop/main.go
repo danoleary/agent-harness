@@ -293,24 +293,49 @@ func runPRLoop(cfg config.Config, l config.Loop, dryRun bool) int {
 }
 
 // runSecurityLoop is the composition root of a security-alerts loop (ADR-0040):
-// the github_security_alerts Source over the repository's Dependabot alerts.
-// --dry-run prints the Source's plan and changes nothing. A real run is refused
-// until the loop has a Pipeline to run its Steps.
+// the github_security_alerts Source over the repository's Dependabot alerts, and
+// the security Pipeline, which cuts each package's branch fresh, runs the
+// SecurityFix session and lands the fix as a new PR. --dry-run prints the Source's
+// plan and changes nothing.
 func runSecurityLoop(cfg config.Config, l config.Loop, dryRun bool) int {
-	if !dryRun {
-		fmt.Fprintf(os.Stderr, "loop %s: a %s loop is not yet runnable: its Steps have no Pipeline yet. Run `agent-harness loop %s --dry-run` to see what it would work.\n", l.Name, config.SourceGitHubSecurityAlerts, l.Name)
-		return 2
-	}
-	quiet := runlog.NewConsole(loopstream.NewStream(os.DevNull))
 	co := gitpkg.Open(cfg.ProjectPath, cfg.BranchPrefix)
-	src := secloop.NewSource(loophost.RepoPRs(cfg), secloop.OptionsFrom(cfg, l), co.MainSHA, quiet)
-	plan, err := securityDryRun(l, src)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "loop %s --dry-run: %v\n", l.Name, err)
-		return 1
+	if dryRun {
+		quiet := runlog.NewConsole(loopstream.NewStream(os.DevNull))
+		src := secloop.NewSource(loophost.RepoPRs(cfg), secloop.OptionsFrom(cfg, l), co.MainSHA, quiet)
+		plan, err := securityDryRun(l, src)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "loop %s --dry-run: %v\n", l.Name, err)
+			return 1
+		}
+		fmt.Print("\n" + plan)
+		return 0
 	}
-	fmt.Print("\n" + plan)
-	return 0
+
+	log := openStream(cfg, l)
+	source := secloop.NewSource(loophost.RepoPRs(cfg), secloop.OptionsFrom(cfg, l), fetchedMain(co, log), log)
+	host := loophost.NewDaemon(cfg, l, source.CheckAccess)
+	installSignalHandler(host, log)
+	return loop.Run(loop.Deps{
+		Source:   source,
+		Pipeline: secloop.Pipeline{Loop: l},
+		Host:     host,
+		Limits:   limitsFrom(cfg, l),
+		Clock:    loop.SystemClock{},
+		Log:      log,
+	})
+}
+
+// fetchedMain reads origin/main for the security Source after refetching it. The
+// daemon fetches only at startup and after an item, and a Source that skips every
+// package until main moves would otherwise never see it move. A failed fetch
+// warns and reads the ref as last fetched.
+func fetchedMain(co gitpkg.Checkout, log loop.Narrator) func() (string, error) {
+	return func() (string, error) {
+		if err := co.FetchMain(); err != nil {
+			log.Event("loop … warning: could not fetch origin/main before the poll: " + err.Error())
+		}
+		return co.MainSHA()
+	}
 }
 
 // securityDryRun renders the security Source's plan: every vulnerable package, and

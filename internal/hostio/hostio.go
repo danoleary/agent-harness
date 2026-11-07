@@ -169,6 +169,9 @@ type Remote interface {
 	Push() error
 	PushForceWithLease() error
 	CreatePR(title, body string) (string, error)
+	// LabelPR adds label to the PR CreatePR opened at url. The security-alerts loop
+	// holds its lease with it once the PR exists (ADR-0040, decision 8).
+	LabelPR(url, label string) error
 	PRExists() bool
 	OpenPRExists() bool
 	ChecksReadable() (bool, string)

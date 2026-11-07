@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/danoleary/agent-harness/internal/config"
 	"github.com/danoleary/agent-harness/internal/filing"
 	gitpkg "github.com/danoleary/agent-harness/internal/git"
+	"github.com/danoleary/agent-harness/internal/github"
 	"github.com/danoleary/agent-harness/internal/pr"
 	"github.com/danoleary/agent-harness/internal/proc"
 	"github.com/danoleary/agent-harness/internal/runlog"
@@ -262,6 +264,31 @@ func (h *Real) CreatePR(title, body string) (string, error) {
 		return "", fmt.Errorf("%s: %s", err, strings.TrimSpace(string(out)))
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+// LabelPR adds label to the PR at url through the REST labels endpoint, which
+// creates a label the repository does not have yet; `gh pr edit --add-label`
+// refuses one.
+func (h *Real) LabelPR(url, label string) error {
+	n, err := prNumber(url)
+	if err != nil {
+		return err
+	}
+	return github.NewPulls(github.NewGhTransport(h.cfg.ProjectPath), "{owner}/{repo}").AddLabel(n, label)
+}
+
+// prNumber reads the PR number off the URL `gh pr create` printed
+// (`https://github.com/<owner>/<repo>/pull/<n>`).
+func prNumber(url string) (int, error) {
+	i := strings.LastIndex(url, "/pull/")
+	if i < 0 {
+		return 0, fmt.Errorf("no PR number in %q", url)
+	}
+	n, err := strconv.Atoi(strings.TrimRight(url[i+len("/pull/"):], "/"))
+	if err != nil {
+		return 0, fmt.Errorf("no PR number in %q: %w", url, err)
+	}
+	return n, nil
 }
 
 func (h *Real) PRExists() bool { return pr.Exists(h.cfg.ProjectPath, h.Worktree().Branch()) }
