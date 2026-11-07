@@ -895,12 +895,6 @@ func (d Deps) capBackoffDuration(now, resetTime time.Time) time.Duration {
 	return wait
 }
 
-// interruptibleSleep waits out total, but breaks the wait into TickInterval chunks
-// and re-checks StopRequested between each chunk. A stop (SIGINT/sentinel) landing
-// mid-wait is therefore observed within one TickInterval, not a whole total later —
-// the responsiveness the daemon's "idle/backoff is an interruptible stop point"
-// (ADR-0004) depends on. A non-positive TickInterval degrades to a single total
-// sleep so a misconfigured tick can't spin.
 // maxPreflightBackoff caps the preflight backoff, in poll intervals.
 const maxPreflightBackoff = 16
 
@@ -916,6 +910,12 @@ func preflightBackoff(poll time.Duration, n int) time.Duration {
 	return f * poll
 }
 
+// interruptibleSleep waits out total, but breaks the wait into TickInterval chunks
+// and re-checks StopRequested between each chunk. A stop (SIGINT/sentinel) landing
+// mid-wait is therefore observed within one TickInterval, not a whole total later —
+// the responsiveness the daemon's "idle/backoff is an interruptible stop point"
+// (ADR-0004) depends on. A non-positive TickInterval degrades to a single total
+// sleep so a misconfigured tick can't spin.
 func (d Deps) interruptibleSleep(total time.Duration) {
 	if d.Limits.TickInterval <= 0 {
 		d.clock().Sleep(total)
