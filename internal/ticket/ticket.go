@@ -240,6 +240,27 @@ func emptySection(content string) bool {
 	return false
 }
 
+// adrFile matches a numbered ADR filename, with any leading path: the
+// `docs/adr/0039-<slug>.md` #197 named.
+var adrFile = regexp.MustCompile("(?:[\\w.-]+/)*adr/[0-9]{4}-[^\\s`()\\[\\]'\"]+?\\.md")
+
+// ADRFiles returns each numbered ADR filename the ticket's title or body names,
+// once, in order. A ticket that asks for a new ADR by filename fixes its number
+// when it is written, and by the time it runs a sibling may have taken it (#228):
+// ADR-0034 leaves the number to the next free one on origin/main. An existing ADR
+// the ticket links matches too, so the caller can only advise, never rename.
+func (t Ticket) ADRFiles() []string {
+	var found []string
+	seen := map[string]bool{}
+	for _, m := range adrFile.FindAllString(t.Title+"\n"+t.Description, -1) {
+		if !seen[m] {
+			seen[m] = true
+			found = append(found, m)
+		}
+	}
+	return found
+}
+
 // SubIssue is a child of an umbrella/batch ticket, carrying the title + body the
 // implementation prompt inlines so a sandboxed session can implement it without
 // reaching Linear (BEH-619).

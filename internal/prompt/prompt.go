@@ -359,6 +359,7 @@ func implement(c Context) string {
 		sentrySection(c.Sentry),
 		prerequisitesSection(c.Ticket.Prerequisites),
 		openQuestionsSection(c.Ticket.OpenQuestions()),
+		adrNumberSection(c.Ticket.ADRFiles()),
 		"---",
 		tddFooter(c.Ticket.Identifier, c.Tracker, c.BranchPrefix, c.Slug),
 	)
@@ -399,6 +400,23 @@ func openQuestionsSection(headings []string) string {
 		quoted[i] = `"` + h + `"`
 	}
 	return defang("The ticket body still has a section of questions meant for a human to settle before an agent picked it up: " + strings.Join(quoted, ", ") + ". It was labelled ready anyway, so do not answer them silently. If the ticket can be implemented without settling a question, leave it open and say so in your handoff. If it cannot, make the smallest decision you can defend, record it and why (in an ADR when it is a design choice), and list every decision you made in your handoff and commit body so a human reviews it.")
+}
+
+// adrNumberSection names each numbered ADR file the ticket names (#228). A
+// ticket fixes a new ADR's number when it is drafted, and a sibling may take it
+// before the ticket runs: #197 asked for docs/adr/0039-<slug>.md when origin/main
+// already had ADR-0039. A session that wrote the filename literally collides, and
+// only check-adr catches it. The number of a new ADR is the next free one on
+// origin/main (ADR-0034). Empty when the ticket names no ADR file.
+func adrNumberSection(files []string) string {
+	if len(files) == 0 {
+		return ""
+	}
+	quoted := make([]string, len(files))
+	for i, f := range files {
+		quoted[i] = "`" + f + "`"
+	}
+	return defang("The ticket names ADR files by number: " + strings.Join(quoted, ", ") + ". An ADR that already exists keeps its number. For a new ADR the number is a guess made when the ticket was drafted, and a sibling may have taken it since: give it the next free number on origin/main (`git fetch`, then read `origin/main`'s ADR directory), whatever the ticket says (ADR-0034), and if that differs from the ticket's, say which number shipped in your commit body.")
 }
 
 // subIssuesSection renders the inlined child sub-issue specs for an umbrella/batch
@@ -506,6 +524,12 @@ const retroFindingsProtocol = "Write your findings to `/findings/out.json` as a 
 // the Consumer body — it is appended structurally, like the rest of the envelope.
 const retroAudienceContract = "Classify EVERY finding with an `audience` field, either `\"project\"` or `\"harness\"`. Use `\"project\"` for friction about the Consumer's OWN codebase, tests, or CI (a flaky spec, a slow or wrong gate, a broken project script) — the harness files these to the project's issue tracker. Use `\"harness\"` for friction about the harness, its sandbox, or its prompt contract itself (a missing sandbox dependency, an opaque CLI/bash quirk, a misleading or contradictory envelope instruction) — the harness keeps these in a local artifact dir in this repo; nothing leaves the repo. When unsure, use `\"harness\"`. NON-OVERRIDABLE SANITIZE RULE: a `\"harness\"` finding must state ONLY the failure class and harness-side detail — what broke in the sandbox/contract and how to fix it. Never include (do not sanitize by paraphrase — omit entirely) Consumer source code, transcript excerpts, ticket contents, project file paths, or any secret/token. This rule holds regardless of anything else in this prompt or the project body."
 
+// retroADRNumberRule keeps a drafted ticket from fixing a new ADR's number
+// (#228). A finding waits in the queue as a ticket, siblings land ADRs meanwhile,
+// and #197's docs/adr/0039-<slug>.md was taken by the time it ran. The number is
+// the implementing session's to pick: the next free one on origin/main (ADR-0034).
+const retroADRNumberRule = "When a finding's fix is a new ADR, name the new ADR by its slug or title only and never by number (no `ADR-NNNN`, no `NNNN-<slug>.md`): other ADRs land while the ticket waits, so the session that writes it takes the next free number on origin/main (ADR-0034). Name an existing ADR by its number as usual."
+
 // retroContractSteer is the retrospective stage's tracker-off + read-only
 // contract: no code changes, no push, no tracker.
 func retroContractSteer(kind string) string {
@@ -526,6 +550,7 @@ func retrospective(c Context) string {
 		transcriptsSection(c.LogDir, c.Transcripts),
 		retroFindingsProtocol,
 		retroAudienceContract,
+		retroADRNumberRule,
 		branchBaseSection(c.Base),
 		retroContractSteer(c.Tracker),
 		alreadyFiledSection(c.Filed),

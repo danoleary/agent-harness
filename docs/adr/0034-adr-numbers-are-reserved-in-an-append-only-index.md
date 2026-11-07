@@ -49,5 +49,11 @@ branch, not on main.
 - Two branches that each add a *different* number at the same time (say 0034 and
   0035, by someone who numbered against a sibling branch) also conflict on the
   index. That conflict is trivial: keep both lines in order.
+- A ticket that fixes a new ADR's number when it is drafted can find it taken
+  when it runs (#228: #197 asked for `0039-<slug>.md` after ADR-0039 had
+  landed). A ticket names a new ADR by slug only. The retrospective envelope
+  says so to the findings it drafts, and the implementation envelope tells a
+  session whose ticket names an ADR file to number a new one next free on
+  `origin/main` anyway.
 - The guard catches only ADR numbers. Other values that parallel branches can
   each take independently are not covered by this.

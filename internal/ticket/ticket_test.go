@@ -1,6 +1,9 @@
 package ticket
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestIsLargeRefactor(t *testing.T) {
 	cases := []struct {
@@ -148,6 +151,44 @@ func TestOpenQuestions(t *testing.T) {
 				if got[i] != c.want[i] {
 					t.Errorf("OpenQuestions()[%d] = %q, want %q", i, got[i], c.want[i])
 				}
+			}
+		})
+	}
+}
+
+func TestADRFiles(t *testing.T) {
+	cases := []struct {
+		name  string
+		title string
+		body  string
+		want  []string
+	}{
+		{
+			name: "the #197 placeholder filename",
+			body: "Write the decision up as docs/adr/0039-<slug>.md, checking origin/main for the next free number first.",
+			want: []string{"docs/adr/0039-<slug>.md"},
+		},
+		{
+			name: "a filename in backticks and a Markdown link",
+			body: "Add `docs/adr/0042-loops-share-one-lease.md` and amend [ADR-0034](adr/0034-adr-numbers-are-reserved-in-an-append-only-index.md).",
+			want: []string{"docs/adr/0042-loops-share-one-lease.md", "adr/0034-adr-numbers-are-reserved-in-an-append-only-index.md"},
+		},
+		{
+			name:  "the title too, each filename once",
+			title: "Record docs/adr/0040-x.md",
+			body:  "See docs/adr/0040-x.md.",
+			want:  []string{"docs/adr/0040-x.md"},
+		},
+		{
+			name: "a bare ADR number is not a filename",
+			body: "This extends ADR-0034.",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := Ticket{Title: c.title, Description: c.body}.ADRFiles()
+			if strings.Join(got, "|") != strings.Join(c.want, "|") {
+				t.Errorf("ADRFiles() = %q, want %q", got, c.want)
 			}
 		})
 	}
