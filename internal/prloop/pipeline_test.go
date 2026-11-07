@@ -191,6 +191,30 @@ func TestFixRunsTheCIFixSessionAndGatesItsCommit(t *testing.T) {
 	}
 }
 
+// #186: the PR loop's slug is `pr-12`, but the worktree is on the PR's own head
+// branch, `feat/gh-7`, cut by an earlier ticket run. The retrospective and the
+// fix sessions name that branch, never a `feat/pr-12` that does not exist.
+func TestFixSessionsNameThePRsHeadBranchNotOneBuiltFromTheSlug(t *testing.T) {
+	h, it, _ := prHost(t, harnessItem(CIRed))
+	h.CIFn = func(w hostio.CIWatch) ci.Outcome {
+		_ = w.Fix("FAIL TestThing", true)
+		return ci.Outcome{OK: true}
+	}
+	cfg := pipelineCfg()
+	cfg.Prompts.Retro = "/retrospective for {{.Identifier}} on branch `{{.Branch}}`."
+
+	Fix(h, cfg, pipelineLog(t), it, prDoctor())
+
+	if len(h.Agents) != 2 || h.Agents[1].Label != "retrospective" {
+		t.Fatalf("agents = %v, want the CIFix session then the retrospective", agentLabels(h))
+	}
+	for _, a := range h.Agents {
+		if !strings.Contains(a.Prompt, "`feat/gh-7`") || strings.Contains(a.Prompt, "feat/pr-12") {
+			t.Errorf("%s prompt does not name the PR's head branch feat/gh-7:\n%s", a.Label, a.Prompt)
+		}
+	}
+}
+
 // A flake the watch's re-run washed out needs no session at all — and with no
 // transcript there is nothing for a retrospective to mine.
 func TestFixLaunchesNothingWhenTheRerunGoesGreen(t *testing.T) {

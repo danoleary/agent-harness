@@ -122,8 +122,10 @@ type Context struct {
 	CILogs         string
 	CILogAvailable bool
 
-	// Branch, when set, names the branch CIFix and RebaseFix work on in place of
+	// Branch, when set, names the branch the session works on in place of
 	// `<BranchPrefix>/<Slug>`: the PR loop fixes a branch it did not name (ADR-0019).
+	// CIFix, RebaseFix and the Review footer name it, and a body reads it as
+	// `{{.Branch}}` (#186).
 	Branch string
 	// Merge selects the RebaseFix variant that merges origin/main into the branch
 	// instead of replaying it, for a branch a human opted in: its history must not
@@ -131,7 +133,7 @@ type Context struct {
 	Merge bool
 }
 
-// branch is the branch CIFix and RebaseFix name: the override, else the
+// branch is the branch the session's worktree is on: the override, else the
 // canonical `<BranchPrefix>/<Slug>`.
 func (c Context) branch() string {
 	if c.Branch != "" {
@@ -161,13 +163,16 @@ func For(s Stage, ctx Context) string {
 // bodyData is the template context available to a Consumer prompt body. A body
 // interpolates these with `{{.Field}}` (text/template) so herd's committed bodies
 // can name the ticket, slug, branch, and worktree without the harness hardcoding
-// them. Missing fields render empty; a malformed template falls back to the raw
+// them. Branch is the branch the worktree is really on (Context.branch): a PR-loop
+// slug is `pr-<n>`, so `{{.BranchPrefix}}/{{.Slug}}` names a branch that does not
+// exist there (#186). Missing fields render empty; a malformed template falls back to the raw
 // body (renderBody).
 type bodyData struct {
 	Identifier   string
 	Title        string
 	Slug         string
 	BranchPrefix string
+	Branch       string
 	WorktreePath string
 	LogDir       string
 }
@@ -187,6 +192,7 @@ func renderBody(c Context) string {
 		Title:        c.Ticket.Title,
 		Slug:         c.Slug,
 		BranchPrefix: c.BranchPrefix,
+		Branch:       c.branch(),
 		WorktreePath: c.WorktreePath,
 		LogDir:       c.LogDir,
 	}
@@ -587,9 +593,9 @@ func alreadyFiledSection(filed []FiledFinding) string {
 // first, so a commit message names commits by subject, not SHA — #95), the tracker-off
 // steer (ADR-0010), the findings protocol (review emits NONE; retrospective owns
 // findings), and the bash-quirk steer.
-func reviewContractFooter(kind, branchPrefix, slug string) string {
+func reviewContractFooter(kind, branch string) string {
 	return join(
-		"Apply any review fixes as a LOCAL commit on `"+branchPrefix+"/"+slug+"` and stop there; a review that finds nothing to fix makes no commit. Do NOT push, do NOT run `gh`, do NOT open or raise a PR. The harness owns all remote git I/O (ADR-0002): it independently re-runs the quality gates host-side and, only if they pass, pushes the branch and opens the PR itself.",
+		"Apply any review fixes as a LOCAL commit on `"+branch+"` and stop there; a review that finds nothing to fix makes no commit. Do NOT push, do NOT run `gh`, do NOT open or raise a PR. The harness owns all remote git I/O (ADR-0002): it independently re-runs the quality gates host-side and, only if they pass, pushes the branch and opens the PR itself.",
 		"The host gate is the only thing that authorises the push, and a red host gate over a commit you made returns to you once with its output: the harness re-launches this review with the failing gate's name and log tail, then re-runs the gates. A gate still red after that, or red over a commit you did not make, fails the ticket.",
 		"Before it pushes, the harness rebases the branch onto origin/main, which rewrites every commit SHA on it. So do NOT name a commit by its SHA in your commit message; name the commit your fixes amend by its subject line. A SHA in the pushed message would point at a commit that is not on the branch or in the PR.",
 		trackerOff(kind),
@@ -611,7 +617,7 @@ func review(c Context) string {
 		redGateSection(c.RedGate),
 		resolutionSection(c.Resolution),
 		"---",
-		reviewContractFooter(c.Tracker, c.BranchPrefix, c.Slug),
+		reviewContractFooter(c.Tracker, c.branch()),
 	)
 }
 

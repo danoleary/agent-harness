@@ -184,7 +184,7 @@ func reviewRun(cfg config.Config, s Subject, prior *prompt.PriorReview, redGate 
 		Label: reviewSession,
 		Model: cfg.ReviewModel,
 		Prompt: prompt.For(prompt.Review, prompt.Context{
-			Ticket: s.Ticket, Slug: s.Slug, BranchPrefix: cfg.BranchPrefix, Tracker: cfg.Tracker.Kind, WorktreePath: s.WorktreePath, Body: cfg.Prompts.Review,
+			Ticket: s.Ticket, Slug: s.Slug, BranchPrefix: cfg.BranchPrefix, Branch: s.Branch, Tracker: cfg.Tracker.Kind, WorktreePath: s.WorktreePath, Body: cfg.Prompts.Review,
 			PriorReview: prior, RedGate: redGate, Base: s.Base,
 		}),
 		Cap: cfg.ReviewTimeout,
@@ -199,7 +199,7 @@ func resolutionReviewRun(cfg config.Config, s Subject, base string, r *prompt.Re
 	run := reviewRun(cfg, s, nil, nil)
 	run.Label = reviewSession + "-resolution"
 	run.Prompt = prompt.For(prompt.Review, prompt.Context{
-		Ticket: s.Ticket, Slug: s.Slug, BranchPrefix: cfg.BranchPrefix, Tracker: cfg.Tracker.Kind, WorktreePath: s.WorktreePath, Body: cfg.Prompts.Review,
+		Ticket: s.Ticket, Slug: s.Slug, BranchPrefix: cfg.BranchPrefix, Branch: s.Branch, Tracker: cfg.Tracker.Kind, WorktreePath: s.WorktreePath, Body: cfg.Prompts.Review,
 		Base: s.Base, Resolution: r,
 	})
 	return run
@@ -212,7 +212,7 @@ func retrospectiveRun(cfg config.Config, s Subject, filed []prompt.FiledFinding)
 		Label: retrospectiveSession,
 		Model: cfg.RetrospectiveModel,
 		Prompt: prompt.For(prompt.Retrospective, prompt.Context{
-			Ticket: s.Ticket, Slug: s.Slug, BranchPrefix: cfg.BranchPrefix, Tracker: cfg.Tracker.Kind, Body: cfg.Prompts.Retro, Filed: filed, Base: s.Base,
+			Ticket: s.Ticket, Slug: s.Slug, BranchPrefix: cfg.BranchPrefix, Branch: s.Branch, Tracker: cfg.Tracker.Kind, Body: cfg.Prompts.Retro, Filed: filed, Base: s.Base,
 			LogDir: checkoutRelative(cfg.ProjectPath, s.LogDir), Transcripts: runLogs(s.LogDir),
 		}),
 		FindingsDir: runlog.FindingsDir(s.LogDir, retrospectiveSession),
