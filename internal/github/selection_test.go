@@ -3,6 +3,7 @@ package github
 import (
 	"bytes"
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -308,5 +309,42 @@ func TestSelectNextTicketPassesOverSkippedKeys(t *testing.T) {
 	}
 	if got.Identifier != "#9" || !got.HasLabel("parallel-ok") {
 		t.Errorf("selected = %+v, want #9 labelled parallel-ok", got)
+	}
+}
+
+// TestMarkBlockedAddsTheBlockedLabel hands a ticket to a human (#230): it adds the
+// configured blocked label, which selection screens out, and leaves the claim's
+// labels alone.
+func TestMarkBlockedAddsTheBlockedLabel(t *testing.T) {
+	tr, calls := fakeTransport(map[string]any{
+		"POST /repos/acme/widgets/issues/9/labels": []any{},
+	})
+	c := NewClient(tr, "acme", "widgets", readyLabels)
+
+	if err := c.MarkBlocked("#9"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(*calls) != 1 || (*calls)[0].method != "POST" {
+		t.Fatalf("calls = %+v, want the one label POST", *calls)
+	}
+	if ls := labelsInBody((*calls)[0].body); len(ls) != 1 || ls[0] != "blocked" {
+		t.Errorf("added labels = %v, want [blocked]", ls)
+	}
+}
+
+// TestMarkBlockedWithoutABlockedLabelErrors: with no blocked label configured there
+// is nothing that would keep selection off the ticket, so it says so and calls
+// nothing.
+func TestMarkBlockedWithoutABlockedLabelErrors(t *testing.T) {
+	opts := readyLabels
+	opts.Blocked = ""
+	tr, calls := fakeTransport(map[string]any{})
+	c := NewClient(tr, "acme", "widgets", opts)
+
+	if err := c.MarkBlocked("#9"); err == nil || !strings.Contains(err.Error(), "blocked_label") {
+		t.Errorf("err = %v, want one naming the unset blocked_label", err)
+	}
+	if len(*calls) != 0 {
+		t.Errorf("calls = %+v, want none", *calls)
 	}
 }

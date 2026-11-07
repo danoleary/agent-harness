@@ -115,6 +115,7 @@ func newTracker(tc config.TrackerConfig, secrets Secrets) (tracker.Tracker, erro
 			InProgressTransition: tc.InProgressTransition,
 			TodoTransition:       tc.TodoTransition,
 			CanceledTransition:   tc.CanceledTransition,
+			Blocked:              tc.BlockedLabel,
 		}), nil
 	default:
 		return nil, fmt.Errorf("unsupported tracker kind %q (supported: linear, github, jira)", tc.Kind)

@@ -46,6 +46,7 @@ in_progress_transition = "In Progress"
 todo_transition = "To Do"
 cancel_transition = "Won't Do"
 findings_label_id = "agent-harness"   # a label NAME, applied to filed Findings
+# blocked_label = "blocked"           # optional: added to a ticket handed to a human; exclude it in ready_jql
 # findings_issue_type = "Task"        # the issue type Findings are created as
 ```
 

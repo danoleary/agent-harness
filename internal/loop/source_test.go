@@ -70,6 +70,8 @@ func (s *prSource) Releasing(why ReleaseReason, key string) string {
 	}
 }
 
+func (s *prSource) Block(string) error { return nil }
+
 func (s *prSource) Comment(key, body string) error {
 	if s.comments == nil {
 		s.comments = map[string][]string{}

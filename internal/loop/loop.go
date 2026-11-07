@@ -112,6 +112,10 @@ type Source interface {
 	// looks rather than silently bouncing. Best-effort: a post failure is tolerated
 	// (the release is what matters; the comment is the breadcrumb).
 	Comment(key, body string) error
+	// Block labels an item blocked for a human — the committed-fix recovery refused
+	// to land a branch the review did not clear (#230) — so neither selection nor a
+	// later poll picks it up again until the human removes the label.
+	Block(key string) error
 	// Releasing words the stream line the daemon writes as it gives key's claim
 	// back for why, without the "loop — " prefix the daemon adds. Only the Source
 	// knows what releasing means for its items: a ticket goes back to Todo, a PR
@@ -151,7 +155,9 @@ type Pipeline interface {
 	// diff no-PR run), so the loop falls through to the normal release. Host-side
 	// (push + open PR), never the loop reimplementing the review machinery; a
 	// completion failure just falls through to the release, so a flaky push can't
-	// strand the item claimed.
+	// strand the item claimed. A NeedsHuman outcome is a branch the review refused
+	// (a blocked verdict, a red Gate) that the recovery would not land: the loop
+	// hands it to a human instead of releasing it (#230).
 	Recover(item WorkItem) (outcome stages.Result, attempted bool)
 }
 
@@ -462,14 +468,19 @@ func Run(d Deps) int {
 		// the normal release below.
 		if outcome.Disposition == stages.NoPR {
 			if completed, attempted := d.Pipeline.Recover(item); attempted {
-				if completed.Disposition == stages.Shipped {
+				switch completed.Disposition {
+				case stages.Shipped:
 					d.Log.Structured(loopstream.Record{
 						Kind:    loopstream.KindPROpened,
 						Ticket:  key,
 						Message: "loop — " + key + " had a committed, gate-green fix that was never pushed; completed it (pushed + opened PR) instead of releasing (BEH-713)",
 					})
 					outcome.Disposition = stages.Shipped
-				} else {
+				case stages.NeedsHuman:
+					// The review refused this very tip (#230): hand it over below, never
+					// back to Todo.
+					outcome = completed
+				default:
 					d.Log.Event("loop … " + key + " committed-fix recovery did not reach a PR; falling through to the no-PR release")
 				}
 			}
@@ -501,6 +512,8 @@ func Run(d Deps) int {
 			}
 			d.Log.Structured(loopstream.Record{Kind: loopstream.KindRecommendClose, Ticket: key, Message: msg})
 			d.comment(key, "Autonomous run found this branch makes zero net change against `main` (an empty diff) — there is nothing to ship. "+note+" If a PR was already opened (the branch only became a no-op after the pre-push rebase) it is a no-op and should be closed too. It was deliberately NOT released to Todo so it won't be re-picked and re-run to the same conclusion. See the run logs for the cause.")
+		case stages.NeedsHuman:
+			d.handToHuman(key, outcome.Refusal)
 		case stages.NoPR:
 			// Release-on-no-PR (BEH-590): a run that finished WITHOUT opening a pushed PR —
 			// any non-cap failure mode: OOM, sandbox crash, a review stage that died before
@@ -609,6 +622,21 @@ func (d Deps) close(claim *lease.Lease) bool {
 		return false
 	}
 	return true
+}
+
+// handToHuman settles a run whose committed branch the recovery refused to land
+// (#230): the claim is kept, so the ticket is not re-run to the same refusal, the
+// ticket is labelled blocked and the breadcrumb says why. A failed label is
+// narrated and named in the breadcrumb, so the human can apply it; the claim and
+// the breadcrumb hold either way.
+func (d Deps) handToHuman(key, why string) {
+	d.Log.Structured(loopstream.Record{Kind: loopstream.KindTicketReleased, Ticket: key, Message: "loop — " + key + " has a committed, unpushed branch the review refused (" + why + "); handing it to a human — labelled blocked, left In Progress, not released (#230)"})
+	label := "It is labelled blocked and was left In Progress rather than released to Todo, so it will not be re-run to the same refusal."
+	if err := d.Source.Block(key); err != nil {
+		d.Log.Event("loop … warning: could not label " + key + " blocked: " + err.Error())
+		label = "It was left In Progress rather than released to Todo, but it could not be labelled blocked (" + err.Error() + "), so please label it blocked by hand to keep a later run from picking it up."
+	}
+	d.comment(key, "Autonomous run left a committed branch with no PR, and the harness refused to push it: "+why+". A human needs to resolve that before this ticket can ship — the branch is waiting in its worktree. "+label+" Remove the label once it is resolved. See the run logs for the review and gate output.")
 }
 
 // reclaimDisk proactively frees host disk between items when free space has

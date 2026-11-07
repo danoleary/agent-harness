@@ -97,6 +97,11 @@ type Queue interface {
 	// left claimed. Terminal, so the ticket leaves both the select and reap pools —
 	// unlike ReleaseToTodo, which returns it to the queue for a later run.
 	MoveToCanceled(key Key) error
+	// MarkBlocked adds the configured blocked label to a ticket, handing it to a
+	// human: selection screens a blocked ticket out until a person removes the label
+	// (#230). It leaves the ticket's state alone. With no blocked label configured
+	// it returns an error and changes nothing.
+	MarkBlocked(key Key) error
 	ListInProgressClaims() ([]InProgressClaim, error)
 }
 

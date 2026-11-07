@@ -376,6 +376,77 @@ func (c *Client) MoveToCanceled(identifier string) error {
 	})
 }
 
+// blockedLabelQuery resolves the issue's UUID and the blocked label by name: the
+// issue's team's label of that name, and a workspace label (no team) of that name,
+// since an issue may carry either.
+const blockedLabelQuery = `
+	query BlockedLabel($id: String!, $name: String!) {
+		issue(id: $id) {
+			id
+			team {
+				labels(filter: { name: { eq: $name } }) {
+					nodes {
+						id
+					}
+				}
+			}
+		}
+		issueLabels(filter: { name: { eq: $name }, team: { null: true } }) {
+			nodes {
+				id
+			}
+		}
+	}
+`
+
+const addLabelMutation = `
+	mutation AddLabel($id: String!, $labelId: String!) {
+		issueAddLabel(id: $id, labelId: $labelId) {
+			success
+		}
+	}
+`
+
+// MarkBlocked hands a ticket to a human (#230): it adds the configured blocked
+// label, which selection screens out, and leaves the ticket's state alone. The
+// label is resolved by name — the team's label first, else a workspace label —
+// because the add takes a UUID and the config names the label.
+func (c *Client) MarkBlocked(identifier string) error {
+	if c.opts.Blocked == "" {
+		return fmt.Errorf("no tracker.blocked_label is configured to mark %s with", identifier)
+	}
+	data, err := c.transport(blockedLabelQuery, map[string]any{"id": identifier, "name": c.opts.Blocked})
+	if err != nil {
+		return err
+	}
+	type nodes struct {
+		Nodes []struct {
+			ID string `json:"id"`
+		} `json:"nodes"`
+	}
+	var resp struct {
+		Issue *struct {
+			ID   string `json:"id"`
+			Team struct {
+				Labels nodes `json:"labels"`
+			} `json:"team"`
+		} `json:"issue"`
+		IssueLabels nodes `json:"issueLabels"`
+	}
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return err
+	}
+	if resp.Issue == nil {
+		return fmt.Errorf("Linear issue not found: %s", identifier)
+	}
+	labels := append(resp.Issue.Team.Labels.Nodes, resp.IssueLabels.Nodes...)
+	if len(labels) == 0 {
+		return fmt.Errorf("no Linear label named %q for %s's team or workspace", c.opts.Blocked, identifier)
+	}
+	_, err = c.transport(addLabelMutation, map[string]any{"id": resp.Issue.ID, "labelId": labels[0].ID})
+	return err
+}
+
 // FileFinding files a harness-improvement finding as a new issue referencing the
 // worked ticket. It tags the issue with the agent-harness label (so dedup search
 // can find it) and, when the finding carries an explicit dedup key, embeds the

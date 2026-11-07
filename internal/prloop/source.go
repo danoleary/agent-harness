@@ -483,6 +483,16 @@ func (s *Source) Release(key string) error {
 	return s.gh.RemoveLabel(n, s.opts.HeldLabel)
 }
 
+// Block labels the PR blocked, as the attempt budget's hand-off does. The PR
+// Pipeline never recovers a branch, so the daemon has no refusal to hand over today.
+func (s *Source) Block(key string) error {
+	n, err := Number(key)
+	if err != nil {
+		return err
+	}
+	return s.gh.AddLabel(n, s.opts.BlockedLabel)
+}
+
 // Comment posts nothing. The daemon's breadcrumbs are worded for tickets ("released
 // back to Todo") and would mislead on a PR; the PR loop's own record is the attempt
 // marker it posts on every try and the hand-off comment past the budget.

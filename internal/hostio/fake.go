@@ -269,6 +269,7 @@ type FakeTracker struct {
 	ClaimErr  error
 	ReleErr   error
 	CancelErr error
+	BlockErr  error
 	CommentEr error
 	ReadyErr  error
 
@@ -276,6 +277,7 @@ type FakeTracker struct {
 	Claimed  []string
 	Released []string
 	Canceled []string
+	Blocked  []string
 	Comments []string
 }
 
@@ -332,6 +334,11 @@ func (t *FakeTracker) ReleaseToTodo(key tracker.Key) error {
 func (t *FakeTracker) MoveToCanceled(key tracker.Key) error {
 	t.Canceled = append(t.Canceled, key)
 	return t.CancelErr
+}
+
+func (t *FakeTracker) MarkBlocked(key tracker.Key) error {
+	t.Blocked = append(t.Blocked, key)
+	return t.BlockErr
 }
 
 func (t *FakeTracker) ListInProgressClaims() ([]tracker.InProgressClaim, error) { return nil, nil }

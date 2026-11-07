@@ -70,7 +70,7 @@ is env-only. Setup guides: [GitHub Issues](../how-to/github-issues.md),
 | `kind` | all | yes | `"github"`, `"linear"` or `"jira"`. |
 | `findings_label_id` | all | no | The label applied to filed Findings. A label **name** on GitHub and Jira; a label **UUID** on Linear. |
 | `ready_label` | github, linear | yes | The label that makes a ticket eligible. On GitHub the harness also adds it to Findings that don't need a human (ADR-0033). Checked at load for Linear only. |
-| `blocked_label` | github, linear | no | Screens a ticket out until a person removes the label. |
+| `blocked_label` | all | no | Screens a ticket out until a person removes the label (on Jira, exclude it in `ready_jql`). The loop adds it to a ticket whose committed branch it refused to push because the review was blocked or a Gate was red (ADR-0042). If it is unset, that ticket is left In Progress with a comment and no label. |
 | `repo` | github | yes | `"owner/name"`. Checked when the tracker is built. |
 | `in_progress_label` | github | yes | Added on claim, removed on release. |
 | `assignee` | github | no | A login to assign on claim, besides the label. |

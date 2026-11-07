@@ -102,6 +102,7 @@ type fakeSource struct {
 	release      func(string) error
 	close        func(string) error
 	comment      func(string, string) error
+	block        func(string) error
 	claims       func() ([]StaleClaim, error)
 	remoteBranch func(string) bool
 
@@ -156,6 +157,13 @@ func (s *fakeSource) Comment(key, body string) error {
 		return nil
 	}
 	return s.comment(key, body)
+}
+
+func (s *fakeSource) Block(key string) error {
+	if s.block == nil {
+		return nil
+	}
+	return s.block(key)
 }
 
 // Releasing words a give-back as a ticket Source does (loophost.TicketSource

@@ -163,3 +163,16 @@ func (c *Client) ReleaseToTodo(key string) error {
 func (c *Client) MoveToCanceled(key string) error {
 	return c.transition(key, c.opts.CanceledTransition)
 }
+
+// MarkBlocked hands a ticket to a human (#230) by adding the configured blocked
+// label, leaving its status and its other labels alone. Jira's queue is a JQL
+// query, so it is the Consumer's ready_jql that keeps a blocked ticket out of it.
+func (c *Client) MarkBlocked(key string) error {
+	if c.opts.Blocked == "" {
+		return fmt.Errorf("no tracker.blocked_label is configured to mark %s with", key)
+	}
+	_, err := c.transport("PUT", "/rest/api/2/issue/"+url.PathEscape(key), map[string]any{
+		"update": map[string]any{"labels": []any{map[string]any{"add": c.opts.Blocked}}},
+	})
+	return err
+}

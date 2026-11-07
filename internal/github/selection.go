@@ -209,6 +209,15 @@ func (c *Client) MoveToCanceled(key string) error {
 	return err
 }
 
+// MarkBlocked hands a ticket to a human (#230): it adds the blocked label, which
+// selection screens out, and leaves the claim's labels and assignee alone.
+func (c *Client) MarkBlocked(key string) error {
+	if c.opts.Blocked == "" {
+		return fmt.Errorf("no tracker.blocked_label is configured to mark %s with", key)
+	}
+	return c.addLabel(keyToNumber(key), c.opts.Blocked)
+}
+
 // labelNames is the issue's label names.
 func labelNames(iss issue) []string {
 	out := make([]string, 0, len(iss.Labels))

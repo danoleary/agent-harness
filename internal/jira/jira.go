@@ -67,6 +67,10 @@ type Options struct {
 	// CanceledTransition is the transition name into the terminal canceled state,
 	// consuming a recommend-close verdict (BEH-682).
 	CanceledTransition string
+	// Blocked is the label MarkBlocked adds to hand a ticket to a human (#230). The
+	// queue is ReadyJQL, so excluding the label from it is the Consumer's to write.
+	// Empty makes MarkBlocked an error.
+	Blocked string
 }
 
 // Client is the Jira Cloud adapter behind the host-side tracker port.

@@ -47,3 +47,4 @@ same number then conflict here, before either reaches main.
 - [ADR-0039](0039-the-loop-idles-on-a-held-red-base-instead-of-reselecting.md): The loop idles on a held red base instead of re-selecting
 - [ADR-0040](0040-open-security-alerts-are-fixed-by-a-loop-that-opens-its-own-pr.md): Open security alerts are fixed by a loop that opens its own PR
 - [ADR-0041](0041-the-host-fetches-the-sentry-issues-a-ticket-cites-into-the-prompt.md): The host fetches the Sentry issues a ticket cites into the prompt
+- [ADR-0042](0042-the-committed-fix-recovery-lands-only-a-tip-the-review-cleared.md): The committed-fix recovery lands only a tip the review cleared
