@@ -2,6 +2,7 @@ package sentry
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -299,5 +300,36 @@ func TestPing(t *testing.T) {
 	}
 	if err := (Client{BaseURL: srv.URL, Org: "acme", Token: "bad", HTTP: srv.Client()}).Ping(); err == nil || !strings.Contains(err.Error(), "HTTP 401") {
 		t.Errorf("ping with a bad token: %v", err)
+	}
+}
+
+// Sentry's own data scrubbing is configured per org, so the harness does not
+// rely on it: credentials an event carries are redacted before the prompt, and
+// the key that carried each one stays readable (#234 review).
+func TestScrubRedactsCredentials(t *testing.T) {
+	in := strings.Join([]string{
+		"## Request",
+		"Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.leak1",
+		"- **Cookie**: session=leak2; csrftoken=leak3",
+		"Set-Cookie: sid=leak4; Path=/",
+		"x-api-key: leak5",
+		`{"headers": {"authorization": "Bearer abcdefghijklmnopqrstuvwxyz.leak6"}}`,
+		"GET /download?file=a.pdf&X-Amz-Signature=leak7&X-Amz-Credential=leak8",
+		"GET /cb?access_token=leak9&state=keepme",
+		`config: {"api_key": "leak10", "client_secret": 'leak11', "password": "leak12"}`,
+		"csrf_token=leak13 sig=leak14 signature: leak15",
+		"retrying with Bearer abcdefghijklmnopqrstuvwxyz0123leak16",
+		"at secrets.load (secrets.ts:42)",
+	}, "\n")
+	out := Scrub(in)
+	for i := 1; i <= 16; i++ {
+		if leak := fmt.Sprintf("leak%d", i); strings.Contains(out, leak) {
+			t.Errorf("Scrub leaks %s:\n%s", leak, out)
+		}
+	}
+	for _, kept := range []string{"Authorization:", "Cookie", "X-Amz-Signature=", "access_token=", "state=keepme", `"api_key"`, "file=a.pdf", "at secrets.load (secrets.ts:42)", "## Request"} {
+		if !strings.Contains(out, kept) {
+			t.Errorf("Scrub lost %q:\n%s", kept, out)
+		}
 	}
 }

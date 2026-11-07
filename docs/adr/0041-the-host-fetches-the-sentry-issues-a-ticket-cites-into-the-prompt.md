@@ -39,9 +39,21 @@ envelopes carry them in a "Sentry context" section after the ticket context**
   markdown, with a 10-second timeout per request.
 - **PII.** The event's user object is never decoded. `sentry.Gather` is the only
   way an issue reaches the prompt. It removes any `User` section and `user.*`
-  lines and redacts every email and IP address in what it keeps, then cuts the
-  event to 8 KiB. The section is defanged like the ticket body, and it tells the
-  session that the data is a snapshot taken at dispatch time.
+  lines and redacts every email and IP address in what it keeps. It also redacts
+  credentials: the values of `Authorization`/`Cookie`/`Set-Cookie`/`X-Api-Key`
+  headers, bearer tokens, `X-Amz-*`/`X-Goog-*` signing parameters and secret-named
+  keys (`*token`, `*api_key`, `*secret`, `*password`, `*sig`, `*signature`),
+  because Sentry's server-side scrubbing is per-org config the harness can't
+  rely on. Then it cuts the event to 8 KiB. The section is defanged like the
+  ticket body, and it tells the session that the data is a snapshot taken at
+  dispatch time.
+- **Untrusted event text.** Anyone who can make the application fail can write
+  into an event, so the event is less trusted than the ticket body. It is fenced
+  with a tilde fence longer than any tilde run in it, so no line of the event can
+  close the fence and pass as envelope prose, and it is labelled as data, not
+  instructions. This does not stop a model from following text in it; the
+  sandbox's network (ADR-0002) bounds what a steered session can send, and the
+  review stage and a human merge bound what it can ship.
 - **Failures never block dispatch.** A missing token, an HTTP error or an unknown
   ID logs `⚠ <Key> cites Sentry <id> but it could not be fetched: <reason>`. The
   envelope then names each unfetched issue, so the session reports the
@@ -71,5 +83,7 @@ enters a container.
   review's copy may be newer than the implementation's.
 - The scrub works on patterns: it redacts emails and IPv4 and IPv6 addresses
   wherever they appear, and it can also redact a value that only looks like one,
-  such as a four-part version number.
+  such as a four-part version number. Credential redaction keys on names, so a
+  secret under an unusual key name gets through, and a harmless value under a
+  secret-sounding key is redacted.
 - Only the ticket body is scanned, not its title or sub-issues.

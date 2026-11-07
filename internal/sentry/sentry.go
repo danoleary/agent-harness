@@ -283,10 +283,23 @@ var (
 	// userLineRE is a `user` or `user.*` key-value line, as Sentry's markdown
 	// renders tags and context.
 	userLineRE = regexp.MustCompile(`(?i)^\s*(?:[-*]\s*)?(?:\*\*|` + "`" + `)?user(?:\.[\w.]+)?(?:\*\*|` + "`" + `)?\s*[:=]`)
+	// credHeaderRE is a header line whose whole value is a credential (a cookie
+	// header carries several); the first group keeps the header name.
+	credHeaderRE = regexp.MustCompile(`(?im)^(\s*(?:[-*]\s*)?(?:\*\*|` + "`" + `)?(?:proxy-)?(?:authorization|cookie|set-cookie|x-api-key|x-auth-token)(?:\*\*|` + "`" + `)?\s*[:=]\s*).*$`)
+	// bearerRE is a bearer token wherever it appears; the length floor keeps prose
+	// such as "Bearer authentication" readable.
+	bearerRE = regexp.MustCompile(`(?i)\b(bearer\s+)[A-Za-z0-9._~+/=-]{20,}`)
+	// credKVRE is a key whose name ends in a secret word (`access_token`,
+	// `api_key`, `client_secret`, `sig`, …) or is an `X-Amz-`/`X-Goog-` signing
+	// parameter, with its value: quoted, or up to the next separator. The first two
+	// groups keep the key and its separator.
+	credKVRE = regexp.MustCompile(`(?i)\b((?:[\w-]*?(?:token|api_?key|secret|password|passwd|pwd|signature|sig|auth|authorization|cookie))|x-(?:amz|goog)-[\w-]+)((?:\*\*|` + "`" + `)?["']?\s*[=:]\s*)("[^"\n]*"|'[^'\n]*'|[^\s&"',;)}\]` + "`" + `]+)`)
 )
 
-// Scrub removes user PII from Sentry text: a `User` section of formatted
-// markdown, every `user`/`user.*` line, and every email and IP address.
+// Scrub removes user PII and credentials from Sentry text: a `User` section of
+// formatted markdown, every `user`/`user.*` line, every email and IP address, and
+// the values of credential headers, bearer tokens and secret-named keys. Sentry's
+// own data scrubbing is configured per org, so the harness does not rely on it.
 func Scrub(s string) string {
 	lines := strings.Split(s, "\n")
 	kept := lines[:0]
@@ -314,6 +327,9 @@ func Scrub(s string) string {
 	out = emailRE.ReplaceAllString(out, "[email removed]")
 	out = ipv6RE.ReplaceAllString(out, "[ip removed]")
 	out = ipv4RE.ReplaceAllString(out, "[ip removed]")
+	out = credHeaderRE.ReplaceAllString(out, "${1}[redacted]")
+	out = bearerRE.ReplaceAllString(out, "${1}[redacted]")
+	out = credKVRE.ReplaceAllString(out, "${1}${2}[redacted]")
 	return out
 }
 

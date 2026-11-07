@@ -99,7 +99,7 @@ runnable by hand against a ticket id before the next is added:
    With a `[sentry]` table (#211,
    [ADR-0041](https://github.com/danoleary/agent-harness/blob/main/docs/adr/0041-the-host-fetches-the-sentry-issues-a-ticket-cites-into-the-prompt.md)),
    the host also reads the Sentry issues the body cites (`HERD-3P`, or an issue
-   URL) with `SENTRY_AUTH_TOKEN`. It scrubs them of user data and the
+   URL) with `SENTRY_AUTH_TOKEN`. It scrubs them of user data and credentials and the
    implementation and review envelopes carry them after the ticket context, as a
    snapshot. An issue it can't read is logged and named in the envelope as not
    fetched, and dispatch goes ahead.

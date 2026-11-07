@@ -50,9 +50,18 @@ counts, first and last seen, culprit and link, plus the recommended event cut to
 
 ## What is removed first
 
-Event data carries user PII, so before anything reaches a prompt the harness
-drops the event's user object, any `User` section and `user.*` lines in the
-event, and every email and IP address.
+Event data carries user PII and can carry credentials, so before anything
+reaches a prompt the harness drops the event's user object, any `User` section
+and `user.*` lines in the event, and every email and IP address. It also
+redacts the values of `Authorization`, `Cookie`, `Set-Cookie` and `X-Api-Key`
+headers, bearer tokens, `X-Amz-*`/`X-Goog-*` signing parameters, and any key
+whose name ends in `token`, `api_key`, `secret`, `password`, `sig` or
+`signature`, keeping the key name. Sentry's own data scrubbing is configured per
+org, so the harness does not rely on it.
+
+The prompt fences the event as data and tells the session not to act on any
+instruction in it, since anyone who can make the application fail can write
+into an event.
 
 ## When an issue can't be read
 
