@@ -438,12 +438,19 @@ func CIRerunMessage() string {
 		"fabricated, speculative change."
 }
 
+// checkpointSubjectPrefix leads every recovery checkpoint's subject.
+const checkpointSubjectPrefix = "checkpoint(harness): "
+
+// IsCheckpoint reports whether a commit subject is a harness recovery checkpoint's
+// ([CheckpointMessage]).
+func IsCheckpoint(subject string) bool { return strings.HasPrefix(subject, checkpointSubjectPrefix) }
+
 // CheckpointMessage builds the commit message for a harness recovery checkpoint.
 // The subject is loudly prefixed and names the `session` (tdd / review) so a
 // reviewer — and a resumed review re-deriving the diff — can tell a salvaged-on-
 // timeout diff apart from a real, verified handoff, and know which stage left it.
 func CheckpointMessage(identifier, session string) string {
-	return "checkpoint(harness): recover uncommitted " + session + " session work (" + identifier + ")\n\n" +
+	return checkpointSubjectPrefix + "recover uncommitted " + session + " session work (" + identifier + ")\n\n" +
 		"Harness-created safety net: the " + session + " session left this diff\n" +
 		"uncommitted in the worktree (wall-clock cap, usage-policy refusal, or crash)\n" +
 		"before committing its work. This is NOT a verified handoff — finish the work\n" +

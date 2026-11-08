@@ -15,6 +15,7 @@ import (
 	"github.com/danoleary/agent-harness/internal/lease"
 	"github.com/danoleary/agent-harness/internal/loop"
 	"github.com/danoleary/agent-harness/internal/loopstream"
+	"github.com/danoleary/agent-harness/internal/prompt"
 	"github.com/danoleary/agent-harness/internal/runlog"
 	"github.com/danoleary/agent-harness/internal/stages"
 	"github.com/danoleary/agent-harness/internal/ticket"
@@ -37,7 +38,8 @@ type Pipeline struct {
 	Loop config.Loop
 	// Source is the loop's Source, which takes back the attempt it recorded when
 	// git refuses the checkout on local state (#247) or the sandbox preflight
-	// refuses (#232). Nil leaves the attempt spent.
+	// refuses (#232), and hands the PR to a human when a run's leftover work could
+	// not be saved (#246). Nil leaves the attempt spent and the PR unlabelled.
 	Source *Source
 }
 
@@ -67,11 +69,14 @@ func (p Pipeline) Run(item loop.WorkItem, claim *lease.Lease) stages.Result {
 	out := Fix(h, cfg, log, it, p.Loop)
 	// Before the deferred release, so settling the lease sees the PR handed off.
 	if p.Source != nil {
-		switch out.Disposition {
-		case stages.CheckoutBlocked:
+		var unsaved *UnsavedError
+		switch {
+		case out.Disposition == stages.CheckoutBlocked:
 			p.Source.Withdraw(it, out.Err)
-		case stages.PreflightAborted:
+		case out.Disposition == stages.PreflightAborted:
 			p.Source.TakeBack(it, out.Err)
+		case errors.As(out.Err, &unsaved):
+			p.Source.HandOver(it, unsaved)
 		}
 	}
 	return out
@@ -84,7 +89,8 @@ func (Pipeline) Recover(loop.WorkItem) (stages.Result, bool) { return stages.Res
 // Fix is the PR-fixer pipeline over one PR, through h, running the loop's Steps
 // (ADR-0019):
 //
-//  1. checkout_pr: check the PR's head branch out at the polled head, and run
+//  1. checkout_pr: check the PR's head branch out at the polled head, or at the
+//     recovery checkpoint an earlier attempt left on it (#246), and run
 //     post_create;
 //  2. fix, gates, push_existing: a conflict runs the RebaseFix session (rebase on a
 //     harness branch, merge on a human's), checked by verify.RebaseResolution and
@@ -99,9 +105,11 @@ func (Pipeline) Recover(loop.WorkItem) (stages.Result, bool) { return stages.Res
 // The loop's fix and retro prompt bodies replace the defaults.
 //
 // Nothing is pushed unless the ground truth and the gates agree, and no PR is
-// opened: the PR exists. A push counts as Shipped for the breaker, as a ticket's
+// opened: the PR exists. Uncommitted work a session leaves is saved as a local
+// recovery checkpoint when the run ends; if it cannot be, the result carries an
+// [UnsavedError]. A push counts as Shipped for the breaker, as a ticket's
 // does, even when CI is still red after the fix budget.
-func Fix(h hostio.Host, cfg config.Config, log *runlog.Logger, it Item, l config.Loop) stages.Result {
+func Fix(h hostio.Host, cfg config.Config, log *runlog.Logger, it Item, l config.Loop) (out stages.Result) {
 	l.ApplyPrompts(&cfg.Prompts)
 	key := Key(it.PR.Number)
 	slug := ticket.Slug(key)
@@ -116,7 +124,8 @@ func Fix(h hostio.Host, cfg config.Config, log *runlog.Logger, it Item, l config
 		log.Event(who + " … warning: could not fetch origin/main: " + err.Error())
 	}
 	wt := h.Worktree()
-	if err := wt.CheckoutRemote(); err != nil {
+	resumed, err := wt.CheckoutRemote()
+	if err != nil {
 		log.Event(fmt.Sprintf("%s ✗ could not check out %s: %v — nothing pushed", who, it.PR.HeadBranch, err))
 		// git refused on the host's local state, before any session: not the PR's
 		// failure, and no attempt (#247). A fetch that failed after its retries is.
@@ -127,22 +136,38 @@ func Fix(h hostio.Host, cfg config.Config, log *runlog.Logger, it Item, l config
 		return stages.Result{}
 	}
 	r := run{h: h, cfg: cfg, log: log, fixes: fixes, target: target, it: it, watchCI: l.Has(config.StepWatchCI)}
-	// The branch on origin is the record. A worktree left dirty is kept, and the
-	// next checkout refuses to drop it: the PR is handed to a human without
-	// spending an attempt (#247).
-	defer fixes.Cleanup()
+	// The branch on origin is the record. What a session left uncommitted is saved
+	// as a local recovery checkpoint, which the next attempt at this head starts
+	// from (#246). If it cannot be saved, the next checkout would refuse the dirty
+	// worktree, so the PR goes to a human now rather than spend its attempts.
+	defer func() {
+		if err := fixes.Checkpoint(key); err != nil {
+			log.Event(fmt.Sprintf("%s ✗ could not save the uncommitted work in %s as a recovery checkpoint: %v — handing %s to a human", who, wt.Path(), err, key))
+			out.OK, out.Err = false, &UnsavedError{Path: wt.Path(), Err: err}
+		}
+		fixes.Cleanup()
+	}()
 
 	// Work the head that was polled or nothing: a push that landed since is a newer
-	// head, which the next poll judges as a new item.
-	if head, err := wt.HeadSHA(); err != nil || head != it.PR.HeadSHA {
+	// head, which the next poll judges as a new item. A resumed checkpoint sits on
+	// origin's tip, which is the head.
+	head, err := wt.HeadSHA()
+	if resumed.Checkpoint != "" {
+		head = resumed.Base
+	}
+	if err != nil || head != it.PR.HeadSHA {
 		log.Event(fmt.Sprintf("%s ⊘ %s moved since the poll (now %s, polled %s) — leaving it to the next poll", who, it.PR.HeadBranch, short(head), short(it.PR.HeadSHA)))
 		return stages.Result{}
+	}
+	if resumed.Checkpoint != "" {
+		log.Event(fmt.Sprintf("%s ↺ resuming from the recovery checkpoint %s an earlier attempt left on %s — unverified, and the session is told so (#246)", who, short(resumed.Checkpoint), short(resumed.Base)))
+		r.target.Checkpoint = &prompt.Checkpoint{Commit: resumed.Checkpoint, Base: resumed.Base}
 	}
 	if !fixes.Provision() {
 		return stages.Result{}
 	}
 
-	out := r.repair()
+	out = r.repair()
 	if r.sessions && l.Has(config.StepRetro) {
 		t := target.Ticket
 		t.TeamID = stages.FindingsTeam(h, log, who, key)
@@ -152,6 +177,20 @@ func Fix(h hostio.Host, cfg config.Config, log *runlog.Logger, it Item, l config
 	}
 	return out
 }
+
+// UnsavedError is a run that ended with uncommitted work in its worktree at Path
+// that the harness could not save as a recovery checkpoint (#246). The next
+// checkout would refuse that worktree, so the PR goes to a human at once.
+type UnsavedError struct {
+	Path string
+	Err  error
+}
+
+func (e *UnsavedError) Error() string {
+	return fmt.Sprintf("worktree %s holds uncommitted work that could not be saved as a recovery checkpoint: %v", e.Path, e.Err)
+}
+
+func (e *UnsavedError) Unwrap() error { return e.Err }
 
 // run is one PR fix in flight: what it acts through, and what it has done so far.
 type run struct {

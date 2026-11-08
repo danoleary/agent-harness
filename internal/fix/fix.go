@@ -59,13 +59,16 @@ type Target struct {
 	// `<branch_prefix>/<slug>`. The PR loop sets it: it works a branch it did not
 	// name.
 	Branch string
+	// Checkpoint, when set, is the recovery checkpoint the worktree starts from: an
+	// earlier attempt's saved, unverified work (#246), which the prompt names.
+	Checkpoint *prompt.Checkpoint
 }
 
 func (e Env) promptContext(t Target) prompt.Context {
 	return prompt.Context{
 		Ticket: t.Ticket, Slug: t.Slug, BranchPrefix: e.Cfg.BranchPrefix, Branch: t.Branch,
 		Tracker: e.Cfg.Tracker.Kind, WorktreePath: e.Host.Worktree().Path(),
-		Body: e.Cfg.Prompts.Fix,
+		Body: e.Cfg.Prompts.Fix, Checkpoint: t.Checkpoint,
 	}
 }
 
@@ -327,6 +330,32 @@ func sessionError(outcome session.Outcome, attempt int) error {
 }
 
 // --- cleanup -----------------------------------------------------------------
+
+// Checkpoint saves what a session left uncommitted in the worktree as a local
+// recovery checkpoint commit on its branch ([gitpkg.Worktree.Checkpoint]), and
+// pushes nothing (#246). The worktree is then clean, so [Env.Cleanup] removes it,
+// and a later checkout can start from the checkpoint. A clean worktree, or none,
+// is a no-op. It fails when the commit does, leaving the worktree dirty.
+func (e Env) Checkpoint(identifier string) error {
+	wt := e.Host.Worktree()
+	if !wt.Exists() || wt.Clean() {
+		return nil
+	}
+	if err := wt.Checkpoint(identifier, e.Who); err != nil {
+		return err
+	}
+	head, _ := wt.HeadSHA()
+	e.Log.Event(fmt.Sprintf("%s ⚑ saved the uncommitted work in %s as the local recovery checkpoint %s on %s — not pushed; the next attempt at this head starts from it", e.Who, wt.Path(), shortSHA(head), wt.Branch()))
+	return nil
+}
+
+// shortSHA abbreviates a SHA for the run log.
+func shortSHA(sha string) string {
+	if len(sha) > 7 {
+		return sha[:7]
+	}
+	return sha
+}
 
 // Cleanup removes the worktree once it is clean: the branch on origin is the
 // record, and the next run checks it out or cuts it afresh. A worktree left dirty

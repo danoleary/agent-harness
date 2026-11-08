@@ -166,25 +166,69 @@ func (w Worktree) freshBase() string {
 // worktree is not forced: one still holding uncommitted work makes git refuse, and
 // the caller fails rather than discard it.
 //
+// The one local branch it reuses is a recovery checkpoint on origin's tip: a
+// previous run's session left uncommitted work, and the run saved it with
+// [Worktree.Checkpoint] (#246). The worktree is then added on the local branch as
+// it stands, and the Resumed it returns names the checkpoint and origin's tip under
+// it. A checkpoint origin's tip has moved past is cut from a head that is gone, so
+// the branch is reset as usual.
+//
 // A refusal after the fetch — a worktree holding uncommitted work, a locked one,
 // the branch held by another worktree — is the host's local state, not the
 // remote's, and comes back as a [*LocalStateError] (#247).
-func (w Worktree) CheckoutRemote() error {
+func (w Worktree) CheckoutRemote() (Resumed, error) {
 	tracking := "refs/remotes/origin/" + w.branch
 	if err := w.withRetry(func() error {
 		return w.run("git", "-C", w.repo, "fetch", "-q", "origin", "+refs/heads/"+w.branch+":"+tracking)
 	}); err != nil {
-		return fmt.Errorf("fetch %s: %w", w.branch, err)
+		return Resumed{}, fmt.Errorf("fetch %s: %w", w.branch, err)
 	}
 	if w.Exists() {
 		if err := w.Remove(); err != nil {
-			return &LocalStateError{Path: w.path, Op: "remove the previous worktree", Err: err}
+			return Resumed{}, &LocalStateError{Path: w.path, Op: "remove the previous worktree", Err: err}
 		}
 	}
-	if err := w.run("git", "-C", w.repo, "worktree", "add", "-B", w.branch, w.path, tracking); err != nil {
-		return &LocalStateError{Path: w.path, Op: "add the worktree on " + w.branch, Err: err}
+	resumed := w.checkpointOn(tracking)
+	args := []string{"-C", w.repo, "worktree", "add", "-B", w.branch, w.path, tracking}
+	if resumed.Checkpoint != "" {
+		args = []string{"-C", w.repo, "worktree", "add", w.path, w.branch}
 	}
-	return nil
+	if err := w.run("git", args...); err != nil {
+		return Resumed{}, &LocalStateError{Path: w.path, Op: "add the worktree on " + w.branch, Err: err}
+	}
+	return resumed, nil
+}
+
+// Resumed is the recovery checkpoint [Worktree.CheckoutRemote] started the
+// worktree from instead of origin's tip (#246). The zero value is a checkout at
+// origin's tip.
+type Resumed struct {
+	// Checkpoint is the local branch's tip: a harness recovery checkpoint commit.
+	Checkpoint string
+	// Base is origin's tip, which the checkpoint sits on.
+	Base string
+}
+
+// checkpointOn is the local branch as a Resumed when its tip is a recovery
+// checkpoint with tracking's tip strictly behind it, or the zero value. Any git
+// failure reads as no checkpoint: the checkout then starts from origin's tip.
+func (w Worktree) checkpointOn(tracking string) Resumed {
+	tip, err := w.output("git", "-C", w.repo, "log", "-1", "--format=%H %s", "refs/heads/"+w.branch, "--")
+	if err != nil {
+		return Resumed{}
+	}
+	sha, subject, _ := strings.Cut(strings.TrimSpace(string(tip)), " ")
+	if !IsCheckpoint(subject) {
+		return Resumed{}
+	}
+	out, err := w.output("git", "-C", w.repo, "rev-parse", "--verify", "-q", tracking)
+	base := strings.TrimSpace(string(out))
+	// A checkpoint origin already has is no unpushed work: the ticket loop pushes a
+	// branch whose tip is a checkpoint, and is-ancestor holds for a commit itself.
+	if err != nil || base == sha || w.run("git", "-C", w.repo, "merge-base", "--is-ancestor", tracking, sha) != nil {
+		return Resumed{}
+	}
+	return Resumed{Checkpoint: sha, Base: base}
 }
 
 // LocalStateError is a checkout git refused because of local state on the host —

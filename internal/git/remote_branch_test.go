@@ -27,7 +27,7 @@ func TestCheckoutRemoteFetchesTheBranchAndAddsTheWorktreeAtItsTip(t *testing.T) 
 	run, calls := recordingRunner(func([]string) error { return nil })
 	wt := fakeCheckout(runners{run: run}).WorktreeOn("pr-12", "alice/widget")
 
-	if err := wt.CheckoutRemote(); err != nil {
+	if _, err := wt.CheckoutRemote(); err != nil {
 		t.Fatalf("CheckoutRemote: %v", err)
 	}
 	want := [][]string{
@@ -54,7 +54,7 @@ func TestCheckoutRemoteStopsWhenTheFetchFails(t *testing.T) {
 	now := func() time.Time { clock = clock.Add(time.Hour); return clock }
 	wt := fakeCheckout(runners{run: run, now: now}).WorktreeOn("pr-12", "alice/widget")
 
-	if err := wt.CheckoutRemote(); err == nil {
+	if _, err := wt.CheckoutRemote(); err == nil {
 		t.Fatal("a failed fetch must be returned")
 	}
 	for _, c := range *calls {
@@ -76,7 +76,7 @@ func TestCheckoutRemoteNamesARefusedAdd(t *testing.T) {
 	wt := fakeCheckout(runners{run: run}).WorktreeOn("pr-12", "alice/widget")
 
 	var local *LocalStateError
-	if err := wt.CheckoutRemote(); !errors.As(err, &local) || local.Path != wt.Path() {
+	if _, err := wt.CheckoutRemote(); !errors.As(err, &local) || local.Path != wt.Path() {
 		t.Fatalf("CheckoutRemote = %v, want a LocalStateError on %s", err, wt.Path())
 	}
 }
@@ -94,7 +94,7 @@ func TestCheckoutRemoteFetchFailureIsNotLocalState(t *testing.T) {
 	wt := fakeCheckout(runners{run: run, now: now}).WorktreeOn("pr-12", "alice/widget")
 
 	var local *LocalStateError
-	if err := wt.CheckoutRemote(); err == nil || errors.As(err, &local) {
+	if _, err := wt.CheckoutRemote(); err == nil || errors.As(err, &local) {
 		t.Fatalf("CheckoutRemote = %v, want a fetch failure that is not local state", err)
 	}
 }

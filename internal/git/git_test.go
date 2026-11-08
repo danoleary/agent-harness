@@ -1699,7 +1699,7 @@ func TestWithoutRemoteRetryTriesARemoteOpOnce(t *testing.T) {
 	if err := wt.Push(); !errors.Is(err, boom) {
 		t.Fatalf("Push: expected %v, got %v", boom, err)
 	}
-	if err := wt.CheckoutRemote(); !errors.Is(err, boom) {
+	if _, err := wt.CheckoutRemote(); !errors.Is(err, boom) {
 		t.Fatalf("CheckoutRemote: expected %v, got %v", boom, err)
 	}
 	if len(*calls) != 2 {

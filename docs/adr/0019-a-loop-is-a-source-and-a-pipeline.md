@@ -386,3 +386,39 @@ dropped the build error.
   each abort after it doubles the wait, up to 16 poll intervals. Any other
   outcome resets it. The loop counts aborts in a row rather than comparing
   errors, because a failed build's output carries step timings.
+
+## Amendment, 2026-11-08: a run's uncommitted work is saved as a checkpoint, and the retry resumes from it (#246)
+
+The #247 amendment stopped refused checkouts from spending attempts, but on
+herd PR-1384 it still left one real attempt and a PR labelled `blocked`. CI-fix
+session 1 wrote a fix, never committed it, and the 25-minute cap killed it. The
+run kept the dirty worktree for a look, so the next checkout had to fail. The
+ticket loop already saves such work as a harness recovery checkpoint
+(`git.Worktree.Checkpoint`, BEH-479/BEH-559). The PR loop now does too.
+
+- **A run ends with no dirty worktree.** When a PR run ends and its worktree
+  holds uncommitted work, whichever session left it, the Pipeline commits that
+  work as a recovery checkpoint (`checkpoint(harness): …`) on the local branch.
+  It pushes nothing. The worktree is then clean, so it is removed as usual.
+- **The retry at the same head starts from the checkpoint.** `CheckoutRemote`
+  reuses the local branch, instead of resetting it to origin's tip, only when
+  its tip is a recovery checkpoint and origin's tip is behind it. Otherwise it
+  resets the branch as before: a checkpoint origin has moved past was cut from a
+  head that is gone, and an ordinary unpushed commit (a fix the gates refused)
+  is no checkpoint. The polled-head check compares origin's tip, under the
+  checkpoint, with the polled head.
+- **The session is told the work is unverified.** The CIFix and RebaseFix
+  prompts name the checkpoint and the tip under it, say that no gate has run
+  over it and that it can be wrong, and give the reset that drops it. In the
+  incident the saved diff was the wrong fix: a `waitFor` that hung the story
+  runner. Whatever the session keeps still passes every gate before any push.
+- **A checkpoint that cannot be committed goes to a human at once.** The next
+  checkout would refuse the dirty worktree, so the run's result carries a
+  `prloop.UnsavedError` naming the worktree, and the Source labels the PR
+  `blocked` with a comment naming it. A session ran, so the attempt stays spent;
+  the Disposition is unchanged. #247's refusal remains the backstop if that
+  hand-off fails.
+
+The security-alerts loop does not change: its checkout cuts a fresh branch and
+deliberately drops a failed attempt's commits (ADR-0040), so it still keeps a
+dirty worktree for a look.
