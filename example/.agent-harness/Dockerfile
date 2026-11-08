@@ -3,7 +3,7 @@
 #
 # Pin the IMMUTABLE semver tag, never `:latest`, so a base bump is a deliberate,
 # reviewable edit rather than a silent floating pull.
-FROM ghcr.io/danoleary/agent-harness-base:0.10.0
+FROM ghcr.io/danoleary/agent-harness-base:0.11.0
 
 ARG DOTNET_VERSION=9.0
 
