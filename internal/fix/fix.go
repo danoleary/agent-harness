@@ -8,7 +8,8 @@
 // Its callers share it, so none copies it (ADR-0019): the review stage, on the
 // branch it has just reviewed; the PR loop, on an open PR that went red or
 // conflicting after its review finished; and the security-alerts loop, which
-// provisions and gates the branch it cuts for a package (ADR-0040).
+// provisions and gates the branch it cuts for a package and fixes the red CI of
+// the PR it opens (ADR-0040).
 package fix
 
 import (
@@ -266,6 +267,48 @@ func (e Env) CI(t Target) func(ciLogs string, logAvailable bool) error {
 	}
 }
 
+// GatedCI is the CI watch's fix callback both loops that watch an open PR hand
+// [hostio.CIWatch]: a [Env.CI] session over the failing logs, whose committed fix
+// must then pass every gate before the watch may push it. It counts what it did,
+// so its caller can tell a run that launched a session (whose transcripts a
+// retrospective mines) or had a fix pushed from one that did neither.
+type GatedCI struct {
+	env   Env
+	ciFix func(ciLogs string, logAvailable bool) error
+	// Attempts is how many CIFix sessions the watch launched.
+	Attempts int
+	// Accepted is how many fixes passed the gates; the watch pushes each one.
+	Accepted int
+}
+
+// GatedCI returns the gated CI fix over t, for one CI watch.
+func (e Env) GatedCI(t Target) *GatedCI { return &GatedCI{env: e, ciFix: e.CI(t)} }
+
+// Fix runs one CIFix session and gates its commit. A gate red only in files the
+// fix left alone is re-run once before it refuses the fix (#167); not knowing what
+// the fix changed leaves the plain gates. A red gate refuses the fix, so the watch
+// pushes nothing.
+func (g *GatedCI) Fix(ciLogs string, logAvailable bool) error {
+	g.Attempts++
+	wt := g.env.Host.Worktree()
+	before, _ := wt.HeadSHA()
+	if err := g.ciFix(ciLogs, logAvailable); err != nil {
+		return err
+	}
+	label := fmt.Sprintf("gate-cifix%d", g.Attempts)
+	var gate GateResult
+	if fixed, err := wt.ChangedSince(before); before != "" && err == nil {
+		gate = g.env.GatesOver(label, fixed)
+	} else {
+		gate = g.env.Gates(label)
+	}
+	if !gate.Green() {
+		return fmt.Errorf("gate %q is red over auto-fix %d (exit %d) — not pushing", gate.FailedGate, g.Attempts, gate.Outcome.ExitCode)
+	}
+	g.Accepted++
+	return nil
+}
+
 // sessionError maps a finished auto-fix session's outcome to the error the
 // ci.Driver.Fix callback should return — nil if the session ran cleanly and the
 // caller should proceed to the ground-truth (committed-fix) checks. A spending-cap
@@ -281,6 +324,23 @@ func sessionError(outcome session.Outcome, attempt int) error {
 		return fmt.Errorf("auto-fix session %d exited %d", attempt, outcome.ExitCode)
 	}
 	return nil
+}
+
+// --- cleanup -----------------------------------------------------------------
+
+// Cleanup removes the worktree once it is clean: the branch on origin is the
+// record, and the next run checks it out or cuts it afresh. A worktree left dirty
+// is kept for a look, and so is one git will not remove. Both loops that work a
+// worktree the ticket pipeline did not create share it.
+func (e Env) Cleanup() {
+	wt := e.Host.Worktree()
+	if !wt.Clean() {
+		e.Log.Event(fmt.Sprintf("%s — worktree %s kept: it holds uncommitted changes", e.Who, wt.Path()))
+		return
+	}
+	if err := wt.Remove(); err != nil {
+		e.Log.Event(fmt.Sprintf("%s — worktree %s kept: %v", e.Who, wt.Path(), err))
+	}
 }
 
 // --- conflicts ---------------------------------------------------------------

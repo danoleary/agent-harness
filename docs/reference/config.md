@@ -164,7 +164,7 @@ Each step is `{ use = "<step>" }`, plus `prompt = "<path>"` (relative to
 | `gates` | `github_prs`, `github_security_alerts` | `fix` on `github_prs`; `fix_alerts` on `github_security_alerts` | not accepted | every Gate green over the fixed tree |
 | `push_existing` | `github_prs` | `gates` | not accepted | pushes only a committed, gate-green tree |
 | `open_pr` | `github_security_alerts` | `gates` | not accepted | opens a new PR only for a committed, gate-green tree |
-| `watch_ci` | `tracker`, `github_prs`, `github_security_alerts` | `review` on `tracker`; `push_existing` on `github_prs`; `open_pr` on `github_security_alerts` | not accepted | a CI fix must pass every Gate before it is pushed; on `github_security_alerts` the watch fixes nothing, and a red check is left to `pr-doctor` |
+| `watch_ci` | `tracker`, `github_prs`, `github_security_alerts` | `review` on `tracker`; `push_existing` on `github_prs`; `open_pr` on `github_security_alerts` | not accepted | a CI fix must pass every Gate before it is pushed |
 | `assess` | `backlog` | (first) | leads the Triage prompt with the project's own bar for "ready" | a verdict file: ready, or not ready with questions for a human |
 | `apply` | `backlog` | `assess` | not accepted | a ready ticket gets `ready_label` (on Linear, Backlog → Todo too); one that is not gets a comment with the questions |
 | `retro` | `tracker`, `github_prs`, `github_security_alerts` | any step; must be last | replaces `prompts/retro.md` | files the run's Findings |
@@ -173,9 +173,9 @@ A `tracker` loop needs `implement` and `review`. A `github_prs` loop needs
 `checkout_pr`, `fix`, `gates` and `push_existing`; `when = ["ci_failing"]` also
 needs `watch_ci`, because a red check is fixed inside the CI watch. A
 `github_security_alerts` loop needs `new_branch`, `fix_alerts`, `gates` and
-`open_pr`. A `tracker`
-loop without `watch_ci` stops its review stage once the PR is open and leaves red
-CI to a PR loop (ADR-0031); the built-in `tickets` loop has it. Without
+`open_pr`. A `tracker` or `github_security_alerts`
+loop without `watch_ci` stops once the PR is open and leaves red CI to a PR loop
+(ADR-0031); the built-in `tickets` and `security-alerts` loops have it. Without
 `retro`, nothing files Findings. A `backlog` loop needs `assess`; without
 `apply` it records its verdicts and changes no ticket. Each Step may appear once.
 
