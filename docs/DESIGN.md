@@ -1506,7 +1506,9 @@ reader over a structured stream rather than a `--tui` flag on the daemon.
   tools, the `.env` `config.ResolveEnvFile` picked and the ones it skipped, each
   credential with a live read-only API call (`GH_TOKEN`'s `X-OAuth-Scopes` must
   carry `repo`), the config and prompt bodies, the tracker's repo/team/project
-  and labels, and whether the sandbox image is present, buildable or pullable —
+  and labels, whether the sandbox image is present, buildable or pullable, and,
+  when a `github_security_alerts` loop is declared, one read of the Dependabot
+  alerts that names a missing scope or alerts turned off —
   and prints a fix under each failure. It exits 1 on any failure; `--offline`
   skips the network calls. Every setup error (config load, tracker selection,
   sandbox preflight) ends by pointing at it.

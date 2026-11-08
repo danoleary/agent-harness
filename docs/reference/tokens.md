@@ -11,6 +11,7 @@ enters a container (ADR-0002).
 | a **classic** personal access token | A fine-grained token can push and open a PR, but no fine-grained permission can read check runs, so the post-PR CI watch is blind. |
 | `repo` scope | push branches, open and read PRs, read check runs and logs, re-run failed jobs; on the GitHub tracker, read, label, assign, comment on and open issues |
 | `workflow` scope, if a branch may change `.github/workflows/` | GitHub refuses a push that edits a workflow file without it |
+| `security_events` scope, if a `github_security_alerts` loop runs | the [security-alerts loop](../how-to/fix-security-alerts.md) reads the repository's Dependabot alerts. `repo` includes it; a fine-grained token needs "Dependabot alerts: Read-only" instead |
 | SSO-authorized for the org, if the org enforces SSO | otherwise the org's repos answer as if the token can't see them |
 
 Create one at
@@ -23,7 +24,12 @@ The same token pushes, runs `gh`, works GitHub Issues, and files
 network call. Otherwise it calls `GET https://api.github.com/user` and reads the
 `X-OAuth-Scopes` header. No header means fine-grained, no `repo` means fail, and
 no `workflow` means warn. `doctor` doesn't check SSO. With `[tracker] kind = "github"` it
-also reads the repo and every label the config names.
+also reads the repo and every label the config names. When `config.toml`
+declares a `github_security_alerts` loop, it reads one alert,
+`GET /repos/<origin's owner/repo>/dependabot/alerts?per_page=1`. A 403 fails and
+names the fix: the `security_events` scope on a classic token, "Dependabot
+alerts: Read-only" on a fine-grained one, or turning Dependabot alerts on when
+the repository has them off.
 
 ## Claude credential
 

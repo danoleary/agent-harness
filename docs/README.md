@@ -25,6 +25,7 @@ Running:
 
 - [Run more than one instance of the ticket loop](how-to/run-several-instances.md)
 - [Fix open PRs with `pr-doctor`](how-to/fix-open-prs.md)
+- [Fix Dependabot alerts with `security-alerts`](how-to/fix-security-alerts.md)
 - [Change a loop or declare your own](how-to/declare-a-loop.md)
 - [Send harness findings upstream](how-to/upstream-findings.md)
 - [Give sessions the Sentry issues a ticket cites](how-to/sentry.md)

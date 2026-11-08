@@ -54,21 +54,27 @@ One unit of work a **Source** yields (`loop.WorkItem`): a **Key** and the branch
 the **Pipeline** will push. For a ticket, the Key is the tracker Key and the
 branch is `<branch_prefix>/<slug>`. For an open PR (the **PR loop**), the Key is
 `PR-<number>` and the branch is the PR's head branch. For a vulnerable package
-(the security-alerts Source, ADR-0040), the Key is `SEC-<ecosystem>-<package>`
-and the branch is `<branch_prefix>/<slug>`.
+(the security-alerts Source, ADR-0040), the Work item is an alert group: every
+open Dependabot alert on that package at the configured severities, so one PR
+fixes them together. Its Key is `SEC-<ecosystem>-<package>`, its branch is
+`<branch_prefix>/<slug>`, and its fingerprint over the group's alerts bounds the
+attempts.
 _Avoid_: job, task, ticket (a ticket is one kind of Work item).
 
 **Pipeline** (of a loop):
 What a loop does to one **Work item** (`loop.Pipeline`): its **Steps**, in order.
 For a ticket, the three **Stages**; for a PR, one fix (a conflict resolution or a
-CI fix), then the **Gates**, a push to the existing branch, and the CI watch. The
+CI fix), then the **Gates**, a push to the existing branch, and the CI watch; for
+an alert group, a fresh branch, the SecurityFix session, the **Gates** and a new
+PR. The
 daemon branches only on the **Disposition** it returns.
 
 **Step**:
 One named unit of a loop's **Pipeline**, from a fixed set the harness implements
 in Go (`config.Step`): `implement`, `review`, `watch_ci`, `retro` for a tracker **Source**;
 `checkout_pr`, `fix`, `gates`, `push_existing`, `watch_ci`, `retro` for open PRs;
-`assess`, `apply` for the backlog. Every Step owns its **Ground truth** check. A Consumer's `[[loops]]` config
+`new_branch`, `fix_alerts`, `gates`, `open_pr`, `watch_ci`, `retro` for open
+security alerts; `assess`, `apply` for the backlog. Every Step owns its **Ground truth** check. A Consumer's `[[loops]]` config
 chooses, orders and parameterises Steps and supplies their **Project bodies**, but
 cannot add one (ADR-0019).
 _Avoid_: action, task, hook (a hook is `post_create`, which a Step may run).
