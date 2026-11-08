@@ -292,9 +292,10 @@ keeps doing it until the queue is empty or you stop it.
 // built-in loop needs an entry (TestUsageDescribesEveryLoop), so a new one cannot
 // ship undiscoverable.
 var loopSummaries = map[string]string{
-	config.DefaultLoopName:  "works the ready queue: every ticket labelled ready, one at a time, through to a PR",
-	config.PRDoctorLoopName: "fixes open PRs that conflict with main or have red CI, and pushes the fix to the same PR",
-	config.TriageLoopName:   "reads backlog tickets not yet labelled ready, labels the ones an agent can start, and comments questions on the rest",
+	config.DefaultLoopName:        "works the ready queue: every ticket labelled ready, one at a time, through to a PR",
+	config.PRDoctorLoopName:       "fixes open PRs that conflict with main or have red CI, and pushes the fix to the same PR",
+	config.TriageLoopName:         "reads backlog tickets not yet labelled ready, labels the ones an agent can start, and comments questions on the rest",
+	config.SecurityAlertsLoopName: "fixes open Dependabot alerts, one new PR per vulnerable package, checked on the host before anything is pushed",
 }
 
 // loopsHelp lists the loops for --help: each built-in with what it does and the
@@ -315,22 +316,13 @@ func loopsHelp() string {
 		fmt.Fprintf(&b, "  %-*s  %s\n", width, l.Name, loopSummaries[l.Name])
 		fmt.Fprintf(&b, "  %-*s  steps: %s\n", width, "", strings.Join(uses, " → "))
 	}
-	fmt.Fprintf(&b, `
-More loops are declared as [[loops]] in .agent-harness/config.toml. An entry
-named like a built-in loop replaces it.
-
-A security-alerts loop (source kind %q) fixes the repository's
-open Dependabot alerts, one new PR per vulnerable package:
-  steps: new_branch → fix_alerts → gates → open_pr → watch_ci → retro
-Each fix is cut fresh from origin/main, and nothing is pushed unless the lockfile
-no longer resolves a vulnerable version, the diff touches only dependency files,
-and every gate is green. A red CI check on its PR is left to pr-doctor. Only npm
-packages locked by pnpm-lock.yaml are fixed for now; --dry-run lists the packages
-it would work and why it skips the rest.
+	b.WriteString(`
+Any of these can be replaced by a [[loops]] entry of the same name in
+.agent-harness/config.toml, and other entries add loops of your own.
 
   agent-harness loop --list             every loop this project can run
   agent-harness loop <name> --dry-run   what that loop would work, changing nothing
   https://github.com/danoleary/agent-harness/blob/main/docs/how-to/declare-a-loop.md
-`, config.SourceGitHubSecurityAlerts)
+`)
 	return b.String()
 }

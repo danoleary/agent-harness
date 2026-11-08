@@ -343,8 +343,7 @@ func markdownCells(row string) []string {
 
 // --help is how an operator finds out what the harness can do, so it names every
 // loop it can run — each built-in with what it does and the Steps it runs — and
-// the loop kinds a project can only get by declaring one, like the security-alerts
-// loop. A loop missing from it is one nobody discovers.
+// how to declare more. A loop missing from it is one nobody discovers.
 func TestUsageDescribesEveryLoop(t *testing.T) {
 	got := usage()
 	for _, l := range config.BuiltInLoops() {
@@ -363,7 +362,6 @@ func TestUsageDescribesEveryLoop(t *testing.T) {
 		}
 	}
 	for _, want := range []string{
-		config.SourceGitHubSecurityAlerts,
 		"loop --list",
 		"--dry-run",
 		"[[loops]]",

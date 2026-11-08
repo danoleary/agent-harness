@@ -102,6 +102,8 @@ const (
 	DefaultLoopName  = "tickets"
 	PRDoctorLoopName = "pr-doctor"
 	TriageLoopName   = "triage"
+	// SecurityAlertsLoopName is the built-in github_security_alerts loop.
+	SecurityAlertsLoopName = "security-alerts"
 )
 
 // The github_prs source scopes. ScopeAll, the default, works every open PR the
@@ -330,8 +332,10 @@ func (l Loop) ApplyPrompts(p *PromptBodies) {
 	}
 }
 
-// BuiltInLoops are the loops the harness defines: the ticket loop, and the PR
-// loop that was `loop --prs` before loops had names.
+// BuiltInLoops are the loops the harness defines: the ticket loop, the PR loop
+// that was `loop --prs` before loops had names, the triage loop, and the
+// security-alerts loop. A built-in runs only when it is named; being built in
+// makes it discoverable in --list and --help without a [[loops]] entry.
 func BuiltInLoops() []Loop {
 	steps := func(uses ...string) []Step {
 		out := make([]Step, 0, len(uses))
@@ -355,6 +359,11 @@ func BuiltInLoops() []Loop {
 			Name: TriageLoopName, BuiltIn: true,
 			Source: LoopSource{Kind: SourceBacklog},
 			Steps:  steps(StepAssess, StepApply),
+		},
+		{
+			Name: SecurityAlertsLoopName, BuiltIn: true,
+			Source: LoopSource{Kind: SourceGitHubSecurityAlerts, Severity: append([]string(nil), defaultSeverity...), MaxAttempts: defaultSecurityMaxAttempts},
+			Steps:  steps(StepNewBranch, StepFixAlerts, StepGates, StepOpenPR, StepWatchCI, StepRetro),
 		},
 	}
 }
