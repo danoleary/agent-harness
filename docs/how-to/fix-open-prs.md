@@ -95,6 +95,13 @@ Any new push is a new attempt too. After `source.max_attempts` attempts (else
 `PR_LOOP_MAX_ATTEMPTS`, default 3), the loop comments on the PR with what it tried
 and labels it `blocked`. Remove the label to give it a fresh budget.
 
+If a session ends with uncommitted changes (the time cap killed it before it
+committed, say), the run commits them to the local branch as a
+`checkpoint(harness): …` commit and pushes nothing. The next attempt at the same
+head starts from that checkpoint, and its session is told the work is unverified
+and may be wrong. If that commit fails, the loop labels the PR `blocked` at once
+and comments with the worktree that still holds the changes.
+
 If git refuses to check the branch out because of the state of your checkout (a
 worktree an earlier run left with uncommitted changes, say), no session runs and
 the attempt does not count. The loop labels the PR `blocked` and comments with the

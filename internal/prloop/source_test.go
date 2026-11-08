@@ -1033,3 +1033,55 @@ func TestPreflightAbortsSpendNoAttempts(t *testing.T) {
 		t.Errorf("the PR must say why no session ran:\n%s", strings.Join(posted, "\n"))
 	}
 }
+
+// errUnsaved is a run whose cap-killed session left uncommitted work the harness
+// could not save as a recovery checkpoint (#246).
+var errUnsaved = &UnsavedError{
+	Path: "/herd/.claude/worktrees/pr-1384",
+	Err:  errors.New("exit status 128: fatal: Unable to create '/herd/.git/worktrees/pr-1384/index.lock': File exists."),
+}
+
+// #246: a run that could not save its leftover diff as a checkpoint hands the PR
+// to a human in that run, naming the worktree, rather than leaving the next two
+// attempts to fail on a checkout git will refuse. A session did run, so the
+// attempt stays spent: once a human removes the label the PR resumes after it.
+func TestHandOverUnsavedHandsThePRToAHumanInTheSameRun(t *testing.T) {
+	pr := harnessPR(1384, "4e1f0c9")
+	pr.HeadBranch = "feat/beh-1198"
+	gh := newFakeGitHub(pr)
+	gh.checks["4e1f0c9"] = github.ChecksRed
+	log := &quietLog{}
+	s := NewSource(gh, testOptions, nil, log)
+	s.now = func() time.Time { return testNow }
+
+	item, claim, ok, err := s.Next()
+	if !ok || err != nil {
+		t.Fatalf("Next = ok %v err %v, want PR-1384 on attempt 1", ok, err)
+	}
+	s.HandOver(item.Context.(Item), errUnsaved)
+	if err := claim.Release(); err != nil {
+		t.Fatal(err)
+	}
+
+	if !strings.Contains(strings.Join(gh.added[1384], ","), "blocked") {
+		t.Errorf("added = %v, want the PR labelled blocked for a human", gh.added[1384])
+	}
+	posted := strings.Join(gh.posted[1384], "\n")
+	if !strings.Contains(posted, errUnsaved.Path) || strings.Contains(posted, "does not count as an attempt") {
+		t.Errorf("the PR must name the worktree, and the attempt stays spent:\n%s", posted)
+	}
+	if streamed := strings.Join(log.events, "\n"); !strings.Contains(streamed, errUnsaved.Path) {
+		t.Errorf("the stream must name the worktree; events:\n%s", streamed)
+	}
+	gh.prs[0].Labels = []string{"blocked"}
+	if _, _, ok, _ := s.Next(); ok {
+		t.Fatal("a PR handed to a human must not be selected again")
+	}
+	gh.prs[0].Labels = nil
+	if _, _, ok, _ := s.Next(); !ok {
+		t.Fatal("once the label is gone the PR is worked again")
+	}
+	if last := gh.posted[1384][len(gh.posted[1384])-1]; !strings.Contains(last, "attempt 2 of 3") {
+		t.Errorf("the run that left the work spent its attempt; posted %q", last)
+	}
+}

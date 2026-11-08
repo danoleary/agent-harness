@@ -2,6 +2,7 @@ package prloop
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -511,7 +512,7 @@ func TestFixRunsTheRetrospectiveWhenTheTrackerIsUnresolvable(t *testing.T) {
 func TestFixOverADirtyWorktreeIsCheckoutBlocked(t *testing.T) {
 	h, it, repo := prHost(t, harnessItem(CIRed))
 	wt := h.Worktree()
-	if err := wt.CheckoutRemote(); err != nil {
+	if _, err := wt.CheckoutRemote(); err != nil {
 		t.Fatalf("the first attempt's checkout: %v", err)
 	}
 	repo.Dirty(wt)
@@ -556,5 +557,128 @@ func TestFixOnAHeadBranchGoneFromOriginLaunchesNothing(t *testing.T) {
 	}
 	if h.Worktree().Exists() {
 		t.Error("no worktree is checked out for a branch origin does not have")
+	}
+}
+
+// pr1384 is herd's PR-1384 as pr-doctor polled it on 2026-11-07: red CI on
+// feat/beh-1198, a harness branch.
+func pr1384() Item {
+	it := harnessItem(CIRed)
+	it.PR.Number, it.PR.Title, it.PR.HeadBranch = 1384, "BEH-1198: a story", "feat/beh-1198"
+	return it
+}
+
+// capKilledCIFix scripts the incident's first attempt over h: the CIFix session
+// writes a fix (the `waitFor` that hung the story runner), never commits it, and
+// the 25-minute cap kills it (exit 137). The watch ends on the failed fix.
+func capKilledCIFix(h *hostio.Fake, repo *gittest.Repo) {
+	h.AgentFn = func(_ int, run hostio.AgentRun) session.Outcome {
+		if run.Label != "cifix-1" {
+			return session.Outcome{}
+		}
+		repo.Dirty(h.Worktree())
+		return session.Outcome{ExitCode: 137, CapKilled: true}
+	}
+	h.CIFn = func(w hostio.CIWatch) ci.Outcome {
+		err := w.Fix("FAIL web/src/routes/call/-components/more-tray.stories.tsx > MoreTray", true)
+		return ci.Outcome{OK: false, Reason: fmt.Sprintf("auto-fix session failed: %v", err)}
+	}
+}
+
+// #246, replaying herd PR-1384 on 2026-11-07: CI-fix session 1 wrote a fix, did
+// not commit it, and the cap killed it. The worktree was kept dirty, so attempts 2
+// and 3 each failed to check the branch out and the PR was labelled blocked after
+// one real attempt. Now the run saves the leftover diff as a local recovery
+// checkpoint, pushes nothing, and leaves no dirty worktree, and the retry at the
+// same head starts from the checkpoint and is told it is unverified.
+func TestFixSavesACapKilledSessionsDiffAndTheRetryResumesFromIt(t *testing.T) {
+	h, it, repo := prHost(t, pr1384())
+	capKilledCIFix(h, repo)
+
+	if res := Fix(h, pipelineCfg(), pipelineLog(t), it, prDoctor()); res.OK || res.Err != nil {
+		t.Fatalf("a cap-killed fix ships nothing and needs no human, got %+v", res)
+	}
+
+	checkpoint := repo.Git(repo.Dir, "rev-parse", "refs/heads/feat/beh-1198")
+	if got, want := repo.Git(repo.Dir, "log", "-1", "--format=%s", checkpoint), strings.SplitN(gitpkg.CheckpointMessage("PR-1384", who), "\n", 2)[0]; got != want {
+		t.Fatalf("the local branch's tip is %q, want the recovery checkpoint %q", got, want)
+	}
+	if parent := repo.Git(repo.Dir, "rev-parse", checkpoint+"^"); parent != it.PR.HeadSHA {
+		t.Errorf("the checkpoint sits on %s, want the polled head %s", parent, it.PR.HeadSHA)
+	}
+	if !strings.Contains(repo.Git(repo.Dir, "show", "--name-only", "--format=", checkpoint), "uncommitted.txt") {
+		t.Error("the checkpoint must carry the session's uncommitted diff")
+	}
+	if now := repo.OnOrigin(it.PR.HeadBranch); now != it.PR.HeadSHA {
+		t.Errorf("the checkpoint must not be pushed: origin moved to %s", now)
+	}
+	if wt := h.Worktree(); wt.Exists() && !wt.Clean() {
+		t.Error("the run must not leave its worktree dirty")
+	}
+
+	// Attempt 2, 9 s later, at the same head.
+	retry := hostio.NewFake(repo.Checkout(), ticket.Slug(Key(it.PR.Number)))
+	retry.Branch = it.PR.HeadBranch
+	var startedAt string
+	retry.AgentFn = func(_ int, run hostio.AgentRun) session.Outcome {
+		if run.Label == "cifix-1" {
+			startedAt, _ = retry.Worktree().HeadSHA()
+		}
+		return session.Outcome{}
+	}
+	retry.CIFn = func(w hostio.CIWatch) ci.Outcome {
+		_ = w.Fix("FAIL web/src/routes/call/-components/more-tray.stories.tsx > MoreTray", true)
+		return ci.Outcome{OK: true}
+	}
+
+	res := Fix(retry, pipelineCfg(), pipelineLog(t), it, prDoctor())
+
+	if res.Disposition == stages.CheckoutBlocked {
+		t.Fatalf("the retry's checkout must succeed, got %+v", res)
+	}
+	if startedAt != checkpoint {
+		t.Errorf("the retry's session started at %s, want the checkpoint %s", startedAt, checkpoint)
+	}
+	p := retry.Agents[0].Prompt
+	for _, want := range []string{short(checkpoint), short(it.PR.HeadSHA), "UNVERIFIED"} {
+		if !strings.Contains(p, want) {
+			t.Errorf("the retry's prompt must name the checkpoint as unverified prior work (missing %q):\n%s", want, p)
+		}
+	}
+}
+
+// #246: when the leftover diff cannot be committed as a checkpoint (here git's
+// index is locked), the next checkout would refuse the dirty worktree. The run
+// says so at once, naming the worktree, so the PR goes to a human now instead of
+// spending its remaining attempts on checkouts that cannot succeed.
+func TestFixThatCannotSaveTheCheckpointNeedsAHuman(t *testing.T) {
+	h, it, repo := prHost(t, pr1384())
+	capKilledCIFix(h, repo)
+	killed := h.AgentFn
+	h.AgentFn = func(n int, run hostio.AgentRun) session.Outcome {
+		out := killed(n, run)
+		if run.Label == "cifix-1" {
+			lock := filepath.Join(repo.Git(h.Worktree().Path(), "rev-parse", "--absolute-git-dir"), "index.lock")
+			if err := os.WriteFile(lock, nil, 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return out
+	}
+
+	res := Fix(h, pipelineCfg(), pipelineLog(t), it, prDoctor())
+
+	var unsaved *UnsavedError
+	if res.OK || !errors.As(res.Err, &unsaved) || unsaved.Path != h.Worktree().Path() {
+		t.Fatalf("an unsaved diff needs a human, naming the worktree %s, got %+v", h.Worktree().Path(), res)
+	}
+	if !strings.Contains(res.Err.Error(), h.Worktree().Path()) {
+		t.Errorf("the reason must name the worktree: %v", res.Err)
+	}
+	if !h.Worktree().Exists() {
+		t.Error("the dirty worktree must be kept for the human")
+	}
+	if now := repo.OnOrigin(it.PR.HeadBranch); now != it.PR.HeadSHA {
+		t.Errorf("nothing may be pushed: origin moved to %s", now)
 	}
 }

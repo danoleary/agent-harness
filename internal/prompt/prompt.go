@@ -140,6 +140,10 @@ type Context struct {
 	// CIFix, RebaseFix and the Review footer name it, and a body reads it as
 	// `{{.Branch}}` (#186).
 	Branch string
+	// Checkpoint is the recovery checkpoint a PR loop's fix session starts from:
+	// an earlier attempt's uncommitted work, saved when its session ended (#246).
+	// CIFix and RebaseFix name it as unverified; nil starts from origin's tip.
+	Checkpoint *Checkpoint
 	// Merge selects the RebaseFix variant that merges origin/main into the branch
 	// instead of replaying it, for a branch a human opted in: its history must not
 	// be rewritten (ADR-0019).
@@ -505,6 +509,48 @@ type RedGate struct {
 	Log  string
 }
 
+// Checkpoint is a harness recovery checkpoint a fix session's worktree starts from
+// (#246): Commit is the checkpoint, on top of Base, origin's tip of the branch.
+type Checkpoint struct {
+	Commit string
+	Base   string
+}
+
+// checkpointSteer tells a fix session its worktree starts from an earlier
+// attempt's saved, unverified work rather than origin's tip (#246). In herd
+// PR-1384 that saved diff was the wrong fix: a `waitFor` that hung the story
+// runner. Empty when there is no checkpoint.
+func checkpointSteer(cp *Checkpoint) []string {
+	if cp == nil {
+		return nil
+	}
+	c, b := shortRef(cp.Commit), shortRef(cp.Base)
+	return []string{
+		"IMPORTANT — UNVERIFIED PRIOR WORK: an earlier attempt at this PR was cut off (a time cap, a crash) before it committed its change. The harness saved what it left uncommitted as the recovery checkpoint commit `" + c + "` on top of origin's tip `" + b + "`, and this worktree starts from that checkpoint, not from origin's tip. Nothing has checked it: no gate ran over it, the session that wrote it never finished, and it can be wrong — an earlier saved diff was a fix that made the test it fixed hang.",
+		"",
+		"Read it before you build on it: `git show " + c + "`. Keep it only if you can confirm it is right, and verify it as you would your own change; the harness re-runs every gate over whatever you commit before it pushes. If it is wrong, or you cannot tell, drop it before you start: `git reset --hard " + b + "` puts the branch back on origin's tip and loses only the unpushed checkpoint, so that reset is allowed even where this prompt forbids rewriting history.",
+		"",
+	}
+}
+
+// withCheckpoint puts the checkpoint steer right after a fix prompt's opening
+// paragraph (lines[0] and its blank line), before the session reads its job.
+func withCheckpoint(c Context, lines []string) []string {
+	steer := checkpointSteer(c.Checkpoint)
+	if steer == nil {
+		return lines
+	}
+	return append(append(append([]string{}, lines[:2]...), steer...), lines[2:]...)
+}
+
+// shortRef is a commit's abbreviated SHA, as a prompt names it.
+func shortRef(sha string) string {
+	if len(sha) > 12 {
+		return sha[:12]
+	}
+	return sha
+}
+
 // Resolution is what a pre-push conflict-resolution session wrote after the branch
 // passed review, handed to the scoped review of it (#114). ReviewedBase..ReviewedHead
 // is the range the first review cleared; Conflicted are the files git flagged on
@@ -812,7 +858,7 @@ func ciFix(c Context) string {
 		"",
 		bashQuirkSteer,
 	)
-	return withFixBody(c, lines)
+	return withFixBody(c, withCheckpoint(c, lines))
 }
 
 // withFixBody leads a fix session's prompt with the Project body a loop's `fix`
@@ -877,7 +923,7 @@ func rebaseFix(c Context) string {
 		"",
 		bashQuirkSteer,
 	}
-	return withFixBody(c, lines)
+	return withFixBody(c, withCheckpoint(c, lines))
 }
 
 // mergeFix is the RebaseFix variant for a branch a human opted in to the PR loop
@@ -918,5 +964,5 @@ func mergeFix(c Context) string {
 		"",
 		bashQuirkSteer,
 	}
-	return withFixBody(c, lines)
+	return withFixBody(c, withCheckpoint(c, lines))
 }

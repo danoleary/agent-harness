@@ -615,9 +615,11 @@ poll (Source github_prs, read-only judgement — also what --dry-run prints):
 
 pipeline (one PR, worktree .claude/worktrees/pr-<n> on the PR's head branch):
   preflight; fetch main; fetch the branch, worktree add -B at origin's tip
+    local tip a recovery checkpoint on origin's tip -> worktree add on it instead  // #246
+      (the sessions' prompts name it as unverified prior work)
     git refuses on local state (dirty/locked worktree, branch held) -> CheckoutBlocked:  // #247
       void marker takes the attempt back, label blocked + comment naming the worktree and git's error
-  head != the polled sha -> stop (the next poll sees the new head)
+  origin's tip != the polled sha -> stop (the next poll sees the new head)
   post_create (warn-only; 127/126 stops)
   conflict: RebaseFix session            // internal/fix, shared with review
     harness branch: replay onto origin/main;  human branch: merge origin/main in
@@ -629,6 +631,8 @@ pipeline (one PR, worktree .claude/worktrees/pr-<n> on the PR's head branch):
       did not touch, is re-run once before it refuses the fix (#167)
     a human branch is never reactively rebased (CIWatch.KeepHistory)
   retrospective over the run's transcripts (if a session ran) -> route findings
+  uncommitted work left in the worktree -> local recovery checkpoint commit, not pushed  // #246
+    the commit fails -> label blocked + comment naming the worktree, this run
   remove the in-progress label; remove the worktree if clean
     the last attempt of the budget, PR still failing at its head -> hand off now
 ```

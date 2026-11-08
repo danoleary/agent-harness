@@ -510,6 +510,26 @@ func (s *Source) Withdraw(it Item, err error) {
 	}
 }
 
+// HandOver hands it.PR to a human with the blocked label when its run ended with
+// uncommitted work it could not save as a recovery checkpoint (#246). The next
+// checkout would refuse that worktree, so the PR is handed over now rather than
+// spending its remaining attempts on refusals. A session ran, so the attempt stays
+// spent. Call it before the lease is released, so settling the lease sees the PR
+// blocked. Best-effort: a failure is narrated, and the next checkout's refusal
+// hands the PR over in any case (#247).
+func (s *Source) HandOver(it Item, err error) {
+	key := Key(it.PR.Number)
+	s.log.Structured(loopstream.Record{Kind: loopstream.KindTicketReleased, Ticket: key, Message: fmt.Sprintf("loop — %s: %v; the next checkout of %s would fail — handing it to a human (labelling %s)", key, err, it.PR.HeadBranch, s.opts.BlockedLabel)})
+	body := fmt.Sprintf("agent-harness's run on `%s` ended with uncommitted work it could not save as a recovery checkpoint, so its next checkout of the branch would fail:\n\n```\n%v\n```\n\nIt is handing the PR to a human. Commit or discard the work in that worktree, then remove the `%s` label to have the loop work it again.\n",
+		it.PR.HeadBranch, err, s.opts.BlockedLabel)
+	if err := s.gh.Comment(it.PR.Number, body); err != nil {
+		s.log.Event("loop … warning: could not comment on " + key + ": " + err.Error())
+	}
+	if err := s.gh.AddLabel(it.PR.Number, s.opts.BlockedLabel); err != nil {
+		s.log.Event("loop … warning: could not label " + key + " " + s.opts.BlockedLabel + ": " + err.Error())
+	}
+}
+
 // TakeBack takes back the attempt Next recorded on it.PR when the Docker sandbox
 // preflight refused before any session ran (#232): a full disk, a daemon down, an
 // image that would not build. No attempt was made, so none is spent, and the PR is
