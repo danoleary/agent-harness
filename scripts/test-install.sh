@@ -259,11 +259,11 @@ fi
 
 # --- the operator is told how to reach it -----------------------------------
 echo -n "install.sh prints a PATH line when its bin dir is not on PATH ... "
-if ! printf '%s' "$INSTALL_OUT" | grep -q "$PREFIX/bin"; then
+if ! grep -q "$PREFIX/bin" <<< "$INSTALL_OUT"; then
     fail "output never mentions the install dir: $INSTALL_OUT"
-elif ! printf '%s' "$INSTALL_OUT" | grep -q "PATH"; then
+elif ! grep -q "PATH" <<< "$INSTALL_OUT"; then
     fail "output gives no PATH guidance: $INSTALL_OUT"
-elif ! printf '%s' "$INSTALL_OUT" | grep -q "agent-harness --help"; then
+elif ! grep -q "agent-harness --help" <<< "$INSTALL_OUT"; then
     fail "output does not tell the operator what to run next: $INSTALL_OUT"
 fi
 echo -e "${GREEN}PASS${NC}"
@@ -285,7 +285,7 @@ make_release "$BAD_REL"
 printf 'tampered\n' >>"$BAD_REL/releases/download/$FAKE_VERSION/$ASSET"
 if bad_out="$(run_install "$BAD_REL" "$BAD_PREFIX")"; then
     fail "install succeeded on a tampered archive"
-elif ! printf '%s' "$bad_out" | grep -qi "checksum mismatch"; then
+elif ! grep -qi "checksum mismatch" <<< "$bad_out"; then
     fail "the failure does not name the cause: $bad_out"
 elif [ -e "$BAD_PREFIX/bin/agent-harness" ]; then
     fail "a tampered archive still installed a binary"
@@ -315,7 +315,7 @@ PARTIAL_PREFIX="$TEST_DIR/partial-prefix"
 make_release "$PARTIAL_REL" "loop"
 if partial_out="$(run_install "$PARTIAL_REL" "$PARTIAL_PREFIX")"; then
     fail "install succeeded on an archive with no loop binary"
-elif ! printf '%s' "$partial_out" | grep -q "loop"; then
+elif ! grep -q "loop" <<< "$partial_out"; then
     fail "the failure does not name the missing tool: $partial_out"
 fi
 echo -e "${GREEN}PASS${NC}"
@@ -326,7 +326,7 @@ if missing_out="$(AGENT_HARNESS_BASE_URL="file://$TEST_DIR/no-such-release" \
     AGENT_HARNESS_VERSION="$FAKE_VERSION" \
     sh "$INSTALL_SH" --prefix "$TEST_DIR/missing-prefix" 2>&1)"; then
     fail "install succeeded against a release that does not exist"
-elif ! printf '%s' "$missing_out" | grep -qi "download"; then
+elif ! grep -qi "download" <<< "$missing_out"; then
     fail "the failure does not say the download is what failed: $missing_out"
 fi
 echo -e "${GREEN}PASS${NC}"
@@ -363,7 +363,7 @@ echo -e "${GREEN}PASS${NC}"
 echo -n "install.sh --uninstall says so plainly when there is nothing installed ... "
 empty_out="$(sh "$INSTALL_SH" --prefix "$TEST_DIR/never-installed" --uninstall 2>&1)" ||
     fail "uninstall of a non-install exited non-zero: $empty_out"
-printf '%s' "$empty_out" | grep -qi "nothing to remove" ||
+grep -qi "nothing to remove" <<< "$empty_out" ||
     fail "expected a plain 'nothing to remove', got: $empty_out"
 echo -e "${GREEN}PASS${NC}"
 
@@ -400,7 +400,7 @@ bad_platform_out="$(AGENT_HARNESS_SOURCE_ONLY=1 sh -c "
     . '$INSTALL_SH'
     uname() { case \"\$1\" in -s) echo MINGW64_NT-10.0 ;; -m) echo x86_64 ;; esac; }
     detect_platform" 2>&1 || true)"
-printf '%s' "$bad_platform_out" | grep -qi "unsupported OS" ||
+grep -qi "unsupported OS" <<< "$bad_platform_out" ||
     fail "expected an unsupported-OS error, got: $bad_platform_out"
 echo -e "${GREEN}PASS${NC}"
 
@@ -408,7 +408,7 @@ echo -e "${GREEN}PASS${NC}"
 echo -n "install.sh rejects an unknown flag ... "
 if flag_out="$(sh "$INSTALL_SH" --into /tmp/whatever 2>&1)"; then
     fail "install accepted an unknown flag"
-elif ! printf '%s' "$flag_out" | grep -q "unknown option"; then
+elif ! grep -q "unknown option" <<< "$flag_out"; then
     fail "the failure does not name the bad flag: $flag_out"
 fi
 echo -e "${GREEN}PASS${NC}"

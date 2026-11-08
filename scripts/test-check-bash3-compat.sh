@@ -189,7 +189,7 @@ declare -A m
 EOF
 
 report=$("$SCRIPT_PATH" "$TEST_DIR/test8" 2>&1 || true)
-if echo "$report" | grep -qE 'bug\.sh:3:'; then
+if grep -qE 'bug\.sh:3:' <<< "$report"; then
     echo -e "${GREEN}PASS${NC}"
 else
     echo -e "${RED}FAIL${NC} - expected bug.sh:3 in report, got: $report"

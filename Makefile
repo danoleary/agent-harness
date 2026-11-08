@@ -1,5 +1,5 @@
 # Agent harness — Go toolchain shortcuts. Requires Go 1.26+.
-.PHONY: build install uninstall base-image release test implementation review retrospective pipeline loop watch vet fmt fmt-check check-exec check-bash3 check-awk check-script-git check-buildvcs check-ci check-adr check-bundle-links check-scripts check tidy
+.PHONY: build install uninstall base-image release test implementation review retrospective pipeline loop watch vet fmt fmt-check check-exec check-bash3 check-awk check-script-git check-buildvcs check-ci check-adr check-bundle-links check-pipefail-grep check-scripts check tidy
 
 # Build the tool binaries into ./bin.
 #
@@ -183,6 +183,12 @@ check-bundle-links:
 check-adr:
 	@./scripts/check-adr-numbers.sh
 
+# Fail on a pipe into grep -q in a script that sets pipefail: grep quits on its
+# first match, the writer takes SIGPIPE, and the pipeline reads a match as a
+# miss — intermittently, so it surfaces as a flake (#177, #273).
+check-pipefail-grep:
+	@./scripts/check-pipefail-grep.sh
+
 # Run the agent-harness shell tests (scripts/test-*.sh) so a behavioral
 # regression in a load-bearing harness script (loop-start.sh, the check-* guards)
 # fails the gate instead of shipping green — the tests passed by hand but nothing
@@ -194,7 +200,7 @@ check-scripts:
 	@./scripts/run-script-tests.sh
 
 # The pre-push gate: format check, vet, the script guards, and the full test suite.
-check: fmt-check vet check-exec check-bash3 check-awk check-script-git check-buildvcs check-ci check-adr check-bundle-links check-scripts test
+check: fmt-check vet check-exec check-bash3 check-awk check-script-git check-buildvcs check-ci check-adr check-bundle-links check-pipefail-grep check-scripts test
 
 tidy:
 	go mod tidy

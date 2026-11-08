@@ -37,7 +37,7 @@ expect_fail() {
         fail "$1: expected failure but got success"
     fi
     report=$("$SCRIPT_PATH" "$2" 2>&1 || true)
-    if ! echo "$report" | grep -qE "$3"; then
+    if ! grep -qE "$3" <<< "$report"; then
         fail "$1: report doesn't match '$3'; got: $report"
     fi
     pass

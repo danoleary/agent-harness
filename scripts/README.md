@@ -334,6 +334,44 @@ its `https://github.com/danoleary/agent-harness/...` URL if not.
 ./scripts/test-check-bundle-links.sh
 ```
 
+## check-pipefail-grep.sh
+
+Guard against a pipe into `grep -q` in a script that sets pipefail (#273).
+
+### Purpose
+
+`grep -q` exits on its first match. If the command feeding it is still writing,
+that command takes SIGPIPE, pipefail makes the pipeline exit 141, and an `if`
+reads the match as a miss. Whether it fires depends on timing, so it shows up as
+a flake: #177 hit a guard this way, and #273 hit the script tests' `expect_fail`
+on a report that matched on its first line. It runs under `make check` and is
+bash-3.2-safe.
+
+### What it checks
+
+Every non-comment line of `scripts/*.sh`, `scripts/lib/*.sh` and the repo-root
+`*.sh` that set pipefail, for a single `|` into `grep` with `-q`, `--quiet` or
+`--silent` among its options.
+
+### Fix violations
+
+Match a here-string, which has no writer to kill:
+`grep -q PATTERN <<< "$var"`, or `grep -q PATTERN <<< "$(cmd)"` for a
+command's output.
+
+### Usage
+
+```bash
+./scripts/check-pipefail-grep.sh              # the make check-pipefail-grep default
+./scripts/check-pipefail-grep.sh /path/to/repo
+```
+
+### Testing
+
+```bash
+./scripts/test-check-pipefail-grep.sh
+```
+
 ## check-bash3-compat.sh
 
 Guard against bash-4-only syntax in bash scripts (BEH-457).
@@ -479,8 +517,9 @@ The guard is integrated into the Makefile's `check` target, which runs:
 8. `check-ci` - The CI-runs-check guard (BEH-462)
 9. `check-adr` - The ADR-numbering guard (#92, #146)
 10. `check-bundle-links` - The installed-README link guard (#96)
-11. `check-scripts` - The harness shell tests (BEH-591)
-12. `test` - Full test suite
+11. `check-pipefail-grep` - The pipe-into-`grep -q` guard (#273)
+12. `check-scripts` - The harness shell tests (BEH-591)
+13. `test` - Full test suite
 
 CI runs `make check` directly (then `make build`), so adding a guard to the
 `check` target above covers it in CI with no workflow edit. The `check-ci` guard

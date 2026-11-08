@@ -110,7 +110,7 @@ while IFS= read -r doc; do
             "" | "#"*) continue ;;
         esac
         # Any URL scheme (https:, mailto:, …) points outside the bundle on purpose.
-        if printf '%s' "$target" | grep -qE '^[A-Za-z][A-Za-z0-9+.-]*:'; then
+        if grep -qE '^[A-Za-z][A-Za-z0-9+.-]*:' <<< "$target"; then
             continue
         fi
 

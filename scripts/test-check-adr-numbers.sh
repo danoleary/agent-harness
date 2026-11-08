@@ -47,7 +47,7 @@ expect_fail() {
     if "$SCRIPT_PATH" "$2" > /dev/null 2>&1; then
         echo -e "${RED}FAIL${NC} - $1: expected failure but got success"
         exit 1
-    elif echo "$report" | grep -qE -- "$3"; then
+    elif grep -qE -- "$3" <<< "$report"; then
         echo -e "${GREEN}PASS${NC}"
     else
         echo -e "${RED}FAIL${NC} - $1: expected a report matching '$3', got: $report"
@@ -183,7 +183,7 @@ if git -C "$R" merge -q --no-edit gh-110 > /dev/null 2>&1; then
     echo -e "${RED}FAIL${NC} - #110 merged cleanly onto a main that already took ADR-0030"
     exit 1
 fi
-if ! git -C "$R" diff --name-only --diff-filter=U | grep -qx 'docs/adr/README.md'; then
+if ! grep -qx 'docs/adr/README.md' <<< "$(git -C "$R" diff --name-only --diff-filter=U)"; then
     echo -e "${RED}FAIL${NC} - the merge conflicted, but not on docs/adr/README.md"
     exit 1
 fi

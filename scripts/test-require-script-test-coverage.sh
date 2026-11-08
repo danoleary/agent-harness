@@ -25,7 +25,7 @@ ok()   { printf 'ok   - %s\n' "$1"; pass=$((pass + 1)); }
 ng()   { printf 'FAIL - %s\n' "$1"; fail=$((fail + 1)); }
 
 assert_contains() { # haystack needle label
-	if printf '%s' "$1" | grep -qF -- "$2"; then ok "$3"; else
+	if grep -qF -- "$2" <<< "$1"; then ok "$3"; else
 		ng "$3 (missing: '$2')"; printf '  got: %s\n' "$1"
 	fi
 }
@@ -212,7 +212,7 @@ else
 	ok "fails when one of several changed scripts is uncovered"
 fi
 assert_contains "$out" "second.sh" "names the uncovered script among several"
-if printf '%s' "$out" | grep -qF "sample.sh changed, but"; then
+if grep -qF "sample.sh changed, but" <<< "$out"; then
 	ng "does not flag the covered script as a violation"
 	printf '  got: %s\n' "$out"
 else

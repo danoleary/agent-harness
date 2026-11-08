@@ -22,12 +22,12 @@ ok()   { printf 'ok   - %s\n' "$1"; pass=$((pass + 1)); }
 ng()   { printf 'FAIL - %s\n' "$1"; fail=$((fail + 1)); }
 
 assert_contains() { # haystack needle label
-	if printf '%s' "$1" | grep -qF -- "$2"; then ok "$3"; else
+	if grep -qF -- "$2" <<< "$1"; then ok "$3"; else
 		ng "$3 (missing: '$2')"; printf '  got: %s\n' "$1"
 	fi
 }
 assert_not_contains() { # haystack needle label
-	if printf '%s' "$1" | grep -qF -- "$2"; then
+	if grep -qF -- "$2" <<< "$1"; then
 		ng "$3 (unexpected: '$2')"; printf '  got: %s\n' "$1"
 	else ok "$3"; fi
 }

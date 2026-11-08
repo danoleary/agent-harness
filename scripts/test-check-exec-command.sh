@@ -100,6 +100,7 @@ func test() {
     exec.Command("git", "push", "origin", "main").Run()
     exec.Command("git", "clone", "repo").Run()
     exec.Command("git", "ls-remote", "origin").Run()
+    exec.Command("git", "pull", "origin", "main").Run()
 }
 EOF
 
@@ -108,10 +109,10 @@ if "$SCRIPT_PATH" "$TEST_DIR/test4" > /dev/null 2>&1; then
     exit 1
 else
     output=$("$SCRIPT_PATH" "$TEST_DIR/test4" 2>&1 | grep -c "unbounded git remote operation" || true)
-    if [ "$output" -eq 4 ]; then
+    if [ "$output" -eq 5 ]; then
         echo -e "${GREEN}PASS${NC}"
     else
-        echo -e "${RED}FAIL${NC} - expected 4 violations but got $output"
+        echo -e "${RED}FAIL${NC} - expected 5 violations but got $output"
         exit 1
     fi
 fi
