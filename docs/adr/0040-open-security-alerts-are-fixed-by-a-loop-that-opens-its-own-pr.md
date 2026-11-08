@@ -227,3 +227,25 @@ gets (`severity = ["critical", "high"]`, `max_attempts = 2`) and the steps
 runs only when it is named, so this changes what `loop --list` and `--help` show,
 not what a project runs. An entry named `security-alerts` replaces it, as for the
 other built-ins.
+
+## Amendment, 2026-11-08: Go modules
+
+The host check gains a second reader, so the loop also fixes Go modules. Each
+ecosystem is a `depcheck.Ecosystem`: the file the host scans, the manifests whose
+alerts that scan covers, and the files a fix may change. `verify.SecurityFix`
+and the SecurityFix prompt take theirs from it.
+
+- **The scan is the root `go.mod`.** Since Go 1.17 a module's `go.mod` lists every
+  module its build loads, at the version minimal version selection picked, so its
+  require lines are the resolution, as a pnpm lockfile's keys are. A `go.mod` with
+  no `go` directive, or one older than 1.17, fails closed.
+- **`replace` wins over `require`.** A versioned replacement by the same module
+  is checked at its version. A replacement by a local directory or another module
+  fails closed: no range can place it.
+- **Only the root module.** Each nested `go.mod` is its own module, so an alert in
+  one is skipped.
+- **A fix may change the root `go.mod` and `go.sum`, and anything under `vendor/`**,
+  which `go mod vendor` rewrites in a repository that vendors.
+- **The session runs `go get <module>@v<highest patch>`, then `go mod tidy`** (and
+  `go mod vendor` where `vendor/` exists). `go get` raises an indirect requirement
+  as well as a direct one, so there is no parent-bump or override route to try.

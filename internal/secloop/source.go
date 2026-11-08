@@ -16,12 +16,12 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"fmt"
-	"path"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/danoleary/agent-harness/internal/depcheck"
 	"github.com/danoleary/agent-harness/internal/github"
 	"github.com/danoleary/agent-harness/internal/lease"
 	"github.com/danoleary/agent-harness/internal/loop"
@@ -203,27 +203,18 @@ func Fingerprint(g Group) string {
 // fixes, so a later poll knows which alert set a closed or merged PR was for.
 func Marker(fp string) string { return "<!-- agent-harness:sec-fix fp=" + fp + " -->" }
 
-// lockfiles are the manifests, per ecosystem, the host check has a lockfile reader
-// for (internal/depcheck). An alert on any other is skipped: its fix could not be
-// checked (ADR-0040, decision 4).
-var lockfiles = map[string][]string{
-	"npm": {"pnpm-lock.yaml", "package.json"},
-}
-
-// unsupported says why no fix of g could be checked on the host, or "".
+// unsupported says why no fix of g could be checked on the host, or "". The host
+// check has a reader per ecosystem (depcheck.ForEcosystem); an alert in any other
+// ecosystem, or in a manifest its scan does not cover, is skipped: its fix could
+// not be checked (ADR-0040, decision 4).
 func unsupported(g Group) string {
-	names, ok := lockfiles[g.Ecosystem]
+	eco, ok := depcheck.ForEcosystem(g.Ecosystem)
 	if !ok {
 		return fmt.Sprintf("ecosystem %s is not supported (no lockfile reader)", g.Ecosystem)
 	}
 	for _, a := range append(append([]github.Alert(nil), g.Alerts...), g.Unpatched...) {
-		base := path.Base(a.ManifestPath)
-		supported := false
-		for _, n := range names {
-			supported = supported || base == n
-		}
-		if !supported {
-			return fmt.Sprintf("alert #%d is in %s, which has no lockfile reader", a.Number, a.ManifestPath)
+		if !eco.ChecksManifest(a.ManifestPath) {
+			return fmt.Sprintf("alert #%d is in %s, which the host's scan of %s does not cover", a.Number, a.ManifestPath, eco.Lockfile)
 		}
 	}
 	return ""

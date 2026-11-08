@@ -122,6 +122,18 @@ it skips the rest. It is built in with the defaults below; write the entry out
 only to change them, for example to add `"medium"` or give `fix_alerts` a
 project prompt body:
 
+It fixes two ecosystems, and skips an alert in any other:
+
+| Ecosystem | Alerts it works | The host scans | A fix may change |
+|---|---|---|---|
+| npm (pnpm) | any `package.json` or the root `pnpm-lock.yaml` | the root `pnpm-lock.yaml` | `package.json` (any depth), `pnpm-lock.yaml`, `pnpm-workspace.yaml` |
+| Go | the root `go.mod` | the root `go.mod`, following `replace` | the root `go.mod` and `go.sum`, and `vendor/` |
+
+A Go module needs `go 1.17` or later in its `go.mod`, since only then does it list
+every module the build loads. A module `replace`d by a local directory or a fork,
+and an alert in a nested module's `go.mod`, are refused or skipped rather than
+guessed at.
+
 ```toml
 [[loops]]
 name = "security-alerts"

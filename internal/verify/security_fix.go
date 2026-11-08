@@ -2,27 +2,19 @@ package verify
 
 import (
 	"fmt"
-	"path"
 	"strings"
 
 	"github.com/danoleary/agent-harness/internal/depcheck"
 	"github.com/danoleary/agent-harness/internal/session"
 )
 
-// dependencyFiles are the only files a SecurityFix session may change, by base
-// name: a manifest, the pnpm lockfile, and the workspace file that holds
-// overrides (ADR-0040, decision 4). A nested workspace's package.json counts.
-var dependencyFiles = map[string]bool{
-	"package.json":        true,
-	"pnpm-lock.yaml":      true,
-	"pnpm-workspace.yaml": true,
-}
-
 // SecurityFix decides whether a SecurityFix session fixed its package's alerts,
 // judged on ground truth rather than the session's report (ADR-0040, decision 4).
 // It requires a clean exit, a clean tree, at least one commit ahead of origin/main,
-// a non-empty diff, changes to dependency files only, and a lockfile that resolves
-// no version inside any of the alerts' vulnerable ranges.
+// a non-empty diff, changes to eco's dependency files only (for pnpm the manifests,
+// the lockfile and the workspace file that holds overrides; for Go the root go.mod,
+// go.sum and vendor tree), and a lockfile that resolves no version inside any of
+// the alerts' vulnerable ranges.
 //
 // chk is the host's scan of the branch's lockfile (depcheck.Check). It is not git,
 // so it is not [GroundTruth]; a scan that could not run fails the fix closed, as
@@ -30,7 +22,7 @@ var dependencyFiles = map[string]bool{
 //
 // A spending-cap abort wins outright, as in [RebaseResolution]: the session did no
 // work, and the caller defers rather than counting a failed attempt.
-func SecurityFix(g GroundTruth, out session.Outcome, chk depcheck.Result) Result {
+func SecurityFix(g GroundTruth, out session.Outcome, eco depcheck.Ecosystem, chk depcheck.Result) Result {
 	if out.SpendingCapAbort {
 		return Result{SpendingCapAbort: true, Reason: "security-fix session aborted before running — spending cap reached, retry after reset"}
 	}
@@ -52,12 +44,12 @@ func SecurityFix(g GroundTruth, out session.Outcome, chk depcheck.Result) Result
 	}
 	var other []string
 	for _, f := range changed {
-		if !dependencyFiles[path.Base(f)] {
+		if !eco.IsDependencyFile(f) {
 			other = append(other, f)
 		}
 	}
 	if len(other) > 0 {
-		return Result{Reason: "security fix changed files other than package.json, pnpm-lock.yaml and pnpm-workspace.yaml: " + strings.Join(other, ", ") + " — not pushing"}
+		return Result{Reason: "security fix changed files other than " + strings.ReplaceAll(eco.DependencyFiles(), "`", "") + ": " + strings.Join(other, ", ") + " — not pushing"}
 	}
 	switch {
 	case chk.Package == "":

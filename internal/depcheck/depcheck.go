@@ -1,5 +1,6 @@
-// Package depcheck answers one question on the host: does a pnpm lockfile still
-// resolve a version of a package inside any of a set of vulnerable ranges? It is
+// Package depcheck answers one question on the host: does a lockfile still
+// resolve a version of a package inside any of a set of vulnerable ranges? It
+// reads a pnpm lockfile (npm) and a go.mod (Go); see Ecosystem. It is
 // the security-alerts loop's Ground truth check on a SecurityFix session's
 // result: the session's self-report is not trusted (ADR-0016, ADR-0040).
 //
@@ -13,7 +14,11 @@ import "fmt"
 // ranges, in ascending order. An empty result means the lockfile is clean for
 // pkg. It fails closed, as Resolved does.
 func Vulnerable(lock []byte, pkg string, ranges []Range) ([]Version, error) {
-	resolved, err := Resolved(lock, pkg)
+	return vulnerable(Resolved, lock, pkg, ranges)
+}
+
+func vulnerable(resolve func([]byte, string) ([]Version, error), lock []byte, pkg string, ranges []Range) ([]Version, error) {
+	resolved, err := resolve(lock, pkg)
 	if err != nil {
 		return nil, err
 	}
@@ -45,10 +50,15 @@ func (r Result) Clean() bool {
 	return r.Package != "" && r.Err == nil && len(r.Vulnerable) == 0
 }
 
-// Check scans lock for pkg against ranges, written in GitHub's syntax as the
-// alerts carry them. Every way the scan can fail is folded into Err, so a caller
-// cannot read a failed scan as a fixed lockfile.
+// Check scans a pnpm lockfile for pkg against ranges, written in GitHub's syntax
+// as the alerts carry them. Every way the scan can fail is folded into Err, so a
+// caller cannot read a failed scan as a fixed lockfile. Ecosystem.Check is the
+// same scan for any ecosystem with a reader.
 func Check(lock []byte, pkg string, ranges []string) Result {
+	return check(Resolved, lock, pkg, ranges)
+}
+
+func check(resolve func([]byte, string) ([]Version, error), lock []byte, pkg string, ranges []string) Result {
 	r := Result{Package: pkg}
 	if len(ranges) == 0 {
 		r.Err = fmt.Errorf("no vulnerable range to check %s against", pkg)
@@ -63,6 +73,6 @@ func Check(lock []byte, pkg string, ranges []string) Result {
 		}
 		parsed = append(parsed, rg)
 	}
-	r.Vulnerable, r.Err = Vulnerable(lock, pkg, parsed)
+	r.Vulnerable, r.Err = vulnerable(resolve, lock, pkg, parsed)
 	return r
 }
