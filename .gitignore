@@ -13,6 +13,7 @@ loop.pid
 # The harness working its own backlog (.agent-harness/config.toml).
 .agent-harness/.env
 .agent-harness/logs/
+.agent-harness/locks/
 .agent-harness/STOP
 .agent-harness/harness-findings/
 .claude/worktrees/
