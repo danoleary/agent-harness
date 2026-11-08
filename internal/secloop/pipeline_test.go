@@ -2,11 +2,13 @@ package secloop
 
 import (
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/danoleary/agent-harness/internal/ci"
 	"github.com/danoleary/agent-harness/internal/config"
 	"github.com/danoleary/agent-harness/internal/github"
 	"github.com/danoleary/agent-harness/internal/gittest"
@@ -335,5 +337,117 @@ func TestFixLandsAGoModuleFix(t *testing.T) {
 				t.Errorf("PR body should name go.mod as checked:\n%v", h.PRBodies)
 			}
 		})
+	}
+}
+
+// watchingLoop is the built-in security-alerts loop: the required Steps, then the
+// CI watch and the retrospective.
+func watchingLoop() config.Loop {
+	l := securityLoop()
+	l.Steps = append(l.Steps, config.Step{Use: config.StepWatchCI}, config.Step{Use: config.StepRetro})
+	return l
+}
+
+// CI goes red once over the opened PR: the CIFix session commits a fix, the gates
+// run green over it, the watch pushes it, and CI then goes green. The fix is
+// pr-doctor's gated CI fix, and the watch may rebase the harness's own branch.
+func TestFixGatesAndPushesACIFixThenWatchesCIGoGreen(t *testing.T) {
+	it := lodashItem()
+	h, repo := secHost(t, it)
+	h.AgentFn = func(_ int, run hostio.AgentRun) session.Outcome {
+		switch run.Label {
+		case "securityfix":
+			repo.Commit(h.Worktree(), "pnpm-lock.yaml", patchedLock, "fix(deps): patch lodash")
+		case "cifix-1":
+			repo.Commit(h.Worktree(), "src/compat.js", "export const merge = Object.assign\n", "Fix the build against lodash 4.17.21")
+		}
+		return h.AgentOutcome
+	}
+	var fixErr error
+	h.CIFn = func(w hostio.CIWatch) ci.Outcome {
+		// Red once: the watch hands the failing logs to Fix, and pushes what it accepts.
+		if fixErr = w.Fix("FAIL src/compat.test.js", true); fixErr != nil {
+			return ci.Outcome{Reason: "auto-fix refused"}
+		}
+		if err := h.Push(); err != nil {
+			t.Fatal(err)
+		}
+		return ci.Outcome{OK: true, Reason: "green after the fix"}
+	}
+
+	res := Fix(h, securityCfg(t), secLog(t), it, watchingLoop())
+
+	if fixErr != nil {
+		t.Fatalf("a committed, gate-green CI fix is accepted, got %v", fixErr)
+	}
+	if !res.OK || res.Disposition != stages.Shipped {
+		t.Fatalf("a PR whose CI went green ships, got %+v", res)
+	}
+	if len(h.Watches) != 1 || h.Watches[0].KeepHistory {
+		t.Errorf("one watch that may rebase the harness's own branch, got %+v", h.Watches)
+	}
+	got := calls(h)
+	order := []string{"create-pr ", "watch-ci|", "agent cifix-1|", "shell gate-cifix1-check|", "push|", "agent retrospective|"}
+	at := 0
+	for _, want := range order {
+		i := strings.Index(got[at:], want)
+		if i < 0 {
+			t.Fatalf("calls missing %q in order:\n%v", want, h.Calls)
+		}
+		at += i + len(want)
+	}
+	if !strings.Contains(h.Agents[1].Prompt, "FAIL src/compat.test.js") || !strings.Contains(h.Agents[1].Prompt, "`"+it.Branch+"`") {
+		t.Errorf("the CIFix session gets the failing logs and the package's branch; prompt:\n%s", h.Agents[1].Prompt)
+	}
+	if log := repo.Git(repo.Origin, "log", "-1", "--format=%s", it.Branch); log != "Fix the build against lodash 4.17.21" {
+		t.Errorf("the gated fix must reach origin, got tip %q", log)
+	}
+	if _, err := os.Stat(h.Worktree().Path()); !os.IsNotExist(err) {
+		t.Errorf("a clean worktree is removed after the run, stat = %v", err)
+	}
+}
+
+// A red gate over the CIFix commit refuses the fix: the watch pushes nothing more,
+// and the opened PR still counts as shipped, left to pr-doctor once the held
+// label comes off.
+func TestFixRefusesACIFixWhoseGatesFail(t *testing.T) {
+	it := lodashItem()
+	h, repo := secHost(t, it)
+	h.ShellFn = func(_ int, run hostio.ShellRun) session.Outcome {
+		if strings.HasPrefix(run.Label, "gate-cifix") {
+			return session.Outcome{ExitCode: 2}
+		}
+		return session.Outcome{}
+	}
+	var fixErr error
+	h.CIFn = func(w hostio.CIWatch) ci.Outcome {
+		fixErr = w.Fix("FAIL", true)
+		return ci.Outcome{Reason: "auto-fix refused"}
+	}
+
+	res := Fix(h, securityCfg(t), secLog(t), it, watchingLoop())
+
+	if fixErr == nil || !strings.Contains(fixErr.Error(), `gate "check"`) {
+		t.Fatalf("a fix over a red gate must be refused naming the gate, got %v", fixErr)
+	}
+	if res.Disposition != stages.Shipped {
+		t.Errorf("the PR is open, so the run shipped, got %+v", res)
+	}
+	if log := repo.Git(repo.Origin, "log", "-1", "--format=%s", it.Branch); log != "fix(deps): patch lodash" {
+		t.Errorf("only the security fix is on origin, got tip %q", log)
+	}
+}
+
+// The retrospective files its project findings into the tracker's findings team:
+// no ticket names one for a package (ADR-0038).
+func TestFixFilesProjectFindingsIntoTheTrackersTeam(t *testing.T) {
+	it := lodashItem()
+	h, _ := secHost(t, it)
+	h.Trk.Team = "beh-team-uuid"
+
+	Fix(h, securityCfg(t), secLog(t), it, watchingLoop())
+
+	if strings.Join(h.Routed, ",") != it.Key() || strings.Join(h.RoutedTeams, ",") != "beh-team-uuid" {
+		t.Errorf("routed %v into teams %v, want %s into beh-team-uuid", h.Routed, h.RoutedTeams, it.Key())
 	}
 }

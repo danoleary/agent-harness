@@ -127,7 +127,10 @@ func Fix(h hostio.Host, cfg config.Config, log *runlog.Logger, it Item, l config
 		return stages.Result{}
 	}
 	r := run{h: h, cfg: cfg, log: log, fixes: fixes, target: target, it: it, watchCI: l.Has(config.StepWatchCI)}
-	defer r.cleanup()
+	// The branch on origin is the record. A worktree left dirty is kept, and the
+	// next checkout refuses to drop it: the PR is handed to a human without
+	// spending an attempt (#247).
+	defer fixes.Cleanup()
 
 	// Work the head that was polled or nothing: a push that landed since is a newer
 	// head, which the next poll judges as a new item.
@@ -142,7 +145,7 @@ func Fix(h hostio.Host, cfg config.Config, log *runlog.Logger, it Item, l config
 	out := r.repair()
 	if r.sessions && l.Has(config.StepRetro) {
 		t := target.Ticket
-		t.TeamID = findingsTeam(h, log, key)
+		t.TeamID = stages.FindingsTeam(h, log, who, key)
 		stages.RetrospectiveOver(h, cfg, log, stages.Subject{
 			Ticket: t, Slug: slug, WorktreePath: wt.Path(), Branch: wt.Branch(), LogDir: log.Dir,
 		}, false)
@@ -203,38 +206,16 @@ func (r *run) repair() stages.Result {
 	return r.watch()
 }
 
-// watch watches CI to a terminal verdict. A red check gets a CIFix session over the
-// failing logs, and its committed fix must pass every gate before the watch may
-// push it. A branch a human opted in is never reactively rebased.
+// watch watches CI to a terminal verdict. A red check gets the gated CI fix: a
+// CIFix session over the failing logs, whose committed fix must pass every gate
+// before the watch may push it. A branch a human opted in is never reactively
+// rebased.
 func (r *run) watch() stages.Result {
-	ciFix := r.fixes.CI(r.target)
-	attempt := 0
-	gated := func(logs string, available bool) error {
-		attempt++
-		r.sessions = true
-		wt := r.h.Worktree()
-		before, _ := wt.HeadSHA()
-		if err := ciFix(logs, available); err != nil {
-			return err
-		}
-		// A gate red only in files the fix left alone is re-run once before it refuses
-		// the fix (#167). Not knowing what the fix changed leaves the plain gates.
-		label := fmt.Sprintf("gate-cifix%d", attempt)
-		var gate fix.GateResult
-		if fixed, err := wt.ChangedSince(before); before != "" && err == nil {
-			gate = r.fixes.GatesOver(label, fixed)
-		} else {
-			gate = r.fixes.Gates(label)
-		}
-		if !gate.Green() {
-			return fmt.Errorf("gate %q is red over auto-fix %d (exit %d) — not pushing", gate.FailedGate, attempt, gate.Outcome.ExitCode)
-		}
-		// The watch pushes an accepted fix next.
-		r.pushed = true
-		return nil
-	}
+	gated := r.fixes.GatedCI(r.target)
 	r.log.Event("watching CI for " + r.it.PR.HeadBranch + " …")
-	res := r.h.WatchCI(hostio.CIWatch{Fix: gated, KeepHistory: !r.it.Harness})
+	res := r.h.WatchCI(hostio.CIWatch{Fix: gated.Fix, KeepHistory: !r.it.Harness})
+	r.sessions = r.sessions || gated.Attempts > 0
+	r.pushed = r.pushed || gated.Accepted > 0
 	switch {
 	case res.OK:
 		r.log.Event(who + " ✓ " + res.Reason)
@@ -250,40 +231,8 @@ func (r *run) watch() stages.Result {
 	return stages.Result{}
 }
 
-// cleanup removes the PR's worktree once it is clean: the branch on origin is the
-// record, and the next run checks it out afresh. A worktree left dirty is kept for
-// a look: the next checkout refuses to drop it, and the PR is handed to a human
-// without spending an attempt (#247).
-func (r *run) cleanup() {
-	wt := r.h.Worktree()
-	if !wt.Clean() {
-		r.log.Event(fmt.Sprintf("%s — worktree %s kept: it holds uncommitted changes", who, wt.Path()))
-		return
-	}
-	if err := wt.Remove(); err != nil {
-		r.log.Event(fmt.Sprintf("%s — worktree %s kept: %v", who, wt.Path(), err))
-	}
-}
-
 // prTicket is the PR as the sessions' prompts see it: the intent is the PR's
 // title and description.
 func prTicket(key string, pr github.PullRequest) ticket.Ticket {
 	return ticket.Ticket{Identifier: key, Title: pr.Title, Description: pr.Body, URL: pr.URL}
-}
-
-// findingsTeam is where the retrospective's project findings file to. No ticket
-// names a team for a PR, so it is the tracker's findings team — the configured
-// repo, project or team (ADR-0038). A tracker that cannot name one leaves it
-// empty, and only harness findings are routed.
-func findingsTeam(h hostio.Host, log *runlog.Logger, key string) string {
-	trk, err := h.Tracker()
-	if err != nil {
-		log.Event(fmt.Sprintf("%s … warning: no tracker for %s's project findings: %v", who, key, err))
-		return ""
-	}
-	team, err := trk.FindingsTeam()
-	if err != nil {
-		log.Event(fmt.Sprintf("%s … warning: no tracker team for %s's project findings: %v", who, key, err))
-	}
-	return team
 }

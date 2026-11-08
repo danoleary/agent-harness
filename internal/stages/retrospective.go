@@ -87,10 +87,29 @@ func Retrospective(h hostio.Host, cfg config.Config, log *runlog.Logger, args Ar
 	return Result{OK: true}
 }
 
+// FindingsTeam is where a retrospective over a Work item no ticket names files
+// its project findings: the tracker's findings team — the configured repo,
+// project or team (ADR-0038). The PR loop and the security-alerts loop ask for
+// it. A tracker that cannot name one leaves it empty, with one warning line in
+// who's voice, and only harness findings are routed.
+func FindingsTeam(h hostio.Host, log *runlog.Logger, who, key string) string {
+	trk, err := h.Tracker()
+	if err != nil {
+		log.Event(fmt.Sprintf("%s … warning: no tracker for %s's project findings: %v", who, key, err))
+		return ""
+	}
+	team, err := trk.FindingsTeam()
+	if err != nil {
+		log.Event(fmt.Sprintf("%s … warning: no tracker team for %s's project findings: %v", who, key, err))
+	}
+	return team
+}
+
 // RetrospectiveOver runs the retrospective session over subject's transcripts
 // (everything under its log dir) and routes the findings it drops by audience. It
 // is the part of the stage that needs no tracker ticket: the ticket pipeline runs
-// it over the ticket it fetched, and the PR loop over the PR it fixed (ADR-0019).
+// it over the ticket it fetched, the PR loop over the PR it fixed (ADR-0019), and
+// the security-alerts loop over the package it fixed (ADR-0040).
 // Ground truth is the *presence* of /findings/out.json (an empty `[]` is success;
 // absent means it never ran). A dry-run prints the plan and launches nothing.
 func RetrospectiveOver(h hostio.Host, cfg config.Config, log *runlog.Logger, subject Subject, dryRun bool) Result {

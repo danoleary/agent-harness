@@ -1,7 +1,6 @@
 package secloop
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -78,8 +77,10 @@ func (Pipeline) Recover(loop.WorkItem) (stages.Result, bool) { return stages.Res
 //  3. gates: every Gate, green;
 //  4. open_pr: land the branch as a new PR whose body carries the alerts and the
 //     fingerprint marker, and hold it with the held label;
-//  5. watch_ci: watch CI to a verdict. A red check is left to pr-doctor, whose
-//     CIFix may touch more than dependency files;
+//  5. watch_ci: watch CI to a verdict, and a red check gets pr-doctor's gated CI
+//     fix: a CIFix session over the failing logs whose committed fix must pass
+//     every gate before the watch may push it. A loop without it stops at the
+//     open PR, and pr-doctor fixes red CI once the held label comes off;
 //  6. retro: the retrospective mines the run's transcripts and files findings.
 //
 // Nothing is pushed unless the host check and the gates agree. A landing that
@@ -104,8 +105,9 @@ func Fix(h hostio.Host, cfg config.Config, log *runlog.Logger, it Item, l config
 		log.Event(fmt.Sprintf("%s ✗ could not cut %s fresh from origin/main: %v — nothing pushed", who, wt.Branch(), err))
 		return stages.Result{}
 	}
-	r := run{h: h, cfg: cfg, log: log, it: it, opts: opts}
-	defer r.cleanup()
+	r := run{h: h, cfg: cfg, log: log, it: it, opts: opts, fixes: fixes}
+	// The branch on origin is the record, and the next attempt cuts it fresh.
+	defer fixes.Cleanup()
 	if !fixes.Provision() {
 		return stages.Result{}
 	}
@@ -122,8 +124,10 @@ func Fix(h hostio.Host, cfg config.Config, log *runlog.Logger, it Item, l config
 		r.watch()
 	}
 	if r.sessions && l.Has(config.StepRetro) {
+		t := r.ticket()
+		t.TeamID = stages.FindingsTeam(h, log, who, key)
 		stages.RetrospectiveOver(h, cfg, log, stages.Subject{
-			Ticket: r.ticket(), Slug: ticket.Slug(key), WorktreePath: wt.Path(), Branch: wt.Branch(), LogDir: log.Dir,
+			Ticket: t, Slug: ticket.Slug(key), WorktreePath: wt.Path(), Branch: wt.Branch(), LogDir: log.Dir,
 		}, false)
 	}
 	return out
@@ -131,11 +135,12 @@ func Fix(h hostio.Host, cfg config.Config, log *runlog.Logger, it Item, l config
 
 // run is one package fix in flight.
 type run struct {
-	h    hostio.Host
-	cfg  config.Config
-	log  *runlog.Logger
-	it   Item
-	opts Options
+	h     hostio.Host
+	cfg   config.Config
+	log   *runlog.Logger
+	it    Item
+	opts  Options
+	fixes fix.Env
 	// sessions marks a run that launched an agent session, which leaves the
 	// transcripts a retrospective mines.
 	sessions bool
@@ -235,33 +240,19 @@ func (r *run) mainSHA() string {
 	return sha
 }
 
-// watch watches CI to a verdict. A red check is not this loop's to fix: its fix
-// would touch more than dependency files, so the PR is left for pr-doctor once the
-// held label comes off.
+// watch watches CI to a verdict. A red check gets the gated CI fix pr-doctor
+// runs, and the watch may rebase the branch: it is the harness's own. The PR is
+// open either way, so the verdict is only narrated.
 func (r *run) watch() {
+	gated := r.fixes.GatedCI(fix.Target{Slug: ticket.Slug(r.it.Key()), Ticket: r.ticket(), Branch: r.it.Branch})
 	r.log.Event("watching CI for " + r.it.Branch + " …")
-	res := r.h.WatchCI(hostio.CIWatch{Fix: func(string, bool) error {
-		return errors.New("a security fix touches dependency files only; its red CI is left to pr-doctor")
-	}})
+	res := r.h.WatchCI(hostio.CIWatch{Fix: gated.Fix})
+	r.sessions = r.sessions || gated.Attempts > 0
 	if res.OK {
 		r.log.Event(who + " ✓ " + res.Reason)
 		return
 	}
 	r.log.Event(who + " ✗ CI did not go green: " + res.Reason)
-}
-
-// cleanup removes the package's worktree once it is clean: the branch on origin
-// is the record, and the next attempt cuts it fresh. A worktree left dirty is kept
-// for a look.
-func (r *run) cleanup() {
-	wt := r.h.Worktree()
-	if !wt.Clean() {
-		r.log.Event(fmt.Sprintf("%s — worktree %s kept: it holds uncommitted changes", who, wt.Path()))
-		return
-	}
-	if err := wt.Remove(); err != nil {
-		r.log.Event(fmt.Sprintf("%s — worktree %s kept: %v", who, wt.Path(), err))
-	}
 }
 
 // title is the PR's title: `fix(deps): patch <pkg> (<n> <severities> alerts)`.

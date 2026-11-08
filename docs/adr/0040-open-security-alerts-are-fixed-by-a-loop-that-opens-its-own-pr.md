@@ -249,3 +249,26 @@ and the SecurityFix prompt take theirs from it.
 - **The session runs `go get <module>@v<highest patch>`, then `go mod tidy`** (and
   `go mod vendor` where `vendor/` exists). `go get` raises an indirect requirement
   as well as a direct one, so there is no parent-bump or override route to try.
+
+## Amendment, 2026-11-08: the CI watch fixes red CI, as `pr-doctor`'s does (#204)
+
+This reverses the #203 amendment's `watch_ci`, which watched CI but fixed
+nothing. That left a red security PR waiting for the run to take the held label
+off and for `pr-doctor`'s next poll, only for `pr-doctor` to run the same CIFix
+session over the same branch. Decision 4's dependency-files-only check is for
+the SecurityFix session, which is trusted to bump a version and nothing more. A
+CI fix answers a failing check, and its ground truth is the Gates, as on any PR.
+
+- **`watch_ci` hands a red check to the gated CI fix**, `fix.Env.GatedCI`, which
+  `pr-doctor` now calls too: a CIFix session over the failing logs, whose
+  committed fix must pass every Gate before the watch may push it (with the
+  #167 re-run for a red outside the fix's files). The watch may rebase the
+  branch (`KeepHistory` false): it is the harness's own.
+- **Without `watch_ci` the run stops at the open PR**, and `pr-doctor` fixes red
+  CI once the held label comes off, as a ticket loop without it does (ADR-0031).
+- **`retro` files project findings into the tracker's findings team**
+  (ADR-0038), which `stages.FindingsTeam` now resolves for both loops: no ticket
+  names a team for a package.
+- **After the run the worktree is removed if it is clean**, by
+  `fix.Env.Cleanup`, which both loops share.
+
