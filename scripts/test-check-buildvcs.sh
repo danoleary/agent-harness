@@ -37,7 +37,7 @@ report=$("$SCRIPT_PATH" "$TEST_DIR/test1" 2>&1 || true)
 if "$SCRIPT_PATH" "$TEST_DIR/test1" > /dev/null 2>&1; then
     echo -e "${RED}FAIL${NC} - expected failure but got success"
     exit 1
-elif echo "$report" | grep -qiE 'Makefile:2:.*buildvcs'; then
+elif grep -qiE 'Makefile:2:.*buildvcs' <<< "$report"; then
     echo -e "${GREEN}PASS${NC}"
 else
     echo -e "${RED}FAIL${NC} - expected a 'Makefile:2 ... buildvcs' report, got: $report"
@@ -98,7 +98,7 @@ mkdir -p "$TEST_DIR/test6"
 printf 'test:\n\tgo test ./...\nrun:\n\tgo run ./cmd/foo\n' > "$TEST_DIR/test6/Makefile"
 
 report6=$("$SCRIPT_PATH" "$TEST_DIR/test6" 2>&1 || true)
-if echo "$report6" | grep -qE 'Makefile:2:' && echo "$report6" | grep -qE 'Makefile:4:'; then
+if grep -qE 'Makefile:2:' <<< "$report6" && grep -qE 'Makefile:4:' <<< "$report6"; then
     echo -e "${GREEN}PASS${NC}"
 else
     echo -e "${RED}FAIL${NC} - expected both go test (line 2) and go run (line 4) flagged, got: $report6"
@@ -115,7 +115,7 @@ report7=$("$SCRIPT_PATH" "$TEST_DIR/test7" 2>&1 || true)
 if "$SCRIPT_PATH" "$TEST_DIR/test7" > /dev/null 2>&1; then
     echo -e "${RED}FAIL${NC} - expected failure but got success"
     exit 1
-elif echo "$report7" | grep -qE 'Makefile:2:'; then
+elif grep -qE 'Makefile:2:' <<< "$report7"; then
     echo -e "${GREEN}PASS${NC}"
 else
     echo -e "${RED}FAIL${NC} - expected a 'Makefile:2' report for go install, got: $report7"

@@ -37,8 +37,8 @@ while IFS= read -r makefile; do
         esac
 
         # Only recipe lines that invoke a VCS-stamping go subcommand.
-        if echo "$line" | grep -qE '(^|[^[:alnum:]_])go[[:space:]]+(build|install|run|test)([^[:alnum:]_]|$)'; then
-            if ! echo "$line" | grep -qE -- '-buildvcs=false'; then
+        if grep -qE '(^|[^[:alnum:]_])go[[:space:]]+(build|install|run|test)([^[:alnum:]_]|$)' <<< "$line"; then
+            if ! grep -qE -- '-buildvcs=false' <<< "$line"; then
                 echo "${makefile}:${line_no}: go build/test/run/install without -buildvcs=false (breaks builds in a linked worktree; see BEH-459)"
                 violations=$((violations + 1))
             fi

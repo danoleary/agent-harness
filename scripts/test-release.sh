@@ -78,23 +78,23 @@ echo -n "Test 1: refuses a dirty working tree... "
 c=$(fixture t1)
 echo junk >"$c/junk"
 out=$(cd "$c" && "$SCRIPT_PATH" minor 2>&1) && fail "expected failure"
-echo "$out" | grep -q 'dirty' && pass || fail "got: $out"
+grep -q 'dirty' <<< "$out" && pass || fail "got: $out"
 
 echo -n "Test 2: refuses a branch other than main... "
 c=$(fixture t2)
 git -C "$c" checkout --quiet -b feature
 out=$(cd "$c" && "$SCRIPT_PATH" minor 2>&1) && fail "expected failure"
-echo "$out" | grep -q 'cut from main' && pass || fail "got: $out"
+grep -q 'cut from main' <<< "$out" && pass || fail "got: $out"
 
 echo -n "Test 3: refuses a version not newer than the latest tag... "
 c=$(fixture t3)
 out=$(cd "$c" && "$SCRIPT_PATH" 0.4.9 2>&1) && fail "expected failure"
-echo "$out" | grep -q 'not newer' && pass || fail "got: $out"
+grep -q 'not newer' <<< "$out" && pass || fail "got: $out"
 
 echo -n "Test 4: --dry-run resolves 'minor' and changes nothing... "
 c=$(fixture t4)
 out=$(cd "$c" && "$SCRIPT_PATH" minor --dry-run 2>&1) || fail "dry run failed: $out"
-echo "$out" | grep -q 'v0.6.0' || fail "expected v0.6.0 in: $out"
+grep -q 'v0.6.0' <<< "$out" || fail "expected v0.6.0 in: $out"
 [ -z "$(git -C "$c" status --porcelain)" ] || fail "dry run left changes"
 git -C "$c" rev-parse -q --verify refs/tags/v0.6.0 >/dev/null && fail "dry run tagged"
 pass
@@ -116,17 +116,17 @@ git --git-dir="$o" rev-parse -q --verify refs/tags/v0.6.0 >/dev/null || fail "ta
 [ "$(git --git-dir="$o" rev-parse 'v0.6.0^{commit}')" = "$(git --git-dir="$o" rev-parse main)" ] ||
     fail "tag is not on origin's main tip"
 show() { git --git-dir="$o" show "main:$1"; }
-show .agent-harness/Dockerfile | grep -q 'agent-harness-base:0.6.0' || fail "dogfood pin not bumped"
-show docs/how-to/sandbox-image.md | grep -q 'agent-harness-base:0.6.0' || fail "sandbox-image how-to pin not bumped"
-show internal/scaffold/templates/Dockerfile.tmpl | grep -q 'agent-harness-base:0.6.0' || fail "init's scaffold pin not bumped"
-show Dockerfile.base | grep -q '^ARG CLAUDE_VERSION=2.2.0$' || fail "claude CLI not bumped"
-git --git-dir="$o" log -1 --format=%s main | grep -q '^Release v0.6.0$' || fail "unexpected commit subject"
+grep -q 'agent-harness-base:0.6.0' <<< "$(show .agent-harness/Dockerfile)" || fail "dogfood pin not bumped"
+grep -q 'agent-harness-base:0.6.0' <<< "$(show docs/how-to/sandbox-image.md)" || fail "sandbox-image how-to pin not bumped"
+grep -q 'agent-harness-base:0.6.0' <<< "$(show internal/scaffold/templates/Dockerfile.tmpl)" || fail "init's scaffold pin not bumped"
+grep -q '^ARG CLAUDE_VERSION=2.2.0$' <<< "$(show Dockerfile.base)" || fail "claude CLI not bumped"
+grep -q '^Release v0.6.0$' <<< "$(git --git-dir="$o" log -1 --format=%s main)" || fail "unexpected commit subject"
 pass
 
 echo -n "Test 7: a failed release run is reported with the recovery command... "
 c=$(fixture t7)
 out=$(cd "$c" && FAKE_WATCH_RC=1 "$SCRIPT_PATH" patch 2>&1) && fail "expected failure"
-echo "$out" | grep -q 'gh workflow run release.yml -f tag=v0.5.1' && pass || fail "got: $out"
+grep -q 'gh workflow run release.yml -f tag=v0.5.1' <<< "$out" && pass || fail "got: $out"
 
 echo
 echo -e "${GREEN}All release.sh tests passed${NC}"

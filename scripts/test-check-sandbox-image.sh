@@ -58,7 +58,7 @@ report=$(DOCKER="$FAKE_DOCKER" FAKE_LOG="$TEST_DIR/log1" FAKE_TOOLS="gofmt" \
 if [ "$status" -eq 0 ]; then
     echo -e "${RED}FAIL${NC} - expected failure but got success: $report"
     exit 1
-elif echo "$report" | grep -qE "PATH in img:test: go$"; then
+elif grep -qE "PATH in img:test: go$" <<< "$report"; then
     echo -e "${GREEN}PASS${NC}"
 else
     echo -e "${RED}FAIL${NC} - expected a report naming 'go', got: $report"
@@ -97,7 +97,7 @@ esac
 echo -n "Test 4: explicit tool args are probed instead of the default... "
 report4=$(DOCKER="$FAKE_DOCKER" FAKE_LOG="$TEST_DIR/log4" FAKE_TOOLS="go gofmt" \
     "$SCRIPT_PATH" img:test dotnet 2>&1) && status=0 || status=$?
-if [ "$status" -ne 0 ] && echo "$report4" | grep -q "dotnet"; then
+if [ "$status" -ne 0 ] && grep -q "dotnet" <<< "$report4"; then
     echo -e "${GREEN}PASS${NC}"
 else
     echo -e "${RED}FAIL${NC} - expected dotnet flagged, got (exit $status): $report4"

@@ -53,7 +53,7 @@ expect_fail() {
     if "$SCRIPT_PATH" "$2" > /dev/null 2>&1; then
         echo -e "${RED}FAIL${NC} - $1: expected failure but got success"
         exit 1
-    elif echo "$report" | grep -qE -- "$3"; then
+    elif grep -qE -- "$3" <<< "$report"; then
         echo -e "${GREEN}PASS${NC}"
     else
         echo -e "${RED}FAIL${NC} - $1: expected a report matching '$3', got: $report"

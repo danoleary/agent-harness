@@ -49,7 +49,7 @@ expect_fail() {
     if "$SCRIPT_PATH" "$2" > /dev/null 2>&1; then
         echo -e "${RED}FAIL${NC} - $1: expected failure but got success"
         exit 1
-    elif echo "$report" | grep -qE -- "$3"; then
+    elif grep -qE -- "$3" <<< "$report"; then
         echo -e "${GREEN}PASS${NC}"
     else
         echo -e "${RED}FAIL${NC} - $1: expected a report matching '$3', got: $report"
@@ -139,6 +139,24 @@ while [ "$i" -le 600 ]; do
 done
 printf 'DOCS="%s"\n' "$list" > "$TEST_DIR/t13/install.sh"
 expect_pass "large DOCS list" "$TEST_DIR/t13"
+
+# expect_fail itself once matched its report with `echo | grep -q`: grep quit on
+# a first-line match, echo took SIGPIPE writing the rest, and under pipefail
+# Test 8's plainly matching report read as a FAIL (#273). A stub guard replays
+# that report, padded well past a pipe buffer so the race always fires.
+echo -n "Test 14: a long report that matches on its first line passes (#273)... "
+cat > "$TEST_DIR/long-report.sh" <<'EOF'
+#!/bin/bash
+echo "README.md:3: link to docs/EXTRA.md, which the bundle does not ship"
+i=0
+while [ "$i" -lt 4000 ]; do
+    echo "docs/GUIDE.md:$i: link to docs/EXTRA.md, which the bundle does not ship"
+    i=$((i + 1))
+done
+exit 1
+EOF
+chmod +x "$TEST_DIR/long-report.sh"
+(SCRIPT_PATH="$TEST_DIR/long-report.sh" && expect_fail "long report" "$TEST_DIR/t14" 'README\.md:3:.*docs/EXTRA\.md')
 
 echo
 echo -e "${GREEN}All tests passed!${NC}"

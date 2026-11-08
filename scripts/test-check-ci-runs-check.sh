@@ -55,7 +55,7 @@ report=$("$SCRIPT_PATH" "$TEST_DIR/test1/wf.yaml" "$TEST_DIR/test1/Makefile" 2>&
 if "$SCRIPT_PATH" "$TEST_DIR/test1/wf.yaml" "$TEST_DIR/test1/Makefile" > /dev/null 2>&1; then
     echo -e "${RED}FAIL${NC} - expected failure but got success"
     exit 1
-elif echo "$report" | grep -qE 'fmt-check' && echo "$report" | grep -qiE 'make check'; then
+elif grep -qE 'fmt-check' <<< "$report" && grep -qiE 'make check' <<< "$report"; then
     echo -e "${GREEN}PASS${NC}"
 else
     echo -e "${RED}FAIL${NC} - expected a report naming an enumerated sub-target and 'make check', got: $report"
@@ -96,7 +96,7 @@ report3=$("$SCRIPT_PATH" "$TEST_DIR/test3/wf.yaml" "$TEST_DIR/test3/Makefile" 2>
 if "$SCRIPT_PATH" "$TEST_DIR/test3/wf.yaml" "$TEST_DIR/test3/Makefile" > /dev/null 2>&1; then
     echo -e "${RED}FAIL${NC} - expected failure but got success"
     exit 1
-elif echo "$report3" | grep -qiE "does not run 'make check'"; then
+elif grep -qiE "does not run 'make check'" <<< "$report3"; then
     echo -e "${GREEN}PASS${NC}"
 else
     echo -e "${RED}FAIL${NC} - expected a 'does not run make check' report, got: $report3"
@@ -124,7 +124,7 @@ report4=$("$SCRIPT_PATH" "$TEST_DIR/test4/wf.yaml" "$TEST_DIR/test4/Makefile" 2>
 if "$SCRIPT_PATH" "$TEST_DIR/test4/wf.yaml" "$TEST_DIR/test4/Makefile" > /dev/null 2>&1; then
     echo -e "${RED}FAIL${NC} - expected failure but got success"
     exit 1
-elif echo "$report4" | grep -qE 'check-newguard'; then
+elif grep -qE 'check-newguard' <<< "$report4"; then
     echo -e "${GREEN}PASS${NC}"
 else
     echo -e "${RED}FAIL${NC} - expected 'make check-newguard' to be flagged, got: $report4"

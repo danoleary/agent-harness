@@ -104,7 +104,7 @@ if LOOP_BIN="$MISSING_BIN" LOOP_PIDFILE="$PIDFILE2" LOOP_LOGFILE="$LOGFILE2" "$S
 elif [ -f "$PIDFILE2" ]; then
     echo -e "${RED}FAIL${NC} - a missing binary must not write a pidfile, but $PIDFILE2 exists"
     exit 1
-elif ! echo "$report2" | grep -qiE 'not found|make build'; then
+elif ! grep -qiE 'not found|make build' <<< "$report2"; then
     echo -e "${RED}FAIL${NC} - expected an actionable 'not found / make build' message, got: $report2"
     exit 1
 else
@@ -131,7 +131,7 @@ elif [ "$second_pid" != "$first_pid" ]; then
     echo -e "${RED}FAIL${NC} - the pidfile was overwritten ($first_pid -> $second_pid)"
     STARTED_PIDS="$STARTED_PIDS $second_pid"
     exit 1
-elif ! echo "$report3" | grep -qiE 'already running'; then
+elif ! grep -qiE 'already running' <<< "$report3"; then
     echo -e "${RED}FAIL${NC} - expected an 'already running' message, got: $report3"
     exit 1
 else
@@ -468,13 +468,13 @@ NOBIN="$TEST_DIR/nobin"
 mkdir -p "$NOBIN/scripts"
 cp "$SCRIPT_PATH" "$NOBIN/scripts/loop-start.sh"
 nobin_out="$( ( cd "$TEST_DIR" && PATH="/usr/bin:/bin" PROJECT_PATH="$TEST_DIR" "$NOBIN/scripts/loop-start.sh" 2>&1 ) || true )"
-if ! printf '%s' "$nobin_out" | grep -q "make build"; then
+if ! grep -q "make build" <<< "$nobin_out"; then
     echo -e "${RED}FAIL${NC} - message must still tell a from-source operator to build: $nobin_out"
     exit 1
-elif ! printf '%s' "$nobin_out" | grep -qi "release\|PATH"; then
+elif ! grep -qi "release\|PATH" <<< "$nobin_out"; then
     echo -e "${RED}FAIL${NC} - message must also tell a release operator where a binary comes from: $nobin_out"
     exit 1
-elif ! printf '%s' "$nobin_out" | grep -q "agent-harness start"; then
+elif ! grep -q "agent-harness start" <<< "$nobin_out"; then
     echo -e "${RED}FAIL${NC} - message must point an installed operator at the dispatcher: $nobin_out"
     exit 1
 else
@@ -629,7 +629,7 @@ if [ "$nocaff_rc" != "0" ]; then
 elif [ -z "$nocaff_pid" ] || ! kill -0 "$nocaff_pid" 2>/dev/null; then
     echo -e "${RED}FAIL${NC} - the loop did not start when caffeinate is missing"
     exit 1
-elif ! printf '%s' "$nocaff_err" | grep -q "caffeinate"; then
+elif ! grep -q "caffeinate" <<< "$nocaff_err"; then
     echo -e "${RED}FAIL${NC} - expected a caffeinate warning on stderr, got: '$nocaff_err'"
     exit 1
 else
@@ -667,7 +667,7 @@ elif [ -z "$inst_b" ] || [ "$inst_b" = "$inst_a" ] || ! kill -0 "$inst_b" 2>/dev
 elif ! wait_for_log "$INST_PROJ/.agent-harness/loop-b.log" "fake-loop started with: --instance b"; then
     echo -e "${RED}FAIL${NC} - the daemon was not told its instance, or did not log to loop-b.log"
     exit 1
-elif ! echo "$inst_out" | grep -q "STOP-b"; then
+elif ! grep -q "STOP-b" <<< "$inst_out"; then
     echo -e "${RED}FAIL${NC} - the launch must say how to stop instance b alone, got: $inst_out"
     exit 1
 elif [ "$(cat "$INST_PROJ/.agent-harness/loop.pid")" != "$inst_a" ]; then
@@ -686,7 +686,7 @@ if [ "$again_rc" = "0" ]; then
 elif [ "$(cat "$INST_PROJ/.agent-harness/loop-b.pid")" != "$inst_b" ]; then
     echo -e "${RED}FAIL${NC} - the refused start overwrote instance b's pidfile"
     exit 1
-elif ! echo "$again_out" | grep -q "already running"; then
+elif ! grep -q "already running" <<< "$again_out"; then
     echo -e "${RED}FAIL${NC} - expected an 'already running' message, got: $again_out"
     exit 1
 else
@@ -738,10 +738,10 @@ elif [ -z "$named_pid" ] || [ "$named_pid" = "$named_tickets" ] || ! kill -0 "$n
 elif ! wait_for_log "$NAMED_PROJ/.agent-harness/loop-pr-doctor.log" "fake-loop started with: pr-doctor"; then
     echo -e "${RED}FAIL${NC} - the daemon was not told its loop, or did not log to loop-pr-doctor.log"
     exit 1
-elif ! echo "$named_out" | grep -q "STOP-pr-doctor"; then
+elif ! grep -q "STOP-pr-doctor" <<< "$named_out"; then
     echo -e "${RED}FAIL${NC} - the launch must say how to stop pr-doctor alone, got: $named_out"
     exit 1
-elif ! echo "$named_out" | grep -q "watch --loop pr-doctor"; then
+elif ! grep -q "watch --loop pr-doctor" <<< "$named_out"; then
     echo -e "${RED}FAIL${NC} - the launch must say how to watch pr-doctor, got: $named_out"
     exit 1
 elif [ "$(cat "$NAMED_PROJ/.agent-harness/loop.pid")" != "$named_tickets" ]; then
@@ -828,7 +828,7 @@ elif [ -e "$TEST_DIR/STALE_LOOP_RAN" ]; then
 elif ls "$STALE_PROJ"/.agent-harness/loop*.pid > /dev/null 2>&1; then
     echo -e "${RED}FAIL${NC} - a refused launch wrote a pidfile"
     exit 1
-elif ! printf '%s' "$stale_out" | grep -q "make build" || ! printf '%s' "$stale_out" | grep -q "agent-harness start"; then
+elif ! grep -q "make build" <<< "$stale_out" || ! grep -q "agent-harness start" <<< "$stale_out"; then
     echo -e "${RED}FAIL${NC} - the refusal must name 'make build' and 'agent-harness start', got: $stale_out"
     exit 1
 else

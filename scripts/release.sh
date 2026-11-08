@@ -84,7 +84,7 @@ major) version="v$((lmaj + 1)).0.0" ;;
 v[0-9]* | [0-9]*) version="v${want#v}" ;;
 *) die "version must be vX.Y.Z, patch, minor or major — got '$want'" ;;
 esac
-printf '%s\n' "$version" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$' || die "not a vX.Y.Z version: $version"
+grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$' <<< "$version" || die "not a vX.Y.Z version: $version"
 git rev-parse -q --verify "refs/tags/$version" >/dev/null && die "tag $version already exists"
 
 IFS=. read -r nmaj nmin npat <<EOF

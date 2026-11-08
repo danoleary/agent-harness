@@ -67,6 +67,11 @@ prompt around this skill tells you the ticket, the worktree and the branch.
   (`scripts/check-bundle-links.sh`). The installed docs sit beside only each
   other; link anything else, an ADR included, by its `https://github.com/...`
   URL or add it to `DOCS`.
+- **No pipe into `grep -q` in a script that sets pipefail** —
+  `check-pipefail-grep` (`scripts/check-pipefail-grep.sh`). grep quits on its
+  first match, the writer takes SIGPIPE, and the pipeline reads the match as a
+  miss, intermittently (#177, #273). Match a here-string instead:
+  `grep -q PATTERN <<< "$var"`.
 - **CI runs `make check` itself, never its sub-targets one by one** — `check-ci`
   (`scripts/check-ci-runs-check.sh`); wire a new guard into `check:` only, and
   add a line for it to this list (`internal/docs` fails the gate otherwise).

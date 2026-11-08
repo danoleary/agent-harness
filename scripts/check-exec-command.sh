@@ -86,7 +86,7 @@ for file in $GO_FILES; do
                     full_stmt=$(sed -n "${line_num}p" "$file")
 
                     # Remote operations need deadlines
-                    if echo "$full_stmt" | grep -qE '"(fetch|push|clone|ls-remote|pull)"'; then
+                    if grep -qE '"(fetch|push|clone|ls-remote|pull)"' <<< "$full_stmt"; then
                         VIOLATIONS+=("$file:$line_num: unbounded git remote operation - use internal/proc with timeout")
                     fi
                     # Local operations are deliberately allowed (BEH-386 deferral)
