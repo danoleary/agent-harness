@@ -267,3 +267,21 @@ func TestRebaseDecisionOffersResolveOnlyOnAContentConflict(t *testing.T) {
 		})
 	}
 }
+
+// LabelPR reads the PR number off the URL `gh pr create` printed, and refuses a
+// URL that names none rather than labelling PR 0.
+func TestPRNumberReadsTheCreatedPRsURL(t *testing.T) {
+	for url, want := range map[string]int{
+		"https://github.com/acme/widgets/pull/42":  42,
+		"https://github.com/acme/widgets/pull/42/": 42,
+	} {
+		if got, err := prNumber(url); err != nil || got != want {
+			t.Errorf("prNumber(%q) = %d, %v; want %d", url, got, err, want)
+		}
+	}
+	for _, url := range []string{"", "https://github.com/acme/widgets/issues/42", "https://github.com/acme/widgets/pull/x"} {
+		if _, err := prNumber(url); err == nil {
+			t.Errorf("prNumber(%q) = nil error, want one", url)
+		}
+	}
+}

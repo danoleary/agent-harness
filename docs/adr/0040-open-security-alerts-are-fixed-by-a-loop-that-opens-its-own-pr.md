@@ -182,3 +182,37 @@ steps = [
   { use = "retro" },
 ]
 ```
+
+## Amendment, 2026-11-07: the Pipeline (#203)
+
+`secloop.Fix` runs the Steps, and `agent-harness loop <name>` now runs the loop
+for real. It pins down decisions 3 to 8:
+
+- **`new_branch`** runs the preflight, fetches `origin/main`, cuts the branch
+  with `Worktree.CreateFresh`, and runs `post_create`. The PR loop's
+  provisioning moved to `fix.Env.Provision`, so both loops share it.
+- **`fix_alerts`** is one SecurityFix session, given every alert on the
+  package, including the ones with no patch, which it is told to leave alone.
+  `verify.SecurityFix` checks the result against a scan of the worktree's root
+  `pnpm-lock.yaml` over the patched alerts' vulnerable ranges. A lockfile that
+  cannot be read fails the check.
+- **`gates`** is `fix.Env.Gates`, as on `pr-doctor`.
+- **`open_pr`** is `ship.LandAs` with no conflict hook. Its title is
+  `fix(deps): patch <pkg> (<n> <severities> alerts)`. Its body has the alert
+  table with links, the alerts left open because no patch exists, the commits,
+  and the fingerprint marker. A landed PR gets the held label through the
+  host's `LabelPR`, which uses the REST labels endpoint because that endpoint
+  creates a label the repository lacks.
+  - A **conflict** pushes nothing. The run's `started` line already keeps the
+    package from being retried until main moves.
+  - A **collapse** means main already fixed the package. The run writes a
+    `resolved` ledger line and ends as recommend-close. The Source then skips
+    that fingerprint, even after main moves. It waits the grace period for
+    Dependabot to close the alerts, and after that a human must look, as with a
+    merged fix.
+- **`watch_ci`** watches CI but fixes nothing. A CIFix on a dependency bump
+  would have to touch more than dependency files. The run ends by taking the
+  held label off, so `pr-doctor` can then work a red PR.
+- **The Source refetches `origin/main` before every poll.** The daemon fetches
+  only at startup and after an item. A loop that skips every package until main
+  moves would otherwise never see main move.

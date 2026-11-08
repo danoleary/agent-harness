@@ -1,9 +1,11 @@
 // Package secloop is the security-alerts loop (ADR-0040): the third [loop.Source]
-// the shared daemon drives. Its Source, `github_security_alerts`, reads the open
+// and [loop.Pipeline] the shared daemon drives. Its Source, `github_security_alerts`, reads the open
 // Dependabot alerts, groups them into one Work item per vulnerable package, and
 // judges each against the PRs on the package's branch and an attempt ledger in the
 // loop's logs, so a restarted daemon neither re-opens a fix a human closed nor
-// forgets its budget.
+// forgets its budget. Its Pipeline, [Fix], cuts each package's branch fresh, runs
+// one SecurityFix session, checks the lockfile on the host, and lands the fix as a
+// new PR.
 //
 // The lease is keyed on the branch (ADR-0019, decision 2). Before a PR exists the
 // run holds it alone, and holding it writes a started line to the ledger; once
@@ -286,6 +288,10 @@ func (s *Source) judge(g Group, entries []Entry, base string) Candidate {
 	switch {
 	case t.handedOff:
 		return skip("handed to a human after %d attempts at fingerprint %s", t.attempts, c.Fingerprint)
+	case t.resolved && s.now().Sub(t.resolvedAt) < s.opts.Grace:
+		return skip("origin/main already fixed fingerprint %s %s ago; waiting for Dependabot to close the alerts", c.Fingerprint, s.now().Sub(t.resolvedAt).Round(time.Minute))
+	case t.resolved:
+		return skip("origin/main already fixed fingerprint %s, but %s are still open past the %s grace period; a human must look", c.Fingerprint, alertNumbers(g.Alerts), s.opts.Grace)
 	case t.attempts >= s.opts.MaxAttempts:
 		c.Exhausted = true
 	case t.bases[base]:
@@ -408,7 +414,8 @@ func (s *Source) Release(key string) error {
 func (s *Source) Comment(string, string) error { return nil }
 
 // Block labels nothing. Only the committed-fix recovery hands an item over
-// blocked (#230), and this loop has no Pipeline to recover a branch yet.
+// blocked (#230), and this loop's Pipeline recovers nothing: every attempt cuts
+// its branch fresh.
 func (s *Source) Block(string) error { return nil }
 
 // Releasing narrates the lease coming off a package: there is no Todo to go back

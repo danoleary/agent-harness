@@ -24,6 +24,10 @@ const (
 	// OutcomeHandedOff is the budget on a fingerprint running out: the loop leaves
 	// the package to a human until its alerts change.
 	OutcomeHandedOff = "handed_off"
+	// OutcomeResolved is a fix whose replay onto origin/main collapsed to nothing:
+	// main already fixed the package, so the loop waits for Dependabot to close
+	// the alerts rather than retrying.
+	OutcomeResolved = "resolved"
 )
 
 // Entry is one ledger line.
@@ -90,6 +94,9 @@ type tally struct {
 	handedOff bool
 	// bases are the origin/main SHAs an attempt started at.
 	bases map[string]bool
+	// resolved marks a fingerprint main already fixed, as of resolvedAt.
+	resolved   bool
+	resolvedAt time.Time
 }
 
 func tallyOf(entries []Entry, key, fp string) tally {
@@ -104,6 +111,11 @@ func tallyOf(entries []Entry, key, fp string) tally {
 			t.bases[e.BaseSHA] = true
 		case OutcomeHandedOff:
 			t.handedOff = true
+		case OutcomeResolved:
+			t.resolved = true
+			if e.At.After(t.resolvedAt) {
+				t.resolvedAt = e.At
+			}
 		}
 	}
 	return t

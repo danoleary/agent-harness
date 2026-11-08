@@ -5,9 +5,10 @@
 // ground-truth check the host makes for itself (ADR-0016) — a green Gate exit, a
 // committed fix, a branch actually on its base — never the agent's report.
 //
-// Two callers share it, so neither copies it (ADR-0019): the review stage, on the
-// branch it has just reviewed, and the PR loop, on an open PR that went red or
-// conflicting after its review finished.
+// Its callers share it, so none copies it (ADR-0019): the review stage, on the
+// branch it has just reviewed; the PR loop, on an open PR that went red or
+// conflicting after its review finished; and the security-alerts loop, which
+// provisions and gates the branch it cuts for a package (ADR-0040).
 package fix
 
 import (
@@ -65,6 +66,28 @@ func (e Env) promptContext(t Target) prompt.Context {
 		Tracker: e.Cfg.Tracker.Kind, WorktreePath: e.Host.Worktree().Path(),
 		Body: e.Cfg.Prompts.Fix,
 	}
+}
+
+// --- provisioning ------------------------------------------------------------
+
+// Provision runs the Consumer's post_create in the fresh worktree, so the sessions
+// and the gates open onto installed dependencies. A failed install only warns (a
+// session can install in-session), unless the shell could not run the command at
+// all, which no session can fix (#46). Both loops that work a worktree the ticket
+// pipeline did not create share it.
+func (e Env) Provision() bool {
+	if e.Cfg.PostCreate == "" {
+		return true
+	}
+	res := e.Host.Shell(hostio.ShellRun{Label: "prep", Command: e.Cfg.PostCreate, WorktreePath: e.Host.Worktree().Path(), Cap: e.Cfg.ReviewTimeout})
+	if missing, ok := verify.CommandUnrunnable(res.Outcome); ok {
+		e.Log.Event(fmt.Sprintf("%s ✗ post_create could not run (%q, exit %d) — fix the sandbox image's PATH; nothing pushed", e.Who, missing, res.ExitCode))
+		return false
+	}
+	if res.ExitCode != 0 {
+		e.Log.Event(fmt.Sprintf("%s … warning: post_create exited %d — sessions will provision in-session if needed", e.Who, res.ExitCode))
+	}
+	return true
 }
 
 // --- gates -------------------------------------------------------------------

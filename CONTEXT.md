@@ -108,8 +108,7 @@ _Avoid_: groomer, labeller.
 A loop whose **Source** is `github_security_alerts` (ADR-0040): the open
 Dependabot alerts at the configured severities, one **Work item** per vulnerable
 package. Its Steps are `new_branch`, `fix_alerts` (the SecurityFix session),
-`gates` and `open_pr`, which lands the fix as a new PR. None is built in, and
-for now only `--dry-run` runs.
+`gates` and `open_pr`, which lands the fix as a new PR. None is built in.
 
 ### Prompts
 

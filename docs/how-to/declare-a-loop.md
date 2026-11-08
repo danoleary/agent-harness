@@ -111,8 +111,10 @@ agent-harness start triage            # run it beside the ticket loop
 
 A `github_security_alerts` loop works the repository's open Dependabot alerts,
 one Work item per vulnerable package, and lands each fix as a new PR (ADR-0040).
-It is not built in, and it is not yet runnable: `--dry-run` prints the packages
-it would work, and why it skips the rest, but a real run is refused.
+It is not built in. Each fix is cut fresh from `origin/main`, and nothing is
+pushed unless the lockfile resolves no vulnerable version, the diff touches
+dependency files only, and every Gate is green. `--dry-run` prints the packages
+it would work, and why it skips the rest.
 
 ```toml
 [[loops]]
@@ -130,6 +132,7 @@ steps = [
 
 ```bash
 agent-harness loop security-alerts --dry-run
+agent-harness loop security-alerts
 ```
 
 ## Stop and watch a loop
