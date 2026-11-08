@@ -11,6 +11,7 @@ import (
 	"github.com/danoleary/agent-harness/internal/loopstream"
 	"github.com/danoleary/agent-harness/internal/prloop"
 	"github.com/danoleary/agent-harness/internal/secloop"
+	"github.com/danoleary/agent-harness/internal/triage"
 )
 
 // stepChecks says, for the dry-run, what each Step does and the ground truth it
@@ -27,6 +28,8 @@ var stepChecks = map[string]string{
 	config.StepFixAlerts:    "a SecurityFix session over the package's alerts; checks a diff touching only dependency files and a lockfile that resolves no vulnerable version",
 	config.StepOpenPR:       "opens a new PR for the gate-green branch, carrying the fingerprint marker and the held label",
 	config.StepWatchCI:      "watches CI to a verdict; a red check gets a CIFix session whose commit must pass every gate before it is pushed",
+	config.StepAssess:       "a read-only Triage session over the ticket; checks it left a verdict, with questions for a human when not ready",
+	config.StepApply:        "labels a ready ticket ready (on Linear, Backlog → Todo too), or comments the open questions on one that is not",
 }
 
 // renderList prints every loop `agent-harness loop <name>` can run.
@@ -97,6 +100,8 @@ func describeSource(cfg config.Config, l config.Loop) string {
 		}
 		return fmt.Sprintf("github_prs — open PRs into %s on %s/ or with opt-in label %q, when %s; %d attempts per PR",
 			o.BaseBranch, o.BranchPrefix, o.OptInLabel, strings.Join(l.Source.When, ", "), o.MaxAttempts)
+	case config.SourceBacklog:
+		return fmt.Sprintf("backlog — the %s tickets that are open, unassigned, and not labelled %q or blocked; each judged once until its title or description changes", cfg.Tracker.Kind, cfg.Tracker.ReadyLabel)
 	case config.SourceGitHubSecurityAlerts:
 		o := secloop.OptionsFrom(cfg, l)
 		return fmt.Sprintf("github_security_alerts — open Dependabot alerts at severity %s, one PR per package on %s/sec-…; %d attempts per fingerprint",
@@ -108,6 +113,22 @@ func describeSource(cfg config.Config, l config.Loop) string {
 		}
 		return desc
 	}
+}
+
+// renderTriagePlan lists the tickets a triage loop would judge, in order.
+func renderTriagePlan(plan []triage.Item, apply bool) string {
+	if len(plan) == 0 {
+		return "No untriaged ticket is waiting for a verdict.\n"
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "%d ticket(s) to judge, one per poll:\n", len(plan))
+	for _, it := range plan {
+		fmt.Fprintf(&b, "  %-10s %s\n", it.Ticket.Identifier, it.Ticket.Title)
+	}
+	if !apply {
+		b.WriteString("This loop has no apply step: verdicts are recorded and no ticket is changed.\n")
+	}
+	return b.String()
 }
 
 // underCheckout resolves a relative path against the checkout, as the daemon does.
