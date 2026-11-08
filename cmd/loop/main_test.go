@@ -207,3 +207,26 @@ func TestASecurityAlertsLoopIsNotYetRunnable(t *testing.T) {
 		t.Error("a real run must be refused")
 	}
 }
+
+// `loop <unknown-name>` is refused and names the loops the project can run; it
+// never falls back to the ticket loop (#249). No name is the ticket loop, and a
+// known name resolves to its loop.
+func TestPickLoopRefusesANameNoLoopHas(t *testing.T) {
+	cfg := config.Config{}
+
+	if _, err := pickLoop(cfg, flags{name: "pr-docter"}); err == nil {
+		t.Fatal("an unknown loop name must be refused, not run as the ticket loop")
+	} else {
+		for _, want := range []string{`no loop named "pr-docter"`, "tickets", "pr-doctor", "[[loops]]"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("refusal missing %q:\n%v", want, err)
+			}
+		}
+	}
+	if l, err := pickLoop(cfg, flags{}); err != nil || l.Name != config.DefaultLoopName {
+		t.Errorf("no name = %q, %v; want the ticket loop", l.Name, err)
+	}
+	if l, err := pickLoop(cfg, flags{name: "pr-doctor"}); err != nil || l.Name != config.PRDoctorLoopName {
+		t.Errorf("pr-doctor = %q, %v", l.Name, err)
+	}
+}
