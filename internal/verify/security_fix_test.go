@@ -12,6 +12,15 @@ import (
 // fixedLodash is a lockfile scan that ran and found no vulnerable lodash.
 var fixedLodash = depcheck.Result{Package: "lodash"}
 
+func ecosystem(t *testing.T, name string) depcheck.Ecosystem {
+	t.Helper()
+	e, ok := depcheck.ForEcosystem(name)
+	if !ok {
+		t.Fatalf("no %s ecosystem", name)
+	}
+	return e
+}
+
 // shipped is the ground truth of a SecurityFix session that did its job: a clean
 // tree, one commit ahead, a real diff, and only dependency files changed.
 func shipped(t *testing.T) *truth {
@@ -57,7 +66,7 @@ func TestSecurityFixRequiresACommittedDependencyOnlyDiffThatClearsTheLockfile(t 
 			if tc.edit != nil {
 				tc.edit(g)
 			}
-			r := SecurityFix(g, tc.out, tc.chk)
+			r := SecurityFix(g, tc.out, ecosystem(t, "npm"), tc.chk)
 			if r.OK != tc.ok {
 				t.Errorf("OK = %v, want %v (%s)", r.OK, tc.ok, r.Reason)
 			}
@@ -68,9 +77,36 @@ func TestSecurityFixRequiresACommittedDependencyOnlyDiffThatClearsTheLockfile(t 
 	}
 }
 
+// A Go fix may change the root go.mod and go.sum, and the vendor tree when the
+// repository vendors; anything else, a nested module's go.mod included, is refused
+// and the refusal names Go's files, not pnpm's.
+func TestSecurityFixOnAGoModuleAllowsOnlyGoDependencyFiles(t *testing.T) {
+	fixedNet := depcheck.Result{Package: "golang.org/x/net"}
+	for _, tc := range []struct {
+		changed []string
+		ok      bool
+		reason  string
+	}{
+		{[]string{"go.mod", "go.sum"}, true, `golang\.org/x/net`},
+		{[]string{"go.mod", "go.sum", "vendor/modules.txt", "vendor/golang.org/x/net/http2/frame.go"}, true, `golang\.org/x/net`},
+		{[]string{"go.mod", "go.sum", "main.go"}, false, `go\.mod, go\.sum and vendor/: main\.go`},
+		{[]string{"go.mod", "tools/go.mod"}, false, `tools/go\.mod`},
+	} {
+		g := shipped(t)
+		g.changed = tc.changed
+		r := SecurityFix(g, session.Outcome{}, ecosystem(t, "go"), fixedNet)
+		if r.OK != tc.ok {
+			t.Errorf("%v: OK = %v, want %v (%s)", tc.changed, r.OK, tc.ok, r.Reason)
+		}
+		if !regexp.MustCompile(tc.reason).MatchString(r.Reason) {
+			t.Errorf("%v: reason %q should match %q", tc.changed, r.Reason, tc.reason)
+		}
+	}
+}
+
 // A spending-cap abort is the retry-after-reset class, as for RebaseResolution.
 func TestSecurityFixFlagsASpendingCapAbort(t *testing.T) {
-	if !SecurityFix(shipped(t), session.Outcome{SpendingCapAbort: true}, fixedLodash).SpendingCapAbort {
+	if !SecurityFix(shipped(t), session.Outcome{SpendingCapAbort: true}, ecosystem(t, "npm"), fixedLodash).SpendingCapAbort {
 		t.Error("a cap-aborted session must carry SpendingCapAbort so the caller defers")
 	}
 }

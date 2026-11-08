@@ -165,3 +165,36 @@ func lineWith(p, substr string) string {
 	}
 	return ""
 }
+
+// goNetAlerts are two patched alerts on one Go module.
+var goNetAlerts = []github.Alert{
+	{Number: 3, Ecosystem: "go", Package: "golang.org/x/net", ManifestPath: "go.mod", Severity: "high", GHSA: "GHSA-4374-p667-p6c8", Summary: "HTTP/2 rapid reset", VulnerableRange: "< 0.17.0", Patched: "0.17.0"},
+	{Number: 5, Ecosystem: "go", Package: "golang.org/x/net", ManifestPath: "go.mod", Severity: "critical", GHSA: "GHSA-4v7x-pqxf-cx7m", Summary: "HTTP/2 CONTINUATION flood", VulnerableRange: "< 0.23.0", Patched: "0.23.0"},
+}
+
+// A Go module's fix is `go get` at the highest patched version, then `go mod
+// tidy` (and `go mod vendor` where the repo vendors). It names Go's files, never
+// pnpm's, and rules out a replace directive, which the host check refuses.
+func TestSecurityFixOnAGoModuleUsesTheGoTool(t *testing.T) {
+	c := securityFixContext()
+	c.Alerts = goNetAlerts
+	p := For(SecurityFix, c)
+
+	steps := []string{"`go get golang.org/x/net@v0.23.0`", "`go mod tidy`", "`go mod vendor`", "commit"}
+	at := 0
+	for _, s := range steps {
+		i := strings.Index(p[at:], s)
+		if i < 0 {
+			t.Fatalf("%q missing, or out of order:\n%s", s, p)
+		}
+		at += i + len(s)
+	}
+	for _, want := range []string{"Touch nothing else", "`go.mod`, `go.sum` and `vendor/`", "replace", "commit NOTHING", "Do NOT push"} {
+		if !strings.Contains(p, want) {
+			t.Errorf("prompt missing %q", want)
+		}
+	}
+	if strings.Contains(p, "pnpm") {
+		t.Errorf("a Go prompt names pnpm:\n%s", p)
+	}
+}

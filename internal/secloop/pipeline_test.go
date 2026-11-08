@@ -284,3 +284,56 @@ func ledgerOf(t *testing.T, cfg config.Config) []Entry {
 	}
 	return entries
 }
+
+// A Go module's fix runs the same pipeline: the host scans the worktree's go.mod,
+// and a committed go.mod and go.sum that require no vulnerable version land as a
+// new PR whose body names go.mod as what was checked. One that still requires a
+// vulnerable version is refused and nothing is pushed.
+func TestFixLandsAGoModuleFix(t *testing.T) {
+	const (
+		vulnerableMod = "module example.com/app\n\ngo 1.22\n\nrequire golang.org/x/net v0.17.0 // indirect\n"
+		patchedMod    = "module example.com/app\n\ngo 1.22\n\nrequire golang.org/x/net v0.23.0 // indirect\n"
+	)
+	g := Group{Ecosystem: "go", Package: "golang.org/x/net", Alerts: []github.Alert{
+		{Number: 5, URL: "https://github.com/acme/widgets/security/dependabot/5", Ecosystem: "go", Package: "golang.org/x/net", ManifestPath: "go.mod", Severity: "high", GHSA: "GHSA-4v7x-pqxf-cx7m", Summary: "HTTP/2 CONTINUATION flood", VulnerableRange: "< 0.23.0", Patched: "0.23.0"},
+	}}
+	it := Item{Group: g, Branch: gittest.Prefix + "/" + ticket.Slug(g.Key()), Fingerprint: Fingerprint(g)}
+	for _, tc := range []struct {
+		name    string
+		fixed   string
+		shipped bool
+	}{
+		{"patched", patchedMod, true},
+		{"still vulnerable", vulnerableMod + "\n// touched\n", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := gittest.New(t)
+			repo.Merge("go.mod", vulnerableMod, "require x/net")
+			h := hostio.NewFake(repo.Checkout(), ticket.Slug(it.Key()))
+			h.AgentFn = func(_ int, run hostio.AgentRun) session.Outcome {
+				if run.Label == "securityfix" {
+					repo.Commit(h.Worktree(), "go.mod", tc.fixed, "fix(deps): patch golang.org/x/net")
+				}
+				return h.AgentOutcome
+			}
+			cfg := securityCfg(t)
+			cfg.PostCreate = "go mod download"
+			cfg.Gates = []config.Gate{{Name: "check", Command: "go test ./..."}}
+
+			res := Fix(h, cfg, secLog(t), it, securityLoop())
+
+			if res.OK != tc.shipped {
+				t.Fatalf("OK = %v, want %v: %+v\n%v", res.OK, tc.shipped, res, h.Calls)
+			}
+			if !tc.shipped {
+				if repo.OnOrigin(it.Branch) != "" || len(h.PRBodies) != 0 {
+					t.Error("a fix the host check refused must push nothing")
+				}
+				return
+			}
+			if len(h.PRBodies) != 1 || !strings.Contains(h.PRBodies[0], "The host checked that `go.mod` resolves no version") {
+				t.Errorf("PR body should name go.mod as checked:\n%v", h.PRBodies)
+			}
+		})
+	}
+}

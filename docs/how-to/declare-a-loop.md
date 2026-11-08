@@ -118,9 +118,22 @@ one Work item per vulnerable package, and lands each fix as a new PR (ADR-0040).
 Each fix is cut fresh from `origin/main`, and nothing is pushed unless the
 lockfile resolves no vulnerable version, the diff touches dependency files only,
 and every Gate is green. `--dry-run` prints the packages it would work, and why
-it skips the rest. It is built in with the defaults below; write the entry out
-only to change them, for example to add `"medium"` or give `fix_alerts` a
-project prompt body:
+it skips the rest.
+
+It fixes two ecosystems, and skips an alert in any other:
+
+| Ecosystem | Alerts it works | The host scans | A fix may change |
+|---|---|---|---|
+| npm (pnpm) | any `package.json` or the root `pnpm-lock.yaml` | the root `pnpm-lock.yaml` | `package.json` (any depth), `pnpm-lock.yaml`, `pnpm-workspace.yaml` |
+| Go | the root `go.mod` | the root `go.mod`, following `replace` | the root `go.mod` and `go.sum`, and `vendor/` |
+
+A Go module needs `go 1.17` or later in its `go.mod`, since only then does it list
+every module the build loads. A module `replace`d by a local directory or a fork,
+and an alert in a nested module's `go.mod`, are refused or skipped rather than
+guessed at.
+
+It is built in with the defaults below; write the entry out only to change
+them, for example to add `"medium"` or give `fix_alerts` a project prompt body:
 
 ```toml
 [[loops]]

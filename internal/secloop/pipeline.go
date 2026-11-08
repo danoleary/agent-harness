@@ -30,9 +30,6 @@ const who = "sec-fix"
 // sessionLabel keys the SecurityFix session's container and transcript.
 const sessionLabel = "securityfix"
 
-// lockfile is the pnpm lockfile the host check reads, at the worktree's root.
-const lockfile = "pnpm-lock.yaml"
-
 // Pipeline is a security-alerts loop's [loop.Pipeline]: [Fix] over one package,
 // on a Host bound to the package's branch, with its own per-item log dir and run
 // id.
@@ -168,7 +165,8 @@ func (r *run) fixAlerts() *stages.Result {
 		// A dependency bump drives no browser (#248).
 		NoMCP: true,
 	})
-	verdict := verify.SecurityFix(wt, res.Outcome, r.scan())
+	eco, _ := depcheck.ForEcosystem(r.it.Ecosystem)
+	verdict := verify.SecurityFix(wt, res.Outcome, eco, r.scan(eco))
 	switch {
 	case verdict.SpendingCapAbort:
 		r.log.Event(who + " ↻ " + verdict.Reason)
@@ -181,11 +179,15 @@ func (r *run) fixAlerts() *stages.Result {
 	return nil
 }
 
-// scan reads the worktree's lockfile and checks it against the patched alerts'
-// vulnerable ranges. An unreadable lockfile is a failed scan, which refuses the fix.
-func (r *run) scan() depcheck.Result {
+// scan reads the worktree's lockfile for eco (pnpm-lock.yaml, go.mod) and checks
+// it against the patched alerts' vulnerable ranges. An unreadable lockfile, or an
+// ecosystem with no reader, is a failed scan, which refuses the fix.
+func (r *run) scan(eco depcheck.Ecosystem) depcheck.Result {
 	pkg := r.it.Package
-	lock, err := os.ReadFile(filepath.Join(r.h.Worktree().Path(), lockfile))
+	if eco.Lockfile == "" {
+		return depcheck.Result{Package: pkg, Err: fmt.Errorf("ecosystem %s has no lockfile reader", r.it.Ecosystem)}
+	}
+	lock, err := os.ReadFile(filepath.Join(r.h.Worktree().Path(), eco.Lockfile))
 	if err != nil {
 		return depcheck.Result{Package: pkg, Err: err}
 	}
@@ -193,7 +195,7 @@ func (r *run) scan() depcheck.Result {
 	for i, a := range r.it.Alerts {
 		ranges[i] = a.VulnerableRange
 	}
-	return depcheck.Check(lock, pkg, ranges)
+	return eco.Check(lock, pkg, ranges)
 }
 
 // openPR lands the gate-green branch as a new PR and holds it with the held label.
@@ -279,7 +281,8 @@ func title(it Item, severities []string) string {
 // exists for, the commits, and the fingerprint marker the Source reads back.
 func body(it Item, subjects []string) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "Moves `%s` (%s) to a patched version, clearing the Dependabot alerts below. The host checked that `%s` resolves no version inside any of their vulnerable ranges, and that the diff touches dependency files only.\n\n", it.Package, it.Ecosystem, lockfile)
+	eco, _ := depcheck.ForEcosystem(it.Ecosystem)
+	fmt.Fprintf(&b, "Moves `%s` (%s) to a patched version, clearing the Dependabot alerts below. The host checked that `%s` resolves no version inside any of their vulnerable ranges, and that the diff touches dependency files only.\n\n", it.Package, it.Ecosystem, eco.Lockfile)
 	b.WriteString("| Alert | Severity | Advisory | Vulnerable range | First patched | Manifest |\n|---|---|---|---|---|---|\n")
 	for _, a := range it.Alerts {
 		advisory := a.GHSA

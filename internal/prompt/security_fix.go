@@ -35,19 +35,13 @@ func securityFix(c Context) string {
 	}
 	lines = append(lines,
 		"",
-		"Fix every patched alert above. For each, take the FIRST of these that works:",
-		"  1. If "+pkg+" is a direct dependency, bump it where it is declared (the manifest above) to at least the first patched version.",
-		"  2. Otherwise, bump the parent that pulls it in (`pnpm why` names it), if a release of that parent exists that resolves a patched version.",
-		"  3. Otherwise, add the narrowest pnpm override, `\"<pkg>@<vulnerable major>\": \"^<patched>\"`, under `overrides:` in `pnpm-workspace.yaml` (or in the root `package.json`'s `pnpm.overrides`, if the repo already keeps its overrides there). Never a bare `\"<pkg>\"` key, which would also move majors no alert names. For these alerts: "+overrides(c.Alerts)+".",
-		"Then regenerate the lockfile with `pnpm install`, confirm `pnpm-lock.yaml` resolves no version inside any vulnerable range above, and commit the result as ONE LOCAL commit on `"+branch+"`.",
-		"",
-		"Touch nothing else. Change only `package.json`, `pnpm-lock.yaml` and `pnpm-workspace.yaml` — no source, test, config or doc edit, not even to fix a gate the bump breaks. The harness checks this on the host: a diff that touches any other file, or a lockfile that still resolves a vulnerable version, is not pushed.",
+		fixSteps(c, pkg, branch),
 		"",
 		"If no fix works — every route leaves a vulnerable version resolved, or the install fails — commit NOTHING: restore the tree with `git checkout -- .` and stop, saying why in your report.",
 		"",
 		"---",
 		"",
-		"This sandbox reaches the package registry, so `pnpm install` works, but it holds no git or GitHub credential. Commit the fix LOCALLY and stop there. Do NOT push, do NOT run `gh`, do NOT open or comment on a PR. The harness owns all remote git I/O (ADR-0002): it re-runs the quality gates host-side and opens the PR itself.",
+		"This sandbox reaches the package registry, so `"+installCommand(c)+"` works, but it holds no git or GitHub credential. Commit the fix LOCALLY and stop there. Do NOT push, do NOT run `gh`, do NOT open or comment on a PR. The harness owns all remote git I/O (ADR-0002): it re-runs the quality gates host-side and opens the PR itself.",
 		"",
 		trackerOff(c.Tracker),
 		"",
@@ -56,6 +50,65 @@ func securityFix(c Context) string {
 		bashQuirkSteer,
 	)
 	return withFixBody(c, lines)
+}
+
+// isGo reports whether the alerts are on a Go module. The loop works one package
+// per Work item, so every alert shares the first one's ecosystem; an alert that
+// names none is read as npm, the ecosystem the loop first supported.
+func isGo(c Context) bool {
+	return len(c.Alerts) > 0 && c.Alerts[0].Ecosystem == "go"
+}
+
+// installCommand is the command that resolves the dependencies, as the sandbox
+// note names it.
+func installCommand(c Context) string {
+	if isGo(c) {
+		return "go mod download"
+	}
+	return "pnpm install"
+}
+
+// fixSteps is the ecosystem's fix, in the order to try it, and the files it may
+// touch: the host check (verify.SecurityFix) read backwards.
+func fixSteps(c Context, pkg, branch string) string {
+	if isGo(c) {
+		module := defang(c.Alerts[0].Package)
+		return strings.Join([]string{
+			"Fix every patched alert above:",
+			"  1. Run `go get " + module + "@v" + highestPatched(c.Alerts) + "`, the highest first-patched version above. It raises " + pkg + " in `go.mod` whether it is a direct or an indirect requirement.",
+			"  2. Run `go mod tidy`, then, only if the repo has a `vendor/` directory, `go mod vendor`.",
+			"Do not add a `replace` directive: the host check refuses a module replaced by a local directory or a fork. Confirm `go.mod` requires no version inside any vulnerable range above, and commit the result as ONE LOCAL commit on `" + branch + "`.",
+			"",
+			"Touch nothing else. Change only `go.mod`, `go.sum` and `vendor/` at the repository root — no source, test, config or doc edit, not even to fix a gate the bump breaks. The harness checks this on the host: a diff that touches any other file, or a `go.mod` that still requires a vulnerable version, is not pushed.",
+		}, "\n")
+	}
+	return strings.Join([]string{
+		"Fix every patched alert above. For each, take the FIRST of these that works:",
+		"  1. If " + pkg + " is a direct dependency, bump it where it is declared (the manifest above) to at least the first patched version.",
+		"  2. Otherwise, bump the parent that pulls it in (`pnpm why` names it), if a release of that parent exists that resolves a patched version.",
+		"  3. Otherwise, add the narrowest pnpm override, `\"<pkg>@<vulnerable major>\": \"^<patched>\"`, under `overrides:` in `pnpm-workspace.yaml` (or in the root `package.json`'s `pnpm.overrides`, if the repo already keeps its overrides there). Never a bare `\"<pkg>\"` key, which would also move majors no alert names. For these alerts: " + overrides(c.Alerts) + ".",
+		"Then regenerate the lockfile with `pnpm install`, confirm `pnpm-lock.yaml` resolves no version inside any vulnerable range above, and commit the result as ONE LOCAL commit on `" + branch + "`.",
+		"",
+		"Touch nothing else. Change only `package.json`, `pnpm-lock.yaml` and `pnpm-workspace.yaml` — no source, test, config or doc edit, not even to fix a gate the bump breaks. The harness checks this on the host: a diff that touches any other file, or a lockfile that still resolves a vulnerable version, is not pushed.",
+	}, "\n")
+}
+
+// highestPatched is the highest first-patched version among the alerts, without
+// a leading "v": on one Go module path every alert is in one major, so the
+// highest patch clears them all. A version that is not semver is skipped.
+func highestPatched(alerts []github.Alert) string {
+	var best *depcheck.Version
+	out := "<patched>"
+	for _, a := range alerts {
+		v, err := depcheck.ParseVersion(a.Patched)
+		if a.Patched == "" || err != nil {
+			continue
+		}
+		if best == nil || depcheck.Compare(v, *best) > 0 {
+			best, out = &v, strings.TrimPrefix(a.Patched, "v")
+		}
+	}
+	return defang(out)
 }
 
 // alertsTable renders one row per alert. Every cell but the number is advisory or

@@ -191,6 +191,27 @@ func TestPlanSkipsAnUnsupportedEcosystemOrLockfile(t *testing.T) {
 	}
 }
 
+// A Go module's alert in the root go.mod is worked; one in a nested module's
+// go.mod is skipped, since the host scans only the root go.mod.
+func TestPlanWorksARootGoModuleAndSkipsANestedOne(t *testing.T) {
+	root := github.Alert{Number: 1, Ecosystem: "go", Package: "golang.org/x/net", ManifestPath: "go.mod", Severity: "high", VulnerableRange: "< 0.23.0", Patched: "0.23.0"}
+	nested := github.Alert{Number: 2, Ecosystem: "go", Package: "golang.org/x/text", ManifestPath: "tools/go.mod", Severity: "high", VulnerableRange: "< 0.15.0", Patched: "0.15.0"}
+	f := newFixture(t, root, nested)
+
+	cands := f.plan(t)
+
+	byKey := map[string]Candidate{}
+	for _, c := range cands {
+		byKey[c.Key()] = c
+	}
+	if c := byKey["SEC-go-golang.org/x/net"]; strings.Contains(c.Skip, "not supported") || strings.Contains(c.Skip, "no lockfile reader") {
+		t.Errorf("root go.mod alert skipped as unsupported: %q", c.Skip)
+	}
+	if c := byKey["SEC-go-golang.org/x/text"]; !strings.Contains(c.Skip, "tools/go.mod") {
+		t.Errorf("nested go.mod skip = %q, want the manifest named", c.Skip)
+	}
+}
+
 // The PRs on the package's branch: an open one, a blocked label, one a human closed
 // at this fingerprint, and one merged at it whose alerts are still open, inside and
 // past the grace period.
