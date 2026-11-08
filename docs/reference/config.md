@@ -123,7 +123,7 @@ projects = ["HERD"]
 
 ## `[[loops]]`
 
-Optional. An entry with a built-in loop's name (`tickets`, `pr-doctor`, `triage`) replaces
+Optional. An entry with a built-in loop's name (`tickets`, `pr-doctor`, `triage`, `security-alerts`) replaces
 it; any other name adds a loop. See
 [change a loop or declare your own](../how-to/declare-a-loop.md).
 

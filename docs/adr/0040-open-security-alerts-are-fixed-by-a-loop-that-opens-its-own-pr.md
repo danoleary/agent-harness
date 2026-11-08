@@ -216,3 +216,14 @@ for real. It pins down decisions 3 to 8:
 - **The Source refetches `origin/main` before every poll.** The daemon fetches
   only at startup and after an item. A loop that skips every package until main
   moves would otherwise never see main move.
+
+## Amendment, 2026-11-08: built in as `security-alerts`
+
+Once the Pipeline ran, nothing kept the loop out of `config.BuiltInLoops()`: it
+was left undeclared only because it could not run when #201 shipped. It is now
+the fourth built-in loop, `security-alerts`, with the defaults a declared entry
+gets (`severity = ["critical", "high"]`, `max_attempts = 2`) and the steps
+`new_branch`, `fix_alerts`, `gates`, `open_pr`, `watch_ci`, `retro`. A built-in
+runs only when it is named, so this changes what `loop --list` and `--help` show,
+not what a project runs. An entry named `security-alerts` replaces it, as for the
+other built-ins.

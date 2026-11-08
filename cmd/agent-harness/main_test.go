@@ -7,6 +7,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/danoleary/agent-harness/internal/config"
 )
 
 // The dispatcher's whole job is finding the right executable. Every layout below
@@ -337,4 +339,41 @@ func markdownCells(row string) []string {
 		cells = cells[1:]
 	}
 	return cells
+}
+
+// --help is how an operator finds out what the harness can do, so it names every
+// loop it can run — each built-in with what it does and the Steps it runs — and
+// how to declare more. A loop missing from it is one nobody discovers.
+func TestUsageDescribesEveryLoop(t *testing.T) {
+	got := usage()
+	for _, l := range config.BuiltInLoops() {
+		desc, ok := loopSummaries[l.Name]
+		if !ok || desc == "" {
+			t.Errorf("built-in loop %q has no summary in loopSummaries", l.Name)
+			continue
+		}
+		if !strings.Contains(got, desc) {
+			t.Errorf("usage does not describe loop %q:\n%s", l.Name, got)
+		}
+		for _, s := range l.Steps {
+			if !strings.Contains(got, s.Use) {
+				t.Errorf("usage does not name loop %q's step %q:\n%s", l.Name, s.Use, got)
+			}
+		}
+	}
+	for _, want := range []string{
+		"loop --list",
+		"--dry-run",
+		"[[loops]]",
+		"declare-a-loop.md",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("usage does not mention %q:\n%s", want, got)
+		}
+	}
+	// The security-alerts loop runs for real since #203; help must not send an
+	// operator away from it.
+	if strings.Contains(got, "not runnable") {
+		t.Errorf("usage still says a loop is not runnable:\n%s", got)
+	}
 }

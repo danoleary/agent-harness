@@ -72,8 +72,9 @@ Runs one loop unattended until stopped: a Source polled for work, and the Steps
 run over each item it yields (ADR-0019). With no name it runs the ticket loop
 ("tickets"): implementation, review and retrospective per ready ticket, then a PR.
 "pr-doctor" fixes the open PRs that conflict with main or have red CI. "triage"
-judges the tickets not yet labelled ready, and labels the ready ones. A project
-declares its own loops, or re-parameterises these two, as [[loops]] in
+judges the tickets not yet labelled ready, and labels the ready ones.
+"security-alerts" fixes open Dependabot alerts, one new PR per package. A project
+declares its own loops, or re-parameterises these, as [[loops]] in
 .agent-harness/config.toml.
 
   <name>      the loop to run (default: tickets)

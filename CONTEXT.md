@@ -76,7 +76,7 @@ _Avoid_: action, task, hook (a hook is `post_create`, which a Step may run).
 **Loop** (named):
 A **Source**, its **Steps** and its own limits, run by one daemon under a name
 (`agent-harness loop <name>`): the built-in `tickets` (the default),
-`pr-doctor` and `triage`, or a `[[loops]]` entry in `config.toml`. Each has its own STOP
+`pr-doctor`, `triage` and `security-alerts`, or a `[[loops]]` entry in `config.toml`. Each has its own STOP
 sentinel (`STOP-<name>`) and its own `loop.jsonl`.
 
 **Instance** (of a loop):
@@ -108,7 +108,8 @@ _Avoid_: groomer, labeller.
 A loop whose **Source** is `github_security_alerts` (ADR-0040): the open
 Dependabot alerts at the configured severities, one **Work item** per vulnerable
 package. Its Steps are `new_branch`, `fix_alerts` (the SecurityFix session),
-`gates` and `open_pr`, which lands the fix as a new PR. None is built in.
+`gates` and `open_pr`, which lands the fix as a new PR; the built-in one is
+`security-alerts`.
 
 ### Prompts
 

@@ -13,9 +13,9 @@ func loopsCheckout(t *testing.T, loops string) string {
 	return testCheckout(t, testConfigTOML+loops)
 }
 
-// With no [[loops]], the three built-in loops are what `loop` can run: the ticket
-// loop, which a bare `agent-harness loop` runs as it always has, pr-doctor and
-// triage.
+// With no [[loops]], the four built-in loops are what `loop` can run: the ticket
+// loop, which a bare `agent-harness loop` runs as it always has, pr-doctor,
+// triage and security-alerts.
 func TestNoLoopsDeclaredLeavesTheBuiltIns(t *testing.T) {
 	pc, err := LoadProject(loopsCheckout(t, ""))
 	if err != nil {
@@ -23,8 +23,8 @@ func TestNoLoopsDeclaredLeavesTheBuiltIns(t *testing.T) {
 	}
 	p := Project{Loops: pc.ResolvedLoops}
 	got := p.AllLoops()
-	if len(got) != 3 || got[0].Name != DefaultLoopName || got[1].Name != PRDoctorLoopName || got[2].Name != TriageLoopName {
-		t.Fatalf("AllLoops = %+v, want the built-in tickets, pr-doctor and triage loops", got)
+	if len(got) != 4 || got[0].Name != DefaultLoopName || got[1].Name != PRDoctorLoopName || got[2].Name != TriageLoopName || got[3].Name != SecurityAlertsLoopName {
+		t.Fatalf("AllLoops = %+v, want the built-in tickets, pr-doctor, triage and security-alerts loops", got)
 	}
 	tickets, ok := p.LoopNamed("")
 	if !ok || tickets.Name != DefaultLoopName || tickets.Source.Kind != SourceTracker {
@@ -42,6 +42,13 @@ func TestNoLoopsDeclaredLeavesTheBuiltIns(t *testing.T) {
 	}
 	if !pr.Source.WorksAllPRs() {
 		t.Error("the built-in pr-doctor works every open PR by default")
+	}
+	sec, _ := p.LoopNamed(SecurityAlertsLoopName)
+	if sec.Source.Kind != SourceGitHubSecurityAlerts || !reflect.DeepEqual(sec.StepNames(), []string{StepNewBranch, StepFixAlerts, StepGates, StepOpenPR, StepWatchCI, StepRetro}) {
+		t.Errorf("security-alerts = %+v", sec)
+	}
+	if !reflect.DeepEqual(sec.Source.Severity, []string{SeverityCritical, SeverityHigh}) || sec.Source.MaxAttempts != defaultSecurityMaxAttempts {
+		t.Errorf("the built-in security-alerts loop has the declared loop's defaults, got %+v", sec.Source)
 	}
 	if _, ok := p.LoopNamed("nope"); ok {
 		t.Error("an undeclared name is not a loop")
@@ -100,7 +107,7 @@ steps = [{ use = "checkout_pr" }, { use = "fix" }, { use = "gates" }, { use = "p
 	}
 }
 
-// builtInLoopsTOML writes the three built-in loops out as [[loops]] entries.
+// builtInLoopsTOML writes the four built-in loops out as [[loops]] entries.
 const builtInLoopsTOML = `
 [[loops]]
 name = "tickets"
@@ -123,6 +130,18 @@ steps = [
 name = "triage"
 source = { kind = "backlog" }
 steps = [{ use = "assess" }, { use = "apply" }]
+
+[[loops]]
+name = "security-alerts"
+source = { kind = "github_security_alerts" }
+steps = [
+  { use = "new_branch" },
+  { use = "fix_alerts" },
+  { use = "gates" },
+  { use = "open_pr" },
+  { use = "watch_ci" },
+  { use = "retro" },
+]
 `
 
 // Each built-in loop can be written out as a [[loops]] entry, and the entry
@@ -211,8 +230,8 @@ steps = [{ use = "implement", prompt = "prompts/implement-strict.md" }, { use = 
 		t.Fatalf("LoadProject: %v", err)
 	}
 	all := Project{Loops: pc.ResolvedLoops}.AllLoops()
-	if len(all) != 3 {
-		t.Fatalf("AllLoops = %+v, want tickets and the built-in pr-doctor and triage", all)
+	if len(all) != 4 {
+		t.Fatalf("AllLoops = %+v, want tickets and the built-in pr-doctor, triage and security-alerts", all)
 	}
 	l, _ := Project{Loops: pc.ResolvedLoops}.LoopNamed("")
 	if l.BuiltIn || l.Has(StepRetro) || l.Prompt(StepImplement) != "/tdd, strictly" {

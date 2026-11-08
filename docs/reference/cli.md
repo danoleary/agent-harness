@@ -103,7 +103,8 @@ agent-harness loop [<name>] [--instance <id>] [--list] [--dry-run]
 
 Runs one loop in the foreground until it is stopped. With no name it runs
 `tickets`, the ready queue; `pr-doctor` fixes open PRs; `triage` labels the
-backlog tickets an agent can start; a `[[loops]]` entry adds others.
+backlog tickets an agent can start; `security-alerts` fixes open Dependabot
+alerts, one new PR per package; a `[[loops]]` entry adds others.
 
 | Flag | Meaning |
 |---|---|

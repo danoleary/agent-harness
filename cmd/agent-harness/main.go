@@ -26,6 +26,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/danoleary/agent-harness/internal/config"
 	"github.com/danoleary/agent-harness/internal/version"
 )
 
@@ -59,7 +60,7 @@ var commands = []command{
 	{Name: "init", Args: initArgs, Summary: "scaffold this project's .agent-harness/ directory", Builtin: initMain},
 	{Name: doctorCommand, Args: "[--offline]", Summary: "check the whole setup; print a fix for every problem"},
 	{Name: "start", File: "loop-start.sh", Args: "[<name>] [--instance <id>]", Summary: "start a loop as a detached daemon (logs to loop.log, or loop-<name>.log / loop-<id>.log)"},
-	{Name: "loop", File: "loop", Args: "[<name>] [--instance <id>] [--list] [--dry-run]", Summary: "run a loop until stopped: the ready queue by default, or pr-doctor, or a [[loops]] entry"},
+	{Name: "loop", File: "loop", Args: "[<name>] [--instance <id>] [--list] [--dry-run]", Summary: "run a loop until stopped: tickets by default, or pr-doctor, triage or a [[loops]] entry"},
 	{Name: "watch", File: "watch", Args: "[LOGFILE | --loop <name> | --instance <id> | --all]", Summary: "live, read-only view of a running loop, one instance or all"},
 	{Name: "pipeline", File: "pipeline", Args: "<KEY> | --next", Summary: "one ticket, start to finish, then exit"},
 	{Name: "implementation", File: "implementation", Args: "<KEY>", Summary: "stage 1 alone: /tdd into a worktree + commit"},
@@ -263,11 +264,65 @@ func usage() string {
 	fmt.Fprintf(&b, "  %-*s  %s\n", width, "--version", "print the harness version")
 	fmt.Fprintf(&b, "  %-*s  %s\n", width, "--help", "this message")
 
+	b.WriteString(howItWorks)
+	b.WriteString(loopsHelp())
+
 	b.WriteString("\npipeline, implementation, review and retrospective also take --dry-run, --verbose and --force.\n")
 	b.WriteString("Every command but start and watch answers --help without a credential.\n")
 	b.WriteString("Stop a running loop with `touch $PROJECT_PATH/.agent-harness/STOP`.\n\n")
 	b.WriteString("Before the first run you need credentials in a .env file, and an .agent-harness/\n")
 	b.WriteString("directory in the project you point it at — `agent-harness init` writes both:\n")
 	b.WriteString("  https://github.com/danoleary/agent-harness/blob/main/docs/CONSUMER.md\n")
+	return b.String()
+}
+
+// howItWorks is the paragraph --help gives on what one ticket run does, so the
+// stage commands above it read as parts of one thing rather than three tools.
+const howItWorks = `
+How a ticket is worked: the harness claims a ready ticket from your tracker, then
+runs three Claude sessions, each in its own sandbox container. implementation
+writes the change test-first in a fresh git worktree and commits it; review reads
+that commit cold, fixes real defects, runs your gates (lint, tests) on the host,
+pushes the branch and opens a PR; retrospective files what went wrong as new
+tickets and removes the worktree. pipeline runs all three for one ticket; a loop
+keeps doing it until the queue is empty or you stop it.
+`
+
+// loopSummaries is what each built-in loop does, as --help says it. Every
+// built-in loop needs an entry (TestUsageDescribesEveryLoop), so a new one cannot
+// ship undiscoverable.
+var loopSummaries = map[string]string{
+	config.DefaultLoopName:        "works the ready queue: every ticket labelled ready, one at a time, through to a PR",
+	config.PRDoctorLoopName:       "fixes open PRs that conflict with main or have red CI, and pushes the fix to the same PR",
+	config.TriageLoopName:         "reads backlog tickets not yet labelled ready, labels the ones an agent can start, and comments questions on the rest",
+	config.SecurityAlertsLoopName: "fixes open Dependabot alerts, one new PR per vulnerable package, checked on the host before anything is pushed",
+}
+
+// loopsHelp lists the loops for --help: each built-in with what it does and the
+// Steps it runs, then the loop kinds a project only gets by declaring one.
+func loopsHelp() string {
+	var b strings.Builder
+	b.WriteString("\nLoops (agent-harness loop <name>, or start <name> to run it in the background):\n")
+	loops := config.BuiltInLoops()
+	width := 0
+	for _, l := range loops {
+		width = max(width, len(l.Name))
+	}
+	for _, l := range loops {
+		uses := make([]string, 0, len(l.Steps))
+		for _, s := range l.Steps {
+			uses = append(uses, s.Use)
+		}
+		fmt.Fprintf(&b, "  %-*s  %s\n", width, l.Name, loopSummaries[l.Name])
+		fmt.Fprintf(&b, "  %-*s  steps: %s\n", width, "", strings.Join(uses, " → "))
+	}
+	b.WriteString(`
+Any of these can be replaced by a [[loops]] entry of the same name in
+.agent-harness/config.toml, and other entries add loops of your own.
+
+  agent-harness loop --list             every loop this project can run
+  agent-harness loop <name> --dry-run   what that loop would work, changing nothing
+  https://github.com/danoleary/agent-harness/blob/main/docs/how-to/declare-a-loop.md
+`)
 	return b.String()
 }

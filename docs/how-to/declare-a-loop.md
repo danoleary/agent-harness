@@ -1,13 +1,17 @@
 # Change a loop or declare your own
 
 A **loop** is one daemon: a **Source** it polls for work, and the **Steps** it
-runs over each **Work item** the Source yields (ADR-0019). Three loops are built in:
+runs over each **Work item** the Source yields (ADR-0019). Four loops are built in:
 
 | Name | Source | Steps | Runs with |
 |---|---|---|---|
 | `tickets` | `tracker`: the ready queue | `implement`, `review`, `watch_ci`, `retro` | `agent-harness loop` (the default) |
 | `pr-doctor` | `github_prs`: open PRs that conflict with `main` or have red CI | `checkout_pr`, `fix`, `gates`, `push_existing`, `watch_ci`, `retro` | `agent-harness loop pr-doctor` |
 | `triage` | `backlog`: tickets not yet labelled ready for an agent | `assess`, `apply` | `agent-harness loop triage` |
+| `security-alerts` | `github_security_alerts`: open Dependabot alerts, one item per package | `new_branch`, `fix_alerts`, `gates`, `open_pr`, `watch_ci`, `retro` | `agent-harness loop security-alerts` |
+
+A built-in loop runs only when you name it: being built in puts it in `--list`
+and `--help`, nothing more.
 
 ## See what a project can run
 
@@ -107,14 +111,16 @@ agent-harness loop triage --dry-run   # the tickets it would judge, in order
 agent-harness start triage            # run it beside the ticket loop
 ```
 
-## Declare a security-alerts loop
+## Run or re-tune the security-alerts loop
 
 A `github_security_alerts` loop works the repository's open Dependabot alerts,
 one Work item per vulnerable package, and lands each fix as a new PR (ADR-0040).
-It is not built in. Each fix is cut fresh from `origin/main`, and nothing is
-pushed unless the lockfile resolves no vulnerable version, the diff touches
-dependency files only, and every Gate is green. `--dry-run` prints the packages
-it would work, and why it skips the rest.
+Each fix is cut fresh from `origin/main`, and nothing is pushed unless the
+lockfile resolves no vulnerable version, the diff touches dependency files only,
+and every Gate is green. `--dry-run` prints the packages it would work, and why
+it skips the rest. It is built in with the defaults below; write the entry out
+only to change them, for example to add `"medium"` or give `fix_alerts` a
+project prompt body:
 
 ```toml
 [[loops]]
