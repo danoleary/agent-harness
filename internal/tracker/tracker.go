@@ -128,3 +128,23 @@ type Tracker interface {
 	FindingsSink
 	AddComment(key Key, body string) error
 }
+
+// Backlog is the triage layer (ADR-0045): the tickets a human has not yet marked
+// ready for an agent, and the one write that marks one. It is a capability apart
+// from [Tracker] rather than a fourth layer of it, because only the trackers whose
+// readiness is a label have it: Linear and GitHub Issues. Jira's ready queue is a
+// JQL query the harness cannot add a ticket to, so its adapter does not implement
+// it, and a triage loop over Jira is refused when it starts.
+type Backlog interface {
+	// Untriaged lists the open, unassigned tickets that do not carry the ready
+	// label and are neither blocked nor claimed: on Linear, the team's issues in a
+	// backlog or unstarted state; on GitHub, the repo's open issues. Each carries
+	// its Labels. Highest priority first where the tracker has one, else oldest
+	// first.
+	Untriaged() ([]ticket.Ticket, error)
+	// MarkReady adds the ready label, which puts the ticket in the ready queue. On
+	// Linear it also moves a ticket in a backlog state to the team's unstarted
+	// "Todo" state, which is where selection reads; a ticket a human has meanwhile
+	// moved anywhere else keeps its state.
+	MarkReady(key Key) error
+}

@@ -67,16 +67,16 @@ daemon branches only on the **Disposition** it returns.
 **Step**:
 One named unit of a loop's **Pipeline**, from a fixed set the harness implements
 in Go (`config.Step`): `implement`, `review`, `watch_ci`, `retro` for a tracker **Source**;
-`checkout_pr`, `fix`, `gates`, `push_existing`, `watch_ci`, `retro` for open PRs.
-Every Step owns its **Ground truth** check. A Consumer's `[[loops]]` config
+`checkout_pr`, `fix`, `gates`, `push_existing`, `watch_ci`, `retro` for open PRs;
+`assess`, `apply` for the backlog. Every Step owns its **Ground truth** check. A Consumer's `[[loops]]` config
 chooses, orders and parameterises Steps and supplies their **Project bodies**, but
 cannot add one (ADR-0019).
 _Avoid_: action, task, hook (a hook is `post_create`, which a Step may run).
 
 **Loop** (named):
 A **Source**, its **Steps** and its own limits, run by one daemon under a name
-(`agent-harness loop <name>`): the built-in `tickets` (the default) and
-`pr-doctor`, or a `[[loops]]` entry in `config.toml`. Each has its own STOP
+(`agent-harness loop <name>`): the built-in `tickets` (the default),
+`pr-doctor` and `triage`, or a `[[loops]]` entry in `config.toml`. Each has its own STOP
 sentinel (`STOP-<name>`) and its own `loop.jsonl`.
 
 **Instance** (of a loop):
@@ -94,6 +94,15 @@ A loop whose **Source** is `github_prs` (ADR-0019); the built-in one is
 and that opted in: on the harness's `branch_prefix`, or carrying the opt-in label.
 Its **Lease** is the `in-progress` label on the PR, keyed on the branch.
 _Avoid_: babysitter. ("pr-doctor" is the built-in loop's name, not the concept.)
+
+**Triage loop**:
+A loop whose **Source** is `backlog` (ADR-0045); the built-in one is `triage`.
+The Source is the tracker's open, unassigned tickets that carry neither the ready
+nor the blocked label. Its Pipeline runs one read-only Triage session per ticket,
+whose **Verdict** is ready or not ready with questions for a human, and acts on
+it: the ready label (on Linear, Backlog → Todo too), or one comment with the
+questions. It holds no **Lease**: it never claims the ticket.
+_Avoid_: groomer, labeller.
 
 **Security-alerts loop**:
 A loop whose **Source** is `github_security_alerts` (ADR-0040): the open

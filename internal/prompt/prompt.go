@@ -62,6 +62,9 @@ const (
 	// SecurityFix moves a package's open Dependabot alerts to a patched version
 	// in a fresh branch (ADR-0040).
 	SecurityFix
+	// Triage judges whether one backlog ticket is ready for an agent to work
+	// unattended, read-only (ADR-0045).
+	Triage
 )
 
 // Resume says how an Implement session enters its worktree. The host picks it;
@@ -172,6 +175,8 @@ func For(s Stage, ctx Context) string {
 		return rebaseFix(ctx)
 	case SecurityFix:
 		return securityFix(ctx)
+	case Triage:
+		return triage(ctx)
 	}
 	panic(fmt.Sprintf("prompt: unknown stage %d", s))
 }

@@ -1,12 +1,13 @@
 # Change a loop or declare your own
 
 A **loop** is one daemon: a **Source** it polls for work, and the **Steps** it
-runs over each **Work item** the Source yields (ADR-0019). Two loops are built in:
+runs over each **Work item** the Source yields (ADR-0019). Three loops are built in:
 
 | Name | Source | Steps | Runs with |
 |---|---|---|---|
 | `tickets` | `tracker`: the ready queue | `implement`, `review`, `watch_ci`, `retro` | `agent-harness loop` (the default) |
 | `pr-doctor` | `github_prs`: open PRs that conflict with `main` or have red CI | `checkout_pr`, `fix`, `gates`, `push_existing`, `watch_ci`, `retro` | `agent-harness loop pr-doctor` |
+| `triage` | `backlog`: tickets not yet labelled ready for an agent | `assess`, `apply` | `agent-harness loop triage` |
 
 ## See what a project can run
 
@@ -72,6 +73,39 @@ steps = [{ use = "implement" }, { use = "review" }, { use = "retro" }]
 ```
 
 Without a running PR loop, red CI on those PRs then waits for a human.
+
+## Triage the backlog into the ready queue
+
+The `triage` loop judges, one per poll, each open and unassigned ticket that
+carries neither `ready_label` nor `blocked_label` (ADR-0045). A read-only session
+reads the ticket against the code and leaves a verdict:
+
+- **Ready**: the ticket gets `ready_label`, and on Linear moves from Backlog to
+  Todo, so the `tickets` loop picks it up. A short comment says why.
+- **Not ready**: the ticket gets one comment listing what a human must answer or
+  do first. Edit the description to answer, and triage judges it again; or add
+  `ready_label` yourself.
+
+A judged ticket is not judged again until its title or description changes. The
+verdicts are kept in `.agent-harness/locks/triage/`. It runs on Linear and GitHub
+Issues; Jira's ready queue is a JQL query the harness cannot add a ticket to.
+
+Try it without touching the tracker first: leave out `apply`, and it only records
+verdicts (in its `loop.jsonl` and per-ticket logs). Give `assess` your project's
+own bar for "ready", which leads the harness's default one:
+
+```toml
+[[loops]]
+name = "triage"
+poll_interval = "15m"
+source = { kind = "backlog" }
+steps = [{ use = "assess", prompt = "prompts/triage.md" }]   # add { use = "apply" } once the verdicts look right
+```
+
+```bash
+agent-harness loop triage --dry-run   # the tickets it would judge, in order
+agent-harness start triage            # run it beside the ticket loop
+```
 
 ## Declare a security-alerts loop
 

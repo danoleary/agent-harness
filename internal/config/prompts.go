@@ -29,6 +29,10 @@ type PromptBodies struct {
 	// SecurityFix session (ADR-0040). Optional for the same reason as Fix: the
 	// session invokes no skill.
 	SecurityFix string
+	// Triage is the body a triage loop's `assess` step supplies for its Triage
+	// session (ADR-0045): the project's own bar for "ready for an agent". Optional:
+	// the envelope alone states a default bar.
+	Triage string
 }
 
 // LoadPrompts reads the per-Stage body files from
