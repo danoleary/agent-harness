@@ -221,11 +221,14 @@ func (w Worktree) checkpointOn(tracking string) Resumed {
 	if !IsCheckpoint(subject) {
 		return Resumed{}
 	}
-	base, err := w.output("git", "-C", w.repo, "rev-parse", "--verify", "-q", tracking)
-	if err != nil || w.run("git", "-C", w.repo, "merge-base", "--is-ancestor", tracking, sha) != nil {
+	out, err := w.output("git", "-C", w.repo, "rev-parse", "--verify", "-q", tracking)
+	base := strings.TrimSpace(string(out))
+	// A checkpoint origin already has is no unpushed work: the ticket loop pushes a
+	// branch whose tip is a checkpoint, and is-ancestor holds for a commit itself.
+	if err != nil || base == sha || w.run("git", "-C", w.repo, "merge-base", "--is-ancestor", tracking, sha) != nil {
 		return Resumed{}
 	}
-	return Resumed{Checkpoint: sha, Base: strings.TrimSpace(string(base))}
+	return Resumed{Checkpoint: sha, Base: base}
 }
 
 // LocalStateError is a checkout git refused because of local state on the host —

@@ -120,3 +120,21 @@ func TestCheckoutRemoteResetsAnUnpushedCommitThatIsNoCheckpoint(t *testing.T) {
 		t.Errorf("the worktree is at %s, want origin's tip %s", head, tip)
 	}
 }
+
+// A checkpoint origin already has — the ticket loop pushes a branch whose tip is
+// one — is no unpushed work: the checkout is at origin's tip, and resumes nothing.
+func TestCheckoutRemoteDoesNotResumeAPushedCheckpoint(t *testing.T) {
+	repo := gittest.New(t)
+	wt := repo.Checkout().WorktreeOn("pr-12", "alice/widget")
+	checkpoint, _ := checkpointed(t, repo, wt)
+	repo.Git(repo.Dir, "push", "-q", "origin", "alice/widget")
+
+	resumed, err := wt.CheckoutRemote()
+
+	if err != nil || resumed != (gitpkg.Resumed{}) {
+		t.Fatalf("CheckoutRemote = %+v, %v; want a plain checkout at origin's tip", resumed, err)
+	}
+	if head, _ := wt.HeadSHA(); head != checkpoint {
+		t.Errorf("the worktree is at %s, want origin's tip %s", head, checkpoint)
+	}
+}
