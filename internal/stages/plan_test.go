@@ -132,3 +132,24 @@ func TestReviewPlanNotesASkippedPrep(t *testing.T) {
 		t.Errorf("plan does not say the prep is skipped:\n%s", out)
 	}
 }
+
+// #219: each session's run carries what its prompt's composition warned of, for
+// the launch to narrate — a body placeholder this binary does not know, and, for
+// the retrospective, a run that left no transcripts to study.
+func TestSessionRunsCarryTheirPromptWarnings(t *testing.T) {
+	cfg := stageCfg()
+	cfg.Prompts.Implement, cfg.Prompts.Review, cfg.Prompts.Retro = "{{.Nope}} impl", "{{.Nope}} review", "{{.Nope}} retro"
+	h, _ := fresh(t, "PROJ-1")
+	s := NewSubject(h, "PROJ-1", t.TempDir(), hostio.NewFakeTracker().Ticket)
+	for _, p := range []StagePlan{ImplementationPlan(cfg, s, prompt.Fresh), ReviewPlan(cfg, s, nil), RetrospectivePlan(cfg, s, nil)} {
+		for _, run := range p.Agents() {
+			if w := strings.Join(run.Warnings, "\n"); !strings.Contains(w, "{{.Nope}}") {
+				t.Errorf("%s run warnings %q do not name {{.Nope}}", run.Label, run.Warnings)
+			}
+		}
+	}
+	retro := RetrospectivePlan(cfg, s, nil).Agents()[0]
+	if w := strings.Join(retro.Warnings, "\n"); !strings.Contains(w, "no transcripts") {
+		t.Errorf("retrospective over an empty log dir does not warn of it: %q", retro.Warnings)
+	}
+}

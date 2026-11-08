@@ -58,6 +58,10 @@ type AgentRun struct {
 	// NoMCP starts the session without the MCP servers the Consumer's project
 	// config declares: only the stages that drive a browser need them (#248).
 	NoMCP bool
+	// Warnings are narrated before the session launches: what the prompt's
+	// composition could not do cleanly, such as a body placeholder this binary
+	// does not know (#219). The session runs regardless.
+	Warnings []string
 }
 
 // ShellRun describes one secret-free throwaway container that runs a shell

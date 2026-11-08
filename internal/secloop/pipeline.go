@@ -158,15 +158,17 @@ func (r *run) fixAlerts() *stages.Result {
 	wt := r.h.Worktree()
 	r.sessions = true
 	r.log.Event(fmt.Sprintf("%s · launching the SecurityFix session for %s (cap %d min active)", who, alertNumbers(r.it.Alerts), int(r.cfg.ReviewTimeout.Minutes())))
+	pctx := prompt.Context{
+		Ticket: r.ticket(), Slug: ticket.Slug(r.it.Key()), BranchPrefix: r.cfg.BranchPrefix, Branch: wt.Branch(),
+		Tracker: r.cfg.Tracker.Kind, WorktreePath: wt.Path(), Body: r.cfg.Prompts.SecurityFix,
+		Alerts: append(append([]github.Alert(nil), r.it.Alerts...), r.it.Unpatched...),
+	}
 	res := r.h.Agent(hostio.AgentRun{
-		Label: sessionLabel,
-		Model: r.cfg.ReviewModel,
-		Prompt: prompt.For(prompt.SecurityFix, prompt.Context{
-			Ticket: r.ticket(), Slug: ticket.Slug(r.it.Key()), BranchPrefix: r.cfg.BranchPrefix, Branch: wt.Branch(),
-			Tracker: r.cfg.Tracker.Kind, WorktreePath: wt.Path(), Body: r.cfg.Prompts.SecurityFix,
-			Alerts: append(append([]github.Alert(nil), r.it.Alerts...), r.it.Unpatched...),
-		}),
-		Cap: r.cfg.ReviewTimeout,
+		Label:    sessionLabel,
+		Model:    r.cfg.ReviewModel,
+		Prompt:   prompt.For(prompt.SecurityFix, pctx),
+		Warnings: prompt.BodyWarnings(pctx),
+		Cap:      r.cfg.ReviewTimeout,
 		// A dependency bump drives no browser (#248).
 		NoMCP: true,
 	})

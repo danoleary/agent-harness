@@ -1078,3 +1078,68 @@ func TestRetrospectiveLeavesANewADRsNumberToTheImplementer(t *testing.T) {
 		t.Errorf("prompt does not tell a finding to name a new ADR by slug, not number:\n%s", p)
 	}
 }
+
+// #219: a body naming a field this binary's template context lacks — version
+// skew, the checkout's body newer than the harness — still renders every field
+// the binary does know. Before, the unknown field failed Execute and the whole
+// body went out raw, so a retrospective got `{{.Identifier}}`, `{{.Slug}}`,
+// `{{.Branch}}` and `{{.LogDir}}` as literal text. This replays that body: the
+// real retro body plus one placeholder no binary has.
+func TestBodyWithAnUnknownFieldStillRendersTheKnownOnes(t *testing.T) {
+	c := Context{
+		Ticket: sample, Slug: "beh-362", BranchPrefix: testPrefix,
+		Body:   exampleBody(t, "retro") + "\nStudy {{.RunName}} for {{.Identifier}}.",
+		LogDir: ".agent-harness/logs/BEH-362",
+	}
+	p := For(Retrospective, c)
+	for _, want := range []string{
+		"/retrospective for BEH-362.",
+		"`.claude/worktrees/beh-362` on branch `feat/beh-362`",
+		"under `.agent-harness/logs/BEH-362/`",
+		"Study  for BEH-362.",
+	} {
+		if !strings.Contains(p, want) {
+			t.Errorf("prompt is missing %q:\n%s", want, p)
+		}
+	}
+	if strings.Contains(p, "{{.") {
+		t.Errorf("prompt still carries an unrendered placeholder:\n%s", p)
+	}
+	w := BodyWarnings(c)
+	if len(w) != 1 || !strings.Contains(w[0], "{{.RunName}}") {
+		t.Errorf("BodyWarnings = %q, want one warning naming {{.RunName}}", w)
+	}
+}
+
+// #219: every unknown placeholder is named, once each, in the order the body
+// uses them.
+func TestBodyWarningsNameEachUnknownPlaceholderOnce(t *testing.T) {
+	c := Context{Ticket: sample, Body: "{{.Foo}} {{.Identifier}} {{.Bar}} {{.Foo}}"}
+	w := BodyWarnings(c)
+	if len(w) != 2 || !strings.Contains(w[0], "{{.Foo}}") || !strings.Contains(w[1], "{{.Bar}}") {
+		t.Errorf("BodyWarnings = %q, want {{.Foo}} then {{.Bar}}", w)
+	}
+}
+
+// #219: a body that does not parse still goes out raw — the envelope is the
+// contract, not the body — but no longer silently: the warning carries the parse
+// error, which names where the body broke.
+func TestMalformedBodyGoesOutRawWithAWarning(t *testing.T) {
+	c := Context{Ticket: sample, Slug: "beh-362", BranchPrefix: testPrefix, Body: "work on {{.Identifier}} {{.Slug"}
+	if p := For(Implement, c); !strings.Contains(p, "work on {{.Identifier}} {{.Slug") {
+		t.Errorf("malformed body was not passed through raw:\n%s", p)
+	}
+	w := BodyWarnings(c)
+	if len(w) != 1 || !strings.Contains(w[0], "not rendered") {
+		t.Errorf("BodyWarnings = %q, want one warning that the body was not rendered", w)
+	}
+}
+
+// A body that renders cleanly, or an empty one, warns of nothing.
+func TestCleanBodyHasNoWarnings(t *testing.T) {
+	for _, body := range []string{"", "plain", "on {{.Identifier}} in {{.Slug}} at {{.Branch}} {{.WorktreePath}} {{.LogDir}} {{.Title}} {{.BranchPrefix}}"} {
+		if w := BodyWarnings(Context{Ticket: sample, Body: body}); len(w) != 0 {
+			t.Errorf("body %q: BodyWarnings = %q, want none", body, w)
+		}
+	}
+}

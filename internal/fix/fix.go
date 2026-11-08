@@ -244,10 +244,11 @@ func (e Env) CI(t Target) func(ciLogs string, logAvailable bool) error {
 		pctx := e.promptContext(t)
 		pctx.CILogs, pctx.CILogAvailable = ciLogs, logAvailable
 		res := e.Host.Agent(hostio.AgentRun{
-			Label:  fmt.Sprintf("cifix-%d", attempt),
-			Model:  e.Cfg.ReviewModel,
-			Prompt: prompt.For(prompt.CIFix, pctx),
-			Cap:    e.Cfg.ReviewTimeout,
+			Label:    fmt.Sprintf("cifix-%d", attempt),
+			Model:    e.Cfg.ReviewModel,
+			Prompt:   prompt.For(prompt.CIFix, pctx),
+			Warnings: prompt.BodyWarnings(pctx),
+			Cap:      e.Cfg.ReviewTimeout,
 			// A CI fix reproduces a gate; it drives no browser by hand (#248).
 			NoMCP: true,
 		})
@@ -441,10 +442,11 @@ func (e Env) ResolveConflict(c Conflict) ConflictResult {
 	pctx := e.promptContext(c.Target)
 	pctx.Merge = c.Strategy == Merge
 	res := e.Host.Agent(hostio.AgentRun{
-		Label:  "rebasefix",
-		Model:  e.Cfg.ReviewModel,
-		Prompt: prompt.For(prompt.RebaseFix, pctx),
-		Cap:    e.Cfg.ReviewTimeout,
+		Label:    "rebasefix",
+		Model:    e.Cfg.ReviewModel,
+		Prompt:   prompt.For(prompt.RebaseFix, pctx),
+		Warnings: prompt.BodyWarnings(pctx),
+		Cap:      e.Cfg.ReviewTimeout,
 	})
 	e.Log.Event(fmt.Sprintf("conflict-resolution session exited (code %d)", res.ExitCode))
 

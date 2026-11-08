@@ -29,8 +29,11 @@ skill isn't there, the session has nothing to run.
 
 ## 3. Fill in the template fields
 
-A body is a Go `text/template`. These fields interpolate; a body that fails to
-parse is used verbatim, so check the dry run if a field doesn't appear:
+A body is a Go `text/template`. These fields interpolate. A field the running
+harness doesn't know (a body newer than the binary, or a typo) renders empty
+while the rest still render. A body that fails to parse is used verbatim. Either
+way the session's launch logs a `⚠` line that names the placeholder or the parse
+error. Check the dry run if a field doesn't appear:
 
 | Field | Value |
 |---|---|

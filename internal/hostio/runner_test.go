@@ -398,3 +398,23 @@ func TestShellPreviewNamesTheBranchImageWithoutBuildingIt(t *testing.T) {
 		t.Errorf("preview built %d images, want none", len(*ensured))
 	}
 }
+
+// #219: a run's warnings — a prompt body with a placeholder the binary does not
+// know, a retrospective with no transcripts — are narrated before the session
+// launches, so the run log says why a prompt came out hollow.
+func TestRunnerNarratesTheRunsWarningsBeforeLaunching(t *testing.T) {
+	r, seen := testRunner(t)
+
+	r.Agent(AgentRun{Label: "retrospective", Warnings: []string{"prompt body names {{.RunName}}"}})
+
+	if len(*seen) != 1 {
+		t.Fatalf("launches = %d, want 1", len(*seen))
+	}
+	raw, err := os.ReadFile(filepath.Join(r.log.Dir, "run.jsonl"))
+	if err != nil {
+		t.Fatalf("read run.jsonl: %v", err)
+	}
+	if !strings.Contains(string(raw), `⚠ retrospective: prompt body names {{.RunName}}`) {
+		t.Errorf("run.jsonl does not narrate the warning:\n%s", raw)
+	}
+}
