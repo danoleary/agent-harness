@@ -533,3 +533,28 @@ func TestFixOverADirtyWorktreeIsCheckoutBlocked(t *testing.T) {
 		t.Error("the dirty worktree must be left for a human to look at")
 	}
 }
+
+// #254, the test #247 had to drop: the PR's head branch is gone from origin, so the
+// checkout's fetch fails. That is the remote's doing, not the host's local state —
+// no session, nothing pushed, and not CheckoutBlocked. Over gittest's local origin
+// the fetch is tried once, so this takes as long as git does, not the retry budget.
+func TestFixOnAHeadBranchGoneFromOriginLaunchesNothing(t *testing.T) {
+	h, it, repo := prHost(t, harnessItem(CIRed))
+	repo.Git(repo.Origin, "branch", "-q", "-D", it.PR.HeadBranch)
+	start := time.Now()
+
+	res := Fix(h, pipelineCfg(), pipelineLog(t), it, prDoctor())
+
+	if took := time.Since(start); took > 30*time.Second {
+		t.Fatalf("a failed fetch over a local origin took %v: it waited out the retry budget", took)
+	}
+	if res.Disposition == stages.CheckoutBlocked || res.OK {
+		t.Fatalf("a fetch that failed is neither CheckoutBlocked nor shipped, got %+v", res)
+	}
+	if len(h.Agents) != 0 {
+		t.Errorf("no session may launch, got %v", agentLabels(h))
+	}
+	if h.Worktree().Exists() {
+		t.Error("no worktree is checked out for a branch origin does not have")
+	}
+}

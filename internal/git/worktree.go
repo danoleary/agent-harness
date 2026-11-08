@@ -37,6 +37,17 @@ func Open(path, branchPrefix string) Checkout {
 	return Checkout{path: path, branchPrefix: branchPrefix, runners: execRunners()}
 }
 
+// WithoutRemoteRetry is the Checkout with every remote op (fetch, push) tried
+// once: a failure is returned at once instead of being retried under the
+// multi-minute backoff budget. It is for a test's local origin, which has no
+// transient failures to ride out, so a test can exercise a failed fetch or push
+// outside this package without waiting out the real budget (#254). Production
+// never calls it.
+func (c Checkout) WithoutRemoteRetry() Checkout {
+	c.once = true
+	return c
+}
+
 // Worktree names the worktree the harness creates for one ticket slug. It is a
 // pure naming operation — the worktree need not exist yet (that is [Worktree.Create])
 // and none of git runs here.

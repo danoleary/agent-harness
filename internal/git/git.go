@@ -60,6 +60,9 @@ type runners struct {
 	pipe     pipeRunner
 	sleep    func(time.Duration)
 	now      func() time.Time
+	// once makes a remote op a single attempt: no backoff, no budget. Only
+	// [Checkout.WithoutRemoteRetry] sets it, for a remote that cannot blip (#254).
+	once bool
 }
 
 // execRunners is the production seam: the real git binary, the real clock.
@@ -201,6 +204,9 @@ func nonTransient(err error) bool {
 // real waiting — and, unlike the twin-pair arrangement this replaces, through the
 // same exported methods production calls.
 func (r runners) withRetry(op func() error) error {
+	if r.once {
+		return op()
+	}
 	deadline := r.now().Add(remoteRetryBudget)
 	delay := remoteBaseDelay
 	var err error
