@@ -1572,7 +1572,10 @@ reader over a structured stream rather than a `--tui` flag on the daemon.
   if ever added, it must not auto-restart a clean exit. The one thing the launcher
   adds besides the pidfile is opt-in: `LOOP_KEEP_AWAKE=1` attaches
   `caffeinate -is -w <loop pid>`, whose lifetime `-w` ties to the daemon's, so it
-  needs no supervisor and no cleanup (#49).
+  needs no supervisor and no cleanup (#49). Run directly from a source checkout,
+  the launcher refuses a `bin/loop` older than the newest commit to `cmd/loop` or
+  `internal/config`, and names `make build` and `agent-harness start`. An old build
+  may not know the requested loop (#249, ADR-0012).
 - **Exit-code contract (observability, supervisor-agnostic).** `0` = a *deliberate*
   terminal stop — STOP requested, circuit breaker tripped, or an optional
   `LOOP_MAX_*` ceiling reached. Non-zero = an *unexpected* crash (panic, docker

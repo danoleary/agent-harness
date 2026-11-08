@@ -146,6 +146,20 @@ func parseFlags(argv []string) (flags, error) {
 	return f, nil
 }
 
+// pickLoop resolves the loop the command line names, run as its instance. A name
+// no loop has is refused with the loops the project can run: falling back to the
+// ticket loop would claim a ticket nobody asked this daemon to work (#249).
+func pickLoop(cfg config.Config, f flags) (config.Loop, error) {
+	if _, ok := cfg.LoopNamed(f.name); !ok {
+		return config.Loop{}, fmt.Errorf("loop: no loop named %q in this project.\n%sDeclare it as [[loops]] in %s/config.toml.", f.name, renderList(cfg.AllLoops()), config.ProjectDirName)
+	}
+	l, err := cfg.LoopInstance(f.name, f.instance)
+	if err != nil {
+		return config.Loop{}, fmt.Errorf("loop: %w", err)
+	}
+	return l, nil
+}
+
 func main() {
 	// Usage before config: an operator who has just unpacked a release archive must
 	// be able to ask what this takes without holding a credential yet. Handled here
@@ -184,13 +198,9 @@ func main() {
 		fmt.Print(renderList(cfg.AllLoops()))
 		os.Exit(0)
 	}
-	if _, ok := cfg.LoopNamed(f.name); !ok {
-		fmt.Fprintf(os.Stderr, "loop: no loop named %q in this project.\n%sDeclare it as [[loops]] in %s/config.toml.\n", f.name, renderList(cfg.AllLoops()), config.ProjectDirName)
-		os.Exit(2)
-	}
-	l, err := cfg.LoopInstance(f.name, f.instance)
+	l, err := pickLoop(cfg, f)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "loop: %v\n", err)
+		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
 	}
 	if f.dryRun {

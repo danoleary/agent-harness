@@ -136,3 +136,22 @@ belongs to.
   carried. The ADRs stay out of the bundle and are linked by github.com URL.
   Shipping them would make `DOCS` a glob, and `--uninstall`, which removes only
   the files it names, would then need a manifest of what it installed.
+
+## Amendment, 2026-11-08: a direct launch refuses a stale `bin/loop` (#249)
+
+Run directly from a source checkout, `loop-start.sh` takes `bin/loop` first. One
+built before named loops existed ignored `pr-doctor`, started the ticket loop,
+and claimed a ticket. The dispatcher path never had this problem, because it
+hands over its own `LOOP_BIN`.
+
+The launcher now refuses a checkout's `bin/loop` whose mtime is older than the
+newest commit to `cmd/loop` or `internal/config`, the code that decides which
+loops the binary knows. The refusal names `make build` and `agent-harness start`.
+We rejected the other fix, preferring the installed binary over `bin/loop`. The
+installed binary is a different build from the checkout the operator launched
+from, and it may be just as stale. It would also run silently in place of the
+code the operator is looking at. An explicit `LOOP_BIN`, an archive and the
+installed layout skip the check, because none of them is built from a checkout.
+
+The daemon is the second line of defence: `loop <name>` with a name no loop has
+exits 2 and lists the loops it knows. It never falls back to the ticket loop.

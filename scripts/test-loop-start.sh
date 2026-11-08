@@ -5,10 +5,14 @@
 # LOOP_LOGFILE env overrides) so no real daemon launches, and asserts the
 # detached-launch contract: a pidfile pointing at the live child, the child's
 # output captured to the logfile, a prompt non-blocking return, the
-# already-running guard, the stale-pidfile recovery, and the missing-binary
-# failure. Like the other harness guards it must run under macOS's stock bash 3.2.
+# already-running guard, the stale-pidfile recovery, the missing-binary and the
+# stale-binary failures (#249). Like the other harness guards it must run under
+# macOS's stock bash 3.2.
 
 set -euo pipefail
+
+# The stale-binary tests build a throwaway harness checkout (#166).
+. "$(dirname "$0")/lib/scratch-git.sh"
 
 if [ -t 1 ]; then
     GREEN='\033[0;32m'
@@ -778,6 +782,83 @@ if [ -z "$tickets_pid" ] || ! kill -0 "$tickets_pid" 2>/dev/null; then
     exit 1
 elif ls "$TICKETS_PROJ"/.agent-harness/loop-*.pid > /dev/null 2>&1; then
     echo -e "${RED}FAIL${NC} - 'tickets' wrote a pidfile of its own beside loop.pid"
+    exit 1
+else
+    echo -e "${GREEN}PASS${NC}"
+fi
+
+# --- a bin/loop older than the checkout's loop source is refused (#249) -------
+#
+# The incident: `scripts/loop-start.sh pr-doctor`, run straight from a checkout
+# whose bin/loop was built on 2026-09-30, before named loops existed. That binary
+# ignored `pr-doctor` and started the ticket loop, which claimed a ticket. The
+# launcher must refuse a bin/loop built before the newest commit to the source
+# that decides which loops it knows, and say how to get a current one, without
+# running it or writing a pidfile.
+echo -n "loop-start.sh refuses a bin/loop older than the checkout's loop source ... "
+STALE_HARNESS="$TEST_DIR/harness-stale"
+scratch_git_repo "$STALE_HARNESS"
+mkdir -p "$STALE_HARNESS/scripts" "$STALE_HARNESS/bin" "$STALE_HARNESS/cmd/loop"
+cp "$SCRIPT_PATH" "$STALE_HARNESS/scripts/loop-start.sh"
+echo "package main // named loops (#106)" > "$STALE_HARNESS/cmd/loop/main.go"
+git -C "$STALE_HARNESS" add -A
+GIT_COMMITTER_DATE="2026-10-14T12:00:00Z" GIT_AUTHOR_DATE="2026-10-14T12:00:00Z" \
+    git -C "$STALE_HARNESS" commit -q -m "Name the loops (#106)"
+# The old binary runs whatever it is given as the ticket loop; it leaves a mark
+# if it ran at all.
+cat > "$STALE_HARNESS/bin/loop" <<EOF
+#!/bin/bash
+touch "$TEST_DIR/STALE_LOOP_RAN"
+exec sleep 60
+EOF
+chmod +x "$STALE_HARNESS/bin/loop"
+touch -t 202609301200 "$STALE_HARNESS/bin/loop"
+STALE_PROJ="$TEST_DIR/consumer-stale"
+mkdir -p "$STALE_PROJ"
+stale_rc=0
+stale_out="$( ( cd "$TEST_DIR" && env -u LOOP_BIN PROJECT_PATH="$STALE_PROJ" "$STALE_HARNESS/scripts/loop-start.sh" pr-doctor 2>&1 ) )" || stale_rc=$?
+STARTED_PIDS="$STARTED_PIDS $(cat "$STALE_PROJ"/.agent-harness/loop*.pid 2>/dev/null || true)"
+sleep 0.2
+if [ "$stale_rc" -eq 0 ]; then
+    echo -e "${RED}FAIL${NC} - a stale bin/loop was launched: $stale_out"
+    exit 1
+elif [ -e "$TEST_DIR/STALE_LOOP_RAN" ]; then
+    echo -e "${RED}FAIL${NC} - the stale bin/loop ran"
+    exit 1
+elif ls "$STALE_PROJ"/.agent-harness/loop*.pid > /dev/null 2>&1; then
+    echo -e "${RED}FAIL${NC} - a refused launch wrote a pidfile"
+    exit 1
+elif ! printf '%s' "$stale_out" | grep -q "make build" || ! printf '%s' "$stale_out" | grep -q "agent-harness start"; then
+    echo -e "${RED}FAIL${NC} - the refusal must name 'make build' and 'agent-harness start', got: $stale_out"
+    exit 1
+else
+    echo -e "${GREEN}PASS${NC}"
+fi
+
+# Rebuilt after that commit, the same bin/loop launches.
+echo -n "loop-start.sh launches a bin/loop built after the checkout's loop source ... "
+touch "$STALE_HARNESS/bin/loop"
+( cd "$TEST_DIR" && env -u LOOP_BIN PROJECT_PATH="$STALE_PROJ" "$STALE_HARNESS/scripts/loop-start.sh" pr-doctor > /dev/null 2>&1 )
+fresh_pid="$(cat "$STALE_PROJ/.agent-harness/loop-pr-doctor.pid" 2>/dev/null || true)"
+STARTED_PIDS="$STARTED_PIDS $fresh_pid"
+if [ -z "$fresh_pid" ] || ! kill -0 "$fresh_pid" 2>/dev/null; then
+    echo -e "${RED}FAIL${NC} - a current bin/loop did not launch"
+    exit 1
+else
+    echo -e "${GREEN}PASS${NC}"
+fi
+
+# An explicit LOOP_BIN is the caller's choice (the dispatcher exports its own), so
+# it is never second-guessed, even from a checkout with a stale bin/loop.
+echo -n "loop-start.sh runs an explicit LOOP_BIN without the staleness check ... "
+EXPLICIT_PROJ="$TEST_DIR/consumer-explicit"
+mkdir -p "$EXPLICIT_PROJ"
+touch -t 202609301200 "$FAKE_BIN"
+( cd "$TEST_DIR" && LOOP_BIN="$FAKE_BIN" PROJECT_PATH="$EXPLICIT_PROJ" "$STALE_HARNESS/scripts/loop-start.sh" > /dev/null 2>&1 )
+explicit_pid="$(cat "$EXPLICIT_PROJ/.agent-harness/loop.pid" 2>/dev/null || true)"
+STARTED_PIDS="$STARTED_PIDS $explicit_pid"
+if [ -z "$explicit_pid" ] || ! kill -0 "$explicit_pid" 2>/dev/null; then
+    echo -e "${RED}FAIL${NC} - an explicit LOOP_BIN was refused"
     exit 1
 else
     echo -e "${GREEN}PASS${NC}"

@@ -101,6 +101,7 @@ HARNESS_DIR="$(dirname "$SCRIPT_DIR")"
 # which install it belongs to, so it exports LOOP_BIN before exec'ing this script
 # and the search below never runs. The search is what keeps the script working
 # when it is invoked directly.
+loop_bin_explicit="${LOOP_BIN:-}"
 if [ -z "${LOOP_BIN:-}" ]; then
     for loop_candidate in "$HARNESS_DIR/bin/loop" "$HARNESS_DIR/loop" "$SCRIPT_DIR/loop"; do
         if [ -x "$loop_candidate" ]; then
@@ -245,6 +246,32 @@ if [ ! -x "$LOOP_BIN" ]; then
         echo "  or set LOOP_BIN to the binary explicitly"
     } >&2
     exit 1
+fi
+
+# A source checkout's bin/loop is only as current as its last `make build`. One
+# built before the newest commit to the code that decides which loops it knows —
+# its argument grammar (cmd/loop) and the built-in loops (internal/config) — may
+# not understand the loop it is asked for. The one that caused #249 predated
+# named loops, ignored `pr-doctor`, and started the ticket loop, which claimed a
+# ticket. So that bin/loop is refused, by comparing its mtime with the commit
+# time, rather than passed over for an installed binary: an installed binary is a
+# different build from the code the operator is looking at, and may be just as
+# stale. The check needs this dir to be a git checkout; an archive, the installed
+# libexec layout, and an explicit LOOP_BIN (the dispatcher's) are not second-guessed.
+if [ "$LOOP_BIN" = "$HARNESS_DIR/bin/loop" ] && [ -z "$loop_bin_explicit" ] && [ -e "$HARNESS_DIR/.git" ] && command -v git >/dev/null 2>&1; then
+    source_time="$(git -C "$HARNESS_DIR" log -1 --format=%ct -- cmd/loop internal/config 2>/dev/null || true)"
+    # GNU stat, then BSD (macOS) stat.
+    bin_time="$(stat -c %Y "$LOOP_BIN" 2>/dev/null || stat -f %m "$LOOP_BIN" 2>/dev/null || true)"
+    if [ -n "$source_time" ] && [ -n "$bin_time" ] && [ "$bin_time" -lt "$source_time" ]; then
+        {
+            echo "loop binary $LOOP_BIN is older than the last commit to cmd/loop or internal/config,"
+            echo "so it may not know the loop you asked for (an old one ran every name as the ticket loop)."
+            echo "  from this source checkout: run 'make build', then start again"
+            echo "  or run 'agent-harness start', which launches the installed loop"
+            echo "  or set LOOP_BIN to the binary explicitly"
+        } >&2
+        exit 1
+    fi
 fi
 
 # Detached background launch: nohup divorces the daemon from this shell's session
