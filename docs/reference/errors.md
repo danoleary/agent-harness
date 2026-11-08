@@ -47,6 +47,9 @@ Nothing restarts a stopped loop. The `loop` exit code tells a deliberate stop
 | `tracker.repo must be "owner/name"` | — | set `repo` |
 | `warning: … unknown key <name>, ignored` | a misspelled key, or one from a newer harness | fix the spelling, or upgrade |
 | `missing or blank prompt body:` | a prompt body is absent or empty | [write the prompt bodies](../how-to/prompt-bodies.md) |
+| `⚠ <session>: prompt body names {{.X}}, which this harness does not know` | the body uses a field the running binary lacks: a body newer than the binary, or a typo. A warning only; the field renders empty and the rest still render | fix the spelling, or upgrade ([template fields](../how-to/prompt-bodies.md#3-fill-in-the-template-fields)) |
+| `⚠ <session>: prompt body was not rendered, so it goes out with its placeholders as literal text (…)` | the body does not parse as a Go `text/template`. A warning only; the session runs on the raw body | fix the template syntax at the position the error names |
+| `⚠ retrospective: no transcripts under …` | the run left no session transcripts in its log dir. A warning only | nothing, unless a session should have run: then read `run.jsonl` |
 | `this project requires agent-harness >= X` | `min_harness_version` is newer than the binary | upgrade |
 | `SESSION_IDLE_TIMEOUT (…) must be below the … cap` | the idle timeout can never fire | lower it, or raise the cap |
 | `<KEY> must be <want>, got "<raw>"` | a bad `LOOP_*`, `GATE_*` or `PR_LOOP_*` value | [env reference](env.md#the-loop-daemon) |
