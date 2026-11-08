@@ -14,6 +14,7 @@ package prompt
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 	"text/template"
 
@@ -185,47 +186,82 @@ func For(s Stage, ctx Context) string {
 	panic(fmt.Sprintf("prompt: unknown stage %d", s))
 }
 
-// bodyData is the template context available to a Consumer prompt body. A body
+// bodyFields is the template context available to a Consumer prompt body. A body
 // interpolates these with `{{.Field}}` (text/template) so herd's committed bodies
 // can name the ticket, slug, branch, and worktree without the harness hardcoding
 // them. Branch is the branch the worktree is really on (Context.branch): a PR-loop
 // slug is `pr-<n>`, so `{{.BranchPrefix}}/{{.Slug}}` names a branch that does not
-// exist there (#186). Missing fields render empty; a malformed template falls back to the raw
-// body (renderBody).
-type bodyData struct {
-	Identifier   string
-	Title        string
-	Slug         string
-	BranchPrefix string
-	Branch       string
-	WorktreePath string
-	LogDir       string
+// exist there (#186).
+//
+// It is a map, not a struct, so a field this binary does not know renders empty
+// instead of failing the whole body (#219): the body comes from the checkout, the
+// binary may be older, and a struct turned one unknown field into no interpolation
+// at all.
+func bodyFields(c Context) map[string]string {
+	return map[string]string{
+		"Identifier":   c.Ticket.Identifier,
+		"Title":        c.Ticket.Title,
+		"Slug":         c.Slug,
+		"BranchPrefix": c.BranchPrefix,
+		"Branch":       c.branch(),
+		"WorktreePath": c.WorktreePath,
+		"LogDir":       c.LogDir,
+	}
 }
+
+// missingKey pulls the key out of text/template's missingkey=error failure.
+var missingKey = regexp.MustCompile(`map has no entry for key "([^"]*)"`)
 
 // renderBody interpolates the Consumer body's `{{.Field}}` placeholders against
 // the Context. A body is Consumer-controlled and may be malformed or empty; rather than
-// fail the whole prompt, a parse/exec error falls back to the raw body verbatim —
-// quality is the Consumer's concern, the contract (which is envelope, not body)
-// is never at risk.
-func renderBody(c Context) string {
-	tmpl, err := template.New("body").Parse(c.Body)
+// fail the whole prompt, a placeholder this binary does not know renders empty and
+// a body that will not parse or execute goes out raw — quality is the Consumer's
+// concern, the contract (which is envelope, not body) is never at risk. Neither is
+// silent: the warnings name each unknown placeholder, or why the body went out
+// raw, for the launch to narrate (BodyWarnings).
+func renderBody(c Context) (string, []string) {
+	tmpl, err := template.New("body").Option("missingkey=error").Parse(c.Body)
 	if err != nil {
-		return c.Body
+		return c.Body, []string{rawBodyWarning(err)}
 	}
-	d := bodyData{
-		Identifier:   c.Ticket.Identifier,
-		Title:        c.Ticket.Title,
-		Slug:         c.Slug,
-		BranchPrefix: c.BranchPrefix,
-		Branch:       c.branch(),
-		WorktreePath: c.WorktreePath,
-		LogDir:       c.LogDir,
+	fields := bodyFields(c)
+	var warnings []string
+	// Each pass learns one unknown key and renders it empty on the next, so the
+	// loop is bounded by the body's distinct placeholders.
+	for {
+		var b strings.Builder
+		err := tmpl.Execute(&b, fields)
+		if err == nil {
+			return b.String(), warnings
+		}
+		m := missingKey.FindStringSubmatch(err.Error())
+		if m == nil {
+			return c.Body, append(warnings, rawBodyWarning(err))
+		}
+		if _, seen := fields[m[1]]; seen {
+			return c.Body, append(warnings, rawBodyWarning(err))
+		}
+		fields[m[1]] = ""
+		warnings = append(warnings, fmt.Sprintf("prompt body names {{.%s}}, which this harness does not know — it renders empty; the body may be newer than the harness binary (#219)", m[1]))
 	}
-	var b strings.Builder
-	if err := tmpl.Execute(&b, d); err != nil {
-		return c.Body
-	}
-	return b.String()
+}
+
+func rawBodyWarning(err error) string {
+	return "prompt body was not rendered, so it goes out with its placeholders as literal text (" + err.Error() + ") (#219)"
+}
+
+// body is the rendered Consumer body, for the stage composers.
+func body(c Context) string {
+	s, _ := renderBody(c)
+	return s
+}
+
+// BodyWarnings is what rendering c.Body would warn of: each placeholder this
+// binary does not know, or why the body could not be rendered at all (#219). The
+// caller narrates them at launch; nil means the body rendered cleanly.
+func BodyWarnings(c Context) []string {
+	_, w := renderBody(c)
+	return w
 }
 
 // defang neutralizes the pinned Claude CLI's `!`…“ inline-bash directive inside
@@ -372,7 +408,7 @@ func implement(c Context) string {
 		worktreeState = freshWorktreeInstr(c.Slug, c.BranchPrefix)
 	}
 	return join(
-		renderBody(c),
+		body(c),
 		worktreeState,
 		ticketContext(c.Ticket),
 		sentrySection(c.Sentry),
@@ -607,7 +643,7 @@ func retroContractSteer(kind string) string {
 // bash-quirk steer, plus the dynamic already-filed dedup context (BEH-539).
 func retrospective(c Context) string {
 	return join(
-		renderBody(c),
+		body(c),
 		transcriptsSection(c.LogDir, c.Transcripts),
 		retroFindingsProtocol,
 		retroAudienceContract,
@@ -703,7 +739,7 @@ func reviewContractFooter(kind, branch string) string {
 // context (the intent to review against) and the non-overridable contract footer.
 func review(c Context) string {
 	return join(
-		renderBody(c),
+		body(c),
 		ticketContext(c.Ticket),
 		sentrySection(c.Sentry),
 		branchBaseSection(c.Base),
@@ -868,7 +904,7 @@ func withFixBody(c Context, lines []string) string {
 	if strings.TrimSpace(c.Body) == "" {
 		return strings.Join(lines, "\n")
 	}
-	return join(renderBody(c), "---", strings.Join(lines, "\n"))
+	return join(body(c), "---", strings.Join(lines, "\n"))
 }
 
 // rebaseFix builds the `-p` prompt for the sandboxed conflict-resolution

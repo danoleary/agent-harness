@@ -87,8 +87,11 @@ func (r *Runner) name(label string) string {
 }
 
 // Agent launches one sandboxed claude session and returns its outcome together
-// with the names it was given.
+// with the names it was given, narrating the run's Warnings first.
 func (r *Runner) Agent(a AgentRun) Result {
+	for _, w := range a.Warnings {
+		r.log.Event("⚠ " + a.Label + ": " + w)
+	}
 	return r.attempts(a.Label, a.Retry, func(label string) Result {
 		name := r.name(label)
 		transcript := runlog.TranscriptName(label, r.runID)

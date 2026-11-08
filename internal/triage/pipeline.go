@@ -111,10 +111,12 @@ func (p Pipeline) assess(sb Sandbox, log *runlog.Logger, it Item) (Verdict, stag
 
 	cfg := p.Cfg
 	p.Loop.ApplyPrompts(&cfg.Prompts)
+	pctx := prompt.Context{Ticket: it.Ticket, Tracker: cfg.Tracker.Kind, Body: cfg.Prompts.Triage}
 	out := sb.Agent(hostio.AgentRun{
 		Label:       who,
 		Model:       cfg.ReviewModel,
-		Prompt:      prompt.For(prompt.Triage, prompt.Context{Ticket: it.Ticket, Tracker: cfg.Tracker.Kind, Body: cfg.Prompts.Triage}),
+		Prompt:      prompt.For(prompt.Triage, pctx),
+		Warnings:    prompt.BodyWarnings(pctx),
 		FindingsDir: dropbox,
 		Cap:         cfg.ReviewTimeout,
 	})

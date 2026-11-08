@@ -32,7 +32,7 @@ func triageContract(kind string) string {
 // the ticket, the verdict contract and the read-only steer.
 func triage(c Context) string {
 	return join(
-		renderBody(c),
+		body(c),
 		"Decide whether the ticket below is ready for an autonomous coding agent to start work on. You are triaging, not implementing.",
 		triageBar,
 		ticketContext(c.Ticket),

@@ -170,6 +170,7 @@ func implementationRun(cfg config.Config, s Subject, resume prompt.Resume) hosti
 		Label:       implementationSession,
 		Model:       cfg.ImplementationModel,
 		Prompt:      prompt.For(prompt.Implement, pctx),
+		Warnings:    prompt.BodyWarnings(pctx),
 		FindingsDir: runlog.FindingsDir(s.LogDir, implementationSession),
 		Cap:         tddCap(cfg, s.Ticket),
 	}
@@ -184,14 +185,16 @@ func prepRun(cfg config.Config, worktreePath string) hostio.ShellRun {
 // (retrospective owns them), so it mounts no dropbox. A non-nil redGate is the
 // re-launch over a host gate that went red on the session's own commit (#111).
 func reviewRun(cfg config.Config, s Subject, prior *prompt.PriorReview, redGate *prompt.RedGate) hostio.AgentRun {
+	pctx := prompt.Context{
+		Ticket: s.Ticket, Slug: s.Slug, BranchPrefix: cfg.BranchPrefix, Branch: s.Branch, Tracker: cfg.Tracker.Kind, WorktreePath: s.WorktreePath, Body: cfg.Prompts.Review,
+		PriorReview: prior, RedGate: redGate, Base: s.Base, Sentry: s.Sentry,
+	}
 	return hostio.AgentRun{
-		Label: reviewSession,
-		Model: cfg.ReviewModel,
-		Prompt: prompt.For(prompt.Review, prompt.Context{
-			Ticket: s.Ticket, Slug: s.Slug, BranchPrefix: cfg.BranchPrefix, Branch: s.Branch, Tracker: cfg.Tracker.Kind, WorktreePath: s.WorktreePath, Body: cfg.Prompts.Review,
-			PriorReview: prior, RedGate: redGate, Base: s.Base, Sentry: s.Sentry,
-		}),
-		Cap: cfg.ReviewTimeout,
+		Label:    reviewSession,
+		Model:    cfg.ReviewModel,
+		Prompt:   prompt.For(prompt.Review, pctx),
+		Warnings: prompt.BodyWarnings(pctx),
+		Cap:      cfg.ReviewTimeout,
 	}
 }
 
@@ -202,23 +205,32 @@ func resolutionReviewRun(cfg config.Config, s Subject, base string, r *prompt.Re
 	s.Base = base
 	run := reviewRun(cfg, s, nil, nil)
 	run.Label = reviewSession + "-resolution"
-	run.Prompt = prompt.For(prompt.Review, prompt.Context{
+	pctx := prompt.Context{
 		Ticket: s.Ticket, Slug: s.Slug, BranchPrefix: cfg.BranchPrefix, Branch: s.Branch, Tracker: cfg.Tracker.Kind, WorktreePath: s.WorktreePath, Body: cfg.Prompts.Review,
 		Base: s.Base, Resolution: r, Sentry: s.Sentry,
-	})
+	}
+	run.Prompt = prompt.For(prompt.Review, pctx)
+	run.Warnings = prompt.BodyWarnings(pctx)
 	return run
 }
 
 // retrospectiveRun is the retrospective session, handed the finding classes a
-// prior run already filed as settled context (BEH-539).
+// prior run already filed as settled context (BEH-539). A run that left no
+// transcripts gives it nothing to study, which its launch says (#219).
 func retrospectiveRun(cfg config.Config, s Subject, filed []prompt.FiledFinding) hostio.AgentRun {
+	pctx := prompt.Context{
+		Ticket: s.Ticket, Slug: s.Slug, BranchPrefix: cfg.BranchPrefix, Branch: s.Branch, Tracker: cfg.Tracker.Kind, Body: cfg.Prompts.Retro, Filed: filed, Base: s.Base,
+		LogDir: checkoutRelative(cfg.ProjectPath, s.LogDir), Transcripts: runLogs(s.LogDir),
+	}
+	warnings := prompt.BodyWarnings(pctx)
+	if len(pctx.Transcripts) == 0 {
+		warnings = append(warnings, "no transcripts under "+s.LogDir+" — the retrospective has no session to study and can find little (#219)")
+	}
 	return hostio.AgentRun{
-		Label: retrospectiveSession,
-		Model: cfg.RetrospectiveModel,
-		Prompt: prompt.For(prompt.Retrospective, prompt.Context{
-			Ticket: s.Ticket, Slug: s.Slug, BranchPrefix: cfg.BranchPrefix, Branch: s.Branch, Tracker: cfg.Tracker.Kind, Body: cfg.Prompts.Retro, Filed: filed, Base: s.Base,
-			LogDir: checkoutRelative(cfg.ProjectPath, s.LogDir), Transcripts: runLogs(s.LogDir),
-		}),
+		Label:       retrospectiveSession,
+		Model:       cfg.RetrospectiveModel,
+		Prompt:      prompt.For(prompt.Retrospective, pctx),
+		Warnings:    warnings,
 		FindingsDir: runlog.FindingsDir(s.LogDir, retrospectiveSession),
 		Cap:         cfg.RetrospectiveTimeout,
 	}
