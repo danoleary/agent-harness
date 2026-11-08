@@ -473,3 +473,19 @@ func TestCommentIsANoOpAndHasRemoteBranchIsFalse(t *testing.T) {
 		t.Error("HasRemoteBranch = true, want false")
 	}
 }
+
+// The committed-fix recovery is the only caller of Block, and this loop's Pipeline
+// recovers nothing, so Block satisfies loop.Source without labelling anything
+// (#251): it neither reads nor relabels a PR.
+func TestBlockIsANoOp(t *testing.T) {
+	f := newFixture(t, lodash(7))
+	f.gh.open = []github.PullRequest{{Number: 50, HeadBranch: "feat/sec-npm-lodash", Labels: []string{"in-progress"}}}
+
+	var src loop.Source = f.src
+	if err := src.Block("SEC-npm-lodash"); err != nil {
+		t.Fatalf("Block: %v", err)
+	}
+	if len(f.gh.removed) != 0 || len(f.gh.branchReads) != 0 {
+		t.Errorf("removed %v branch reads %v, want Block to touch no PR", f.gh.removed, f.gh.branchReads)
+	}
+}
