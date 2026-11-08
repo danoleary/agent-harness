@@ -118,7 +118,8 @@ one Work item per vulnerable package, and lands each fix as a new PR (ADR-0040).
 Each fix is cut fresh from `origin/main`, and nothing is pushed unless the
 lockfile resolves no vulnerable version, the diff touches dependency files only,
 and every Gate is green. `--dry-run` prints the packages it would work, and why
-it skips the rest.
+it skips the rest. [Fix Dependabot alerts](fix-security-alerts.md) covers what it
+needs and what it leaves alone.
 
 It fixes two ecosystems, and skips an alert in any other:
 

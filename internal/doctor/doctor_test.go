@@ -670,3 +670,93 @@ func TestSentryChecksTheTokenWhenConfigured(t *testing.T) {
 		})
 	}
 }
+
+// securityLoop declares the security-alerts loop (ADR-0040) in a project config.
+const securityLoop = `
+[[loops]]
+name = "security-alerts"
+source = { kind = "github_security_alerts" }
+steps = [
+  { use = "new_branch" },
+  { use = "fix_alerts" },
+  { use = "gates" },
+  { use = "open_pr" },
+]
+`
+
+// #205: a declared github_security_alerts loop reads the repository's Dependabot
+// alerts with GH_TOKEN, so doctor makes that one read (per_page=1) against the
+// checkout's origin and says why it fails: the token's scope or permission, or
+// alerts turned off on the repository. Without the loop there is no line.
+func TestDependabotAlertsCheckedWhenTheSecurityLoopIsDeclared(t *testing.T) {
+	const name = "Dependabot alerts"
+	for _, r := range newWorld(t).run() {
+		if r.Name == name {
+			t.Errorf("a %s line without a security loop: %+v", name, r)
+		}
+	}
+
+	forbidden := func(scopes, message string) http.HandlerFunc {
+		return func(rw http.ResponseWriter, _ *http.Request) {
+			if scopes != "" {
+				rw.Header().Set("X-OAuth-Scopes", scopes)
+			}
+			rw.WriteHeader(http.StatusForbidden)
+			_, _ = rw.Write([]byte(`{"message":"` + message + `"}`))
+		}
+	}
+	for _, tc := range []struct {
+		name    string
+		remote  string
+		route   http.HandlerFunc
+		token   string
+		offline bool
+		want    Status
+		detail  string
+		fix     string
+	}{
+		{name: "readable", route: ok, want: OK, detail: "acme/widgets"},
+		{name: "classic token without security_events",
+			route: forbidden("public_repo, workflow", "Resource not accessible by personal access token"),
+			want:  Fail, detail: "public_repo, workflow", fix: "security_events"},
+		{name: "fine-grained token without Dependabot alerts read",
+			route: forbidden("", "Resource not accessible by personal access token"),
+			want:  Fail, detail: "fine-grained", fix: "Dependabot alerts: Read"},
+		{name: "alerts disabled on the repo",
+			route: forbidden("repo, workflow", "Dependabot alerts are disabled for this repository."),
+			want:  Fail, detail: "disabled", fix: "Settings"},
+		{name: "repo not visible", route: func(rw http.ResponseWriter, _ *http.Request) { rw.WriteHeader(http.StatusNotFound) },
+			want: Fail, detail: "HTTP 404", fix: "origin"},
+		{name: "origin is not on GitHub", remote: "git@gitlab.com:acme/widgets.git", route: ok, want: Fail, detail: "gitlab.com", fix: "origin"},
+		{name: "offline", route: ok, offline: true, want: Skip, detail: "--offline"},
+		{name: "no token", route: ok, token: "-", want: Skip, detail: "GH_TOKEN"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := newWorld(t)
+			project := w.env["PROJECT_PATH"]
+			writeProject(t, project, githubConfig+securityLoop)
+			remote := "https://github.com/acme/widgets.git"
+			if tc.remote != "" {
+				remote = tc.remote
+			}
+			w.cmds["git -C "+project+" remote get-url origin"] = cmdResult{out: remote + "\n"}
+			w.routes["GET /repos/acme/widgets/dependabot/alerts"] = func(rw http.ResponseWriter, r *http.Request) {
+				if got := r.URL.Query().Get("per_page"); got != "1" {
+					t.Errorf("per_page = %q, want 1: the check needs one alert at most", got)
+				}
+				tc.route(rw, r)
+			}
+			w.offline = tc.offline
+			if tc.token == "-" {
+				delete(w.env, "GH_TOKEN")
+			}
+			r := find(t, w.run(), name)
+			if r.Status != tc.want || !strings.Contains(r.Detail, tc.detail) {
+				t.Errorf("%s = %s %q, want %s naming %q", name, r.Status, r.Detail, tc.want, tc.detail)
+			}
+			if !strings.Contains(r.Fix, tc.fix) {
+				t.Errorf("fix %q does not say %q", r.Fix, tc.fix)
+			}
+		})
+	}
+}

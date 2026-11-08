@@ -102,3 +102,27 @@ The ticket left two questions open. They are answered here:
   through the `tracker.Tracker` port because the port has no "does this exist?"
   method. Adding one to all three adapters for a diagnostic would make the port
   bigger, not smaller (ADR-0010's lowest-common-denominator rule).
+
+## Amendment, 2026-11-08: the Dependabot alerts read (#205)
+
+When `config.toml` declares a `github_security_alerts` loop (ADR-0040), `doctor`
+adds a **Dependabot alerts** line. It makes the read every poll of that loop
+makes, cut to one alert: `GET /repos/<owner>/<repo>/dependabot/alerts?state=open&per_page=1`
+with `GH_TOKEN`, on the repository `origin` names, which is the one `gh` resolves
+for the loop.
+
+- A 200 passes. A 403 fails, and GitHub's answer says which fix to print:
+  - a message that alerts are disabled: turn Dependabot alerts on in the
+    repository's settings, or `gh api -X PUT repos/<owner>/<repo>/vulnerability-alerts`;
+  - a classic token (it sent `X-OAuth-Scopes`): add the `security_events` scope,
+    which `repo` includes;
+  - a fine-grained token: grant "Dependabot alerts: Read-only".
+- A 404 fails as a repository the token cannot see. Any other status warns,
+  as an unverified check does elsewhere.
+- An `origin` that is not a GitHub remote fails, even offline, since the loop
+  has no repository to read. `--offline` otherwise skips the line, and an unset
+  `GH_TOKEN` skips it as a prerequisite.
+
+Only a declared loop gets the line. The built-in `security-alerts` loop runs
+only when it is named, so a project that never runs it is not failed for a
+token or repository setting it does not need.

@@ -53,7 +53,7 @@ TOOLS="implementation review retrospective pipeline loop watch"
 DOCS="README.md LICENSE .env.example
 	docs/README.md docs/tutorial.md docs/CONSUMER.md docs/DESIGN.md docs/troubleshooting.md
 	docs/how-to/claude-credential.md docs/how-to/declare-a-loop.md docs/how-to/fix-open-prs.md
-	docs/how-to/github-issues.md docs/how-to/jira.md docs/how-to/linear.md
+	docs/how-to/fix-security-alerts.md docs/how-to/github-issues.md docs/how-to/jira.md docs/how-to/linear.md
 	docs/how-to/prompt-bodies.md docs/how-to/run-several-instances.md docs/how-to/sandbox-image.md
 	docs/how-to/sentry.md docs/how-to/upstream-findings.md
 	docs/reference/cli.md docs/reference/config.md docs/reference/env.md

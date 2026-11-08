@@ -141,6 +141,9 @@ func Run(p Probes) []Result {
 	if r, ok := checkSentry(p, proj); ok {
 		results = append(results, r)
 	}
+	if r, ok := checkSecurityAlerts(p, proj); ok {
+		results = append(results, r)
+	}
 	return results
 }
 
