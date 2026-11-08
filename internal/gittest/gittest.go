@@ -72,8 +72,13 @@ func identify(r *Repo, dir string) {
 }
 
 // Checkout is the harness's view of the checkout: what hostio builds from a
-// Consumer's project_path and branch_prefix.
-func (r *Repo) Checkout() gitpkg.Checkout { return gitpkg.Open(r.Dir, Prefix) }
+// Consumer's project_path and branch_prefix, with one difference — a remote op is
+// tried once. The origin is a local bare repository, so a failure is never a blip
+// to retry, and a test that makes a fetch or push fail would otherwise wait out
+// the real multi-minute retry budget (#254).
+func (r *Repo) Checkout() gitpkg.Checkout {
+	return gitpkg.Open(r.Dir, Prefix).WithoutRemoteRetry()
+}
 
 // Worktree names slug's worktree. Like [gitpkg.Checkout.Worktree] it creates
 // nothing.

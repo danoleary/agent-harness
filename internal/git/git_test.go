@@ -1687,6 +1687,29 @@ func TestPushGivesUpNearBudgetAfterPersistentFailure(t *testing.T) {
 	}
 }
 
+// #254: a Checkout without remote retry tries a failing push and fetch once and
+// returns the error at once — no backoff, no budget — so a test over a local
+// origin can make a remote op fail without waiting out the real budget.
+func TestWithoutRemoteRetryTriesARemoteOpOnce(t *testing.T) {
+	clock := newFakeClock()
+	boom := errors.New("exit status 128")
+	run, calls := scriptedRunner(1<<30, boom) // always fails
+	wt := fakeCheckout(runners{run: run, sleep: clock.sleep, now: clock.now}).WithoutRemoteRetry().Worktree("gh-254")
+
+	if err := wt.Push(); !errors.Is(err, boom) {
+		t.Fatalf("Push: expected %v, got %v", boom, err)
+	}
+	if err := wt.CheckoutRemote(); !errors.Is(err, boom) {
+		t.Fatalf("CheckoutRemote: expected %v, got %v", boom, err)
+	}
+	if len(*calls) != 2 {
+		t.Fatalf("expected one attempt per op, got %d: %v", len(*calls), *calls)
+	}
+	if clock.elapsed() != 0 {
+		t.Fatalf("a single attempt sleeps not at all, slept %v", clock.elapsed())
+	}
+}
+
 // BEH-475: a 401/403 is a permanent auth failure — the token is wrong, expired,
 // or lacks the repo grant, so every retry fails identically. Retrying it burns the
 // whole 5-min budget as dead time that, worse, looks like a hang. It must fail after

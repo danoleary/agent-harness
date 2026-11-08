@@ -104,3 +104,11 @@ type Repo interface {
   `checkpoint PROJ-9 tdd`, `abort-rebase`) now read git: the branch is on
   origin/main, HEAD's subject is the checkpoint message, the tip did not move. The
   call log still records the sandbox and the remote.
+- A gittest checkout tries each remote op once (#254). Its origin is a local bare
+  repository, which has no transient failures, but `withRetry`'s budget, backoff
+  and clock are unexported in `internal/git`, so a test that made a fetch fail —
+  a PR head branch gone from origin — waited out the real five-minute budget.
+  `Repo.Checkout` now opens the checkout with `git.Checkout.WithoutRemoteRetry`,
+  and a failed fetch or push returns as fast as git does. The retry itself stays
+  covered in `internal/git` over the fake clock. This also removes the cost the
+  pre-receive-hook alternative above was rejected for.
