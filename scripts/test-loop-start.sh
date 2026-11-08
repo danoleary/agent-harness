@@ -853,8 +853,10 @@ fi
 echo -n "loop-start.sh runs an explicit LOOP_BIN without the staleness check ... "
 EXPLICIT_PROJ="$TEST_DIR/consumer-explicit"
 mkdir -p "$EXPLICIT_PROJ"
-touch -t 202609301200 "$FAKE_BIN"
-( cd "$TEST_DIR" && LOOP_BIN="$FAKE_BIN" PROJECT_PATH="$EXPLICIT_PROJ" "$STALE_HARNESS/scripts/loop-start.sh" > /dev/null 2>&1 )
+# The checkout's own bin/loop, stale again, named explicitly: only the explicit
+# choice exempts it, since the path alone is the one the search would refuse.
+touch -t 202609301200 "$STALE_HARNESS/bin/loop"
+( cd "$TEST_DIR" && LOOP_BIN="$STALE_HARNESS/bin/loop" PROJECT_PATH="$EXPLICIT_PROJ" "$STALE_HARNESS/scripts/loop-start.sh" > /dev/null 2>&1 )
 explicit_pid="$(cat "$EXPLICIT_PROJ/.agent-harness/loop.pid" 2>/dev/null || true)"
 STARTED_PIDS="$STARTED_PIDS $explicit_pid"
 if [ -z "$explicit_pid" ] || ! kill -0 "$explicit_pid" 2>/dev/null; then
