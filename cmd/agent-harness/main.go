@@ -316,11 +316,17 @@ func loopsHelp() string {
 		fmt.Fprintf(&b, "  %-*s  steps: %s\n", width, "", strings.Join(uses, " → "))
 	}
 	fmt.Fprintf(&b, `
-More loops are declared as [[loops]] in .agent-harness/config.toml. A source kind
-of %q fixes open Dependabot alerts, one PR per vulnerable package
-(steps: new_branch → fix_alerts → gates → open_pr → watch_ci → retro). It is not
-runnable yet: --dry-run shows the packages it would fix, and a real run is refused.
-An entry named like a built-in loop replaces it.
+More loops are declared as [[loops]] in .agent-harness/config.toml. An entry
+named like a built-in loop replaces it.
+
+A security-alerts loop (source kind %q) fixes the repository's
+open Dependabot alerts, one new PR per vulnerable package:
+  steps: new_branch → fix_alerts → gates → open_pr → watch_ci → retro
+Each fix is cut fresh from origin/main, and nothing is pushed unless the lockfile
+no longer resolves a vulnerable version, the diff touches only dependency files,
+and every gate is green. A red CI check on its PR is left to pr-doctor. Only npm
+packages locked by pnpm-lock.yaml are fixed for now; --dry-run lists the packages
+it would work and why it skips the rest.
 
   agent-harness loop --list             every loop this project can run
   agent-harness loop <name> --dry-run   what that loop would work, changing nothing

@@ -373,4 +373,9 @@ func TestUsageDescribesEveryLoop(t *testing.T) {
 			t.Errorf("usage does not mention %q:\n%s", want, got)
 		}
 	}
+	// The security-alerts loop runs for real since #203; help must not send an
+	// operator away from it.
+	if strings.Contains(got, "not runnable") {
+		t.Errorf("usage still says a loop is not runnable:\n%s", got)
+	}
 }
