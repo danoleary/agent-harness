@@ -197,3 +197,17 @@ func TestFixPromptsLeadWithALoopsFixBody(t *testing.T) {
 		}
 	}
 }
+
+// #288: a conflict-resolution session that ran the project's full gate before it
+// stopped paid that gate twice in a row, because the harness re-gates the same HEAD
+// host-side as soon as the session exits. Both variants must say to check only the
+// touched packages and leave the full gate to the host.
+func TestRebaseFixLeavesTheFullGateToTheHost(t *testing.T) {
+	const want = "After resolving, compile and run the tests of the packages you touched, and stop there. Do NOT run the project's full gate command: the harness runs it host-side on the resulting HEAD right after you stop and blocks the push if it is red, so running it here only pays the same gate twice."
+	for _, merge := range []bool{false, true} {
+		p := For(RebaseFix, Context{Ticket: sample, Slug: "beh-362", BranchPrefix: "feat", WorktreePath: sampleWorktree, Merge: merge})
+		if !strings.Contains(p, want) {
+			t.Errorf("merge=%v: prompt must leave the full gate to the host; missing:\n%s", merge, want)
+		}
+	}
+}
