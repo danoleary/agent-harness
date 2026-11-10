@@ -797,3 +797,18 @@ func TestWatchFailsSoftWhenGitHubStaysUnreachable(t *testing.T) {
 		t.Fatalf("reason %q should carry the last network error", out.Reason)
 	}
 }
+
+func TestWatchFailsSoftWhenGhReportsTheHostOffline(t *testing.T) {
+	// #266: the host lost its network right after a push, and every `gh pr checks`
+	// poll printed gh's own offline message. That is CI unreachable, not CI red.
+	d := newGhPollDriver(func() ([]byte, []byte, error) {
+		return nil, []byte(ghOfflineStderr), errors.New("exit status 1")
+	})
+	out := WatchAndFix(d, testWatchCfg(), newFakeClock().now)
+	if !out.OK || !strings.HasPrefix(out.Reason, "CI watch unavailable: network errors reaching GitHub") {
+		t.Fatalf("outcome = %+v, want OK with \"CI watch unavailable: network errors …\"", out)
+	}
+	if d.reruns != 0 || d.fixes != 0 {
+		t.Fatalf("an offline host must not trigger rerun/fix; got rerun=%d fix=%d", d.reruns, d.fixes)
+	}
+}

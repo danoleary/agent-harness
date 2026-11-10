@@ -253,6 +253,10 @@ func TestTruncateLogsNoticeUsesMarkerConstants(t *testing.T) {
 	}
 }
 
+// ghOfflineStderr is what gh prints when the host has no network at all (#266): its
+// own wording, with none of Go's transport errors (dial tcp, no such host, …) in it.
+const ghOfflineStderr = "error connecting to api.github.com\ncheck your internet connection or https://githubstatus.com"
+
 func TestInterpretChecksOutputFlagsNetworkFailuresAsTransient(t *testing.T) {
 	// A `gh pr checks` poll that failed at the transport layer never reached GitHub,
 	// so it says nothing about CI. It must surface as errPollTransient so the poll
@@ -270,6 +274,7 @@ func TestInterpretChecksOutputFlagsNetworkFailuresAsTransient(t *testing.T) {
 		"http 502":              {`HTTP 502: Bad Gateway (https://api.github.com/graphql)`, errors.New("exit status 1")},
 		"http 503":              {`HTTP 503: Service Unavailable (https://api.github.com/graphql)`, errors.New("exit status 1")},
 		"http 504":              {`HTTP 504: Gateway Timeout (https://api.github.com/graphql)`, errors.New("exit status 1")},
+		"gh offline (#266)":     {ghOfflineStderr, errors.New("exit status 1")},
 		"gh call hung":          {"", fmt.Errorf(`"gh" did not respond within 1m0s: %w`, proc.ErrTimeout)},
 	}
 	for name, tc := range cases {

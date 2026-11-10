@@ -33,9 +33,9 @@ var errChecksUnobservable = errors.New("CI checks not observable with this token
 var errChecksUnauthenticated = errors.New("CI checks not readable: gh not authenticated (HTTP 401 / bad credentials) — PR was pushed, check CI manually")
 
 // errPollTransient marks a `gh pr checks` call that failed at the transport layer:
-// a TCP dial or read timed out, the connection was reset, DNS failed, or GitHub's
-// edge answered 502/503/504. The poll never reached CI, so it says nothing about
-// whether a check failed. The poller retries it, and only a run of them in a row
+// a TCP dial or read timed out, the connection was reset, DNS failed, gh found the
+// host offline, or GitHub's edge answered 502/503/504. The poll never reached CI,
+// so it says nothing about whether a check failed. The poller retries it, and only a run of them in a row
 // ends the watch, failing soft to "CI watch unavailable" (#194).
 var errPollTransient = errors.New("CI checks poll could not reach GitHub (network error)")
 
@@ -51,6 +51,10 @@ var transientSignatures = []string{
 	"http 502",
 	"http 503",
 	"http 504",
+	// gh's own wording when the host has no network at all, which carries none of
+	// Go's transport errors above (#266).
+	"error connecting to",
+	"check your internet connection",
 }
 
 // isTransientErr reports whether a failed gh call never got an answer from GitHub:
@@ -360,8 +364,8 @@ func interpretChecksOutput(stdout, stderr []byte, runErr error) ([]Check, error)
 		if isUnauthenticatedErr(s) {
 			return nil, errChecksUnauthenticated
 		}
-		// A transport-level failure (dial/read timeout, reset, DNS, a 502/503/504
-		// from GitHub's edge) never reached CI — the poller retries it (#194).
+		// A transport-level failure (dial/read timeout, reset, DNS, gh offline, a
+		// 502/503/504 from GitHub's edge) never reached CI — the poller retries it (#194).
 		if isTransientErr(s, runErr) {
 			if s != "" {
 				return nil, fmt.Errorf("%w: %s", errPollTransient, s)

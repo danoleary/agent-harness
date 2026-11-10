@@ -159,6 +159,23 @@ func TestFixMergesIntoAHumanBranchAndPushesWithoutForce(t *testing.T) {
 	}
 }
 
+// #266: the resolved conflict passed the gates and was pushed, then the CI watch
+// could not read CI and ended not OK. The branch on origin is the resolution, so
+// the run shipped: it is not a failed attempt against the PR's budget.
+func TestFixShipsAPushedConflictResolutionWhoseCIWatchFails(t *testing.T) {
+	h, it, _ := prHost(t, harnessItem(Conflict))
+	h.CI = ci.Outcome{Reason: "polling CI failed: gh pr checks failed: exit status 1: error connecting to api.github.com"}
+
+	res := Fix(h, pipelineCfg(), pipelineLog(t), it, prDoctor())
+
+	if !strings.Contains(calls(h), "push-force|watch-ci|") {
+		t.Fatalf("the resolution must be pushed before the watch; calls = %v", h.Calls)
+	}
+	if res.Disposition != stages.Shipped {
+		t.Fatalf("a pushed resolution ships whatever the CI watch says, got %+v", res)
+	}
+}
+
 // Red CI: the watch re-runs the failed checks, then hands the failing logs to a
 // CIFix session; the harness re-runs the gates over the committed fix before the
 // watch may push it.
