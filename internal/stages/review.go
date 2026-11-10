@@ -635,13 +635,17 @@ func resolveRebaseConflict(fixes fix.Env, target fix.Target, comment func(string
 	})
 	branch := fixes.Host.Worktree().Branch()
 	switch {
-	case res.OK, res.SpendingCapAbort:
+	case res.OK:
+	case res.SpendingCapAbort:
+		fixes.Log.Event("review — keeping worktree for the retry after reset")
 	case res.Resolved:
+		fixes.Log.Event("review — keeping worktree, nothing pushed")
 		comment(fmt.Sprintf(
 			"The %s conflict was auto-resolved on `%s`, but the post-rebase gate re-run failed (exit %d). The rebased branch is waiting in a worktree for a look. (BEH-581)",
 			trigger, branch, res.Gate.Outcome.ExitCode,
 		))
 	default:
+		fixes.Log.Event("review — keeping worktree, nothing pushed")
 		comment(fmt.Sprintf(
 			"Auto-rebase onto `main` (%s) could not be completed for `%s`: %s This branch passed cold review and the harness gate, but it now needs a manual rebase onto `main`. It is waiting in a worktree. (BEH-581)",
 			trigger, branch, res.Reason,

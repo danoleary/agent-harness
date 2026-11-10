@@ -95,7 +95,9 @@ func (Pipeline) Recover(loop.WorkItem) (stages.Result, bool) { return stages.Res
 //  2. fix, gates, push_existing: a conflict runs the RebaseFix session (rebase on a
 //     harness branch, merge on a human's), checked by verify.RebaseResolution and
 //     then every gate, and pushes to the existing branch — force-with-lease after a
-//     rebase, plain after a merge;
+//     rebase, plain after a merge. A resolution the gates hold back is saved, and
+//     the next run at the same head, on the same origin/main, re-gates and pushes
+//     it with no session (#252);
 //  3. watch_ci: watch CI to a verdict, and a red check gets a CIFix session over
 //     the failing logs whose committed fix must pass every gate before the watch
 //     may push it. A loop without it stops at the push, and works no red CI
@@ -213,17 +215,8 @@ type run struct {
 // repair fixes what is wrong with the PR and watches CI to a verdict.
 func (r *run) repair() stages.Result {
 	if r.it.Kind == Conflict {
-		r.sessions = true
-		res := r.fixes.ResolveConflict(fix.Conflict{
-			Target:   r.target,
-			Strategy: r.it.Strategy(),
-			Regate:   func() fix.GateResult { return r.fixes.Gates("gate") },
-		})
-		if !res.OK {
-			if res.SpendingCapAbort {
-				return stages.Result{Disposition: stages.CapAborted}
-			}
-			return stages.Result{}
+		if out, ok := r.resolve(); !ok {
+			return out
 		}
 		push := r.h.PushForceWithLease
 		if r.it.Strategy() == fix.Merge {
@@ -234,6 +227,7 @@ func (r *run) repair() stages.Result {
 			return stages.Result{}
 		}
 		r.pushed = true
+		r.h.Worktree().DropResolutions()
 		r.log.Event(fmt.Sprintf("%s ✓ pushed the resolved %s (%s)", who, r.it.PR.HeadBranch, r.it.Strategy()))
 	}
 	if !r.watchCI {
@@ -243,6 +237,50 @@ func (r *run) repair() stages.Result {
 		return stages.Result{}
 	}
 	return r.watch()
+}
+
+// resolve brings the conflicting branch onto origin/main and reports whether it is
+// clear to push; when it is not, out is the run's result. A resolution an earlier
+// run at this head committed, whose push its red re-gate held back, is re-gated
+// and pushed as it stands, with no session, while origin/main is still its base
+// (#252). Otherwise a RebaseFix session resolves the conflict, and a resolution
+// the ground truth accepts but the gates hold back is saved for the next run: the
+// worktree is removed and the next checkout resets the branch to origin's tip.
+func (r *run) resolve() (out stages.Result, ok bool) {
+	wt := r.h.Worktree()
+	head := r.it.PR.HeadSHA
+	if tip, saved := wt.SavedResolution(head); saved && r.target.Checkpoint == nil {
+		r.log.Event(fmt.Sprintf("%s ↺ resuming the conflict resolution %s an earlier run committed over %s on %s — re-gating it instead of launching a conflict-resolution session (#252)", who, short(tip), short(head), git.BaseRef))
+		if err := wt.ResumeResolution(tip); err != nil {
+			r.log.Event(fmt.Sprintf("%s ✗ could not move %s to the saved resolution %s: %v — nothing pushed", who, r.it.PR.HeadBranch, short(tip), err))
+			return stages.Result{}, false
+		}
+		if gate := r.fixes.Gates("gate"); !gate.Green() || !wt.Clean() {
+			r.log.Event(fmt.Sprintf("%s ✗ gate re-run over the saved resolution failed (exit %d) — nothing pushed; the resolution stays saved for the next run at this head (#252)", who, gate.Outcome.ExitCode))
+			return stages.Result{}, false
+		}
+		r.log.Event(who + " ✓ gate re-run over the saved resolution is green — clear to push")
+		return stages.Result{}, true
+	}
+	r.sessions = true
+	res := r.fixes.ResolveConflict(fix.Conflict{
+		Target:   r.target,
+		Strategy: r.it.Strategy(),
+		Regate:   func() fix.GateResult { return r.fixes.Gates("gate") },
+	})
+	switch {
+	case res.OK:
+		return stages.Result{}, true
+	case res.SpendingCapAbort:
+		return stages.Result{Disposition: stages.CapAborted}, false
+	case res.Resolved:
+		if tip, err := wt.SaveResolution(head); err != nil {
+			r.log.Event(fmt.Sprintf("%s … warning: could not save the committed resolution of %s: %v — the next run resolves it again", who, short(head), err))
+		} else {
+			r.log.Event(fmt.Sprintf("%s ⚑ saved the committed resolution %s of %s as a local ref, not pushed — the next run at this head re-gates it instead of resolving again (#252)", who, short(tip), short(head)))
+		}
+	}
+	return stages.Result{}, false
 }
 
 // watch watches CI to a terminal verdict. A red check gets the gated CI fix: a

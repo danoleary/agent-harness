@@ -423,6 +423,34 @@ The security-alerts loop does not change: its checkout cuts a fresh branch and
 deliberately drops a failed attempt's commits (ADR-0040), so it still keeps a
 dirty worktree for a look.
 
+## Amendment, 2026-11-10: a committed conflict resolution survives a red re-gate (#252)
+
+A conflict-resolution session rebased and committed a branch cleanly, and the
+re-gate over it went red for a reason outside the branch. The run logged
+`keeping worktree, nothing pushed`, but the cleanup removed the clean worktree,
+and the next run's checkout reset the branch to origin's tip (`worktree add -B`).
+Only the reflog still had the resolution. The next run saw the same conflict at
+the same head, and a second session redid it, taking twice as long.
+
+- **A resolution the gates hold back is saved.** When the ground truth accepts a
+  resolution and the re-gate refuses it, the run saves the tip as
+  `refs/harness/resolved/<slug>/<head>`, keyed on the PR head it resolved: a
+  rebase leaves no trace of that head in the commits. It pushes nothing. One
+  slug keeps one saved resolution.
+- **The next run at that head re-gates it instead of opening a session**, while
+  origin/main as just fetched is still an ancestor of the tip (and not the tip
+  itself). The run moves the fresh worktree onto the tip, runs every gate, and
+  pushes as the strategy says: force-with-lease after a rebase, plain after a
+  merge. A red gate keeps it saved and pushes nothing. No session ran, so no
+  retrospective runs.
+- **A stale resolution is dropped.** Once origin/main moves past its base it
+  resolves a conflict the PR no longer has, so the run drops it and launches
+  RebaseFix as before. A pushed resolution is dropped too. A run that resumed a
+  recovery checkpoint (#246) resolves afresh from it.
+- **The log says what happens to the worktree.** `fix.Env.ResolveConflict` no
+  longer claims the worktree is kept; its caller says so (the review stage keeps
+  it), and the PR loop's cleanup narrates removing a clean worktree.
+
 ## Amendment, 2026-11-10: a CI fix is gated merged with origin/main too (#259)
 
 The CI watch gated a CIFix commit on the branch HEAD alone. The red check it
