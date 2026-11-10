@@ -75,6 +75,13 @@ prompt around this skill tells you the ticket, the worktree and the branch.
 - **CI runs `make check` itself, never its sub-targets one by one** — `check-ci`
   (`scripts/check-ci-runs-check.sh`); wire a new guard into `check:` only, and
   add a line for it to this list (`internal/docs` fails the gate otherwise).
+- **Every flag the sandbox launcher passes to `claude` must be one the pinned
+  CLI declares** (Dockerfile.base `CLAUDE_VERSION`). The check is
+  `internal/sandbox/cli_flags_test.go`, which skips where `claude` isn't on PATH,
+  so only the sandbox runs it (#261). When you change the Claude CLI argv or
+  settings, look the flag up in `claude --help` in the sandbox first. For
+  inline `--settings` JSON, run `claude --settings '<json>' --help`: it exits 1
+  on a value it can't parse.
 - A changed `scripts/<name>.sh` that has a sibling `scripts/test-<name>.sh` must
   change that test too (CI checks this), and `check-scripts` runs every
   `scripts/test-*.sh`.

@@ -25,7 +25,10 @@ implementation transcript. Write one line: what should now be true.
    change, and if no test replays it, add one.
 2. **Correctness** — error paths, nil/empty inputs, context cancellation,
    goroutine and file-handle leaks, off-by-ones, exit codes (see DESIGN.md
-   §Exit-code contract).
+   §Exit-code contract). If the diff touches the Claude CLI argv or settings,
+   look each flag up in `claude --help` in the sandbox, and for inline
+   `--settings` JSON, run `claude --settings '<json>' --help` to confirm it
+   parses (it exits 1 if not). An argv-shape test proves neither (#261).
 3. **Invariants** — the sandbox never reaches a remote and never sees
    GH_TOKEN or a tracker credential (ADR-0002); the prompt envelope stays
    non-overridable (ADR-0009); harness findings are sanitized (ADR-0011).
