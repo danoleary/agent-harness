@@ -1,4 +1,4 @@
-# ADR-0046: An overlap mention must name a file in particular, and a held queue says so
+# ADR-0047: An overlap mention must name a file in particular, and a held queue says so
 
 - Status: Accepted
 - Date: 2026-11-10

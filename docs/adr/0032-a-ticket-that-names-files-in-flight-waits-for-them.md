@@ -3,7 +3,7 @@
 - Status: Accepted
 - Date: 2026-10-25
 - Extends: ADR-0003, ADR-0023
-- Amended by: ADR-0046 (a directory, a generic or dot-prefixed name, and a fenced code block name no file; a held queue is narrated as held)
+- Amended by: ADR-0047 (a directory, a generic or dot-prefixed name, and a fenced code block name no file; a held queue is narrated as held)
 
 ## Context
 

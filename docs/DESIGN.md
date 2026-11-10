@@ -949,7 +949,7 @@ A ticket is eligible iff **all** hold:
   its title and body (`overlap.Predict`). A directory, a generic or dot-prefixed
   bare name (`index.ts`, `config`, `.figma.tsx`) and anything in a fenced code
   block name no file
-  ([ADR-0046](https://github.com/danoleary/agent-harness/blob/main/docs/adr/0046-an-overlap-mention-must-name-a-file-in-particular.md)). If one piece of work shares
+  ([ADR-0047](https://github.com/danoleary/agent-harness/blob/main/docs/adr/0047-an-overlap-mention-must-name-a-file-in-particular.md)). If one piece of work shares
   `OVERLAP_THRESHOLD` (default 1) of those files, the ticket is passed over for this
   poll (logging `#97 deferred: overlaps PR #81 on <files>`) and the next ready
   ticket is selected. It is re-checked every poll, so it dispatches on the first
