@@ -648,7 +648,7 @@ func retrospective(c Context) string {
 		retroFindingsProtocol,
 		retroAudienceContract,
 		retroADRNumberRule,
-		branchBaseSection(c.Base),
+		branchBaseSection(c.Base, c.WorktreePath, c.branch()),
 		retroContractSteer(c.Tracker),
 		alreadyFiledSection(c.Filed),
 		bashQuirkSteer,
@@ -685,13 +685,34 @@ func transcriptsSection(logDir string, transcripts []string) string {
 // work out on its own that the foreign work is not the branch's. Naming the exact
 // base removes the question; an unresolved base falls back to origin/main, whose
 // three-dot diff finds the same fork point.
-func branchBaseSection(base string) string {
+//
+// The session's cwd is the primary checkout, not the worktree, and that checkout
+// can sit on an unrelated branch that also descends from the base, so a bare
+// `<base>..HEAD` there quietly shows a different change (#220). The range runs in
+// the worktree with `git -C`, and a line names the worktree and its real branch,
+// so neither depends on a Consumer body that may not name them or may go out raw.
+// An unknown worktree (a test, a plan) keeps the bare range.
+func branchBaseSection(base, worktree, branch string) string {
 	if base == "" {
 		base = "origin/main"
 	}
-	return "The branch's change is exactly `git log " + base + "..HEAD` and `git diff " + base + "...HEAD`" +
+	git, where := "git ", ""
+	if worktree != "" {
+		git = "git -C " + shellWord(worktree) + " "
+		where = "This run's worktree is `" + worktree + "` on branch `" + branch + "`; your cwd may be the primary checkout, which can be on another branch, so read the branch's change in the worktree, never with a bare `git` in the cwd. "
+	}
+	return where + "The branch's change is exactly `" + git + "log " + base + "..HEAD` and `" + git + "diff " + base + "...HEAD`" +
 		" — `" + base + "` is the commit the harness cut the branch from or last rebased it onto. Scope the change with that range only." +
 		" Do NOT diff against local `main`: the harness never updates it, so it may be stale and `main...HEAD` would also show commits from other, already-merged tickets."
+}
+
+// shellWord single-quotes s for a shell command line when it carries a character
+// the shell would split or expand; a plain path goes out as it is.
+func shellWord(s string) string {
+	if !strings.ContainsAny(s, " \t\n'\"\\$`*?[]{}()<>|&;~#!") {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // alreadyFiledSection renders the dedup context (BEH-539): the open finding
@@ -742,7 +763,7 @@ func review(c Context) string {
 		body(c),
 		ticketContext(c.Ticket),
 		sentrySection(c.Sentry),
-		branchBaseSection(c.Base),
+		branchBaseSection(c.Base, c.WorktreePath, c.branch()),
 		priorReviewSection(c.PriorReview),
 		redGateSection(c.RedGate),
 		resolutionSection(c.Resolution),

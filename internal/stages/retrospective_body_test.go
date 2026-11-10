@@ -255,3 +255,43 @@ func TestRetrospectiveOverAPRLoopRunListsTheLoopsOwnTranscripts(t *testing.T) {
 		t.Error("the findings dir is not a transcript")
 	}
 }
+
+// #220, replayed: a PR loop's retrospective whose body went out raw (it named a
+// field this binary did not know) and never named the worktree. The session ran in
+// the primary checkout, on an unrelated branch that also descended from the base,
+// and the envelope's bare range showed it a different commit. The envelope now
+// runs the range in the run's own worktree and names that worktree's branch.
+func TestRetrospectiveRunsTheBranchRangeInTheRunsWorktree(t *testing.T) {
+	h := shipped(t, "PR-178")
+	cfg := stageCfg()
+	cfg.ProjectPath = t.TempDir()
+	wt := filepath.Join(cfg.ProjectPath, ".claude", "worktrees", "pr-178")
+	logDir := filepath.Join(cfg.ProjectPath, ".agent-harness", "logs", "loops", "pr-fix", "PR-178")
+	var prompt string
+	h.AgentFn = func(i int, run hostio.AgentRun) session.Outcome {
+		prompt = run.Prompt
+		return writesDropbox("[]")(i, run)
+	}
+	cfg.Prompts.Retro = "/retrospective {{.Identifier}} {{.NotAField}}"
+	log, err := runlog.New(filepath.Dir(logDir), "PR-178")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	res := RetrospectiveOver(h, cfg, log, Subject{
+		Ticket: ticket.Ticket{Identifier: "PR-178"}, Slug: "pr-178", WorktreePath: wt, Branch: "fix/login-redirect", LogDir: logDir,
+	}, false)
+
+	if !res.OK {
+		t.Fatalf("res = %+v", res)
+	}
+	for _, want := range []string{
+		"`git -C " + wt + " log ",
+		"`git -C " + wt + " diff ",
+		"`" + wt + "` on branch `fix/login-redirect`",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}

@@ -159,3 +159,19 @@ transcripts** (#185). The stage runner fills both in, because it knows where the
 run logged. A body can interpolate the dir as `{{.LogDir}}`. The list sits in the
 envelope, not the body, so a body that names a different layout cannot keep the
 session from the real files.
+
+## Amendment, 2026-11-10: the branch range runs in the worktree
+
+The branch-base amendment above named the range as a bare `git log <base>..HEAD`.
+A review or retrospective session starts in the primary checkout, not the feature
+worktree. Only the Consumer body named the worktree, as `{{.WorktreePath}}`. When
+a body did not name it, or went out raw, the session ran the range in the primary
+checkout. That checkout can sit on an unrelated branch that also descends from the
+base, so the range showed a different commit and nothing errored.
+
+**The review and retrospective envelopes now run the range in the worktree, as
+`git -C <worktree> log <base>..HEAD` / `git -C <worktree> diff <base>...HEAD`.
+They also carry a line that names the worktree and the branch it is really on**
+(#220). The stage runner now hands the retrospective the worktree path, as it
+already did for review. Both facts sit in the envelope because only the host knows
+them for certain, and a body may not name them or may not render.
