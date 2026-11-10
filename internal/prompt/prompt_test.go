@@ -1087,14 +1087,14 @@ func TestRetrospectiveLeavesANewADRsNumberToTheImplementer(t *testing.T) {
 // real retro body plus one placeholder no binary has.
 func TestBodyWithAnUnknownFieldStillRendersTheKnownOnes(t *testing.T) {
 	c := Context{
-		Ticket: sample, Slug: "beh-362", BranchPrefix: testPrefix,
+		Ticket: sample, Slug: "beh-362", BranchPrefix: testPrefix, WorktreePath: sampleWorktree,
 		Body:   exampleBody(t, "retro") + "\nStudy {{.RunName}} for {{.Identifier}}.",
 		LogDir: ".agent-harness/logs/BEH-362",
 	}
 	p := For(Retrospective, c)
 	for _, want := range []string{
 		"/retrospective for BEH-362.",
-		"`.claude/worktrees/beh-362` on branch `feat/beh-362`",
+		"`" + sampleWorktree + "` on branch `feat/beh-362`",
 		"under `.agent-harness/logs/BEH-362/`",
 		"Study  for BEH-362.",
 	} {

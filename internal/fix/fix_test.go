@@ -130,3 +130,21 @@ func TestTheCIFixSessionStartsWithoutMCPServers(t *testing.T) {
 		t.Error("the CI-fix session must start with no MCP servers")
 	}
 }
+
+// #245: a fix session starts in the worktree it fixes, so the skills and settings
+// it loads are the branch's, not whatever the host checkout has checked out.
+func TestFixSessionsStartInTheWorktree(t *testing.T) {
+	e, _ := conflictEnv(t, func(*gittest.Repo, *hostio.Fake) {})
+	_ = e.CI(Target{})("FAIL src/Swatch.stories.tsx", true)
+	_ = e.ResolveConflict(Conflict{Regate: func() GateResult { return GateResult{} }})
+
+	h := e.Host.(*hostio.Fake)
+	if len(h.Agents) != 2 {
+		t.Fatalf("want a CI-fix and a conflict-resolution session, got %d", len(h.Agents))
+	}
+	for _, run := range h.Agents {
+		if want := h.Worktree().Path(); run.WorkDir != want {
+			t.Errorf("%s session starts in %q, want the worktree %q", run.Label, run.WorkDir, want)
+		}
+	}
+}

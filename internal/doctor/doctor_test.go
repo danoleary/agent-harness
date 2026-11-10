@@ -51,6 +51,7 @@ func newWorld(t *testing.T) *world {
 			"git --version":                       {out: "git version 2.47.1\n"},
 			"gh --version":                        {out: "gh version 2.60.0 (2024-10-30)\n"},
 			"docker image inspect example:latest": {out: "[{}]"},
+			skillDriftCmd(project):                {},
 		},
 		routes: map[string]http.HandlerFunc{},
 	}
@@ -194,6 +195,45 @@ func TestReportsEveryProblemAtOnceEachWithAFix(t *testing.T) {
 	}
 	if !Failed(results) {
 		t.Error("Failed() = false with failing checks; doctor must exit non-zero")
+	}
+}
+
+// skillDriftCmd is the read doctor makes of the host checkout's `.claude/` tree.
+func skillDriftCmd(project string) string {
+	return "git -C " + project + " diff --name-only origin/main -- .claude/"
+}
+
+// #245: a session that starts in the host checkout loads its skills and settings
+// as the checkout has them, and the harness never updates the checkout. Doctor
+// names the skills that differ from main, so a stale /tdd is visible before a
+// run rather than blamed on the agent after one.
+func TestSessionSkills(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		res  cmdResult
+		want Status
+		says []string
+	}{
+		{"matches main", cmdResult{}, OK, []string{"origin/main"}},
+		{"behind main", cmdResult{out: ".claude/skills/review-worktree/SKILL.md\n.claude/skills/tdd/SKILL.md\n"}, Warn, []string{".claude/skills/tdd/SKILL.md", ".claude/skills/review-worktree/SKILL.md", "triage"}},
+		{"no origin/main", cmdResult{out: "fatal: bad revision 'origin/main'", err: errors.New("exit status 128")}, Skip, []string{"bad revision"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := newWorld(t)
+			w.cmds[skillDriftCmd(w.env["PROJECT_PATH"])] = tc.res
+			got := find(t, w.run(), "session skills")
+			if got.Status != tc.want {
+				t.Errorf("status %s (%q), want %s", got.Status, got.Detail, tc.want)
+			}
+			for _, want := range tc.says {
+				if !strings.Contains(got.Detail, want) {
+					t.Errorf("detail %q does not name %q", got.Detail, want)
+				}
+			}
+			if tc.want == Warn && got.Fix == "" {
+				t.Error("a drift warning has no fix")
+			}
+		})
 	}
 }
 

@@ -56,6 +56,11 @@ credential but Anthropic's.** Concretely:
   removal runs host-side. The path is still fixed per machine, preserving the
   cross-container invariant the worktree contract depends on.
 
+  > **Amended by [ADR-0046](0046-a-tickets-session-starts-in-its-worktree.md).**
+  > The mount is unchanged, but a session over a worktree now starts in it
+  > (`-w <worktree>`), so the skills and settings it loads are the branch's, not
+  > the host checkout's (#245).
+
 Combined with ADR-0001 (Linear), the rule is now uniform: **the harness owns all
 remote I/O — Linear and git — and the sandbox holds only the Claude credential.**
 

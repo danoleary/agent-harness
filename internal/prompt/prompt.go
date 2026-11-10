@@ -105,9 +105,9 @@ type Context struct {
 	// envelopes scope the diff to it (#86); empty falls back to origin/main.
 	Base string
 
-	// LogDir is the run's log dir as the session reads it, relative to the checkout
-	// (`.agent-harness/logs/<Identifier>` for a ticket, the loop's own dir for a PR
-	// loop's run). Transcripts names the files the run left there, which the
+	// LogDir is the run's log dir, absolute (`<checkout>/.agent-harness/logs/<Identifier>`
+	// for a ticket, the loop's own dir for a PR loop's run): the session starts in
+	// the worktree, not in the checkout a relative path would resolve from (#245). Transcripts names the files the run left there, which the
 	// Retrospective envelope lists so a Consumer body cannot point it elsewhere (#185).
 	LogDir      string
 	Transcripts []string
@@ -374,9 +374,20 @@ func branchHandoffContract(branchPrefix, slug string) string {
 // content (not body) because it varies per implementation variant (fresh /
 // resumed-branch / usage-policy retry), each of which enters the worktree
 // differently.
-func freshWorktreeInstr(slug, branchPrefix string) string {
+func freshWorktreeInstr(slug, worktreePath, branchPrefix string) string {
 	branch := branchPrefix + "/" + slug
-	return "The worktree for slug `" + slug + "` has already been created for you at `.claude/worktrees/" + slug + "` on branch `" + branch + "` — the harness owns worktree and branch creation, so do NOT run `scripts/new-worktree.sh` and do NOT create a new worktree or branch. `cd` into that worktree and do all your work there, committing your handoff on `" + branch + "` verbatim regardless of the ticket type (bug-fix, chore, docs, …)."
+	return "The worktree for slug `" + slug + "` has already been created for you at `" + worktreeAt(slug, worktreePath) + "` on branch `" + branch + "` — the harness owns worktree and branch creation, so do NOT run `scripts/new-worktree.sh` and do NOT create a new worktree or branch. `cd` into that worktree and do all your work there, committing your handoff on `" + branch + "` verbatim regardless of the ticket type (bug-fix, chore, docs, …)."
+}
+
+// worktreeAt is where the envelope says the worktree is: its absolute path, since
+// the session starts in the worktree rather than in the checkout a relative path
+// resolves from (#245). A Context built without one — a test's — falls back to
+// the path relative to the checkout.
+func worktreeAt(slug, worktreePath string) string {
+	if worktreePath != "" {
+		return worktreePath
+	}
+	return ".claude/worktrees/" + slug
 }
 
 // tddFooter is the shared contract footer for every implementation-stage prompt
@@ -401,11 +412,11 @@ func implement(c Context) string {
 	var worktreeState string
 	switch c.Resume {
 	case ResumedBranch:
-		worktreeState = resumedBranchWorktreeState(c.Slug, c.BranchPrefix)
+		worktreeState = resumedBranchWorktreeState(c.Slug, c.WorktreePath, c.BranchPrefix)
 	case AfterRefusal:
 		worktreeState = resumeWorktreeState(c.Slug, c.WorktreePath, c.BranchPrefix)
 	default:
-		worktreeState = freshWorktreeInstr(c.Slug, c.BranchPrefix)
+		worktreeState = freshWorktreeInstr(c.Slug, c.WorktreePath, c.BranchPrefix)
 	}
 	return join(
 		body(c),
@@ -502,10 +513,10 @@ func subIssuesSection(subs []ticket.SubIssue) string {
 // prior session resumed that worktree and likely already landed a complete fix, so
 // this steers the agent to inspect the branch's existing commits FIRST and prefer
 // verify-and-handoff over re-implementing.
-func resumedBranchWorktreeState(slug, branchPrefix string) string {
+func resumedBranchWorktreeState(slug, worktreePath, branchPrefix string) string {
 	branch := branchPrefix + "/" + slug
 	return join(
-		"Enter the worktree already created for you at `.claude/worktrees/"+slug+"` on branch `"+branch+"` — the harness owns worktree and branch creation, so do NOT run `scripts/new-worktree.sh`.",
+		"Enter the worktree already created for you at `"+worktreeAt(slug, worktreePath)+"` on branch `"+branch+"` — the harness owns worktree and branch creation, so do NOT run `scripts/new-worktree.sh`.",
 		"IMPORTANT — RESUMED WORKTREE: branch `"+branch+"` ALREADY carries commit(s) for this ticket ahead of `main` from a previous session — the fix may already be COMPLETE. Before you plan or write any code, enter the worktree and inspect that history: run `git log origin/main..HEAD` (not local `main`, which the harness never updates and may be stale) and read the diff. If the ticket's behaviour is already implemented and tested on the branch, do NOT re-implement, rewrite, or redo it — instead verify the gates pass and record \"already fixed on branch — recommend review/handoff\" in your handoff, then stop. Only finish or extend the work if the branch's fix is genuinely incomplete. The ticket prose below may describe the code as still un-fixed even though the branch already resolves it, so trust the branch's git history over the prose.",
 	)
 }

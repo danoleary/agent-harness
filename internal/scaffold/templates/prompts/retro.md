@@ -1,4 +1,4 @@
-/TODO-retro-skill for {{.Identifier}}. The worktree is at `.claude/worktrees/{{.Slug}}` on branch `{{.Branch}}`.
+/TODO-retro-skill for {{.Identifier}}. The worktree is at `{{.WorktreePath}}` on branch `{{.Branch}}`.
 
 <!-- TODO(agent-harness init): replace /TODO-retro-skill with the skill this
 repository carries for a session retrospective, then delete this comment. The

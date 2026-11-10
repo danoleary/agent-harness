@@ -133,6 +133,10 @@ func TestFixLandsACheckedGateGreenFixAsANewPR(t *testing.T) {
 	if !strings.Contains(h.Agents[0].Prompt, "| #7 |") || !strings.Contains(h.Agents[0].Prompt, "`"+it.Branch+"`") {
 		t.Errorf("the session gets the alerts and the package's branch; prompt:\n%s", h.Agents[0].Prompt)
 	}
+	// #245: the session starts in the package's worktree, not the host checkout.
+	if want := h.Worktree().Path(); h.Agents[0].WorkDir != want {
+		t.Errorf("the SecurityFix session starts in %q, want the worktree %q", h.Agents[0].WorkDir, want)
+	}
 }
 
 // Every way a fix fails before the landing pushes nothing.

@@ -88,7 +88,9 @@ func TestWithoutSentryConfigThePromptIsUnchanged(t *testing.T) {
 		if got := sentryCalls(h); len(got) != 0 {
 			t.Errorf("%s: sentry calls = %v, want none without [sentry]", name, got)
 		}
-		prompts[name] = strings.Replace(h.Agents[0].Prompt, body, "<body>", 1)
+		// Each run's worktree sits in its own temp dir, and the envelope names it by
+		// its absolute path (#245).
+		prompts[name] = strings.ReplaceAll(strings.Replace(h.Agents[0].Prompt, body, "<body>", 1), h.Worktree().Path(), "<worktree>")
 	}
 	if prompts["cites"] != prompts["plain"] {
 		t.Error("a ticket citing HERD-3P changed the prompt with Sentry off")

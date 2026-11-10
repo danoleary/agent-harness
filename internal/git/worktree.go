@@ -685,6 +685,21 @@ func (c Checkout) TrackedFiles() ([]string, error) {
 	return pathLines(out), nil
 }
 
+// ClaudeDrift lists the tracked paths under the checkout's `.claude/` — its
+// skills, settings and agents — that differ from ref, uncommitted edits included.
+// A session that starts in the checkout rather than in a ticket's worktree loads
+// those files as the checkout has them, and the harness never updates the
+// checkout, so a skill fix merged to main does not reach that session until the
+// operator pulls (#245). The worktrees under `.claude/worktrees/` are untracked
+// and never listed. An unresolvable ref is an error, not a clean tree.
+func (c Checkout) ClaudeDrift(ref string) ([]string, error) {
+	out, err := c.output("git", "-C", c.path, "diff", "--name-only", ref, "--", ".claude/")
+	if err != nil {
+		return nil, err
+	}
+	return pathLines(out), nil
+}
+
 // CheckedOutBranches maps each branch a worktree of the checkout has checked out
 // (the main checkout included) to that worktree's path, as `git worktree list
 // --porcelain` reports it. git refuses to check a branch out a second time, so the

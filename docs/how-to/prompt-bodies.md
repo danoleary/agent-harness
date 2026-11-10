@@ -42,8 +42,8 @@ error. Check the dry run if a field doesn't appear:
 | `{{.Slug}}` | the branch slug: `gh-57`, `proj-123` |
 | `{{.BranchPrefix}}` | `branch_prefix` from `config.toml` |
 | `{{.Branch}}` | the branch the worktree is on: `<branch_prefix>/<slug>` for a ticket, the PR's own head branch in a PR loop |
-| `{{.WorktreePath}}` | the worktree's path, `.claude/worktrees/<slug>` under the checkout |
-| `{{.LogDir}}` | retrospective only: the run's log dir under the checkout, `.agent-harness/logs/<Identifier>` for a ticket or `.agent-harness/logs/loops/<loop>/<Identifier>` for a PR loop's run. The envelope also lists the files in it |
+| `{{.WorktreePath}}` | the worktree's absolute path, `<checkout>/.claude/worktrees/<slug>`. The session starts there, so the skills and settings it loads are the branch's |
+| `{{.LogDir}}` | retrospective only: the run's log dir, absolute, `<checkout>/.agent-harness/logs/<Identifier>` for a ticket or `<checkout>/.agent-harness/logs/loops/<loop>/<Identifier>` for a PR loop's run. The envelope also lists the files in it |
 
 A minimal implementation body:
 

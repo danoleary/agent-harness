@@ -170,7 +170,8 @@ func (r *run) fixAlerts() *stages.Result {
 		Warnings: prompt.BodyWarnings(pctx),
 		Cap:      r.cfg.ReviewTimeout,
 		// A dependency bump drives no browser (#248).
-		NoMCP: true,
+		NoMCP:   true,
+		WorkDir: wt.Path(),
 	})
 	eco, _ := depcheck.ForEcosystem(r.it.Ecosystem)
 	verdict := verify.SecurityFix(wt, res.Outcome, eco, r.scan(eco))

@@ -199,6 +199,12 @@ type Config struct {
 	Image string
 	// ProjectPath is the host path to the herd checkout to bind-mount.
 	ProjectPath string
+	// WorkDir is the directory the session starts in: the ticket's worktree, so
+	// Claude Code loads `.claude/skills`, `.claude/settings.json` and CLAUDE.md
+	// from the base commit the worktree was cut from rather than from whatever the
+	// host checkout has checked out (#245, ADR-0046). It lies inside ProjectPath,
+	// which is still mounted whole. Empty starts the session in the checkout.
+	WorkDir string
 	// FindingsDir is the host path to this session's findings dropbox dir,
 	// mounted at /findings.
 	FindingsDir string
@@ -297,8 +303,12 @@ func BuildDockerRunArgs(c Config) []string {
 		args = append(args, "-v", c.FindingsDir+":"+FindingsMountPath)
 	}
 
+	workDir := c.WorkDir
+	if workDir == "" {
+		workDir = c.ProjectPath
+	}
 	args = append(args,
-		"-w", c.ProjectPath,
+		"-w", workDir,
 		c.Image,
 		"claude",
 		"-p", c.Prompt,

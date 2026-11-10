@@ -250,7 +250,8 @@ func (e Env) CI(t Target) func(ciLogs string, logAvailable bool) error {
 			Warnings: prompt.BodyWarnings(pctx),
 			Cap:      e.Cfg.ReviewTimeout,
 			// A CI fix reproduces a gate; it drives no browser by hand (#248).
-			NoMCP: true,
+			NoMCP:   true,
+			WorkDir: wt.Path(),
 		})
 		if err := sessionError(res.Outcome, attempt); err != nil {
 			return err
@@ -447,6 +448,7 @@ func (e Env) ResolveConflict(c Conflict) ConflictResult {
 		Prompt:   prompt.For(prompt.RebaseFix, pctx),
 		Warnings: prompt.BodyWarnings(pctx),
 		Cap:      e.Cfg.ReviewTimeout,
+		WorkDir:  wt.Path(),
 	})
 	e.Log.Event(fmt.Sprintf("conflict-resolution session exited (code %d)", res.ExitCode))
 

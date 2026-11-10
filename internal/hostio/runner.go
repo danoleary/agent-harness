@@ -3,10 +3,13 @@ package hostio
 import (
 	"fmt"
 	"os"
+	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/danoleary/agent-harness/internal/config"
+	gitpkg "github.com/danoleary/agent-harness/internal/git"
 	"github.com/danoleary/agent-harness/internal/runlog"
 	"github.com/danoleary/agent-harness/internal/sandbox"
 	"github.com/danoleary/agent-harness/internal/session"
@@ -39,6 +42,10 @@ type Runner struct {
 	// prep and every gate share one build — or one failed build (#61).
 	ensureImage  func(sandbox.PreflightConfig) error
 	branchImages map[string]error
+	// skillDrift lists the checkout's `.claude/` paths that differ from
+	// origin/main (git.Checkout.ClaudeDrift in production), for a session that
+	// starts in the checkout (#245).
+	skillDrift func() ([]string, error)
 }
 
 // NewRunner binds a Runner to one run of one ticket.
@@ -55,6 +62,9 @@ func NewRunner(cfg config.Config, log *runlog.Logger, runID string, verbose bool
 
 		ensureImage:  sandbox.Preflight,
 		branchImages: map[string]error{},
+		skillDrift: func() ([]string, error) {
+			return gitpkg.Open(cfg.ProjectPath, cfg.BranchPrefix).ClaudeDrift(gitpkg.BaseRef)
+		},
 	}
 }
 
@@ -87,8 +97,10 @@ func (r *Runner) name(label string) string {
 }
 
 // Agent launches one sandboxed claude session and returns its outcome together
-// with the names it was given, narrating the run's Warnings first.
+// with the names it was given, narrating the run's Warnings first — and, for a
+// session that starts in the host checkout, any skill drift there (#245).
 func (r *Runner) Agent(a AgentRun) Result {
+	a = r.settleWorkDir(a)
 	for _, w := range a.Warnings {
 		r.log.Event("⚠ " + a.Label + ": " + w)
 	}
@@ -134,6 +146,28 @@ func (r *Runner) Shell(s ShellRun) Result {
 		r.log.TeeLine(transcript, runlog.StepFooter(out.ExitCode))
 		return Result{Outcome: out, Container: name, Transcript: transcript}
 	})
+}
+
+// settleWorkDir decides where a session starts at launch. A worktree that has
+// gone from disk is dropped rather than handed to `docker run -w`, which would
+// create it as an empty directory inside the mounted checkout. A session left in
+// the checkout loads the checkout's `.claude/` tree, so a drift from origin/main
+// is added to its Warnings: nothing else would show that its skills are not the
+// ones main carries (#245). A drift that cannot be read is not reported.
+func (r *Runner) settleWorkDir(a AgentRun) AgentRun {
+	if a.WorkDir != "" {
+		if info, err := os.Stat(a.WorkDir); err == nil && info.IsDir() {
+			return a
+		}
+		a.Warnings = append(slices.Clone(a.Warnings), "worktree "+a.WorkDir+" is not on disk — starting the session in the host checkout instead")
+		a.WorkDir = ""
+	}
+	if drift, err := r.skillDrift(); err == nil && len(drift) > 0 {
+		a.Warnings = append(slices.Clone(a.Warnings), fmt.Sprintf(
+			"the session starts in the host checkout, whose .claude/ differs from %s in %s — it loads those skills and settings, not main's; update the checkout (#245)",
+			gitpkg.BaseRef, strings.Join(drift, ", ")))
+	}
+	return a
 }
 
 // AgentPreview is the argv Agent would launch, for `--dry-run`. It goes through
@@ -182,6 +216,7 @@ func (r *Runner) agentArgs(name string, a AgentRun) []string {
 	return sandbox.BuildDockerRunArgs(sandbox.Config{
 		Image:          r.cfg.Image,
 		ProjectPath:    r.cfg.ProjectPath,
+		WorkDir:        a.WorkDir,
 		FindingsDir:    a.FindingsDir,
 		CacheVolume:    r.cfg.CacheVolume,
 		CacheMountPath: r.cfg.CacheMountPath,
