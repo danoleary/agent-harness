@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danoleary/agent-harness/internal/basegate"
 	"github.com/danoleary/agent-harness/internal/config"
 	"github.com/danoleary/agent-harness/internal/findings"
 	"github.com/danoleary/agent-harness/internal/gittest"
@@ -97,8 +98,8 @@ func TestImplementationHoldsEveryTicketOnARedBase(t *testing.T) {
 	if firstRes.HeldBase != base || secondRes.HeldBase != base {
 		t.Errorf("held bases = %q / %q, want origin/main %q", firstRes.HeldBase, secondRes.HeldBase, base)
 	}
-	if until := firstRes.HeldUntil; until.Before(before.Add(baseRedRecheck)) || until.After(time.Now().Add(baseRedRecheck)) {
-		t.Errorf("held until %v, want baseRedRecheck past the verdict", until)
+	if until := firstRes.HeldUntil; until.Before(before.Add(basegate.RedRecheck)) || until.After(time.Now().Add(basegate.RedRecheck)) {
+		t.Errorf("held until %v, want basegate.RedRecheck past the verdict", until)
 	}
 	if !secondRes.HeldUntil.Equal(firstRes.HeldUntil) {
 		t.Errorf("second hold until %v, want the recorded verdict's expiry %v", secondRes.HeldUntil, firstRes.HeldUntil)
@@ -178,7 +179,7 @@ func TestImplementationSkipsTheBaseCheck(t *testing.T) {
 	}{
 		{"force", func(_ *hostio.Fake, _ *gittest.Repo, args *Args) { args.Force = true }},
 		{"repair ticket", func(h *hostio.Fake, _ *gittest.Repo, _ *Args) {
-			h.Trk.Ticket.Description = "main fails its gates.\n\n" + findings.KeyMarker(baseRedFindingKey)
+			h.Trk.Ticket.Description = "main fails its gates.\n\n" + findings.KeyMarker(basegate.FindingKey)
 		}},
 		{"resumed branch", func(h *hostio.Fake, repo *gittest.Repo, _ *Args) {
 			repo.Handoff(ticket.Slug("PROJ-30"))
@@ -201,30 +202,6 @@ func TestImplementationSkipsTheBaseCheck(t *testing.T) {
 				t.Errorf("gated the base %d times, want 0", got)
 			}
 		})
-	}
-}
-
-// A red verdict can be a flake, so it is trusted only for a while; a green one
-// holds for the life of its SHA.
-func TestBaseVerdictsExpireRedButNotGreen(t *testing.T) {
-	now := time.Date(2026, 11, 1, 9, 0, 0, 0, time.UTC)
-	v := baseVerdicts{dir: t.TempDir(), now: func() time.Time { return now }}
-
-	if _, ok := v.read("aaa"); ok {
-		t.Fatal("an unrecorded base has no verdict")
-	}
-	v.write("aaa", baseVerdict{Gate: "check"})
-	v.write("bbb", baseVerdict{})
-
-	if got, ok := v.read("aaa"); !ok || got.Green() || got.Gate != "check" {
-		t.Errorf("read(aaa) = %+v, %v; want the red verdict naming its gate", got, ok)
-	}
-	now = now.Add(baseRedRecheck + time.Minute)
-	if _, ok := v.read("aaa"); ok {
-		t.Error("a red verdict past baseRedRecheck must be gated again")
-	}
-	if got, ok := v.read("bbb"); !ok || !got.Green() {
-		t.Errorf("read(bbb) = %+v, %v; a green verdict does not expire", got, ok)
 	}
 }
 
@@ -264,7 +241,7 @@ func TestImplementationRedBaseNarratesTheStepLogTailAndPath(t *testing.T) {
 // #189, replayed: a flaky gate step went red once on an untouched, green base.
 // Before, that one red run was the base's verdict: the ticket was held, a
 // base-gates-red finding was filed, and every ticket on the base waited out
-// baseRedRecheck until the same SHA was gated again and passed. Now the red is
+// basegate.RedRecheck until the same SHA was gated again and passed. Now the red is
 // re-run once before it counts; the re-run passes, so the base is recorded green,
 // the ticket dispatches, nothing is filed, and the next ticket trusts the green.
 func TestImplementationDispatchesWhenARedBaseGateFlakes(t *testing.T) {
@@ -293,8 +270,8 @@ func TestImplementationDispatchesWhenARedBaseGateFlakes(t *testing.T) {
 	}
 	// The session files its own dropbox after it runs; a flake must add nothing to it.
 	dropbox, _ := os.ReadFile(filepath.Join(runlog.FindingsDir(log.Dir, implementationSession), "out.json"))
-	if strings.Contains(string(dropbox), baseRedFindingKey) {
-		t.Errorf("findings dropbox = %s, want no %s finding for a flake", dropbox, baseRedFindingKey)
+	if strings.Contains(string(dropbox), basegate.FindingKey) {
+		t.Errorf("findings dropbox = %s, want no %s finding for a flake", dropbox, basegate.FindingKey)
 	}
 	if said := narration(t, log); !strings.Contains(said, "flaked") {
 		t.Errorf("run.jsonl should say the base gate flaked; got %s", said)

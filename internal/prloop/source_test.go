@@ -1085,3 +1085,36 @@ func TestHandOverUnsavedHandsThePRToAHumanInTheSameRun(t *testing.T) {
 		t.Errorf("the run that left the work spent its attempt; posted %q", last)
 	}
 }
+
+// #250: a resolution held because origin/main itself is red spends none of the
+// PR's attempts, and leaves it unlabelled: the loop works it again once main moves.
+func TestARedBaseHoldSpendsNoAttempt(t *testing.T) {
+	gh := newFakeGitHub(harnessPR(1385, "9c2d7e1"))
+	gh.merge[1385] = ci.MergeConflicting
+	log := &quietLog{}
+	s := NewSource(gh, testOptions, nil, log)
+	s.now = func() time.Time { return testNow }
+
+	for try := 1; try <= 3; try++ {
+		item, claim, ok, err := s.Next()
+		if !ok || err != nil {
+			t.Fatalf("try %d: Next = ok %v err %v", try, ok, err)
+		}
+		s.HoldOnBase(item.Context.(Item), "3f9c2e7a1b2c", "check")
+		if err := claim.Release(); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if strings.Contains(strings.Join(gh.added[1385], ","), "blocked") {
+		t.Errorf("added = %v, want no blocked label: the base is red, not the PR", gh.added[1385])
+	}
+	plan, _ := s.Plan()
+	if len(plan) != 1 || plan[0].Attempts != 0 || plan[0].Exhausted || len(plan[0].Tried) != 0 {
+		t.Errorf("plan = %+v, want the full budget untouched", plan)
+	}
+	posted := strings.Join(gh.posted[1385], "\n")
+	if !strings.Contains(posted, "3f9c2e7") || !strings.Contains(posted, `"check"`) {
+		t.Errorf("the PR must say which base and gate held it:\n%s", posted)
+	}
+}

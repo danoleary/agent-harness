@@ -55,3 +55,4 @@ catches a duplicate there.
 - [ADR-0045](0045-a-triage-loop-moves-agent-ready-tickets-into-the-ready-queue.md): A triage loop moves agent-ready tickets into the ready queue
 - [ADR-0046](0046-a-tickets-session-starts-in-its-worktree.md): A ticket's session starts in its worktree
 - [ADR-0047](0047-an-overlap-mention-must-name-a-file-in-particular.md): An overlap mention must name a file in particular, and a held queue says so
+- [ADR-0048](0048-a-red-re-gate-over-a-red-base-holds-the-pr-instead-of-blaming-it.md): A red re-gate over a red base holds the PR instead of blaming it

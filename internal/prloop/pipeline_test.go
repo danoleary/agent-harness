@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danoleary/agent-harness/internal/basegate"
 	"github.com/danoleary/agent-harness/internal/ci"
 	"github.com/danoleary/agent-harness/internal/config"
 	gitpkg "github.com/danoleary/agent-harness/internal/git"
@@ -950,4 +951,42 @@ func readEvents(t *testing.T, log *runlog.Logger) string {
 		t.Fatal(err)
 	}
 	return string(b)
+}
+
+// #250, replayed: the session resolved the conflict cleanly onto an origin/main
+// that does not build by itself, so the re-gate went red on the base's compile
+// error. The run is not the PR's failure: it holds on that base as a BaseRed run
+// until main moves, files the base-gates-red finding, and pushes nothing.
+func TestFixHoldsAResolutionRedOnlyBecauseTheBaseIsRed(t *testing.T) {
+	h, it, repo := prHost(t, harnessItem(Conflict))
+	h.ShellFn = func(_ int, s hostio.ShellRun) session.Outcome {
+		if strings.HasPrefix(s.Label, "gate") || strings.HasPrefix(s.Label, "basegate") {
+			return session.Outcome{ExitCode: 2, StderrTail: "internal/fake/fake.go:14:9: *Fake does not implement Port (missing method Close)"}
+		}
+		return session.Outcome{}
+	}
+	cfg := pipelineCfg()
+	cfg.ProjectPath = t.TempDir()
+	base := repo.OnOrigin("main")
+	before := time.Now()
+	log := pipelineLog(t)
+
+	res := Fix(h, cfg, log, it, prDoctor())
+
+	if res.OK || res.Disposition != stages.BaseRed {
+		t.Fatalf("a re-gate red only because the base is red is a BaseRed hold, got %+v", res)
+	}
+	if res.HeldBase != base {
+		t.Errorf("held on %q, want origin/main %q", res.HeldBase, base)
+	}
+	if until := res.HeldUntil; until.Before(before.Add(basegate.RedRecheck)) || until.After(time.Now().Add(basegate.RedRecheck)) {
+		t.Errorf("held until %v, want the recorded verdict's expiry", until)
+	}
+	if strings.Join(h.Filed, ",") != Key(it.PR.Number) {
+		t.Errorf("filed = %v, want the red-base finding filed once for %s", h.Filed, Key(it.PR.Number))
+	}
+	if dropbox, _ := os.ReadFile(filepath.Join(log.FindingsDir("basegate"), "out.json")); !strings.Contains(string(dropbox), basegate.FindingKey) {
+		t.Errorf("findings dropbox = %s, want the %s finding", dropbox, basegate.FindingKey)
+	}
+	assertNothingPushed(t, h, repo, it.PR.HeadBranch, it.PR.HeadSHA)
 }

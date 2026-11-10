@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/danoleary/agent-harness/internal/basegate"
 	"github.com/danoleary/agent-harness/internal/ci"
 	"github.com/danoleary/agent-harness/internal/config"
 	gitpkg "github.com/danoleary/agent-harness/internal/git"
@@ -507,7 +508,32 @@ type ConflictResult struct {
 	Resolved bool
 	// Gate is the re-gate over the resolved tree; zero when nothing was re-gated.
 	Gate GateResult
+	// BaseRed, when set, marks a red re-gate whose failing Gate fails on
+	// origin/main alone too (#250): the base is red, not the branch, so the caller
+	// holds the work until main moves rather than count the failure against it.
+	BaseRed *BaseRed
 }
+
+// BaseRed is origin/main failing, with nothing of the branch on it, the Gate a
+// resolved branch's re-gate failed (#250).
+type BaseRed struct {
+	// SHA is the base, and Verdict the red verdict the record holds for it
+	// (ADR-0036), whose expiry ends the hold.
+	SHA     string
+	Verdict basegate.Verdict
+	// Recorded marks a verdict this run gated and recorded, rather than read; the
+	// run that records a red base files its finding. Gate is that run's red gate.
+	Recorded bool
+	Gate     GateResult
+}
+
+// baseGateStep labels the containers that gate origin/main alone after a red
+// re-gate, and baseConfirmStep their re-run over a red base (#189). They are the
+// labels the implementation stage gates an untouched base under.
+const (
+	baseGateStep    = "basegate"
+	baseConfirmStep = "basegate-confirm"
+)
 
 // ResolveConflict launches a bounded sandboxed conflict-resolution session over the
 // existing worktree (steered by the RebaseFix prompt to bring the branch onto
@@ -563,6 +589,13 @@ func (e Env) ResolveConflict(c Conflict) ConflictResult {
 	// the gates before trusting the push. Push only on a green gate over a
 	// still-clean worktree.
 	gate := c.Regate()
+	if !gate.Green() {
+		if base := e.redBase(gate); base != nil {
+			reason := fmt.Sprintf("post-resolution gate %q is red (exit %d), and origin/main %s fails it too with nothing of the branch on it", gate.FailedGate, gate.Outcome.ExitCode, shortSHA(base.SHA))
+			e.Log.Event(e.Who + " ⏸ " + reason + " — base is red, not the branch; nothing pushed (#250)")
+			return ConflictResult{Resolved: true, Reason: reason, Gate: gate, BaseRed: base}
+		}
+	}
 	if !gate.Green() || !wt.Clean() {
 		reason := fmt.Sprintf("post-resolution gate re-run failed (exit %d)", gate.Outcome.ExitCode)
 		e.Log.Event(e.Who + " ✗ " + reason + " — nothing pushed")
@@ -570,4 +603,71 @@ func (e Env) ResolveConflict(c Conflict) ConflictResult {
 	}
 	e.Log.Event(e.Who + " ✓ post-resolution gate re-run is green — clear to push")
 	return ConflictResult{OK: true, Resolved: true, Gate: gate}
+}
+
+// redBase reports whether origin/main itself fails the Gate the re-gate over a
+// resolved branch failed (#250): a base two PRs left red fails the re-gate of
+// every branch resolved onto it, through no fault of the branch. The verdict
+// record answers for a SHA it already holds (ADR-0036). Otherwise origin/main is
+// checked out alone in a [gitpkg.Worktree.TrialBase], provisioned and gated, and a
+// red is confirmed by a re-run before it is recorded, as the implementation stage
+// confirms one (#189). Nil means the branch keeps the blame: the base passes that
+// Gate or fails another, the re-gate's red or the base's was environmental (which
+// says nothing about either), or the base could not be read or gated.
+func (e Env) redBase(regate GateResult) *BaseRed {
+	if regate.FailedGate == "" || regate.Outcome.Retryable() || regate.Outcome.CapKilled {
+		return nil
+	}
+	wt := e.Host.Worktree()
+	sha, err := wt.RefSHA(gitpkg.BaseRef)
+	if err != nil {
+		e.Log.Event(fmt.Sprintf("%s … warning: could not read %s to check whether the base fails gate %q too: %v", e.Who, gitpkg.BaseRef, regate.FailedGate, err))
+		return nil
+	}
+	verdicts := basegate.For(e.Cfg)
+	if v, ok := verdicts.Read(sha); ok {
+		if v.Gate != regate.FailedGate {
+			return nil
+		}
+		e.Log.Event(fmt.Sprintf("%s · base %s failed gate %q at %s already — not gating it again (#250)", e.Who, shortSHA(sha), v.Gate, v.At.Format(time.RFC3339)))
+		return &BaseRed{SHA: sha, Verdict: v}
+	}
+
+	e.Log.Event(fmt.Sprintf("%s · gating %s %s alone, to tell a red base from a red branch (#250)", e.Who, gitpkg.BaseRef, shortSHA(sha)))
+	b, err := wt.TrialBase(sha)
+	if err != nil {
+		e.Log.Event(fmt.Sprintf("%s … warning: could not check out %s alone to gate it (%v) — the red re-gate stays the branch's", e.Who, gitpkg.BaseRef, err))
+		return nil
+	}
+	defer func() {
+		if err := b.Remove(); err != nil {
+			e.Log.Event(fmt.Sprintf("%s … warning: could not remove the trial base at %s: %v", e.Who, b.Path(), err))
+		}
+	}()
+	if !e.provisionIn(b.Path(), "prep-"+baseGateStep) {
+		return nil
+	}
+	res := e.gatesIn(b.Path(), baseGateStep, nil)
+	if !res.Green() && !environmental(res) {
+		e.Log.Event(fmt.Sprintf("%s ↻ base gate %q is red (exit %d) — re-running the gates once before the base counts as red (#189)", e.Who, res.FailedGate, res.Outcome.ExitCode))
+		res = e.gatesIn(b.Path(), baseConfirmStep, nil)
+	}
+	if environmental(res) {
+		e.Log.Event(fmt.Sprintf("%s ⚠ base gate %q failed environmentally (exit %d) — that says nothing about the base; the red re-gate stays the branch's", e.Who, res.FailedGate, res.Outcome.ExitCode))
+		return nil
+	}
+	v, err := verdicts.Write(sha, basegate.Verdict{Gate: res.FailedGate})
+	if err != nil {
+		e.Log.Event("⚠ could not record the base verdict (" + err.Error() + ") — the next run on this base gates it again")
+	}
+	if v.Gate != regate.FailedGate {
+		return nil
+	}
+	return &BaseRed{SHA: sha, Verdict: v, Recorded: true, Gate: res}
+}
+
+// environmental reports whether a red gate failed for its environment, not its
+// tree: an OOM-kill or a failed launch through its retries, or its cap.
+func environmental(g GateResult) bool {
+	return !g.Green() && (g.Outcome.Retryable() || g.Outcome.CapKilled)
 }

@@ -7,7 +7,10 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/danoleary/agent-harness/internal/basegate"
 	"github.com/danoleary/agent-harness/internal/config"
+	"github.com/danoleary/agent-harness/internal/filing"
+	"github.com/danoleary/agent-harness/internal/findings"
 	"github.com/danoleary/agent-harness/internal/fix"
 	"github.com/danoleary/agent-harness/internal/git"
 	"github.com/danoleary/agent-harness/internal/github"
@@ -75,6 +78,8 @@ func (p Pipeline) Run(item loop.WorkItem, claim *lease.Lease) stages.Result {
 			p.Source.Withdraw(it, out.Err)
 		case out.Disposition == stages.PreflightAborted:
 			p.Source.TakeBack(it, out.Err)
+		case out.Disposition == stages.BaseRed:
+			p.Source.HoldOnBase(it, out.HeldBase, out.HeldGate)
 		case errors.As(out.Err, &unsaved):
 			p.Source.HandOver(it, unsaved)
 		}
@@ -279,8 +284,49 @@ func (r *run) resolve() (out stages.Result, ok bool) {
 		} else {
 			r.log.Event(fmt.Sprintf("%s ⚑ saved the committed resolution %s of %s as a local ref, not pushed — the next run at this head re-gates it instead of resolving again (#252)", who, short(tip), short(head)))
 		}
+		if res.BaseRed != nil {
+			return r.holdOnBase(*res.BaseRed), false
+		}
 	}
 	return stages.Result{}, false
+}
+
+// holdOnBase ends a run whose resolution was red only because origin/main is
+// (#250): a BaseRed run, held on that base until main moves or its red verdict
+// expires (ADR-0039), which spends none of the PR's attempts. The run that
+// recorded the red verdict files the base-gates-red finding, as the
+// implementation stage does for a ticket (ADR-0036); one that read it leaves the
+// filing to whoever recorded it.
+func (r *run) holdOnBase(base fix.BaseRed) stages.Result {
+	key := Key(r.it.PR.Number)
+	r.log.Event(fmt.Sprintf("%s ⏸ holding %s on the red base %s until main moves — not counted as an attempt (#250)", who, key, short(base.SHA)))
+	if base.Recorded {
+		r.fileBaseRed(base)
+	}
+	return stages.Result{Disposition: stages.BaseRed, HeldBase: base.SHA, HeldUntil: base.Verdict.RecheckAt(), HeldGate: base.Verdict.Gate}
+}
+
+// fileBaseRed files the finding a red base raises (basegate.Finding) into the
+// tracker's findings team.
+func (r *run) fileBaseRed(base fix.BaseRed) {
+	key := Key(r.it.PR.Number)
+	body := fmt.Sprintf(
+		"The harness resolved %s's conflict with `main` (`%s`), and its re-gate went red. Gated alone, with nothing of the branch on it, `main` at `%s` fails gate `%s` (exit %d) too, so the red is main's.\n\n"+
+			"The PR loop holds until `main` moves rather than spend the PR's attempts on a red it cannot fix (#250), and the ticket loop holds every ticket cut from this base (#125).\n\n"+
+			"Repair `main` directly, or dispatch this issue by hand (`agent-harness pipeline <this issue>`): an issue carrying this finding key is exempt from the hold.",
+		key, r.it.PR.HeadBranch, base.SHA, base.Verdict.Gate, base.Gate.Outcome.ExitCode,
+	)
+	f := basegate.Finding(base.Verdict.Gate, base.Gate.Outcome.ExitCode, base.Gate.Outcome.StderrTail, body)
+	dir := r.log.FindingsDir("basegate")
+	err := os.MkdirAll(dir, 0o755)
+	if err == nil {
+		err = filing.WriteDropbox(dir, []findings.Finding{f})
+	}
+	if err != nil {
+		r.log.Event("⚠ could not write the red-base finding (" + err.Error() + ")")
+		return
+	}
+	r.h.FileFindings(dir, stages.FindingsTeam(r.h, r.log, who, key), key)
 }
 
 // watch watches CI to a terminal verdict. A red check gets the gated CI fix: a
