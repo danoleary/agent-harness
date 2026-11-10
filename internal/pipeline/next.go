@@ -45,6 +45,11 @@ type NextSelection struct {
 	// tell "the tracker is unreachable" from "nothing to do" — the two looked the
 	// same in the loop log, and a dead token idled as an empty queue for minutes.
 	Err error
+	// Held, on an empty selection, says the queue is not empty but held: the
+	// overlap screen deferred every ready ticket, e.g. `2 ticket(s) deferred by
+	// overlaps (#1, #2)`. The loop idled as "queue empty" over 20 such tickets
+	// before it said so (#281).
+	Held string
 }
 
 // ResolveNext implements `pipeline --next` ticket resolution (DESIGN.md
@@ -72,6 +77,11 @@ func ResolveNext(r NextResolver, lock lease.Locker, dryRun bool, queueHint strin
 		if !ok {
 			// A normal steady state, not a failure — the loop will later wrap --next and
 			// reads this exit-0 as "nothing to do" without remapping codes.
+			if h, ok := r.(heldQueue); ok && len(h.held()) > 0 {
+				held := heldReason(h.held())
+				log.Event("no eligible ticket — queue held: " + held)
+				return NextSelection{ExitCode: 0, Held: held}
+			}
 			msg := "no eligible ticket — queue empty"
 			if queueHint != "" {
 				msg += "; " + queueHint

@@ -123,6 +123,15 @@ type Source interface {
 	Releasing(why ReleaseReason, key string) string
 }
 
+// Holder is a [Source] that can say why its last empty Next was not an empty
+// queue: every ready item is held, e.g. `2 ticket(s) deferred by overlaps (#1,
+// #2)`. "" means the queue was empty. The daemon idles either way, but a held
+// queue names its reason on the idle line rather than hiding behind "queue
+// empty" (#281).
+type Holder interface {
+	Held() string
+}
+
 // ReleaseReason is why the daemon is giving a claimed item back, so its
 // [Source] can say so in its own words.
 type ReleaseReason int
@@ -374,7 +383,11 @@ func Run(d Deps) int {
 			// rather than exiting (DESIGN.md "The loop"). The idle is broken into
 			// short ticks that re-check stop, so a SIGINT/sentinel landing mid-idle
 			// is honoured within one TickInterval, not a whole poll interval later.
-			d.Log.Structured(loopstream.Record{Kind: loopstream.KindIdle, Message: fmt.Sprintf("loop — queue empty; re-polling in %s", d.Limits.PollInterval)})
+			state := "queue empty"
+			if h, ok := d.Source.(Holder); ok && h.Held() != "" {
+				state = "queue held: " + h.Held()
+			}
+			d.Log.Structured(loopstream.Record{Kind: loopstream.KindIdle, Message: fmt.Sprintf("loop — %s; re-polling in %s", state, d.Limits.PollInterval)})
 			d.idleWait()
 			continue
 		}

@@ -33,6 +33,11 @@ type TicketSource struct {
 	// prs, when set, are the open PRs selection screens a ticket against: a ticket
 	// that names files the harness's own PRs already change waits (#97).
 	prs OpenPRs
+	// screen is the overlap screen, built once so a deferral that stands poll
+	// after poll reaches the loop stream once (#281).
+	screen pipeline.NextResolver
+	// held is why the last poll was held rather than empty ([loop.Holder]).
+	held string
 }
 
 // OpenPRs is the repository's open PRs and the files each changes: the GitHub
@@ -42,7 +47,10 @@ type OpenPRs interface {
 	Files(number int) ([]string, error)
 }
 
-var _ loop.Source = (*TicketSource)(nil)
+var (
+	_ loop.Source = (*TicketSource)(nil)
+	_ loop.Holder = (*TicketSource)(nil)
+)
 
 // NewTicketSource builds the ticket Source over the Consumer's Tracker.
 func NewTicketSource(cfg config.Config, log loop.Narrator, client tracker.Tracker) *TicketSource {
@@ -88,6 +96,7 @@ func (s *TicketSource) CheckAccess() error {
 // item's Branch is the slugged feature branch the Stages will create and push.
 func (s *TicketSource) Next() (loop.WorkItem, *lease.Lease, bool, error) {
 	sel := pipeline.ResolveNext(s.Resolver(), hostlock.File(config.ClaimLockFile(s.cfg.ProjectPath)), false, s.cfg.Tracker.QueueHint(), s.log)
+	s.held = sel.Held
 	if sel.Err != nil {
 		return loop.WorkItem{}, nil, false, sel.Err
 	}
@@ -106,10 +115,18 @@ func (s *TicketSource) Resolver() pipeline.NextResolver {
 	if s.prs == nil {
 		return s.client
 	}
-	policy := overlap.Policy{Threshold: s.cfg.OverlapThreshold, EscapeLabel: s.cfg.OverlapEscapeLabel}
-	branch := func(key string) string { return s.checkout().Worktree(ticket.Slug(key)).Branch() }
-	return pipeline.DeferOverlaps(s.client, s.inFlight, branch, policy, s.log)
+	if s.screen == nil {
+		policy := overlap.Policy{Threshold: s.cfg.OverlapThreshold, EscapeLabel: s.cfg.OverlapEscapeLabel}
+		branch := func(key string) string { return s.checkout().Worktree(ticket.Slug(key)).Branch() }
+		s.screen = pipeline.DeferOverlaps(s.client, s.inFlight, branch, policy, s.log)
+	}
+	return s.screen
 }
+
+// Held says why the last Next found nothing to claim over a queue that was not
+// empty: the overlap screen deferred every ready ticket (#281). "" is an empty
+// queue.
+func (s *TicketSource) Held() string { return s.held }
 
 // inFlight is the work a ready ticket may collide with (#97): each open PR on the
 // harness's branch prefix with the files it changes, then each claimed ticket's

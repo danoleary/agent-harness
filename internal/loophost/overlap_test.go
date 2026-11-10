@@ -51,6 +51,18 @@ func TestNextDefersATicketOverlappingAnOpenHarnessPR(t *testing.T) {
 	if !saw(log, "#97 deferred: overlaps PR #81 on internal/loop/loop.go") {
 		t.Errorf("events = %v, want the deferral named", log.events)
 	}
+	// The poll was held, not empty, and the daemon's idle line says so (#281).
+	if got, want := s.Held(), "1 ticket(s) deferred by overlaps (#97)"; got != want {
+		t.Errorf("Held() = %q, want %q", got, want)
+	}
+
+	prs.open = nil // PR #81 merged
+	if _, _, ok, err := s.Next(); !ok || err != nil {
+		t.Fatalf("Next() after the merge = (%v, %v), want the ticket", ok, err)
+	}
+	if got := s.Held(); got != "" {
+		t.Errorf("Held() after a dispatch = %q, want empty", got)
+	}
 }
 
 // Only the harness's own PRs are its work in flight: a human's branch and a fork

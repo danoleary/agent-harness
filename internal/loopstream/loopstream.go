@@ -66,7 +66,8 @@ const (
 	KindIdle Kind = "idle"
 	// KindItemSkipped — the Source passed over a work item it would otherwise work,
 	// for a reason a human may need to clear: a worktree that holds a PR's branch and
-	// cannot be removed safely (#231). Ticket names the item; Message says why.
+	// cannot be removed safely (#231), or a ticket the overlap screen deferred behind
+	// work in flight (#281). Ticket names the item; Message says why.
 	KindItemSkipped Kind = "item-skipped"
 	// KindLoopStopped — the daemon's terminal record: it has wound down and Run is
 	// returning (STOP requested, max-runtime, max-tickets, or a breaker trip). The
