@@ -879,13 +879,22 @@ func ciFixLogSteer(branch, ciLogs string, logAvailable bool) (logFraming, job []
 // off the moves that made one.
 const browserTestSteer = "If the failing gate is a browser-backed test (a Storybook story file, a vitest browser run), run just the failing file, once, in the foreground: no outer `timeout` wrapper, no `&` or background run, no poll loop. An outer `timeout` kills the package manager but not its headless browser, and the browser left behind slows or blocks the next run; bound the call with the Bash tool's own timeout parameter (about 5 minutes) instead. The harness kills any headless browser or vitest process left over from an earlier run before each story run starts. Commit the candidate fix as a local commit before the run that verifies it, so the session's time cap cannot throw it away; if that run shows the fix is wrong, fix forward in a further commit, or `git revert` it if you find no fix. A verification run that makes no progress for a few minutes is a failed fix, not a slow run: the change made the test hang. Stop waiting on it, do not re-run it unchanged, and try another approach."
 
+// mergeRefSteer is the CI-fix session's first diagnosis step (#258). CI on a
+// pull_request event builds the PR's merge ref, not the branch: in the incident
+// origin/main had already landed its own fix for the same base break, the
+// session fixed it again on the branch alone, and the merge ref went red on the
+// duplicate until a second session merged origin/main anyway.
+const mergeRefSteer = "Before you diagnose, check origin/main. CI on a pull request tests the PR's merge ref — the branch merged into the current origin/main — not the branch alone, so a branch that is green locally can be red on CI because of what landed on origin/main since it was cut. The harness already fetched origin/main into this worktree before the session started; use that ref and do not try to fetch it again. If the failure does not reproduce on the branch alone, or the failing symbol or file was touched on origin/main since the merge-base (`git log HEAD..origin/main -- <path>`), reproduce it on a scratch merge: `git merge --no-commit --no-ff origin/main`, run the failing gate, then `git merge --abort` to return to the branch. When origin/main already fixes the failure, or conflicts with it (both sides now declare the same thing), resolve it by merging origin/main as a real commit (`git merge --no-ff origin/main`, resolving any conflict in favour of origin/main's version of the base fix), not with a parallel fix on the branch that duplicates what origin/main already did. Re-run the failing gate on that merge commit before you stop."
+
 func ciFix(c Context) string {
 	t, branch, worktreePath := c.Ticket, c.branch(), c.WorktreePath
 	logFraming, job := ciFixLogSteer(branch, defang(c.CILogs), c.CILogAvailable)
 	lines := []string{
 		"A GitHub CI check is failing on the open PR for " + t.Identifier + ". The worktree already exists at `" + worktreePath + "` on branch `" + branch + "` — work in it; do NOT create a new worktree.",
 		"",
-		"The branch already passed the harness's local gate re-run, but CI on GitHub went red. The cause is usually a CI-vs-local difference (a different toolchain/env, a lockfile or native-binding skew, or a flaky spec) rather than something the local gate could catch.",
+		"The branch already passed the harness's local gate re-run, but CI on GitHub went red. The cause is usually a CI-vs-local difference (a different toolchain/env, a lockfile or native-binding skew, or a flaky spec) rather than something the local gate could catch — or merge-ref skew.",
+		"",
+		mergeRefSteer,
 		"",
 	}
 	lines = append(lines, logFraming...)
@@ -895,7 +904,7 @@ func ciFix(c Context) string {
 		"",
 		"This sandbox has NO network and NO `gh` — the harness already fetched (or failed to fetch) those logs for you host-side. The logs above are all you get; do NOT try to run `gh`, `git fetch`, or any network command to fetch the CI logs, the run, or anything else yourself — it will only fail with `command not found` / no route to host and burn a turn. Work from the logs above plus local reproduction.",
 		"",
-		"Escape hatch — do NOT fabricate a commit. If you reproduce every failing gate locally and they all pass (the red is a cancelled or superseded run, not a reproducible code defect), then make NO commit at all and stop. Do NOT manufacture a speculative or unrelated change (a throwaway story, a no-op tweak, a base-refresh merge) just to give the loop something to push — that only pollutes the PR with unverified commits. When you leave the worktree clean with no new commit, the harness re-triggers CI itself with an empty commit, which clears a cancelled/superseded run. Only commit a fix for a failure you actually reproduced.",
+		"Escape hatch — do NOT fabricate a commit. If you reproduce every failing gate locally and they all pass (the red is a cancelled or superseded run, not a reproducible code defect), then make NO commit at all and stop. Do NOT manufacture a speculative or unrelated change (a throwaway story, a no-op tweak, a base-refresh merge that fixes nothing you reproduced) just to give the loop something to push — that only pollutes the PR with unverified commits. When you leave the worktree clean with no new commit, the harness re-triggers CI itself with an empty commit, which clears a cancelled/superseded run. Only commit a fix for a failure you actually reproduced.",
 		"",
 		browserTestSteer,
 		"",
