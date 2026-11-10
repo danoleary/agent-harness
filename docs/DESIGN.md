@@ -441,6 +441,7 @@ loop:
         `gh pr checks` should read it as a harness gh-auth problem, NOT a CI failure.
   network-error retry (#194): a `gh pr checks` call that fails at the transport layer ("dial tcp",
     "i/o timeout", "operation timed out", "connection reset", "TLS handshake timeout", "no such host",
+    gh's own offline message "error connecting to …" / "check your internet connection" (#266),
     HTTP 502/503/504, or the gh call hanging past its timeout) never reached CI -> errPollTransient. The
     poll backs off one interval and polls again, like the no-checks-yet window; any answer from GitHub
     resets the count. Only 5 in a row, or a budget spent while GitHub is unreachable, ends the poll, and
