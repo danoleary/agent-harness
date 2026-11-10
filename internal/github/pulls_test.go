@@ -167,3 +167,16 @@ func TestFilesListsEveryPathAPRChanges(t *testing.T) {
 		t.Errorf("Files = %v, want %v", got, want)
 	}
 }
+
+// A PR's title and description are rewritten in place, through the pulls
+// endpoint: the PR loop fixes the ADR numbers a conflict resolution moved (#267).
+func TestEditRewritesAPRsTitleAndBody(t *testing.T) {
+	tr, calls := fakeTransport(map[string]any{"PATCH /repos/acme/widgets/pulls/12": map[string]any{}})
+
+	if err := NewPulls(tr, "acme/widgets").Edit(12, "#7: ADR-0041", "Adds ADR-0041."); err != nil {
+		t.Fatalf("Edit: %v", err)
+	}
+	if want := map[string]any{"title": "#7: ADR-0041", "body": "Adds ADR-0041."}; !reflect.DeepEqual((*calls)[0].body, want) {
+		t.Errorf("edit body = %v, want %v", (*calls)[0].body, want)
+	}
+}

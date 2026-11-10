@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -989,4 +990,100 @@ func TestFixHoldsAResolutionRedOnlyBecauseTheBaseIsRed(t *testing.T) {
 		t.Errorf("findings dropbox = %s, want the %s finding", dropbox, basegate.FindingKey)
 	}
 	assertNothingPushed(t, h, repo, it.PR.HeadBranch, it.PR.HeadSHA)
+}
+
+// adrHost is prHost for #267: the PR adds ADR-0040, main then merges an unrelated
+// ADR-0040, and the conflict-resolution session rebases onto main and renumbers
+// the branch's ADR to 0041, as the ADR rules require (ADR-0034).
+func adrHost(t *testing.T, it Item) (*hostio.Fake, Item) {
+	t.Helper()
+	repo := gittest.New(t)
+	it.PR.HeadSHA = repo.PublishFile(it.PR.HeadBranch, "docs/adr/0040-a-pr-records-its-decision.md", "# ADR-0040: a PR records its decision\n")
+	repo.Merge("docs/adr/0040-main-decided-first.md", "# ADR-0040: main decided first\n", "a sibling's ADR")
+	h := hostio.NewFake(repo.Checkout(), ticket.Slug(Key(it.PR.Number)))
+	h.Branch = it.PR.HeadBranch
+	h.AgentFn = func(_ int, run hostio.AgentRun) session.Outcome {
+		if run.Label == "rebasefix" {
+			wt := h.Worktree()
+			repo.Git(wt.Path(), "reset", "-q", "--hard", "origin/main")
+			repo.Commit(wt, "docs/adr/0041-a-pr-records-its-decision.md", "# ADR-0041: a PR records its decision\n", "Record the decision (ADR-0041)")
+		}
+		return h.AgentOutcome
+	}
+	return h, it
+}
+
+// #267, replayed: the session renumbered the PR's ADR-0040 to 0041 and the gates
+// passed, but the harness only pushed the branch, so the PR's title and
+// description still cited ADR-0040, which now names main's unrelated decision.
+// After the push the pr-fix stage rewrites them itself: the renumbered ADR's
+// references and its file's link move to 0041, and an ADR the resolution did not
+// renumber is left alone.
+func TestFixRewritesThePRDescriptionWhenTheResolutionRenumbersAnADR(t *testing.T) {
+	it := harnessItem(Conflict)
+	it.PR.Title = "#7: Record the decision in ADR-0040"
+	it.PR.Body = "Adds ADR-0040 ([docs/adr/0040-a-pr-records-its-decision.md](docs/adr/0040-a-pr-records-its-decision.md)), which extends ADR-0034.\n\nCloses #7"
+	h, it := adrHost(t, it)
+
+	res := Fix(h, pipelineCfg(), pipelineLog(t), it, prDoctor())
+
+	if !res.OK || res.Disposition != stages.Shipped {
+		t.Fatalf("a resolved, gate-green conflict ships, got %+v", res)
+	}
+	want := []hostio.PREdit{{
+		Number: 12,
+		Title:  "#7: Record the decision in ADR-0041",
+		Body:   "Adds ADR-0041 ([docs/adr/0041-a-pr-records-its-decision.md](docs/adr/0041-a-pr-records-its-decision.md)), which extends ADR-0034.\n\nCloses #7",
+	}}
+	if !reflect.DeepEqual(h.PREdits, want) {
+		t.Errorf("PR edits = %+v, want %+v", h.PREdits, want)
+	}
+	got := calls(h)
+	if strings.Index(got, "edit-pr") < strings.Index(got, "push-force") {
+		t.Errorf("the PR is edited after the push that carries the renumber; calls = %v", h.Calls)
+	}
+}
+
+// A resolution that renumbers nothing leaves the PR's description alone, and so
+// does one that renumbers an ADR the description never cites.
+func TestFixLeavesThePRDescriptionAloneWithoutARenumberItCites(t *testing.T) {
+	h, it, _ := prHost(t, harnessItem(Conflict))
+	Fix(h, pipelineCfg(), pipelineLog(t), it, prDoctor())
+	if strings.Contains(calls(h), "edit-pr") {
+		t.Errorf("no ADR was renumbered, so the PR is not edited; calls = %v", h.Calls)
+	}
+
+	h, it = adrHost(t, harnessItem(Conflict))
+	Fix(h, pipelineCfg(), pipelineLog(t), it, prDoctor())
+	if strings.Contains(calls(h), "edit-pr") {
+		t.Errorf("the description cites no renumbered ADR, so the PR is not edited; calls = %v", h.Calls)
+	}
+}
+
+// The branch is already pushed when the edit fails, so the run still ships: a
+// stale description is narrated, not a failed attempt.
+func TestFixShipsWhenThePRDescriptionCannotBeEdited(t *testing.T) {
+	it := harnessItem(Conflict)
+	it.PR.Body = "Adds ADR-0040."
+	h, it := adrHost(t, it)
+	h.EditPRErr = errors.New("gh: HTTP 502")
+
+	res := Fix(h, pipelineCfg(), pipelineLog(t), it, prDoctor())
+
+	if !res.OK || res.Disposition != stages.Shipped {
+		t.Fatalf("a pushed resolution ships even when its description cannot be fixed, got %+v", res)
+	}
+}
+
+// Two renumbers that chain, 0040 → 0041 while 0041 → 0042, move each reference
+// once rather than carrying ADR-0040 on to 0042.
+func TestRenumberADRsMovesEachReferenceOnce(t *testing.T) {
+	moved := []gitpkg.Renumber{
+		{From: "0040", To: "0041", FromFile: "0040-a.md", ToFile: "0041-a.md"},
+		{From: "0041", To: "0042", FromFile: "0041-b.md", ToFile: "0042-b.md"},
+	}
+	got := renumberADRs("ADR-0040 (0040-a.md) and ADR-0041 (0041-b.md), not ADR-00401 or ADR-0012", moved)
+	if want := "ADR-0041 (0041-a.md) and ADR-0042 (0042-b.md), not ADR-00401 or ADR-0012"; got != want {
+		t.Errorf("renumberADRs = %q, want %q", got, want)
+	}
 }

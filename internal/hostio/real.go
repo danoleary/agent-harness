@@ -277,6 +277,11 @@ func (h *Real) LabelPR(url, label string) error {
 	return github.NewPulls(github.NewGhTransport(h.cfg.ProjectPath), "{owner}/{repo}").AddLabel(n, label)
 }
 
+// EditPR replaces the PR's title and description through the REST pulls endpoint.
+func (h *Real) EditPR(number int, title, body string) error {
+	return github.NewPulls(github.NewGhTransport(h.cfg.ProjectPath), "{owner}/{repo}").Edit(number, title, body)
+}
+
 // prNumber reads the PR number off the URL `gh pr create` printed
 // (`https://github.com/<owner>/<repo>/pull/<n>`).
 func prNumber(url string) (int, error) {

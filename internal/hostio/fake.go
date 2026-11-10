@@ -74,6 +74,7 @@ type Fake struct {
 	PRURL        string
 	CreatePRErr  error
 	LabelErr     error
+	EditPRErr    error
 	PRThere      bool
 	OpenPRThere  bool
 	ChecksOK     bool
@@ -108,6 +109,14 @@ type Fake struct {
 	PRBodies []string
 	// PRLabels are the labels LabelPR added, in order.
 	PRLabels []string
+	// PREdits are the PR titles and descriptions EditPR wrote, in order.
+	PREdits []PREdit
+}
+
+// PREdit is one EditPR call.
+type PREdit struct {
+	Number      int
+	Title, Body string
 }
 
 var _ Host = (*Fake)(nil)
@@ -219,6 +228,15 @@ func (f *Fake) LabelPR(url, label string) error {
 		return f.LabelErr
 	}
 	f.PRLabels = append(f.PRLabels, label)
+	return nil
+}
+
+func (f *Fake) EditPR(number int, title, body string) error {
+	f.record("edit-pr %d", number)
+	if f.EditPRErr != nil {
+		return f.EditPRErr
+	}
+	f.PREdits = append(f.PREdits, PREdit{Number: number, Title: title, Body: body})
 	return nil
 }
 
