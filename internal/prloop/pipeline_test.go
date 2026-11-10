@@ -287,6 +287,123 @@ func TestFixRefusesACIFixWhoseGatesFail(t *testing.T) {
 	}
 }
 
+// redOnceMerged scripts every gate green over the branch alone and red over a
+// tree that holds main's change (prHost's other.txt), writing failure as the red
+// gate's step log: a fix that is green alone and red once merged (#259).
+func redOnceMerged(t *testing.T, h *hostio.Fake, log *runlog.Logger, failure string) {
+	t.Helper()
+	h.ShellFn = func(_ int, s hostio.ShellRun) session.Outcome {
+		if !strings.HasPrefix(s.Label, "gate") {
+			return session.Outcome{}
+		}
+		if _, err := os.Stat(filepath.Join(s.WorktreePath, "other.txt")); err != nil {
+			return session.Outcome{}
+		}
+		if err := os.WriteFile(filepath.Join(log.Dir, s.Label+".log"), []byte(failure), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return session.Outcome{ExitCode: 1}
+	}
+}
+
+// #259: red CI on the PR's merge ref, and a CIFix commit the gates pass on the
+// branch alone but fail once merged with origin/main. The harness refuses it
+// before the push, so nothing reaches origin, and hands the next CIFix session the
+// merge gate's output instead of waiting a CI round for it. The trial merge's
+// worktree is gone afterwards, and the branch never gained main's change.
+func TestFixRefusesACIFixWhoseMergeWithMainFailsTheGates(t *testing.T) {
+	h, it, repo := prHost(t, harnessItem(CIRed))
+	log := pipelineLog(t)
+	redOnceMerged(t, h, log, "FAIL other_test.go: TestOther: undefined: Widget\n")
+	var errs []error
+	h.CIFn = func(w hostio.CIWatch) ci.Outcome {
+		errs = append(errs, w.Fix("FAIL TestThing", true), w.Fix("FAIL TestThing", true))
+		return ci.Outcome{OK: false, Reason: "CI still red"}
+	}
+
+	res := Fix(h, pipelineCfg(), log, it, prDoctor())
+
+	for i, err := range errs {
+		if !errors.Is(err, ci.ErrFixRefused) || !strings.Contains(err.Error(), `gate "check"`) {
+			t.Errorf("fix %d over a red merge gate is refused naming the gate, got %v", i+1, err)
+		}
+	}
+	assertWatchPushedNothing(t, h, repo, it.PR.HeadBranch, it.PR.HeadSHA)
+	if res.OK || res.Disposition != stages.NoPR {
+		t.Errorf("a refused fix pushed nothing, so the run is no-PR, got %+v", res)
+	}
+	got := calls(h)
+	if !strings.Contains(got, "agent cifix-1|shell gate-cifix1-check|") || !strings.Contains(got, "shell gate-cifix1-merge-check|") {
+		t.Errorf("the branch gate, then the merge gate, run over the fix; calls = %v", h.Calls)
+	}
+	var cifix2 string
+	for _, a := range h.Agents {
+		if a.Label == "cifix-2" {
+			cifix2 = a.Prompt
+		}
+	}
+	if !strings.Contains(cifix2, "undefined: Widget") || !strings.Contains(cifix2, "origin/main") {
+		t.Errorf("the next CIFix session gets the merge gate's output, got:\n%s", cifix2)
+	}
+	if strings.Contains(cifix2, "FAIL TestThing") {
+		t.Error("the next CIFix session works the merge gate's red, not the CI log it already answered")
+	}
+	if _, err := os.Stat(h.Worktree().Path() + ".merge"); !os.IsNotExist(err) {
+		t.Errorf("the trial merge's worktree is removed, stat err = %v", err)
+	}
+	if out := repo.Git(repo.Dir, "worktree", "list"); strings.Contains(out, ".merge") {
+		t.Errorf("git still lists the trial merge:\n%s", out)
+	}
+}
+
+// A fix whose merge with origin/main conflicts is refused too: there is no merged
+// tree to gate, and CI cannot check one either.
+func TestFixRefusesACIFixThatConflictsWithMain(t *testing.T) {
+	h, it, repo := prHost(t, harnessItem(CIRed))
+	repo.Merge("feat-gh-7.txt", "main's own version\n", "main edits the PR's file")
+	var fixErr error
+	h.CIFn = func(w hostio.CIWatch) ci.Outcome {
+		fixErr = w.Fix("FAIL TestThing", true)
+		return ci.Outcome{OK: false, Reason: "auto-fix session failed"}
+	}
+
+	Fix(h, pipelineCfg(), pipelineLog(t), it, prDoctor())
+
+	if fixErr == nil || !strings.Contains(fixErr.Error(), "feat-gh-7.txt") {
+		t.Fatalf("a fix that conflicts with main is refused naming the conflict, got %v", fixErr)
+	}
+	assertWatchPushedNothing(t, h, repo, it.PR.HeadBranch, it.PR.HeadSHA)
+	if strings.Contains(calls(h), "merge-check") {
+		t.Errorf("a conflicted merge has nothing to gate; calls = %v", h.Calls)
+	}
+}
+
+// A branch that already holds origin/main has a merge ref identical to its HEAD,
+// so the gates over the branch are the gates over the merge: none run twice.
+func TestFixGatesABranchOnMainOnlyOnce(t *testing.T) {
+	h, it, repo := prHost(t, harnessItem(CIRed))
+	h.AgentFn = func(_ int, run hostio.AgentRun) session.Outcome {
+		if run.Label == "cifix-1" {
+			repo.Resolve(h.Worktree())
+		}
+		return session.Outcome{}
+	}
+	var fixErr error
+	h.CIFn = func(w hostio.CIWatch) ci.Outcome {
+		fixErr = w.Fix("FAIL TestThing", true)
+		return ci.Outcome{OK: true}
+	}
+
+	Fix(h, pipelineCfg(), pipelineLog(t), it, prDoctor())
+
+	if fixErr != nil {
+		t.Fatalf("a green fix on main is accepted, got %v", fixErr)
+	}
+	if strings.Contains(calls(h), "merge") {
+		t.Errorf("no trial merge for a branch already on origin/main; calls = %v", h.Calls)
+	}
+}
+
 // herd PR #1312 (#167): red CI on Build, a CIFix session that commits a fix, and
 // the storybook gate over it red because the test browser's connection closed
 // under a story the fix never touched. The gate is re-run once, and the fix it
@@ -447,6 +564,18 @@ func assertNothingPushed(t *testing.T, h *hostio.Fake, repo *gittest.Repo, branc
 	got := calls(h)
 	if strings.Contains(got, "|push|") || strings.Contains(got, "push-force") || strings.Contains(got, "watch-ci") {
 		t.Errorf("nothing may be pushed or watched; calls = %v", h.Calls)
+	}
+	if now := repo.OnOrigin(branch); now != tip {
+		t.Errorf("origin's %s moved from %s to %s", branch, tip, now)
+	}
+}
+
+// assertWatchPushedNothing fails when the CI watch pushed, or origin's branch no
+// longer sits at tip.
+func assertWatchPushedNothing(t *testing.T, h *hostio.Fake, repo *gittest.Repo, branch, tip string) {
+	t.Helper()
+	if got := calls(h); strings.Contains(got, "|push|") || strings.Contains(got, "push-force") {
+		t.Errorf("nothing may be pushed; calls = %v", h.Calls)
 	}
 	if now := repo.OnOrigin(branch); now != tip {
 		t.Errorf("origin's %s moved from %s to %s", branch, tip, now)

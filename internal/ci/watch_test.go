@@ -34,6 +34,9 @@ type fakeDriver struct {
 
 	reruns, fixes, pushes, awaits int
 	rerunErr, fixErr, awaitErr    error
+	// fixErrs, when set, is what each Fix call returns in turn (the last repeats);
+	// it overrides fixErr.
+	fixErrs []error
 
 	mergeState MergeVerdict // verdict d.MergeState() reports (zero = MergeUnknown)
 	mergeErr   error
@@ -64,6 +67,9 @@ func (d *fakeDriver) Fix([]Check) error {
 	d.fixes++
 	if d.clock != nil {
 		d.clock.sleep(d.fixCost)
+	}
+	if len(d.fixErrs) > 0 {
+		return d.fixErrs[min(d.fixes, len(d.fixErrs))-1]
 	}
 	return d.fixErr
 }
@@ -549,6 +555,44 @@ func TestWatchSurfacesFixError(t *testing.T) {
 	}
 	if !strings.Contains(out.Reason, "sandbox fix session crashed") {
 		t.Fatalf("reason %q should surface the fix error", out.Reason)
+	}
+}
+
+// #259: a fix the caller refused before the push (the harness's own gate over its
+// merge with origin/main went red) pushes nothing, polls nothing, and spends its
+// attempt; the next attempt runs at once, and the one after it is pushed.
+func TestWatchRetriesARefusedFixWithoutPushingIt(t *testing.T) {
+	refused := fmt.Errorf("gate red over the merge: %w", ErrFixRefused)
+	d := &fakeDriver{
+		polls:   []pollResult{{v: Failed, checks: failChecks()}, {v: Failed, checks: failChecks()}, {v: Passed}},
+		fixErrs: []error{refused, nil},
+	}
+	out := WatchAndFix(d, testWatchCfg(), newFakeClock().now)
+	if !out.OK {
+		t.Fatalf("the second, accepted fix goes green, got %+v", out)
+	}
+	if d.fixes != 2 || d.pushes != 1 || d.awaits != 1 {
+		t.Fatalf("fixes=%d pushes=%d awaits=%d, want 2/1/1: the refused fix is never pushed", d.fixes, d.pushes, d.awaits)
+	}
+	if d.pollCalls != 3 {
+		t.Errorf("polls = %d, want 3: nothing is polled after a refused fix", d.pollCalls)
+	}
+}
+
+// A refused fix spends an attempt, and a watch whose last attempt was refused
+// says why it pushed nothing.
+func TestWatchRefusedOnEveryAttemptPushesNothing(t *testing.T) {
+	refused := fmt.Errorf("gate red over the merge: %w", ErrFixRefused)
+	d := &fakeDriver{
+		polls:   []pollResult{{v: Failed, checks: failChecks()}},
+		fixErrs: []error{refused},
+	}
+	out := WatchAndFix(d, testWatchCfg(), newFakeClock().now)
+	if out.OK || d.pushes != 0 || d.fixes != 2 {
+		t.Fatalf("want !OK with 2 fixes and no push, got %+v fixes=%d pushes=%d", out, d.fixes, d.pushes)
+	}
+	if !strings.Contains(out.Reason, "gate red over the merge") || len(out.Failing) == 0 {
+		t.Errorf("the reason names the refusal and the failing checks are kept, got %+v", out)
 	}
 }
 

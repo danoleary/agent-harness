@@ -117,6 +117,7 @@ restart it too.
 | `gate re-run could not execute … toolchain missing in the gate shell` | the same PATH problem, in a gate | the same |
 | `harness gate re-run is red — not pushing` | a gate failed on the host | read the gate output in the review log |
 | `↻ gate "…" is red (exit N) with … — re-running it once` | the gate's log shows an environment failure (the test browser's connection closed, an out-of-memory kill or SIGKILL, a download failure, the gate cap), or a PR loop CI fix's gate failed only in files the fix did not touch | nothing; only a second red counts. If the re-run is red too, read its log (`gate-…-rerun-*.log`) |
+| `✗ gate "…" is red over auto-fix N merged with origin/main, though green on the branch alone — not pushing` | a CI fix passes the gates on its branch but not merged with origin/main, which is what CI checks (#259) | nothing; the next CI fix attempt gets that gate's output (`gate-cifixN-merge-*.log`). A fix that conflicts with origin/main is refused too; the PR loop's next poll resolves the conflict |
 | `review ✗ no worktree at … — run implementation first` | `review` was run alone | run `implementation` first |
 
 ## Landing
