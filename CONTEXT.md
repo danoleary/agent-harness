@@ -168,7 +168,10 @@ run was cut short, not broken, so it is never called a failure (ADR-0030).
 **BaseRed** means the base the worktree was cut from already fails a **Gate**, so no
 session launched and the ticket is held until main moves (ADR-0036). The loop then
 selects nothing while origin/main stays on that base and its red verdict is fresh
-(ADR-0039).
+(ADR-0039). In the **PR loop**, it means a conflict resolution's re-gate was red
+on a **Gate** origin/main fails by itself too: the base is red, not the branch,
+so nothing is pushed, no attempt is spent and the loop holds the same way
+(ADR-0048).
 **NeedsHuman** means the committed-fix recovery found the branch committed and
 unpushed but refused to land it, because the review refused that same tip with a
 blocked verdict or a red **Gate**. The loop labels the ticket blocked, comments the

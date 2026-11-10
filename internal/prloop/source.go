@@ -545,6 +545,21 @@ func (s *Source) TakeBack(it Item, err error) {
 	}
 }
 
+// HoldOnBase takes back the attempt Next recorded on it.PR when its conflict
+// resolution's re-gate was red only because origin/main, at sha, fails gate on
+// its own (#250). The base is red, not the PR, so no attempt is spent and the PR
+// is left unlabelled: the loop holds on that base and works the PR again once
+// main moves. Call it before the lease is released, so settling the lease does not
+// count the attempt. Best-effort: a failure is narrated, and an attempt it could
+// not take back stays spent.
+func (s *Source) HoldOnBase(it Item, sha, gate string) {
+	body := fmt.Sprintf("%s\nagent-harness resolved the conflict, but gate %q is red on `origin/main` itself (`%s`), with nothing of this branch on it, so it pushed nothing and this does not count as an attempt. It works the PR again once `main` moves.\n",
+		voidMarker(it.PR.HeadSHA, it.Kind), gate, short(sha))
+	if err := s.gh.Comment(it.PR.Number, body); err != nil {
+		s.log.Event("loop … warning: could not take back the attempt on " + Key(it.PR.Number) + ": " + err.Error())
+	}
+}
+
 // settle runs as the lease on c's PR is released, after the run that worked it. A
 // run that spent the PR's last attempt and left it failing hands it to a human
 // now, not on the next poll: the daemon's breaker may stop it before then, and the

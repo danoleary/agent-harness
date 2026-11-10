@@ -322,11 +322,13 @@ type Result struct {
 	// Interrupted (#99); zero otherwise.
 	Signal syscall.Signal
 	// HeldBase and HeldUntil name the base SHA a BaseRed hold was on and when its
-	// red verdict stops being trusted (baseRedRecheck), so the loop can idle on an
+	// red verdict stops being trusted (basegate.RedRecheck), so the loop can idle on an
 	// unchanged origin/main without selecting, claiming or provisioning again
-	// (#190). Zero otherwise.
+	// (#190). HeldGate is the Gate that verdict failed, which the PR loop names on
+	// the PR it held (#250). Zero otherwise.
 	HeldBase  string
 	HeldUntil time.Time
+	HeldGate  string
 	// Refusal says why the committed-fix recovery would not land the branch when
 	// Disposition is NeedsHuman (#230); empty otherwise.
 	Refusal string

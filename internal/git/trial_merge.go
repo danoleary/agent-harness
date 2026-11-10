@@ -3,6 +3,7 @@ package git
 import (
 	"fmt"
 	"os"
+	"strings"
 )
 
 // TrialMerge is a throwaway worktree holding a branch's HEAD with a ref merged
@@ -10,6 +11,7 @@ import (
 // the gates can run over it before a push (#259). It is detached, so it holds no
 // branch another worktree could need, and it sits beside the branch's own
 // worktree, under the checkout, where the gate container's bind mount reaches.
+// [Worktree.TrialBase] builds one with nothing merged: the base alone.
 type TrialMerge struct {
 	path string
 	repo string
@@ -51,6 +53,29 @@ func (w Worktree) TrialMerge(ref string) (TrialMerge, error) {
 	}
 	_ = m.Remove()
 	return TrialMerge{}, fmt.Errorf("merge %s into %s: %s", ref, shortSHA(head), gitSaid(out, err))
+}
+
+// TrialBase checks commit out alone, detached, in a scratch worktree at
+// `<path>.base`: the base with nothing of the branch in it, which the gates run
+// over to tell a red base from a red branch (#250). Like a trial merge, it holds
+// no branch and sits where the gate container's bind mount reaches. One a run
+// left behind is replaced. The caller removes it with [TrialMerge.Remove].
+func (w Worktree) TrialBase(commit string) (TrialMerge, error) {
+	b := TrialMerge{path: w.path + ".base", repo: w.repo, runners: w.runners}
+	_ = b.Remove()
+	if out, err := b.combined("git", "-C", w.repo, "worktree", "add", "-q", "--detach", b.path, commit); err != nil {
+		return TrialMerge{}, fmt.Errorf("add a scratch worktree at %s: %s", b.path, gitSaid(out, err))
+	}
+	return b, nil
+}
+
+// RefSHA is the commit ref names in the checkout, as of the last fetch.
+func (w Worktree) RefSHA(ref string) (string, error) {
+	out, err := w.output("git", "-C", w.repo, "rev-parse", "--verify", "-q", ref+"^{commit}")
+	if err != nil {
+		return "", fmt.Errorf("resolve %s: %w", ref, err)
+	}
+	return strings.TrimSpace(string(out)), nil
 }
 
 // Remove tears the trial merge's worktree down, forced: it holds an uncommitted
