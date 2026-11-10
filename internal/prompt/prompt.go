@@ -948,6 +948,14 @@ func withFixBody(c Context, lines []string) string {
 	return join(body(c), "---", strings.Join(lines, "\n"))
 }
 
+// leaveFullGateToHost keeps a conflict-resolution session from proving the
+// resolved HEAD green with the project's full gate before it stops (#288). The
+// harness re-runs every gate host-side on that same HEAD as soon as the session
+// exits, so an in-sandbox run paid the gate twice in a row and told the host
+// nothing it was not about to learn. The touched packages' build and tests stay:
+// they are the fast check that the hand-merged hunks compile.
+const leaveFullGateToHost = "After resolving, compile and run the tests of the packages you touched, and stop there. Do NOT run the project's full gate command: the harness runs it host-side on the resulting HEAD right after you stop and blocks the push if it is red, so running it here only pays the same gate twice."
+
 // rebaseFix builds the `-p` prompt for the sandboxed conflict-resolution
 // session the review stage launches when the proactive pre-push rebase hits a
 // genuine content conflict (BEH-581). The branch already passed the cold review +
@@ -983,6 +991,8 @@ func rebaseFix(c Context) string {
 		"Resolve conflicts to preserve the intent of BOTH sides: keep this ticket's change AND the incoming change from main. Do NOT blindly take one side (`--ours`/`--theirs`) — read both hunks and merge them so neither feature is lost. When in doubt, the ticket's intent is below.",
 		"",
 		"Do NOT run `git cherry-pick --abort` (or `git rebase --abort`) or otherwise give up — aborting would strand the branch on its stale base, which is exactly the dead-end this session exists to fix. If a hunk is genuinely impossible to reconcile, make your best-effort merge and leave a clear note in the commit; the harness re-runs the full gate host-side and watches CI, so a mistake surfaces there rather than silently shipping.",
+		"",
+		leaveFullGateToHost,
 		"",
 		"Ticket context (the intent to preserve — already fetched for you):",
 		"",
@@ -1024,6 +1034,8 @@ func mergeFix(c Context) string {
 		"Resolve conflicts to preserve the intent of BOTH sides: keep this PR's change AND the incoming change from main. Do NOT blindly take one side (`--ours`/`--theirs`) — read both hunks and merge them so neither feature is lost. When in doubt, the PR's intent is below.",
 		"",
 		"Do NOT run `git merge --abort` or otherwise give up — aborting leaves the PR conflicting, which is exactly the dead-end this session exists to fix. If a hunk is genuinely impossible to reconcile, make your best-effort merge and say so in the merge commit message; the harness re-runs the full gate host-side and watches CI, so a mistake surfaces there rather than silently shipping.",
+		"",
+		leaveFullGateToHost,
 		"",
 		"PR context (the intent to preserve — already fetched for you):",
 		"",
