@@ -14,6 +14,7 @@ package fix
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/danoleary/agent-harness/internal/ci"
@@ -79,11 +80,14 @@ func (e Env) promptContext(t Target) prompt.Context {
 // session can install in-session), unless the shell could not run the command at
 // all, which no session can fix (#46). Both loops that work a worktree the ticket
 // pipeline did not create share it.
-func (e Env) Provision() bool {
+func (e Env) Provision() bool { return e.provisionIn(e.Host.Worktree().Path(), "prep") }
+
+// provisionIn is [Env.Provision] over the worktree at path, under label.
+func (e Env) provisionIn(path, label string) bool {
 	if e.Cfg.PostCreate == "" {
 		return true
 	}
-	res := e.Host.Shell(hostio.ShellRun{Label: "prep", Command: e.Cfg.PostCreate, WorktreePath: e.Host.Worktree().Path(), Cap: e.Cfg.ReviewTimeout})
+	res := e.Host.Shell(hostio.ShellRun{Label: label, Command: e.Cfg.PostCreate, WorktreePath: path, Cap: e.Cfg.ReviewTimeout})
 	if missing, ok := verify.CommandUnrunnable(res.Outcome); ok {
 		e.Log.Event(fmt.Sprintf("%s ✗ post_create could not run (%q, exit %d) — fix the sandbox image's PATH; nothing pushed", e.Who, missing, res.ExitCode))
 		return false
@@ -177,6 +181,12 @@ func (e Env) gates(labelPrefix string, fixed []string) GateResult {
 		e.Log.Event(e.Who + " · host gate skipped — diff touches only docs/prose paths no gate depends on (BEH-687)")
 		return GateResult{}
 	}
+	return e.gatesIn(wt.Path(), labelPrefix, fixed)
+}
+
+// gatesIn runs the gates over the worktree at worktreePath: the ticket's own, or
+// a trial merge of it (#259).
+func (e Env) gatesIn(worktreePath, labelPrefix string, fixed []string) GateResult {
 	// Only so many runs gate at once across the loop instances sharing the lock
 	// dir (#89). The wait is for the gate step alone: a run implements and reviews
 	// while another gates, and queues here.
@@ -191,7 +201,6 @@ func (e Env) gates(labelPrefix string, fixed []string) GateResult {
 		release = func() {}
 	}
 	defer release()
-	worktreePath := wt.Path()
 	// RunGates stops at the first red, so the last gate run is the failing one.
 	var lastLog string
 	res := RunGates(e.Cfg.Gates, func(g config.Gate) session.Outcome {
@@ -273,9 +282,11 @@ func (e Env) CI(t Target) func(ciLogs string, logAvailable bool) error {
 
 // GatedCI is the CI watch's fix callback both loops that watch an open PR hand
 // [hostio.CIWatch]: a [Env.CI] session over the failing logs, whose committed fix
-// must then pass every gate before the watch may push it. It counts what it did,
-// so its caller can tell a run that launched a session (whose transcripts a
-// retrospective mines) or had a fix pushed from one that did neither.
+// must then pass every gate before the watch may push it — over the branch, and
+// over the branch merged with origin/main, which is what CI checks (#259). It
+// counts what it did, so its caller can tell a run that launched a session (whose
+// transcripts a retrospective mines) or had a fix pushed from one that did
+// neither.
 type GatedCI struct {
 	env   Env
 	ciFix func(ciLogs string, logAvailable bool) error
@@ -283,6 +294,10 @@ type GatedCI struct {
 	Attempts int
 	// Accepted is how many fixes passed the gates; the watch pushes each one.
 	Accepted int
+	// refusal is why the last fix was refused before the push: the red merge
+	// gate's output, which the next attempt works from in place of the CI log the
+	// watch hands it. That log is the red the refused fix already answered.
+	refusal string
 }
 
 // GatedCI returns the gated CI fix over t, for one CI watch.
@@ -291,9 +306,14 @@ func (e Env) GatedCI(t Target) *GatedCI { return &GatedCI{env: e, ciFix: e.CI(t)
 // Fix runs one CIFix session and gates its commit. A gate red only in files the
 // fix left alone is re-run once before it refuses the fix (#167); not knowing what
 // the fix changed leaves the plain gates. A red gate refuses the fix, so the watch
-// pushes nothing.
+// pushes nothing. A fix green on the branch is then gated merged with origin/main
+// ([GatedCI.mergeGate]); a red there is refused with [ci.ErrFixRefused], and the
+// next attempt gets its output as its logs.
 func (g *GatedCI) Fix(ciLogs string, logAvailable bool) error {
 	g.Attempts++
+	if g.refusal != "" {
+		ciLogs, logAvailable, g.refusal = g.refusal, true, ""
+	}
 	wt := g.env.Host.Worktree()
 	before, _ := wt.HeadSHA()
 	if err := g.ciFix(ciLogs, logAvailable); err != nil {
@@ -309,8 +329,74 @@ func (g *GatedCI) Fix(ciLogs string, logAvailable bool) error {
 	if !gate.Green() {
 		return fmt.Errorf("gate %q is red over auto-fix %d (exit %d) — not pushing", gate.FailedGate, g.Attempts, gate.Outcome.ExitCode)
 	}
+	if err := g.mergeGate(label); err != nil {
+		return err
+	}
 	g.Accepted++
 	return nil
+}
+
+// mergeGateTailLines bounds the red merge gate's log the next CIFix session gets.
+const mergeGateTailLines = 200
+
+// mergeGate runs the gates over the fix merged with origin/main, in a throwaway
+// [gitpkg.TrialMerge], when origin/main is not already in the branch: the red
+// check the fix answers ran on the PR's merge ref, so a fix green alone and red
+// merged would only send CI red again, a CI round and a fix attempt later (#259).
+// origin/main is fetched first, as CI's merge ref would be. A merge that
+// conflicts, or that git cannot make, refuses the fix outright; a red gate over
+// it refuses with [ci.ErrFixRefused] and keeps the gate's output for the next
+// attempt. A docs-only branch is not gated here, as on the branch.
+func (g *GatedCI) mergeGate(label string) error {
+	e := g.env
+	if err := e.Host.FetchMain(); err != nil {
+		e.Log.Event(e.Who + " … warning: could not refresh origin/main before gating the fix merged with it: " + err.Error())
+	}
+	wt := e.Host.Worktree()
+	if wt.IsRebasedOnto(gitpkg.BaseRef) || wt.DocsOnly(e.Cfg.DocsOnlyExcludedRoots) {
+		return nil
+	}
+	m, err := wt.TrialMerge(gitpkg.BaseRef)
+	if err != nil {
+		return fmt.Errorf("could not merge auto-fix %d with %s to gate it as CI will (%v) — not pushing", g.Attempts, gitpkg.BaseRef, err)
+	}
+	defer func() {
+		if err := m.Remove(); err != nil {
+			e.Log.Event(fmt.Sprintf("%s … warning: could not remove the trial merge at %s: %v", e.Who, m.Path(), err))
+		}
+	}()
+	if len(m.Conflicts) > 0 {
+		return fmt.Errorf("auto-fix %d conflicts with %s in %s — not pushing", g.Attempts, gitpkg.BaseRef, strings.Join(m.Conflicts, ", "))
+	}
+	e.Log.Event(fmt.Sprintf("%s · gating auto-fix %d merged with %s, as CI checks it (#259)", e.Who, g.Attempts, gitpkg.BaseRef))
+	if !e.provisionIn(m.Path(), "prep-"+strings.TrimPrefix(label, "gate-")+"-merge") {
+		return fmt.Errorf("post_create could not run in the trial merge of auto-fix %d — not pushing", g.Attempts)
+	}
+	gate := e.gatesIn(m.Path(), label+"-merge", nil)
+	if gate.Green() {
+		return nil
+	}
+	e.Log.Event(fmt.Sprintf("%s ✗ gate %q is red over auto-fix %d merged with %s, though green on the branch alone — not pushing; the next attempt works from its output (#259)", e.Who, gate.FailedGate, g.Attempts, gitpkg.BaseRef))
+	g.refusal = mergeRefusal(g.Attempts, gate, tailLines(e.gateLog(gate.Log), mergeGateTailLines))
+	return fmt.Errorf("gate %q is red over auto-fix %d merged with %s (exit %d), though green on the branch alone — not pushing: %w", gate.FailedGate, g.Attempts, gitpkg.BaseRef, gate.Outcome.ExitCode, ci.ErrFixRefused)
+}
+
+// mergeRefusal is what the attempt after a refused fix is handed as its logs: why
+// the harness withheld the fix, and the red merge gate's output.
+func mergeRefusal(attempt int, gate GateResult, log string) string {
+	if strings.TrimSpace(log) == "" {
+		log = gate.Outcome.StderrTail
+	}
+	return fmt.Sprintf("The harness did NOT push auto-fix %d. Its own gate %q passed on the branch alone but went red (exit %d) over the branch merged with origin/main — and CI checks the PR's merge with origin/main, so it would go red the same way. Make the branch pass once merged: `git diff HEAD...origin/main` shows what origin/main changed since the branch left it. Do NOT merge or rebase origin/main into the branch; the harness does that itself. The merge gate's output follows.\n\n%s", attempt, gate.FailedGate, gate.Outcome.ExitCode, log)
+}
+
+// tailLines is the last n lines of s.
+func tailLines(s string, n int) string {
+	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	return strings.Join(lines, "\n")
 }
 
 // sessionError maps a finished auto-fix session's outcome to the error the

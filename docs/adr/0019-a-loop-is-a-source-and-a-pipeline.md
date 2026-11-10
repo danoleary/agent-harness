@@ -422,3 +422,30 @@ ticket loop already saves such work as a harness recovery checkpoint
 The security-alerts loop does not change: its checkout cuts a fresh branch and
 deliberately drops a failed attempt's commits (ADR-0040), so it still keeps a
 dirty worktree for a look.
+
+## Amendment, 2026-11-10: a CI fix is gated merged with origin/main too (#259)
+
+The CI watch gated a CIFix commit on the branch HEAD alone. The red check it
+answers ran on the PR's merge ref, which is the branch merged with current
+origin/main. A fix that was green alone and red once merged passed the gates and
+was pushed, and CI went red again. That cost another fix attempt from the budget
+and another CI round, for a failure the host could have found itself.
+
+- **A fix green on the branch is gated again over a trial merge** when origin/main
+  is not an ancestor of its HEAD (`fix.GatedCI`). The host refetches origin/main,
+  then merges it into a detached scratch worktree at the fix's HEAD
+  (`git merge --no-commit --no-ff`, `gitpkg.Worktree.TrialMerge`, at
+  `.claude/worktrees/<slug>.merge`). It runs `post_create` and every gate there,
+  then removes the scratch worktree. The branch and its worktree never gain
+  origin/main's changes. The branch's own history, and any rebase, stay the
+  harness's (decision 4).
+- **A merge that conflicts refuses the fix.** No merged tree exists to gate. The
+  PR reads as conflicting, so the next poll works it as a conflict.
+- **A red merge gate refuses the fix without a push, and the next attempt starts
+  at once.** The refusal wraps `ci.ErrFixRefused`. `ci.WatchAndFix` does not push or
+  poll for it, and it counts against `CI_MAX_FIX_ATTEMPTS`. The next CIFix session
+  gets the merge gate's output as its logs, in place of the CI log the refused fix
+  already answered. This replaces waiting a CI round for CI to report the same red.
+- The merge gate runs the plain gates. A red in a file the fix did not touch is
+  not re-run as it is on the branch (#167): origin/main's changes are exactly what
+  a merge can break. A docs-only branch is not merge-gated, as it is not gated.

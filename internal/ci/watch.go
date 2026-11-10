@@ -105,6 +105,13 @@ type Config struct {
 // retrospective stages' SpendingCapAbort handling from BEH-494).
 var ErrSpendingCapActive = errors.New("auto-fix skipped: spending cap reached, retry after reset")
 
+// ErrFixRefused is what a Fix callback wraps when it withheld a fix it already
+// knows is still red: the harness's own gate over the fix merged with origin/main
+// failed, so CI on the PR's merge ref would too (#259). WatchAndFix pushes
+// nothing and polls nothing for it, spends the attempt, and starts the next at
+// once; the callback hands that attempt the reason it refused.
+var ErrFixRefused = errors.New("auto-fix refused before the push")
+
 // Outcome is the terminal result of watching (and trying to fix) CI.
 type Outcome struct {
 	OK bool
@@ -185,6 +192,7 @@ func WatchAndFix(d Driver, cfg Config, now func() time.Time) Outcome {
 	failed = FailedChecks(checks)
 
 	// Real failure: bounded diagnose + fix + push + re-poll.
+	var refused error
 	for attempt := 1; attempt <= cfg.MaxFixAttempts; attempt++ {
 		if !now().Before(deadline) {
 			return Outcome{
@@ -193,7 +201,14 @@ func WatchAndFix(d Driver, cfg Config, now func() time.Time) Outcome {
 				Failing: failed,
 			}
 		}
+		refused = nil
 		if err := d.Fix(failed); err != nil {
+			// A fix the harness's own gate already showed is still red is not
+			// pushed: CI would only say so again, a whole CI round later (#259).
+			if errors.Is(err, ErrFixRefused) {
+				refused = err
+				continue
+			}
 			// A spending-cap abort means the fix session never ran — defer rather than
 			// count it as a fix-attempt failure, so a cap-active window doesn't sink an
 			// otherwise-recoverable CI-fix that a post-reset re-dispatch would land
@@ -229,11 +244,11 @@ func WatchAndFix(d Driver, cfg Config, now func() time.Time) Outcome {
 		failed = FailedChecks(checks)
 	}
 
-	return Outcome{
-		OK:      false,
-		Reason:  fmt.Sprintf("CI still red after %d auto-fix attempt(s)", cfg.MaxFixAttempts),
-		Failing: failed,
+	reason := fmt.Sprintf("CI still red after %d auto-fix attempt(s)", cfg.MaxFixAttempts)
+	if refused != nil {
+		reason += "; the last was not pushed: " + refused.Error()
 	}
+	return Outcome{OK: false, Reason: reason, Failing: failed}
 }
 
 // zeroDiffReason is the operator-facing summary when the watch short-circuits a
