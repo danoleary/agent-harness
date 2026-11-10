@@ -54,3 +54,4 @@ catches a duplicate there.
 - [ADR-0044](0044-a-sandboxed-session-reaps-a-leftover-browser-before-a-story-run.md): A sandboxed session reaps a leftover browser before a story run
 - [ADR-0045](0045-a-triage-loop-moves-agent-ready-tickets-into-the-ready-queue.md): A triage loop moves agent-ready tickets into the ready queue
 - [ADR-0046](0046-a-tickets-session-starts-in-its-worktree.md): A ticket's session starts in its worktree
+- [ADR-0046](0046-an-overlap-mention-must-name-a-file-in-particular.md): An overlap mention must name a file in particular, and a held queue says so

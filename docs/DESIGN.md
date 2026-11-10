@@ -946,12 +946,18 @@ A ticket is eligible iff **all** hold:
   tracked files that claimed ticket's own text names, so a ticket another
   instance claimed a moment ago holds its siblings before its first edit. It predicts the
   candidate's files from the paths, file names and backticked module names in
-  its title and body (`overlap.Predict`). If one piece of work shares
+  its title and body (`overlap.Predict`). A directory, a generic or dot-prefixed
+  bare name (`index.ts`, `config`, `.figma.tsx`) and anything in a fenced code
+  block name no file
+  ([ADR-0046](https://github.com/danoleary/agent-harness/blob/main/docs/adr/0046-an-overlap-mention-must-name-a-file-in-particular.md)). If one piece of work shares
   `OVERLAP_THRESHOLD` (default 1) of those files, the ticket is passed over for this
   poll (logging `#97 deferred: overlaps PR #81 on <files>`) and the next ready
   ticket is selected. It is re-checked every poll, so it dispatches on the first
   poll after that PR merges or closes. A ticket labelled `parallel-ok`
-  (`OVERLAP_ESCAPE_LABEL`) is never deferred. A failed read of the work in flight
+  (`OVERLAP_ESCAPE_LABEL`) is never deferred. When every ready ticket is
+  deferred, the poll is logged as `queue held: N ticket(s) deferred by overlaps
+  (…)`, not `queue empty`, and each deferral reaches `loop.jsonl` as an
+  `item-skipped` record. A failed read of the work in flight
   is narrated and fails *open*, which is the behaviour before the check existed.
 - **not gated on a telemetry re-measure**: a low-confidence perf *watch/confirm*
   ticket whose first acceptance criterion is to re-pull the metric over a wider

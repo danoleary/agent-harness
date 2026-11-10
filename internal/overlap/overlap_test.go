@@ -35,13 +35,8 @@ func TestMatchPredictsTheFilesABodyNames(t *testing.T) {
 			want: []string{"web/src/modules/space/host-document-session.ts"},
 		},
 		{
-			name: "a directory names every file under it",
+			name: "a directory names no file under it",
 			body: "Everything lives under `web/src/modules/space/`.",
-			want: []string{
-				"web/src/modules/space/document-page-controls.test.tsx",
-				"web/src/modules/space/document-page-controls.tsx",
-				"web/src/modules/space/host-document-session.ts",
-			},
 		},
 		{
 			name: "a tail of a path",
@@ -185,5 +180,74 @@ func TestDeferralReason(t *testing.T) {
 	d := Deferral{Work: prWork("PR #11", "feat/gh-2"), Files: []string{"a.go", "b.go"}}
 	if got, want := d.Reason(), "deferred: overlaps PR #11 on a.go, b.go"; got != want {
 		t.Errorf("Reason() = %q, want %q", got, want)
+	}
+}
+
+// The herd queue sat idle for hours on 2026-11-09 (#281): nearly every ready
+// ticket deferred on a mention that named files the ticket never meant to touch.
+// Each body below is one of those false matches, replayed against the files the
+// in-flight work changed, and each names nothing.
+func TestMatchIgnoresMentionsThatNameNoFileInParticular(t *testing.T) {
+	inFlight := []string{
+		".agent-harness/.env.example",
+		".gitignore",
+		".mcp.json",
+		".nvmrc",
+		"web/src/middleware/index.ts",
+		"web/src/routes/index.tsx",
+		"web/src/lib/config.ts",
+		"web/src/modules/space/whiteboard.tsx",
+		"web/src/modules/settings/change-password-card.tsx",
+		"web/test/integration/auth.test.ts",
+		"web/test/integration/space.test.ts",
+	}
+	cases := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "a dot-prefixed glob suffix is not every dotfile",
+			body: "`*.figma.tsx` files are out of scope",
+		},
+		{
+			name: "a generic bare file name names no file in particular",
+			body: "see `index.ts`",
+		},
+		{
+			name: "a generic backticked module name names no file in particular",
+			body: "Read it from `config`.",
+		},
+		{
+			name: "a directory is context, not a file to edit",
+			body: "touch `web/test/integration/`",
+		},
+		{
+			name: "a file name quoted in a fenced log excerpt is evidence",
+			body: "The story fails:\n\n```\nFAIL web/src/modules/space/whiteboard.stories.tsx\n  at whiteboard.tsx:12\n```\n\nFix the flaky timer.",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := Match(Predict(c.body), inFlight); len(got) != 0 {
+				t.Errorf("Match = %v, want no match", got)
+			}
+		})
+	}
+}
+
+// Tightening the match keeps the real overlaps: a ticket that names a file waits
+// behind the PR that changes it, by path or by a distinctive file name.
+func TestCheckStillDefersARealOverlap(t *testing.T) {
+	work := []Work{prWork("PR #1407", "feat/beh-1200", "web/src/modules/space/whiteboard.tsx")}
+	for _, body := range []string{
+		"Fix the eraser in `web/src/modules/space/whiteboard.tsx`.",
+		"Fix the eraser in whiteboard.tsx.",
+		"The eraser lives in `whiteboard`.",
+	} {
+		tk := ticket.Ticket{Identifier: "BEH-1243", Description: body}
+		d, deferred := Check(tk, "feat/beh-1243", work, Policy{Threshold: 1})
+		if !deferred || d.Work.Label != "PR #1407" {
+			t.Errorf("%q: deferred = %v (%+v), want deferred behind PR #1407", body, deferred, d)
+		}
 	}
 }

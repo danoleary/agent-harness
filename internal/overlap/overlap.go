@@ -6,7 +6,9 @@
 //
 // The prediction is cheap and literal: the paths, file names and backticked module
 // names the ticket's title and body mention. A ticket that names no file in flight
-// dispatches as it always did.
+// dispatches as it always did. A mention that names no file in particular — a
+// directory, a generic name such as `index.ts`, a name inside a fenced code block
+// — names nothing, so it cannot defer a ticket on its own (#281).
 package overlap
 
 import (
@@ -45,8 +47,8 @@ type Deferral struct {
 	Files []string
 }
 
-// maxReasonFiles bounds the files a deferral line names, so a ticket that names a
-// whole directory does not flood the loop log.
+// maxReasonFiles bounds the files a deferral line names, so a ticket that names
+// many files does not flood the loop log.
 const maxReasonFiles = 5
 
 // Reason is the deferral's loop-log line: `deferred: overlaps PR #N on <files>`.
@@ -96,7 +98,8 @@ func text(t ticket.Ticket) string { return t.Title + "\n" + t.Description }
 type mentionKind int
 
 const (
-	// pathMention contains a slash: it names a file, a directory, or a path's tail.
+	// pathMention contains a slash: it names a file or a path's tail. A directory
+	// is context, not a plan to edit every file under it, so it names none (#281).
 	pathMention mentionKind = iota
 	// fileMention is a bare file name: it names every file with its stem, so
 	// `controls.tsx` names `controls.test.tsx` and `controls.stories.tsx` too.
@@ -133,11 +136,55 @@ var backtickRe = regexp.MustCompile("`([^`\\s]+)`")
 // moduleRe is a name a module can have.
 var moduleRe = regexp.MustCompile(`^[A-Za-z0-9_.-]*[A-Za-z][A-Za-z0-9_.-]*$`)
 
+// genericStems are file and module names so common that a bare mention of one
+// names no file in particular: `index.ts` sits in every directory of a web app,
+// and deferred a ticket behind any PR that touched one (#281). Name such a file by
+// its path.
+var genericStems = map[string]bool{
+	"index": true, "main": true, "route": true, "routes": true, "config": true,
+	"types": true, "env": true, "utils": true, "util": true, "helpers": true,
+	"constants": true, "page": true, "layout": true,
+}
+
+// distinctive reports whether a bare file or module name names files in
+// particular. A dot-prefixed name (`.figma.tsx`, `.env.example`) has an empty
+// stem, which every dotfile shares, so it names none (#281).
+func distinctive(name string) bool {
+	s := stem(name)
+	return s != "" && !genericStems[strings.ToLower(s)]
+}
+
+// fenceRe opens or closes a fenced code block.
+var fenceRe = regexp.MustCompile("^ {0,3}(```|~~~)")
+
+// prose is text without its fenced code blocks: a log excerpt or a stack trace
+// quotes the files a failure passed through as evidence, not as a plan to edit
+// them (#281). An unclosed fence runs to the end, as Markdown renders it.
+func prose(text string) string {
+	var b strings.Builder
+	fenced := false
+	for _, line := range strings.Split(text, "\n") {
+		if fenceRe.MatchString(line) {
+			fenced = !fenced
+			continue
+		}
+		if !fenced {
+			b.WriteString(line)
+			b.WriteByte('\n')
+		}
+	}
+	return b.String()
+}
+
 // Predict reads the files a ticket's text names, in first-seen order.
 func Predict(text string) []Mention {
+	text = prose(text)
 	var out []Mention
 	seen := map[Mention]bool{}
 	add := func(m Mention) {
+		if m.kind != pathMention && !distinctive(m.text) {
+			return
+		}
 		if !seen[m] {
 			seen[m] = true
 			out = append(out, m)
@@ -206,7 +253,7 @@ func stem(name string) string {
 func (m Mention) names(f string) bool {
 	switch m.kind {
 	case pathMention:
-		return f == m.text || strings.HasPrefix(f, m.text+"/") || strings.HasSuffix(f, "/"+m.text)
+		return f == m.text || strings.HasSuffix(f, "/"+m.text)
 	case fileMention:
 		return stem(path.Base(f)) == stem(m.text)
 	default:

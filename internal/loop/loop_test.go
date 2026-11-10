@@ -2396,3 +2396,36 @@ func TestCheckoutBlockedThreeTimesInARowDoesNotTripTheBreaker(t *testing.T) {
 		t.Errorf("record kind = %q (found=%v), want %q", k, ok, loopstream.KindTicketReleased)
 	}
 }
+
+// heldSource is a Source whose empty polls are held, not empty.
+type heldSource struct {
+	*fakeSource
+	held string
+}
+
+func (s heldSource) Held() string { return s.held }
+
+// A Source that held every ready item says so on the idle line instead of
+// "queue empty": the herd loop idled for hours over 20 overlap-deferred tickets
+// with no reason in loop.jsonl (#281).
+func TestHeldQueueIdlesSayingWhy(t *testing.T) {
+	r := &recorder{}
+	Run(Deps{
+		Host: &fakeHost{
+			clearStop:     func() error { return nil },
+			fetchMain:     func() error { return nil },
+			stopRequested: stopAfter(1),
+		},
+		Source:   heldSource{fakeSource: &fakeSource{next: func() (string, bool) { return "", false }}, held: "2 ticket(s) deferred by overlaps (#1, #2)"},
+		Pipeline: &fakePipeline{run: func(string) stages.Result { return stages.Result{Disposition: stages.Shipped} }},
+		Limits:   Limits{PollInterval: time.Minute, TickInterval: time.Minute},
+		Clock:    testClock{sleep: func(time.Duration) {}},
+		Log:      r,
+	})
+	if r.saw("queue empty") {
+		t.Errorf("a held queue must not narrate 'queue empty'; events = %v", r.events)
+	}
+	if k, ok := r.kindFor("loop — queue held: 2 ticket(s) deferred by overlaps (#1, #2); re-polling in 1m0s"); !ok || k != loopstream.KindIdle {
+		t.Errorf("held idle kind = %q (found=%v), want %q; events = %v", k, ok, loopstream.KindIdle, r.events)
+	}
+}

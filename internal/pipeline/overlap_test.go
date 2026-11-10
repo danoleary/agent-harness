@@ -2,8 +2,11 @@ package pipeline
 
 import (
 	"errors"
+	"reflect"
+	"strings"
 	"testing"
 
+	"github.com/danoleary/agent-harness/internal/loopstream"
 	"github.com/danoleary/agent-harness/internal/overlap"
 	"github.com/danoleary/agent-harness/internal/ticket"
 	"github.com/danoleary/agent-harness/internal/tracker"
@@ -107,6 +110,80 @@ func TestDeferOverlapsWithEveryTicketDeferredIsAnEmptyPoll(t *testing.T) {
 	if len(q.ready) != 1 {
 		t.Error("a deferred ticket must stay in the ready queue")
 	}
+}
+
+// A queue the screen deferred whole is held, not empty (#281): the loop sat on
+// "queue empty" for hours over 20 ready tickets. The selection and the narration
+// say how many tickets wait and which, a dry run included, and the deferral lines
+// reach the loop stream.
+func TestDeferOverlapsWithEveryTicketDeferredSaysTheQueueIsHeld(t *testing.T) {
+	for _, dryRun := range []bool{false, true} {
+		q := &readyQueue{ready: []ticket.Ticket{
+			{Identifier: "#1", Description: "Tidy internal/loop/loop.go."},
+			{Identifier: "#2", Description: "Split `loop/loop.go`."},
+		}}
+		rec := &recorder{}
+
+		sel := ResolveNext(screened(q, &inFlight{work: []overlap.Work{openPR}}, overlap.Policy{Threshold: 1}, rec), &mutexLock{}, dryRun, "label a ticket", rec)
+
+		if want := "2 ticket(s) deferred by overlaps (#1, #2)"; sel.Held != want {
+			t.Errorf("dry-run %v: Held = %q, want %q", dryRun, sel.Held, want)
+		}
+		if !rec.saw("queue held: 2 ticket(s) deferred by overlaps (#1, #2)") || rec.saw("queue empty") {
+			t.Errorf("dry-run %v: want a held queue, not an empty one; events = %v", dryRun, rec.events)
+		}
+		var streamed []string
+		for _, r := range rec.records {
+			if r.Kind == loopstream.KindItemSkipped {
+				streamed = append(streamed, r.Ticket)
+			}
+		}
+		if !reflect.DeepEqual(streamed, []string{"#1", "#2"}) {
+			t.Errorf("dry-run %v: deferrals streamed for %v, want #1 and #2", dryRun, streamed)
+		}
+	}
+}
+
+// A deferral that stands poll after poll reaches the stream once, while the
+// console still shows it each poll; a new reason streams again.
+func TestDeferOverlapsStreamsADeferralOnce(t *testing.T) {
+	q := &readyQueue{ready: []ticket.Ticket{{Identifier: "#1", Description: "Tidy internal/loop/loop.go."}}}
+	f := &inFlight{work: []overlap.Work{openPR}}
+	rec := &recorder{}
+	r := screened(q, f, overlap.Policy{Threshold: 1}, rec)
+	streamed := func() int {
+		n := 0
+		for _, r := range rec.records {
+			if r.Kind == loopstream.KindItemSkipped {
+				n++
+			}
+		}
+		return n
+	}
+
+	ResolveNext(r, &mutexLock{}, false, "", rec)
+	ResolveNext(r, &mutexLock{}, false, "", rec)
+	if n := streamed(); n != 1 {
+		t.Errorf("streamed %d deferrals over two polls, want 1", n)
+	}
+	if n := countSaw(rec, "#1 deferred: overlaps PR #10"); n != 2 {
+		t.Errorf("narrated the deferral %d times, want once per poll", n)
+	}
+	f.work = []overlap.Work{{Label: "PR #11", Branch: "feat/gh-8", Files: []string{"internal/loop/loop.go"}}}
+	ResolveNext(r, &mutexLock{}, false, "", rec)
+	if n := streamed(); n != 2 {
+		t.Errorf("streamed %d deferrals after the reason changed, want 2", n)
+	}
+}
+
+func countSaw(r *recorder, event string) int {
+	n := 0
+	for _, e := range r.events {
+		if strings.Contains(e, event) {
+			n++
+		}
+	}
+	return n
 }
 
 // Two siblings under one parent name the same module. The first dispatches; while
