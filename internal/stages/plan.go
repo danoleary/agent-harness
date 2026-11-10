@@ -158,14 +158,11 @@ func postCreateRun(cfg config.Config, worktreePath string) hostio.ShellRun {
 }
 
 // implementationRun is the /tdd session. A multi-file extract-and-rewire
-// refactor gets a larger active-time cap (tddCap, BEH-441/BEH-688). A retry after
-// a usage-policy refusal re-enters the worktree the first attempt left, so only
-// that variant is told where it is (BEH-389).
+// refactor gets a larger active-time cap (tddCap, BEH-441/BEH-688). Like every
+// ticket session it starts in the worktree (#245), so the envelope names the
+// worktree by its absolute path.
 func implementationRun(cfg config.Config, s Subject, resume prompt.Resume) hostio.AgentRun {
-	pctx := prompt.Context{Ticket: s.Ticket, Slug: s.Slug, BranchPrefix: cfg.BranchPrefix, Tracker: cfg.Tracker.Kind, Body: cfg.Prompts.Implement, Resume: resume, Sentry: s.Sentry}
-	if resume == prompt.AfterRefusal {
-		pctx.WorktreePath = s.WorktreePath
-	}
+	pctx := prompt.Context{Ticket: s.Ticket, Slug: s.Slug, BranchPrefix: cfg.BranchPrefix, Tracker: cfg.Tracker.Kind, WorktreePath: s.WorktreePath, Body: cfg.Prompts.Implement, Resume: resume, Sentry: s.Sentry}
 	return hostio.AgentRun{
 		Label:       implementationSession,
 		Model:       cfg.ImplementationModel,
@@ -173,6 +170,7 @@ func implementationRun(cfg config.Config, s Subject, resume prompt.Resume) hosti
 		Warnings:    prompt.BodyWarnings(pctx),
 		FindingsDir: runlog.FindingsDir(s.LogDir, implementationSession),
 		Cap:         tddCap(cfg, s.Ticket),
+		WorkDir:     s.WorktreePath,
 	}
 }
 
@@ -195,6 +193,7 @@ func reviewRun(cfg config.Config, s Subject, prior *prompt.PriorReview, redGate 
 		Prompt:   prompt.For(prompt.Review, pctx),
 		Warnings: prompt.BodyWarnings(pctx),
 		Cap:      cfg.ReviewTimeout,
+		WorkDir:  s.WorktreePath,
 	}
 }
 
@@ -216,11 +215,13 @@ func resolutionReviewRun(cfg config.Config, s Subject, base string, r *prompt.Re
 
 // retrospectiveRun is the retrospective session, handed the finding classes a
 // prior run already filed as settled context (BEH-539). A run that left no
-// transcripts gives it nothing to study, which its launch says (#219).
+// transcripts gives it nothing to study, which its launch says (#219). It starts
+// in the worktree (#245), so the log dir it is pointed at is absolute: the logs
+// live under the checkout, not under the worktree.
 func retrospectiveRun(cfg config.Config, s Subject, filed []prompt.FiledFinding) hostio.AgentRun {
 	pctx := prompt.Context{
 		Ticket: s.Ticket, Slug: s.Slug, BranchPrefix: cfg.BranchPrefix, Branch: s.Branch, Tracker: cfg.Tracker.Kind, WorktreePath: s.WorktreePath, Body: cfg.Prompts.Retro, Filed: filed, Base: s.Base,
-		LogDir: checkoutRelative(cfg.ProjectPath, s.LogDir), Transcripts: runLogs(s.LogDir),
+		LogDir: s.LogDir, Transcripts: runLogs(s.LogDir),
 	}
 	warnings := prompt.BodyWarnings(pctx)
 	if len(pctx.Transcripts) == 0 {
@@ -233,5 +234,6 @@ func retrospectiveRun(cfg config.Config, s Subject, filed []prompt.FiledFinding)
 		Warnings:    warnings,
 		FindingsDir: runlog.FindingsDir(s.LogDir, retrospectiveSession),
 		Cap:         cfg.RetrospectiveTimeout,
+		WorkDir:     s.WorktreePath,
 	}
 }

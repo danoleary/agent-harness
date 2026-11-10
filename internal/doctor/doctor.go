@@ -132,7 +132,7 @@ func Run(p Probes) []Result {
 	daemonUp := tools[0].Status == OK
 
 	results := append(tools, env)
-	results = append(results, checkProjectPath(p))
+	results = append(results, checkProjectPath(p), checkSessionSkills(p))
 	results = append(results, checkClaude(p), checkGitHubToken(p))
 
 	proj := loadProject(p)

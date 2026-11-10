@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/danoleary/agent-harness/internal/config"
+	gitpkg "github.com/danoleary/agent-harness/internal/git"
 )
 
 // minGit is the oldest git the harness supports: the pre-push replay uses
@@ -110,6 +111,36 @@ func checkProjectPath(p Probes) Result {
 		return Result{Name: "PROJECT_PATH", Status: Fail, Detail: detail, Fix: strings.TrimSuffix(fix, ".")}
 	}
 	return Result{Name: "PROJECT_PATH", Status: OK, Detail: path}
+}
+
+// checkSessionSkills compares the host checkout's `.claude/` tree — the skills,
+// settings and agents Claude Code loads from its working directory — with
+// origin/main. A ticket's sessions start in its worktree and load the base
+// commit's, but a session with no worktree (triage) starts in the checkout,
+// which the harness never updates, so a skill fix merged to main does not reach
+// it until the operator pulls (#245). It reads the local origin/main ref and
+// makes no network call.
+func checkSessionSkills(p Probes) Result {
+	const name = "session skills"
+	path := p.Getenv("PROJECT_PATH")
+	if config.ProjectPathProblem(path) != "" {
+		return Result{Name: name, Status: Skip, Detail: "no usable PROJECT_PATH to compare"}
+	}
+	out, err := p.Run("git", "-C", path, "diff", "--name-only", gitpkg.BaseRef, "--", ".claude/")
+	if err != nil {
+		return Result{Name: name, Status: Skip, Detail: "cannot compare the checkout's .claude/ with " + gitpkg.BaseRef + " (" + firstLine(out, err) + ")"}
+	}
+	drift := strings.Fields(string(out))
+	if len(drift) == 0 {
+		return Result{Name: name, Status: OK, Detail: "the host checkout's .claude/ matches " + gitpkg.BaseRef}
+	}
+	return Result{
+		Name:   name,
+		Status: Warn,
+		Detail: "the host checkout's .claude/ differs from " + gitpkg.BaseRef + " in " + strings.Join(drift, ", ") +
+			"\na session that starts in the checkout (triage) loads these, not main's; ticket sessions load their worktree's",
+		Fix: "bring the checkout up to date with main (`git -C " + path + " checkout main && git -C " + path + " pull --ff-only`), or commit the local skill edits upstream",
+	}
 }
 
 // checkClaude checks the one credential that crosses into the sandbox. Exactly

@@ -58,6 +58,12 @@ type AgentRun struct {
 	// NoMCP starts the session without the MCP servers the Consumer's project
 	// config declares: only the stages that drive a browser need them (#248).
 	NoMCP bool
+	// WorkDir is the ticket's worktree, where the session starts, so the skills,
+	// settings and CLAUDE.md it loads are the base commit's, not the host
+	// checkout's (#245, ADR-0046). Empty — a session with no worktree, such as
+	// triage — starts in the checkout, and the launch warns when the checkout's
+	// `.claude/` tree differs from origin/main.
+	WorkDir string
 	// Warnings are narrated before the session launches: what the prompt's
 	// composition could not do cleanly, such as a body placeholder this binary
 	// does not know (#219). The session runs regardless.

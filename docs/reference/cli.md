@@ -47,8 +47,10 @@ bad flag or argument. The per-toolchain defaults are recorded in ADR-0021.
 
 Checks the install, the host tools, the `.env` it read, every credential (with a
 live, read-only API call), the config and prompt bodies, the tracker's
-repo/team/project and labels, and the sandbox image. It prints a fix under every
-failing line (ADR-0020).
+repo/team/project and labels, the sandbox image, and whether the checkout's
+`.claude/` skills and settings match origin/main (a session that starts in the
+checkout, such as triage, loads them as the checkout has them). It prints a fix
+under every failing line (ADR-0020).
 
 | Flag | Meaning |
 |---|---|

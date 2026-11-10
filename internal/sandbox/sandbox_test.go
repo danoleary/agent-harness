@@ -292,6 +292,24 @@ func TestBindMountsCheckoutAtRealHostPath(t *testing.T) {
 	}
 }
 
+// A ticket's session starts in the ticket's worktree, as its gate container does,
+// so Claude Code loads `.claude/skills`, `.claude/settings.json` and CLAUDE.md from
+// the base commit the worktree was cut from, not from whatever branch the
+// operator's host checkout sits on (#245). The checkout stays mounted whole: the
+// worktree resolves into it, and the logs and locks live there.
+func TestAgentSessionStartsInTheWorktree(t *testing.T) {
+	c := baseConfig()
+	c.WorkDir = "/Users/dan/herd/.claude/worktrees/beh-362"
+	args := BuildDockerRunArgs(c)
+
+	if workdirs := valuesForFlag(args, "-w"); !slices.Equal(workdirs, []string{c.WorkDir}) {
+		t.Errorf("-w = %v, want only the worktree %q", workdirs, c.WorkDir)
+	}
+	if mounts := valuesForFlag(args, "-v"); !slices.Contains(mounts, c.ProjectPath+":"+c.ProjectPath) {
+		t.Errorf("mounts %v lost the checkout %q, which the worktree resolves into", mounts, c.ProjectPath)
+	}
+}
+
 func TestPassesSandboxSecretsByNameButNeverLinear(t *testing.T) {
 	args := BuildDockerRunArgs(baseConfig())
 	envNames := valuesForFlag(args, "-e")

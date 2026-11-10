@@ -240,7 +240,8 @@ func TestRetrospectiveOverAPRLoopRunListsTheLoopsOwnTranscripts(t *testing.T) {
 	if !res.OK {
 		t.Fatalf("res = %+v", res)
 	}
-	if want := "under `.agent-harness/logs/loops/pr-fix/PR-178/`"; !strings.Contains(prompt, want) {
+	// Absolute: the session starts in the worktree, not the checkout (#245).
+	if want := "under `" + logDir + "/`"; !strings.Contains(prompt, want) {
 		t.Errorf("prompt does not name the loop's log dir %q:\n%s", want, prompt)
 	}
 	for _, name := range left {

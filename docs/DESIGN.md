@@ -737,6 +737,15 @@ shared        : STOP (every loop), STOP-tickets (every instance), locks/claim.lo
   in every container and on the host** — a human can `cd .claude/worktrees/beh-nnn
   && git diff` to inspect live work. (The path is still fixed *per machine*, so
   the cross-container invariant the worktree contract relies on still holds.)
+- **A ticket's session starts in its worktree — see [ADR-0046](https://github.com/danoleary/agent-harness/blob/main/docs/adr/0046-a-tickets-session-starts-in-its-worktree.md).**
+  Every session over a worktree (implementation, review, retrospective, the PR
+  loop's fixes, SecurityFix) runs with `-w <worktree>`, as the gates do, so Claude
+  Code loads `.claude/skills/`, `.claude/settings.json` and CLAUDE.md from the
+  branch the harness cut from origin/main, not from the host checkout, which the
+  harness never updates (#245). The envelope names the worktree and the log dir by
+  absolute path. A session left in the checkout (triage, or a worktree gone from
+  disk) narrates a warning when the checkout's `.claude/` differs from origin/main,
+  and `doctor` reports the same drift.
 - **Harness picks the ticket; the skill is told which.** Neither skill selects a
   ticket. The harness queries Linear and passes the explicit `BEH-NNN` into the
   `/tdd` prompt.
@@ -1510,7 +1519,8 @@ reader over a structured stream rather than a `--tui` flag on the daemon.
   tools, the `.env` `config.ResolveEnvFile` picked and the ones it skipped, each
   credential with a live read-only API call (`GH_TOKEN`'s `X-OAuth-Scopes` must
   carry `repo`), the config and prompt bodies, the tracker's repo/team/project
-  and labels, whether the sandbox image is present, buildable or pullable, and,
+  and labels, whether the sandbox image is present, buildable or pullable,
+  whether the checkout's `.claude/` skills match origin/main (#245), and,
   when a `github_security_alerts` loop is declared, one read of the Dependabot
   alerts that names a missing scope or alerts turned off —
   and prints a fix under each failure. It exits 1 on any failure; `--offline`

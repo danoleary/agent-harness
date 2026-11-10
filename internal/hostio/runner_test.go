@@ -43,6 +43,7 @@ func testRunner(t *testing.T, outcomes ...session.Outcome) (*Runner, *[]launch) 
 	}, log, "20260920-101500", false)
 	r.pid = "4242"
 	r.sleep = func(time.Duration) {}
+	r.skillDrift = func() ([]string, error) { return nil, nil }
 	r.run = func(args []string, opts session.Options) session.Outcome {
 		seen = append(seen, launch{args: args, opts: opts})
 		if len(seen) <= len(outcomes) {
@@ -416,5 +417,104 @@ func TestRunnerNarratesTheRunsWarningsBeforeLaunching(t *testing.T) {
 	}
 	if !strings.Contains(string(raw), `⚠ retrospective: prompt body names {{.RunName}}`) {
 		t.Errorf("run.jsonl does not narrate the warning:\n%s", raw)
+	}
+}
+
+// runLog is what the Runner narrated into run.jsonl.
+func runLog(t *testing.T, r *Runner) string {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(r.log.Dir, "run.jsonl"))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("read run.jsonl: %v", err)
+	}
+	return string(raw)
+}
+
+// #245: a ticket's session starts in its worktree, so the skills it loads are the
+// base commit's. A worktree that is there needs no look at the host checkout.
+func TestAgentStartsInItsWorktree(t *testing.T) {
+	r, seen := testRunner(t)
+	probed := false
+	r.skillDrift = func() ([]string, error) { probed = true; return []string{".claude/skills/tdd/SKILL.md"}, nil }
+	wt := t.TempDir()
+
+	r.Agent(AgentRun{Label: "implementation", WorkDir: wt})
+
+	if got := flagValue((*seen)[0].args, "-w"); got != wt {
+		t.Errorf("-w = %q, want the worktree %q", got, wt)
+	}
+	if probed {
+		t.Error("a session in its worktree probed the host checkout's .claude/ tree")
+	}
+}
+
+// The incident in #245: the session started in the operator's host checkout, which
+// sat on a side branch whose /tdd skill predated the base commit's, and nothing
+// said so. A session that starts in the checkout now narrates that drift.
+func TestAgentInTheCheckoutWarnsWhenItsSkillsDifferFromTheBase(t *testing.T) {
+	r, seen := testRunner(t)
+	r.skillDrift = func() ([]string, error) {
+		return []string{".claude/skills/review-worktree/SKILL.md", ".claude/skills/tdd/SKILL.md"}, nil
+	}
+
+	r.Agent(AgentRun{Label: "triage"})
+
+	if got := flagValue((*seen)[0].args, "-w"); got != r.cfg.ProjectPath {
+		t.Errorf("-w = %q, want the checkout %q", got, r.cfg.ProjectPath)
+	}
+	log := runLog(t, r)
+	for _, want := range []string{"⚠ triage:", "origin/main", ".claude/skills/tdd/SKILL.md", ".claude/skills/review-worktree/SKILL.md"} {
+		if !strings.Contains(log, want) {
+			t.Errorf("run.jsonl does not name %q:\n%s", want, log)
+		}
+	}
+}
+
+// A checkout whose .claude/ matches the base, or that cannot be compared (no
+// origin/main yet), says nothing: the warning is for drift, not for doubt.
+func TestAgentInTheCheckoutIsQuietWithoutDrift(t *testing.T) {
+	for name, probe := range map[string]func() ([]string, error){
+		"matches":    func() ([]string, error) { return nil, nil },
+		"unreadable": func() ([]string, error) { return nil, errors.New("unknown revision origin/main") },
+	} {
+		t.Run(name, func(t *testing.T) {
+			r, _ := testRunner(t)
+			r.skillDrift = probe
+			r.Agent(AgentRun{Label: "triage"})
+			if log := runLog(t, r); strings.Contains(log, "⚠") {
+				t.Errorf("run.jsonl warns:\n%s", log)
+			}
+		})
+	}
+}
+
+// A worktree that has gone from disk must not be recreated as an empty directory
+// by `docker run -w` inside the mounted checkout: the session starts in the
+// checkout instead, and says so along with any skill drift there.
+func TestAgentWhoseWorktreeIsGoneStartsInTheCheckoutAndSaysSo(t *testing.T) {
+	r, seen := testRunner(t)
+	r.skillDrift = func() ([]string, error) { return []string{".claude/skills/tdd/SKILL.md"}, nil }
+	gone := filepath.Join(t.TempDir(), "beh-1")
+
+	r.Agent(AgentRun{Label: "retrospective", WorkDir: gone})
+
+	if got := flagValue((*seen)[0].args, "-w"); got != r.cfg.ProjectPath {
+		t.Errorf("-w = %q, want the checkout %q", got, r.cfg.ProjectPath)
+	}
+	log := runLog(t, r)
+	for _, want := range []string{gone, ".claude/skills/tdd/SKILL.md"} {
+		if !strings.Contains(log, want) {
+			t.Errorf("run.jsonl does not name %q:\n%s", want, log)
+		}
+	}
+}
+
+// A dry-run plan shows the worktree the session will start in, though a fresh
+// ticket's worktree does not exist yet when the plan is printed.
+func TestAgentPreviewStartsInTheWorktree(t *testing.T) {
+	r, _ := testRunner(t)
+	wt := "/Users/dan/my-project/.claude/worktrees/proj-1"
+	if got := flagValue(r.AgentPreview(AgentRun{Label: "implementation", WorkDir: wt}), "-w"); got != wt {
+		t.Errorf("preview -w = %q, want %q", got, wt)
 	}
 }
