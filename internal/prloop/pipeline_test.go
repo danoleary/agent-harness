@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -827,4 +828,126 @@ func TestFixThatCannotSaveTheCheckpointNeedsAHuman(t *testing.T) {
 	if now := repo.OnOrigin(it.PR.HeadBranch); now != it.PR.HeadSHA {
 		t.Errorf("nothing may be pushed: origin moved to %s", now)
 	}
+}
+
+// rebasingHost is prHost whose conflict-resolution session really rebases the
+// branch onto origin/main, rewriting its history, as the RebaseFix recipe does on
+// a harness branch, and whose gates are red while red is set.
+func rebasingHost(t *testing.T, repo *gittest.Repo, it Item, red *bool) *hostio.Fake {
+	t.Helper()
+	h := hostio.NewFake(repo.Checkout(), ticket.Slug(Key(it.PR.Number)))
+	h.Branch = it.PR.HeadBranch
+	h.AgentFn = func(_ int, run hostio.AgentRun) session.Outcome {
+		if run.Label == "rebasefix" {
+			if res := h.Worktree().Rebase(); res != gitpkg.RebaseClean {
+				t.Fatalf("the fixture's rebase must replay cleanly, got %v", res)
+			}
+		}
+		return session.Outcome{}
+	}
+	h.ShellFn = func(_ int, s hostio.ShellRun) session.Outcome {
+		if *red && strings.HasPrefix(s.Label, "gate") {
+			return session.Outcome{ExitCode: 1}
+		}
+		return session.Outcome{}
+	}
+	return h
+}
+
+// #252: a conflict-resolution session rebased and committed the branch cleanly,
+// the re-gate went red for a reason outside the branch, and the run logged
+// "keeping worktree, nothing pushed" — then removed the clean worktree, and the
+// next run's checkout reset the branch to the PR's head, so a second RebaseFix
+// session redid the same resolution from scratch. Now the run saves the resolved
+// tip, and the next run at the same head, on the same origin/main, re-gates and
+// pushes it without a session.
+func TestFixKeepsACommittedResolutionWhoseRegateWentRed(t *testing.T) {
+	repo := gittest.New(t)
+	it := harnessItem(Conflict)
+	it.PR.HeadSHA = repo.Publish(it.PR.HeadBranch)
+	repo.Merge("other.txt", "unrelated\n", "main moved on")
+	red := true
+	first := rebasingHost(t, repo, it, &red)
+	log := pipelineLog(t)
+
+	if res := Fix(first, pipelineCfg(), log, it, prDoctor()); res.OK {
+		t.Fatalf("a red re-gate pushes nothing, got %+v", res)
+	}
+	assertNothingPushed(t, first, repo, it.PR.HeadBranch, it.PR.HeadSHA)
+	events := readEvents(t, log)
+	if strings.Contains(events, "keeping worktree") && !first.Worktree().Exists() {
+		t.Errorf("the run log must not say the worktree is kept when cleanup removed it:\n%s", events)
+	}
+	resolved := repo.Git(repo.Dir, "rev-parse", "refs/harness/resolved/pr-12/"+it.PR.HeadSHA)
+	if !onMainAt(repo, resolved) {
+		t.Fatalf("the saved resolution %s must sit on origin/main", resolved)
+	}
+
+	red = false
+	retry := rebasingHost(t, repo, it, &red)
+	res := Fix(retry, pipelineCfg(), pipelineLog(t), it, prDoctor())
+
+	if !res.OK || res.Disposition != stages.Shipped {
+		t.Fatalf("the saved resolution, green now, ships, got %+v", res)
+	}
+	for _, l := range agentLabels(retry) {
+		if l == "rebasefix" {
+			t.Fatalf("no second conflict-resolution session may run over a saved resolution whose base is unchanged, got %v", agentLabels(retry))
+		}
+	}
+	got := calls(retry)
+	if !strings.Contains(got, "shell gate-check") || !strings.Contains(got, "push-force|") {
+		t.Errorf("the saved resolution is re-gated and force-pushed: %v", retry.Calls)
+	}
+	if now := repo.OnOrigin(it.PR.HeadBranch); now != resolved {
+		t.Errorf("origin must have the saved resolution %s, got %s", resolved, now)
+	}
+	if out := repo.Git(repo.Dir, "for-each-ref", "refs/harness/resolved/"); out != "" {
+		t.Errorf("a pushed resolution leaves no saved ref behind: %s", out)
+	}
+}
+
+// #252: a saved resolution is cut from the origin/main it was resolved onto. Once
+// origin/main moves on, it is no longer a resolution of the conflict the PR has,
+// so the next run resolves afresh.
+func TestFixResolvesAfreshOnceOriginMainMovesPastASavedResolution(t *testing.T) {
+	repo := gittest.New(t)
+	it := harnessItem(Conflict)
+	it.PR.HeadSHA = repo.Publish(it.PR.HeadBranch)
+	repo.Merge("other.txt", "unrelated\n", "main moved on")
+	red := true
+	if res := Fix(rebasingHost(t, repo, it, &red), pipelineCfg(), pipelineLog(t), it, prDoctor()); res.OK {
+		t.Fatalf("a red re-gate pushes nothing, got %+v", res)
+	}
+	repo.Merge("another.txt", "more\n", "main moved on again")
+
+	red = false
+	retry := rebasingHost(t, repo, it, &red)
+	res := Fix(retry, pipelineCfg(), pipelineLog(t), it, prDoctor())
+
+	if !res.OK {
+		t.Fatalf("a fresh resolution ships, got %+v", res)
+	}
+	if labels := agentLabels(retry); len(labels) == 0 || labels[0] != "rebasefix" {
+		t.Errorf("a saved resolution on a stale origin/main must be resolved afresh, got %v", labels)
+	}
+	if !onMain(repo, it.PR.HeadBranch) {
+		t.Error("what reached origin must sit on the current origin/main")
+	}
+}
+
+// onMainAt reports whether origin/main, as the checkout has it, is an ancestor of rev.
+func onMainAt(repo *gittest.Repo, rev string) bool {
+	_, err := exec.Command("git", "-C", repo.Dir, "merge-base", "--is-ancestor", "origin/main", rev).Output()
+	return err == nil
+}
+
+// readEvents is the run log's narration so far.
+func readEvents(t *testing.T, log *runlog.Logger) string {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(log.Dir, "run.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
 }

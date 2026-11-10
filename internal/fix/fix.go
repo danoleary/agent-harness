@@ -457,7 +457,9 @@ func (e Env) Cleanup() {
 	}
 	if err := wt.Remove(); err != nil {
 		e.Log.Event(fmt.Sprintf("%s — worktree %s kept: %v", e.Who, wt.Path(), err))
+		return
 	}
+	e.Log.Event(fmt.Sprintf("%s — removed the clean worktree %s", e.Who, wt.Path()))
 }
 
 // --- conflicts ---------------------------------------------------------------
@@ -521,6 +523,9 @@ type ConflictResult struct {
 // so its replay applied cleanly and left the content exactly as it was (#164). That
 // is logged as such, not as a resolved conflict, so the run log does not record a
 // resolution that never happened.
+//
+// What becomes of the worktree is the caller's to say: the review stage keeps it,
+// the PR loop removes it once clean (#252).
 func (e Env) ResolveConflict(c Conflict) ConflictResult {
 	wt := e.Host.Worktree()
 	onBase := wt.IsRebasedOnto(gitpkg.BaseRef)
@@ -542,10 +547,10 @@ func (e Env) ResolveConflict(c Conflict) ConflictResult {
 	if !verdict.OK {
 		wt.AbortRebase()
 		if verdict.SpendingCapAbort {
-			e.Log.Event(e.Who + " ↻ conflict resolution deferred — spending cap reached, retry after reset (BEH-494) — keeping worktree")
+			e.Log.Event(e.Who + " ↻ conflict resolution deferred — spending cap reached, retry after reset (BEH-494)")
 			return ConflictResult{SpendingCapAbort: true, Reason: verdict.Reason}
 		}
-		e.Log.Event(e.Who + " ✗ " + verdict.Reason + " — keeping worktree, nothing pushed")
+		e.Log.Event(e.Who + " ✗ " + verdict.Reason + " — nothing pushed")
 		return ConflictResult{Reason: verdict.Reason}
 	}
 	if treeAfter, _ := wt.HeadTree(); onBase && treeBefore != "" && treeAfter == treeBefore {
@@ -560,7 +565,7 @@ func (e Env) ResolveConflict(c Conflict) ConflictResult {
 	gate := c.Regate()
 	if !gate.Green() || !wt.Clean() {
 		reason := fmt.Sprintf("post-resolution gate re-run failed (exit %d)", gate.Outcome.ExitCode)
-		e.Log.Event(e.Who + " ✗ " + reason + " — keeping worktree, nothing pushed")
+		e.Log.Event(e.Who + " ✗ " + reason + " — nothing pushed")
 		return ConflictResult{Resolved: true, Reason: reason, Gate: gate}
 	}
 	e.Log.Event(e.Who + " ✓ post-resolution gate re-run is green — clear to push")

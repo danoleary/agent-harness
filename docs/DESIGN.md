@@ -625,6 +625,9 @@ pipeline (one PR, worktree .claude/worktrees/pr-<n> on the PR's head branch):
   conflict: RebaseFix session            // internal/fix, shared with review
     harness branch: replay onto origin/main;  human branch: merge origin/main in
     verify.RebaseResolution -> all gates -> push --force-with-lease | push
+    resolved but the gates red -> save the tip as refs/harness/resolved/pr-<n>/<head>  // #252
+      the next run at <head>, origin/main still in that tip -> re-gate + push it, no session
+      origin/main moved past it -> drop it, resolve afresh;  pushed -> drop it
   both kinds: ci.WatchAndFix to a terminal verdict
     red check: flake re-run, then CIFix session over the failing logs
     -> committed fix -> all gates -> push (append-only)
