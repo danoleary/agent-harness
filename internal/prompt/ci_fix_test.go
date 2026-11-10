@@ -276,3 +276,34 @@ func TestCIFixSteersABrowserTestRunOffTheMovesThatBurnedTheCap(t *testing.T) {
 		}
 	}
 }
+
+// #258, replayed: CI on a pull_request event builds the PR's merge ref, and
+// origin/main had already landed its own fix for the same base break. The
+// session fixed it again on the branch alone, the merge ref went red on the
+// duplicate, and a second session had to merge origin/main anyway. The envelope
+// must name merge-ref skew, steer a reproduction onto a scratch merge with
+// origin/main, and sanction merging origin/main when that is the fix.
+func TestCIFixChecksOriginMainBeforeFixingABaseLevelBreak(t *testing.T) {
+	for _, available := range []bool{true, false} {
+		p := For(CIFix, Context{Ticket: sample, Slug: "beh-362", BranchPrefix: "feat", WorktreePath: sampleWorktree, CILogs: sampleCILogs, CILogAvailable: available})
+
+		for _, want := range []*regexp.Regexp{
+			regexp.MustCompile(`(?i)merge ref`),
+			regexp.MustCompile(`(?i)merged into .{0,20}origin/main`),
+			regexp.MustCompile("`git log HEAD\\.\\.origin/main -- <path>`"),
+			regexp.MustCompile("`git merge --no-commit --no-ff origin/main`"),
+			regexp.MustCompile(`(?i)merging .{0,10}origin/main.{0,10} as a real commit`),
+			regexp.MustCompile(`(?i)not .{0,20}parallel fix on the branch`),
+			regexp.MustCompile(`(?i)base-refresh merge that fixes nothing you reproduced`),
+		} {
+			if !want.MatchString(p) {
+				t.Errorf("log available=%v: ci-fix prompt missing the merge-ref steer %q", available, want)
+			}
+		}
+		// The diagnosis step must come before the escape hatch's ban, or the ban
+		// reads as covering every base merge.
+		if strings.Index(p, "--no-ff origin/main") > strings.Index(p, "Escape hatch") {
+			t.Errorf("log available=%v: merge-ref step comes after the escape hatch", available)
+		}
+	}
+}
