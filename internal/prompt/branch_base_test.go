@@ -50,3 +50,39 @@ func TestNoEnvelopeDiffsAgainstLocalMain(t *testing.T) {
 		}
 	}
 }
+
+// #220: a Review or Retrospective session's cwd is the primary checkout, which can
+// sit on an unrelated branch that also descends from the base, so a bare
+// `git log <base>..HEAD` there quietly shows a different change. The envelope names
+// the worktree in the range commands, and names it and its real branch on a line of
+// its own, so neither depends on a Consumer body that may not name it or render.
+func TestReviewAndRetrospectiveRunTheBranchRangeInTheWorktree(t *testing.T) {
+	const base = "0123456789abcdef0123456789abcdef01234567"
+	const wt = "/repo/.claude/worktrees/pr-42"
+	c := Context{Ticket: sample, Slug: "pr-42", BranchPrefix: testPrefix, Branch: "fix/login-redirect", WorktreePath: wt, Base: base, Body: ""}
+	for name, p := range map[string]string{
+		"review":        For(Review, c),
+		"retrospective": For(Retrospective, c),
+	} {
+		for _, want := range []string{
+			"git -C " + wt + " log " + base + "..HEAD",
+			"git -C " + wt + " diff " + base + "...HEAD",
+			"worktree is `" + wt + "` on branch `fix/login-redirect`",
+		} {
+			if !strings.Contains(p, want) {
+				t.Errorf("%s prompt with an empty body missing %q", name, want)
+			}
+		}
+		if strings.Contains(p, "`git log "+base) {
+			t.Errorf("%s prompt still names a bare branch range that runs in the primary checkout", name)
+		}
+	}
+}
+
+// A worktree under a path with a space still yields a range command that runs.
+func TestBranchRangeQuotesAWorktreePathTheShellWouldSplit(t *testing.T) {
+	p := For(Review, Context{Ticket: sample, Slug: "beh-362", BranchPrefix: testPrefix, WorktreePath: "/Users/dan/My Projects/herd/.claude/worktrees/beh-362", Base: "abc123"})
+	if want := "git -C '/Users/dan/My Projects/herd/.claude/worktrees/beh-362' log abc123..HEAD"; !strings.Contains(p, want) {
+		t.Errorf("prompt missing %q", want)
+	}
+}

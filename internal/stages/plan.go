@@ -219,7 +219,7 @@ func resolutionReviewRun(cfg config.Config, s Subject, base string, r *prompt.Re
 // transcripts gives it nothing to study, which its launch says (#219).
 func retrospectiveRun(cfg config.Config, s Subject, filed []prompt.FiledFinding) hostio.AgentRun {
 	pctx := prompt.Context{
-		Ticket: s.Ticket, Slug: s.Slug, BranchPrefix: cfg.BranchPrefix, Branch: s.Branch, Tracker: cfg.Tracker.Kind, Body: cfg.Prompts.Retro, Filed: filed, Base: s.Base,
+		Ticket: s.Ticket, Slug: s.Slug, BranchPrefix: cfg.BranchPrefix, Branch: s.Branch, Tracker: cfg.Tracker.Kind, WorktreePath: s.WorktreePath, Body: cfg.Prompts.Retro, Filed: filed, Base: s.Base,
 		LogDir: checkoutRelative(cfg.ProjectPath, s.LogDir), Transcripts: runLogs(s.LogDir),
 	}
 	warnings := prompt.BodyWarnings(pctx)

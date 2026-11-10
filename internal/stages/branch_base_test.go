@@ -27,7 +27,7 @@ func TestReviewAndRetrospectiveSessionsAreHandedTheBranchBase(t *testing.T) {
 		if len(h.Agents) == 0 {
 			t.Fatalf("%s launched no session", name)
 		}
-		if p := h.Agents[0].Prompt; !strings.Contains(p, "git diff "+base+"...HEAD") {
+		if p := h.Agents[0].Prompt; !strings.Contains(p, " diff "+base+"...HEAD`") {
 			t.Errorf("%s prompt does not scope the diff to the branch base %s", name, base)
 		}
 	}
