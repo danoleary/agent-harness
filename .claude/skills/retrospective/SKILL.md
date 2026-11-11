@@ -47,6 +47,7 @@ so that it could be picked up as a ticket on its own:
 
 When the fix is a new ADR, name it by slug, never by number: other ADRs land
 while the ticket waits, and the session that writes it takes the next free
-number on `origin/main` (ADR-0034).
+number on `origin/main` (see `git ls-tree origin/main docs/adr/`), per
+ADR-0034.
 
 Three sharp findings beat ten vague ones. Zero is a fine answer: write `[]`.
