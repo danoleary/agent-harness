@@ -63,3 +63,11 @@ moves or is renamed fails `make check` instead of leaving a dead link.
   `docs/reference/env.md` or no line in `.env.example`, commented out or not. A
   key left out on purpose goes in that test's allowlist with its reason. The test
   checks that each key is present. It doesn't check the defaults or the wording.
+- So are the `⚠` run-log warnings (#300). `internal/docs` parses every non-test
+  `.go` file under `internal/` (bar `internal/viewer`, whose `⚠` lines are
+  dashboard banners) and fails `make check` when a string literal opening with
+  `⚠ ` has no matching fragment in `docs/reference/errors.md`. The fragment is
+  the literal's first stretch of fixed text between format verbs, so the check
+  sees that a row exists, not that its cause and fix are right. A warning built
+  as `"⚠ " + …` carries no fixed text and is not checked; nor is a `⚠` that
+  follows a stage prefix (`review ⚠ …`).

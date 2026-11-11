@@ -108,6 +108,18 @@ for 30 minutes, so a gate that flaked on both runs is gated again after that. Th
 running loop keeps idling on the hold it recorded until the re-check time, so
 restart it too.
 
+Base gating fails open: when the harness can't gate the base, or can't record
+what it found, it warns and dispatches rather than hold a ticket on a guess.
+
+| Message | Cause | Fix |
+|---|---|---|
+| `⚠ could not read the base SHA (…) — dispatching without gating the base` | git could not read the fresh worktree's `HEAD` | nothing for this ticket; if it repeats, check the worktree with `git -C <path> rev-parse HEAD` |
+| `⚠ base gate "…" failed environmentally (exit N: an OOM-kill, a failed launch or its cap)` | the gate was killed or never started, so its red says nothing about the base. The PR loop and pr-fix log the same with their own prefix and keep the red re-gate as the branch's | nothing, unless it repeats: then give Docker more memory, or raise the gate cap |
+| `⚠ base gate "…" failed environmentally on its re-run (exit N) — the red is unconfirmed` | the first run was red, and the confirming re-run was killed or never started | the same |
+| `⚠ could not record the base verdict (…)` | the verdict file under `.agent-harness/locks/base-gates/` could not be written | nothing urgent: the next ticket (or PR loop run) on this base gates it again. Check that directory is writable |
+| `⚠ could not write the red-base finding (…)` | the `base-gates-red` finding could not be written to the findings dropbox, so no issue is filed for the red base | the hold still applies; repair `main` yourself, and check the run's log dir is writable |
+| `⚠ could not discard the untouched worktree on the red base (…)` | the held ticket's worktree or branch could not be removed | remove it with `git worktree remove` and `git branch -D`, or the next attempt reuses it at the old base |
+
 ## Worktree setup and gates
 
 | Message | Cause | Fix |
@@ -119,6 +131,30 @@ restart it too.
 | `↻ gate "…" is red (exit N) with … — re-running it once` | the gate's log shows an environment failure (the test browser's connection closed, an out-of-memory kill or SIGKILL, a download failure, the gate cap), or a PR loop CI fix's gate failed only in files the fix did not touch | nothing; only a second red counts. If the re-run is red too, read its log (`gate-…-rerun-*.log`) |
 | `✗ gate "…" is red over auto-fix N merged with origin/main, though green on the branch alone — not pushing` | a CI fix passes the gates on its branch but not merged with origin/main, which is what CI checks (#259) | nothing; the next CI fix attempt gets that gate's output (`gate-cifixN-merge-*.log`). A fix that conflicts with origin/main is refused too; the PR loop's next poll resolves the conflict |
 | `review ✗ no worktree at … — run implementation first` | `review` was run alone | run `implementation` first |
+| `⚠ could not strip <paths> from the worktree (…)` | after a green handoff, the `handoff_strip_paths` build artifacts could not be removed. A warning only; the handoff stands | the reviewer re-runs `post_create`; if its gates crash on a stale artifact, delete the paths in the worktree by hand |
+
+## Dispatch advisories
+
+Warnings logged as a ticket is dispatched. None of them stops the session; the
+session's prompt tells it what to do about each.
+
+| Message | Cause | Fix |
+|---|---|---|
+| `⚠ <KEY> still lists open questions for a human ("…") — dispatching anyway` | the ticket is ready-labelled but its body still has an open-questions section | settle them in the ticket, or drop the ready label if they block the work. The session records any it has to decide and flags them |
+| `⚠ <KEY> cites symbol(s) absent from source: … — likely already resolved` | code identifiers the ticket names are not in the source tree, often because a sibling ticket's merge removed them | check the premise still holds; close the ticket if the work has landed |
+| `⚠ <KEY> already has commit(s) on feat/<slug> ahead of origin/main referencing it` | a resumed worktree's branch already carries commits for this ticket, likely a complete fix that never reached a PR | review `git log origin/main..feat/<slug>` and the diff; if it is done, let the session verify and hand off, or open the PR |
+| `⚠ <KEY> cites Sentry <ref> but it could not be fetched: <reason>` | the ticket links a Sentry issue the harness could not read, so the session runs without its stack trace | check the Sentry token and the link; the reason names which failed |
+
+## Recovering a failed session
+
+When a session fails and leaves uncommitted edits, the harness commits them as a
+recovery checkpoint on the feature branch, so the next attempt resumes from them.
+
+| Message | Cause | Fix |
+|---|---|---|
+| `⚠ uncommitted work remains in the worktree at <path> and the recovery checkpoint commit failed (…)` | the implementation session failed with a dirty worktree, and the checkpoint commit did not go through | commit or save the diff in that worktree by hand before re-running, or the next attempt may lose it |
+| `⚠ review session left uncommitted edits and the recovery checkpoint commit failed (…)` | the same, for a review session's in-progress fixes | the same, at the path the line names |
+| `⚠ disjoint branch detected but the regraft failed (…)` | the verified branch shares no history with `origin/main`, and re-grafting its diff onto a fresh base failed. The worktree is kept | reset the branch onto `origin/main` and cherry-pick the handoff commits by hand (as for a Disjoint landing) |
 
 ## Landing
 

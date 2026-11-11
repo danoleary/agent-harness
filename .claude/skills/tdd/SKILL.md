@@ -94,7 +94,8 @@ prompt around this skill tells you the ticket, the worktree and the branch.
   narration line) gets its row added or updated in `docs/reference/errors.md`:
   the stable message fragment, its cause and the fix. That file is the
   catalogue of what an operator meets, and review counts a missing row as a
-  docs gap (#283).
+  docs gap (#283). `internal/docs` fails the gate on a `"⚠ …"` literal under
+  `internal/` whose fixed text is missing from that page (#300).
 
 ## The loop
 
