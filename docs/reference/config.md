@@ -162,7 +162,7 @@ Each step is `{ use = "<step>" }`, plus `prompt = "<path>"` (relative to
 | `new_branch` | `github_security_alerts` | (first) | not accepted | the package's branch is cut fresh from `origin/main` |
 | `fix_alerts` | `github_security_alerts` | `new_branch` | leads the SecurityFix prompt | a diff touching only dependency files, and a lockfile that resolves no vulnerable version |
 | `gates` | `github_prs`, `github_security_alerts` | `fix` on `github_prs`; `fix_alerts` on `github_security_alerts` | not accepted | every Gate green over the fixed tree |
-| `push_existing` | `github_prs` | `gates` | not accepted | pushes only a committed, gate-green tree |
+| `push_existing` | `github_prs` | `gates` | not accepted | pushes only a committed, gate-green tree; rewrites the PR's title and description when the resolution renumbered one of the branch's ADRs |
 | `open_pr` | `github_security_alerts` | `gates` | not accepted | opens a new PR only for a committed, gate-green tree |
 | `watch_ci` | `tracker`, `github_prs`, `github_security_alerts` | `review` on `tracker`; `push_existing` on `github_prs`; `open_pr` on `github_security_alerts` | not accepted | a CI fix must pass every Gate before it is pushed |
 | `assess` | `backlog` | (first) | leads the Triage prompt with the project's own bar for "ready" | a verdict file: ready, or not ready with questions for a human |

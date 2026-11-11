@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/danoleary/agent-harness/internal/basegate"
@@ -102,7 +104,9 @@ func (Pipeline) Recover(loop.WorkItem) (stages.Result, bool) { return stages.Res
 //     then every gate, and pushes to the existing branch — force-with-lease after a
 //     rebase, plain after a merge. A resolution the gates hold back is saved, and
 //     the next run at the same head, on the same origin/main, re-gates and pushes
-//     it with no session (#252);
+//     it with no session (#252). A pushed resolution that renumbered one of the
+//     branch's ADRs has the PR's title and description rewritten to the new
+//     number (#267);
 //  3. watch_ci: watch CI to a verdict, and a red check gets a CIFix session over
 //     the failing logs whose committed fix must pass every gate before the watch
 //     may push it. A loop without it stops at the push, and works no red CI
@@ -234,6 +238,7 @@ func (r *run) repair() stages.Result {
 		r.pushed = true
 		r.h.Worktree().DropResolutions()
 		r.log.Event(fmt.Sprintf("%s ✓ pushed the resolved %s (%s)", who, r.it.PR.HeadBranch, r.it.Strategy()))
+		r.renumberDescription()
 	}
 	if !r.watchCI {
 		if r.pushed {
@@ -289,6 +294,57 @@ func (r *run) resolve() (out stages.Result, ok bool) {
 		}
 	}
 	return stages.Result{}, false
+}
+
+// renumberDescription rewrites the PR's title and description after a pushed
+// resolution renumbered one of the branch's ADRs because main had merged one
+// under the same number (ADR-0034). The session cannot edit the PR, so without
+// this the description goes on citing a number that now names main's decision
+// (#267). The branch is already pushed, so a failure is only narrated.
+func (r *run) renumberDescription() {
+	moved, err := r.h.Worktree().RenumberedADRs(r.it.PR.HeadSHA)
+	if err != nil {
+		r.log.Event(fmt.Sprintf("%s … warning: could not tell whether the resolution renumbered an ADR: %v — the PR description is unchanged", who, err))
+		return
+	}
+	if len(moved) == 0 {
+		return
+	}
+	title, body := renumberADRs(r.it.PR.Title, moved), renumberADRs(r.it.PR.Body, moved)
+	if title == r.it.PR.Title && body == r.it.PR.Body {
+		return
+	}
+	var names []string
+	for _, m := range moved {
+		names = append(names, "ADR-"+m.From+" → ADR-"+m.To)
+	}
+	if err := r.h.EditPR(r.it.PR.Number, title, body); err != nil {
+		r.log.Event(fmt.Sprintf("%s ⚠ the resolution renumbered %s, but the PR description could not be updated: %v — it still cites the old number (#267)", who, strings.Join(names, ", "), err))
+		return
+	}
+	r.log.Event(fmt.Sprintf("%s ✓ updated the PR title and description for the renumbered %s (#267)", who, strings.Join(names, ", ")))
+}
+
+// adrRef is an `ADR-NNNN` reference.
+var adrRef = regexp.MustCompile(`\bADR-([0-9][0-9][0-9][0-9])\b`)
+
+// renumberADRs rewrites text's references to each renumbered ADR, `ADR-<old>`
+// and its file name, to the new number, all at once, so a chain of renumbers
+// (0040 → 0041 while 0041 → 0042) moves each reference once.
+func renumberADRs(text string, moved []git.Renumber) string {
+	to := map[string]string{}
+	var files []string
+	for _, m := range moved {
+		to[m.From] = m.To
+		files = append(files, m.FromFile, m.ToFile)
+	}
+	text = strings.NewReplacer(files...).Replace(text)
+	return adrRef.ReplaceAllStringFunc(text, func(ref string) string {
+		if n, ok := to[adrRef.FindStringSubmatch(ref)[1]]; ok {
+			return "ADR-" + n
+		}
+		return ref
+	})
 }
 
 // holdOnBase ends a run whose resolution was red only because origin/main is

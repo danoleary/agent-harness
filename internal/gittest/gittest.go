@@ -148,9 +148,15 @@ func (r *Repo) Resolve(wt gitpkg.Worktree) {
 // returns the branch's tip.
 func (r *Repo) Publish(branch string) string {
 	r.t.Helper()
+	return r.PublishFile(branch, strings.ReplaceAll(branch, "/", "-")+".txt", "a change\n")
+}
+
+// PublishFile is [Repo.Publish] with the branch's one commit writing body to file.
+func (r *Repo) PublishFile(branch, file, body string) string {
+	r.t.Helper()
 	r.Git(r.others, "pull", "-q", "--ff-only", "origin", "main")
 	r.Git(r.others, "checkout", "-q", "-b", branch)
-	r.write(r.others, strings.ReplaceAll(branch, "/", "-")+".txt", "a change\n")
+	r.write(r.others, file, body)
 	r.Git(r.others, "add", "-A")
 	r.Git(r.others, "commit", "-q", "-m", "a change on "+branch)
 	r.Git(r.others, "push", "-q", "origin", branch)

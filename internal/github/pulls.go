@@ -277,3 +277,9 @@ func (p *Pulls) RemoveLabel(number int, label string) error {
 	_, err := p.transport("DELETE", p.path("/issues/%d/labels/%s", number, url.PathEscape(label)), nil)
 	return err
 }
+
+// Edit replaces a PR's title and description.
+func (p *Pulls) Edit(number int, title, body string) error {
+	_, err := p.transport("PATCH", p.path("/pulls/%d", number), map[string]any{"title": title, "body": body})
+	return err
+}

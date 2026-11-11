@@ -81,3 +81,26 @@ without a resolution session.
 - **The union keeps main's lines first.** A branch whose ADR has a *lower*
   number than one main just landed comes out of the replay out of order, and
   `check-adr` fails on that too.
+
+## Amendment, 2026-11-10: the PR loop renumbers the PR's description too (#267)
+
+The renumber this ADR calls for happens in the PR loop's conflict-resolution
+session, which cannot reach the remote. The harness pushed the renumbered
+branch, but the PR's title and description went on citing the old number, which
+now names main's unrelated decision, until a human noticed.
+
+After it pushes a resolution, the PR loop compares the ADR files the branch
+added before and after it (`git.Worktree.RenumberedADRs`). A slug the branch
+still adds under another number was renumbered. The PR loop then rewrites every
+`ADR-<old>` and `<old>-<slug>.md` in the PR's title and description to the new
+number, in one pass so that chained renumbers move each reference once, and
+edits the PR with that text.
+
+- **It is mechanical.** The session gets no new output to write and the prompt
+  gets no new contract. A renumber that also changed the slug is not detected.
+- **The branch is already pushed.** A failed edit is narrated and the run still
+  ships.
+- **Only the PR loop does this.** Landing's pre-push replay runs before the PR
+  exists, so the PR is opened from the renumbered branch. The ticket loop's CI
+  watch can also resolve a conflict after the PR is open, when a prerequisite
+  merges (#82), and that resolution does not rewrite the description yet.

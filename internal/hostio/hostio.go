@@ -182,6 +182,9 @@ type Remote interface {
 	// LabelPR adds label to the PR CreatePR opened at url. The security-alerts loop
 	// holds its lease with it once the PR exists (ADR-0040, decision 8).
 	LabelPR(url, label string) error
+	// EditPR replaces the title and description of the open PR numbered number.
+	// The PR loop rewrites the ADR numbers a conflict resolution moved (#267).
+	EditPR(number int, title, body string) error
 	PRExists() bool
 	OpenPRExists() bool
 	ChecksReadable() (bool, string)
