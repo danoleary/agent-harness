@@ -475,7 +475,8 @@ func openQuestionsSection(headings []string) string {
 // before the ticket runs: #197 asked for docs/adr/0039-<slug>.md when origin/main
 // already had ADR-0039. A session that wrote the filename literally collides, and
 // only check-adr catches it. The number of a new ADR is the next free one on
-// origin/main (ADR-0034). Empty when the ticket names no ADR file.
+// origin/main, per ADR-0034; the citation trails the sentence so it cannot read
+// as the number itself (#293). Empty when the ticket names no ADR file.
 func adrNumberSection(files []string) string {
 	if len(files) == 0 {
 		return ""
@@ -484,7 +485,7 @@ func adrNumberSection(files []string) string {
 	for i, f := range files {
 		quoted[i] = "`" + f + "`"
 	}
-	return defang("The ticket names ADR files by number: " + strings.Join(quoted, ", ") + ". An ADR that already exists keeps its number. For a new ADR the number is a guess made when the ticket was drafted, and a sibling may have taken it since: give it the next free number on origin/main (`git fetch`, then read `origin/main`'s ADR directory), whatever the ticket says (ADR-0034), and if that differs from the ticket's, say which number shipped in your commit body.")
+	return defang("The ticket names ADR files by number: " + strings.Join(quoted, ", ") + ". An ADR that already exists keeps its number. For a new ADR the number is a guess made when the ticket was drafted, and a sibling may have taken it since: give it the next free number on origin/main (`git fetch`, then see `git ls-tree origin/main docs/adr/`), whatever the ticket says, and if that differs from the ticket's, say which number shipped in your commit body. That numbering rule is per ADR-0034, which is not itself the number to use.")
 }
 
 // subIssuesSection renders the inlined child sub-issue specs for an umbrella/batch
@@ -637,8 +638,9 @@ const retroAudienceContract = "Classify EVERY finding with an `audience` field, 
 // retroADRNumberRule keeps a drafted ticket from fixing a new ADR's number
 // (#228). A finding waits in the queue as a ticket, siblings land ADRs meanwhile,
 // and #197's docs/adr/0039-<slug>.md was taken by the time it ran. The number is
-// the implementing session's to pick: the next free one on origin/main (ADR-0034).
-const retroADRNumberRule = "When a finding's fix is a new ADR, name the new ADR by its slug or title only and never by number (no `ADR-NNNN`, no `NNNN-<slug>.md`): other ADRs land while the ticket waits, so the session that writes it takes the next free number on origin/main (ADR-0034). Name an existing ADR by its number as usual."
+// the implementing session's to pick: the next free one on origin/main, per
+// ADR-0034 — cited after the listing so it cannot read as the number (#293).
+const retroADRNumberRule = "When a finding's fix is a new ADR, name the new ADR by its slug or title only and never by number (no `ADR-NNNN`, no `NNNN-<slug>.md`): other ADRs land while the ticket waits, so the session that writes it takes the next free number on origin/main (see `git ls-tree origin/main docs/adr/`), per ADR-0034. Name an existing ADR by its number as usual."
 
 // retroContractSteer is the retrospective stage's tracker-off + read-only
 // contract: no code changes, no push, no tracker.

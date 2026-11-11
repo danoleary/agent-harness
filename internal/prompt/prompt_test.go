@@ -1086,6 +1086,32 @@ func TestImplementTreatsATicketsADRNumberAsAGuess(t *testing.T) {
 	}
 }
 
+// #293: "the next free number on origin/main (ADR-0034)" reads as "the next
+// free number is ADR-0034" when origin/main is already past it, so a session
+// that trusts the parenthetical writes a second ADR-0034. Both ADR-number
+// steers point at the listing that gives the number and cite the rule as
+// "per ADR-0034", never as a bare parenthetical number.
+func TestADRNumberSteersCiteTheRuleNotANumber(t *testing.T) {
+	adrTicket := ticket.Ticket{
+		Identifier:  "#197",
+		Title:       "Decide how open security alerts get fixed",
+		Description: "Write the decision up as docs/adr/0039-<slug>.md.",
+	}
+	for name, p := range map[string]string{
+		"implement": bImpl(t, adrTicket, "gh-197"),
+		"retro":     bRetro(t, sample, "beh-362", nil),
+	} {
+		for _, want := range []string{"`git ls-tree origin/main docs/adr/`", "per ADR-0034"} {
+			if !strings.Contains(p, want) {
+				t.Errorf("%s prompt missing %q:\n%s", name, want, p)
+			}
+		}
+		if strings.Contains(p, "(ADR-0034)") {
+			t.Errorf("%s prompt cites ADR-0034 as a parenthetical that reads as the next number:\n%s", name, p)
+		}
+	}
+}
+
 func TestImplementWithNoADRFilenameSaysNothingAboutADRNumbers(t *testing.T) {
 	if p := bImpl(t, sample, "beh-362"); strings.Contains(p, "ADR-0034") {
 		t.Errorf("prompt carries the ADR-number steer for a ticket that names no ADR file:\n%s", p)
