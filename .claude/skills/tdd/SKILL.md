@@ -90,6 +90,11 @@ prompt around this skill tells you the ticket, the worktree and the branch.
 - A new env setting goes in `internal/config/config.go`,
   `docs/reference/env.md` and `.env.example`. The scaffold copy,
   `internal/scaffold/templates/env.example`, is drift-checked against it.
+- A new or changed operator-facing message (an error, a `⚠` warning, a run-log
+  narration line) gets its row added or updated in `docs/reference/errors.md`:
+  the stable message fragment, its cause and the fix. That file is the
+  catalogue of what an operator meets, and review counts a missing row as a
+  docs gap (#283).
 
 ## The loop
 
@@ -110,7 +115,9 @@ Commit before the full gate, not after it. A session that runs out of time
 inside `make check` with nothing committed leaves no handoff commit, and the
 harness has to spend a whole extra cycle recovering the diff (#224).
 
-1. Update docs the change makes stale (README, `docs/DESIGN.md`, an ADR).
+1. Update docs the change makes stale (README, `docs/DESIGN.md`, an ADR, and
+   the `docs/reference/` page for a key, variable, command or message you
+   added or changed: `config.md`, `env.md`, `errors.md`).
    Before numbering a new ADR, check `origin/main`'s `docs/adr/` (`git fetch`
    first), not local main, and expect a sibling branch may take the same number.
    A number the ticket gives a new ADR is a guess from when it was drafted: use
