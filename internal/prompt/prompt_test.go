@@ -347,6 +347,28 @@ func assertCarriesBashQuirkSteer(t *testing.T, p, label string) {
 	if !regexp.MustCompile(`(?i)(its )?own .{0,20}call`).MatchString(p) {
 		t.Errorf("%s does not give the run-each-gate-as-its-own-call workaround", label)
 	}
+	// #290: the steer told the agent to read a gate's exit status "in a separate
+	// call", which can't be done — `$?` does not survive between Bash tool calls.
+	// A session that obeyed ran the gate alone into a log, got back only
+	// "completed with no output", and re-ran the whole gate with `; echo exit=$?`
+	// appended: the very chaining quirk (4) forbids, and a second full gate run
+	// off the session cap. On the pinned CLI the tool result itself is the exit
+	// status: a non-zero exit comes back marked as an error (`Error` /
+	// `Exit code N`), and a call that returns without that marker — "completed
+	// with no output" included — exited 0. The steer must say so, and tell the
+	// agent not to re-run a gate just to learn how it exited.
+	if regexp.MustCompile(`(?i)exit status in a separate call`).MatchString(p) {
+		t.Errorf("%s still tells the agent to read a gate's exit status in a separate call — `$?` does not carry over between Bash calls (#290)", label)
+	}
+	if !regexp.MustCompile(`(?i)without .{0,40}Error.{0,80}exited 0`).MatchString(p) {
+		t.Errorf("%s does not say a gate call that returns without the tool's Error marker exited 0 (#290)", label)
+	}
+	if !regexp.MustCompile(`(?i)completed with no output`).MatchString(p) {
+		t.Errorf("%s does not say a gate call answering \"completed with no output\" passed (#290)", label)
+	}
+	if !regexp.MustCompile(`(?i)(do not|don't|never) re-?run .{0,40}gate .{0,60}exit`).MatchString(p) {
+		t.Errorf("%s does not tell the agent not to re-run a gate just to read its exit status (#290)", label)
+	}
 }
 
 func TestImplementCarriesBashQuirkSteer(t *testing.T) {
