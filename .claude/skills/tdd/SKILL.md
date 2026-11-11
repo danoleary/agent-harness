@@ -117,7 +117,7 @@ harness has to spend a whole extra cycle recovering the diff (#224).
 
 1. Update docs the change makes stale (README, `docs/DESIGN.md`, an ADR, and
    the `docs/reference/` page for a key, variable, command or message you
-   added or changed: `config.md`, `env.md`, `errors.md`).
+   added or changed: `config.md`, `env.md`, `cli.md`, `errors.md`).
    Before numbering a new ADR, check `origin/main`'s `docs/adr/` (`git fetch`
    first), not local main, and expect a sibling branch may take the same number.
    A number the ticket gives a new ADR is a guess from when it was drafted: use
