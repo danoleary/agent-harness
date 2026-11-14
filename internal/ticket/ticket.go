@@ -5,6 +5,7 @@ package ticket
 import (
 	"regexp"
 	"strings"
+	"time"
 )
 
 // Ticket is a Linear ticket, as the harness needs it.
@@ -34,6 +35,11 @@ type Ticket struct {
 	// Labels are the ticket's tracker labels, as selection read them. The overlap
 	// check reads its escape label here (#97).
 	Labels []string
+	// Created is when the ticket was filed, as the tracker reports it; zero when
+	// it reports none. The implementation stage lists the commits that landed on
+	// main since then and changed a file the ticket names, since one may already
+	// be its fix under another number (#335).
+	Created time.Time
 }
 
 // HasLabel reports whether the ticket carries label (empty never matches).

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"testing"
+	"time"
 )
 
 // call records one transport invocation so tests can assert the adapter issued
@@ -41,10 +42,11 @@ func fakeTransport(responses map[string]any) (Transport, *[]call) {
 func TestFetchTicketMapsIssue(t *testing.T) {
 	tr, calls := fakeTransport(map[string]any{
 		"GET /repos/acme/widgets/issues/42": map[string]any{
-			"number":   42,
-			"title":    "Fix the thing",
-			"body":     "Do the work",
-			"html_url": "https://github.com/acme/widgets/issues/42",
+			"number":     42,
+			"title":      "Fix the thing",
+			"body":       "Do the work",
+			"html_url":   "https://github.com/acme/widgets/issues/42",
+			"created_at": "2026-11-14T03:40:00Z",
 		},
 	})
 	c := NewClient(tr, "acme", "widgets", Options{})
@@ -67,6 +69,10 @@ func TestFetchTicketMapsIssue(t *testing.T) {
 	}
 	if got.TeamID != "acme/widgets" {
 		t.Errorf("TeamID = %q, want acme/widgets", got.TeamID)
+	}
+	// #335: the filed time bounds the scan for commits that landed since.
+	if want := time.Date(2026, 11, 14, 3, 40, 0, 0, time.UTC); !got.Created.Equal(want) {
+		t.Errorf("Created = %v, want %v", got.Created, want)
 	}
 	if len(*calls) != 1 {
 		t.Fatalf("expected exactly one transport call, got %d: %+v", len(*calls), *calls)

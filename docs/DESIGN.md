@@ -100,6 +100,13 @@ runnable by hand against a ticket id before the next is added:
    section that names them and tells the session not to answer them silently:
    leave a question open if the work does not need it, otherwise decide, record
    and flag the decision for review in the handoff.
+   A fifth advisory (`git.LandedSince`, #335,
+   [ADR-0052](https://github.com/danoleary/agent-harness/blob/main/docs/adr/0052-a-commit-that-landed-on-a-file-the-ticket-names-is-named-at-dispatch.md))
+   catches a fix that landed under another number without naming the ticket, as
+   #318 did for #317. It lists the commits that reached `origin/main` since the
+   tracker says the ticket was filed and changed a file the ticket names. It logs
+   them, and the envelope tells the session to read them first and stop with
+   "already fixed on main by <sha>" if one is the fix.
    A ticket that names an ADR file by number (`Ticket.ADRFiles`, #228) gets an
    envelope section that names the files and says a *new* ADR takes the next free
    number on `origin/main`, whatever the ticket wrote

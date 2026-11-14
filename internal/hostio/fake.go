@@ -2,6 +2,7 @@ package hostio
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/danoleary/agent-harness/internal/ci"
 	"github.com/danoleary/agent-harness/internal/filing"
@@ -184,8 +185,9 @@ func (f *Fake) Worktree() gitpkg.Worktree {
 	return f.co.Worktree(f.slug)
 }
 
-func (f *Fake) TicketAlreadyOnMain(key string) bool    { return f.co.TicketAlreadyOnMain(key) }
-func (f *Fake) ResolvedAdvisory(string, string) string { return f.Resolved }
+func (f *Fake) TicketAlreadyOnMain(key string) bool         { return f.co.TicketAlreadyOnMain(key) }
+func (f *Fake) LandedSince(since time.Time) []gitpkg.Landed { return f.co.LandedSince(since) }
+func (f *Fake) ResolvedAdvisory(string, string) string      { return f.Resolved }
 
 // --- remote ---
 

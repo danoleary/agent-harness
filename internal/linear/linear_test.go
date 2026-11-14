@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/danoleary/agent-harness/internal/findings"
 	"github.com/danoleary/agent-harness/internal/ticket"
@@ -53,6 +54,7 @@ func TestFetchTicketParsesIssue(t *testing.T) {
 			"description":   "## What to build\n\nA CLI.",
 			"url":           "https://linear.app/example-workspace/issue/BEH-362",
 			"priorityLabel": "Urgent",
+			"createdAt":     "2026-11-14T03:40:00.000Z",
 			"team":          map[string]any{"id": "team-uuid"},
 		},
 	})
@@ -68,6 +70,7 @@ func TestFetchTicketParsesIssue(t *testing.T) {
 		URL:         "https://linear.app/example-workspace/issue/BEH-362",
 		Priority:    "Urgent",
 		TeamID:      "team-uuid",
+		Created:     time.Date(2026, 11, 14, 3, 40, 0, 0, time.UTC),
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("ticket = %+v, want %+v", got, want)
