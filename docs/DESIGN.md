@@ -819,6 +819,9 @@ shared        : STOP (every loop), STOP-tickets (every instance), locks/claim.lo
   `verify.Review` gates the push on `ReviewBlocked` (surfaced by `stream.IsReviewBlocked`)
   **in addition to** the BEH-569 conditions — a blocked verdict is fail-closed, keeping
   the worktree for a human decision rather than opening a PR on an unresolved finding.
+  The Disposition line is read through list/quote markers and markdown emphasis, so a
+  bold `**Disposition:** blocked` still blocks, and `IsReviewBlocked` and
+  `ReviewDisposition` share that one per-line parse (#304).
 - **A usage-policy refusal is retryable, not fatal ([BEH-389](https://linear.app/beherd/issue/BEH-389)).**
   Claude Code's "unable to respond … violate our Usage Policy" refusal is a known
   intermittent false-positive on long agentic sessions; it returns a terminal

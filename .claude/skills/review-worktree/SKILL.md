@@ -71,6 +71,10 @@ Gate: make check <green|red>
 Disposition: clear — <reason>
 ```
 
+Write the labels (`Intent:`, `Findings:`, `Gate:`, `Disposition:`) as plain
+text, exactly as shown: no bold, italics, backticks or list markers around them.
+The harness parses the Disposition line to decide whether to push.
+
 Use `Disposition: blocked — <reason>` only when a finding needs a human decision
 (an ambiguous spec, a trade-off an ADR does not settle). Never block on
 something you could fix.
