@@ -84,6 +84,30 @@ the toolchain is gated in the image it fixes (ADR-0022). Only the Dockerfile's
 own bytes are compared: a branch that changes only a file the Dockerfile `COPY`s
 still runs in the current image.
 
+## Searching the bundled Claude CLI
+
+A session that needs to know how the pinned Claude CLI behaves (a flag, an error
+message) can read it inside the sandbox. `/usr/local/bin/claude` is a symlink to
+`/usr/local/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe`, a single
+native executable of a few hundred MB. Try `claude --help` first.
+
+Search it for a **fixed string**, and cut the context out by byte offset:
+
+```bash
+BIN=/usr/local/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe
+grep -a -b -o -F 'dangerously-skip-permissions' "$BIN" | head   # OFFSET:match, under a second
+tail -c +92625001 "$BIN" | head -c 600 | tr -c '[:print:]\n' '.'  # 600 bytes from ~200 before an OFFSET
+strings -n 8 "$BIN" | grep -F 'dangerously-skip-permissions'     # whole printable lines, a few seconds
+```
+
+`dd if="$BIN" bs=1 skip=<OFFSET-200> count=600 2>/dev/null` cuts the same window.
+
+**Never** put a wildcard context pattern such as `grep -a -o '.{500}literal.{500}'`
+on that file. With `-o` and a bounded repeat in front of the literal, grep tries
+the match from nearly every byte offset: one such call has taken over six minutes
+where the fixed-string search takes under a second, and the Bash tool shows
+nothing until it returns (#310).
+
 ## See also
 
 - [`image`, `dockerfile` and `[cache]`](../reference/config.md)
