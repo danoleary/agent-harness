@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/danoleary/agent-harness/internal/loopstream"
 )
@@ -208,68 +209,107 @@ func IsReviewVerdict(line string) bool {
 	return false
 }
 
-// reviewBlockedMarker is the disposition the /review-worktree report carries when
+// reviewBlockedValue is the disposition the /review-worktree report carries when
 // it could NOT autonomously resolve a Blocker/Important finding and a human
 // decision is required (BEH-580). The autonomous pipeline has no approver, so the
 // reviewer self-resolves what it can (applies a safe fix, or accepts-and-documents
 // a deliberate change) and emits "Disposition: clear"; only a genuinely unresolved
-// finding emits "Disposition: blocked". Matched as a substring so the trailing
-// reason text doesn't have to be exact. The "clear" disposition deliberately does
-// NOT contain this marker, so a clear verdict never trips it.
-const reviewBlockedMarker = "Disposition: blocked"
+// finding emits "Disposition: blocked".
+const reviewBlockedValue = "blocked"
 
 // IsReviewBlocked reports whether a stream-json line is a /review-worktree verdict
-// declaring a blocked disposition (BEH-580): an assistant text block carrying BOTH
-// the "## Review:" report header AND "Disposition: blocked". That pairing means the
-// review ran and found a Blocker/Important finding it could not autonomously
-// resolve — so the harness must fail the push closed and keep the worktree rather
-// than open a PR with the finding unaddressed (the BEH-439 leak). Both markers are
-// required so a "Disposition: blocked" mentioned outside a review report can't trip
-// it; a malformed line is never blocked.
+// declaring a blocked disposition (BEH-580): an assistant text block carrying the
+// "## Review:" report header AND a Disposition line whose value is "blocked". That
+// pairing means the review ran and found a Blocker/Important finding it could not
+// autonomously resolve — so the harness must fail the push closed and keep the
+// worktree rather than open a PR with the finding unaddressed (the BEH-439 leak).
+// The header is required so a "Disposition: blocked" mentioned outside a review
+// report can't trip it; a malformed line is never blocked. It reads the same
+// per-line parse ReviewDisposition does, so markdown emphasis can't hide a blocked
+// verdict from one parser and not the other (#304), and any blocked line in the
+// verdict counts: a report that contradicts itself waits for a human.
 func IsReviewBlocked(line string) bool {
-	var e event
-	if err := json.Unmarshal([]byte(line), &e); err != nil {
-		return false
-	}
-	if e.Type != "assistant" {
-		return false
-	}
-	for _, block := range e.Message.Content {
-		if block.Type == "text" &&
-			strings.Contains(block.Text, reviewVerdictMarker) &&
-			strings.Contains(block.Text, reviewBlockedMarker) {
+	for _, d := range verdictDispositions(line) {
+		if d.value == reviewBlockedValue {
 			return true
 		}
 	}
 	return false
 }
 
-// reviewDispositionMarker leads the verdict's terminal disposition line —
+// reviewDispositionLabel leads the verdict's terminal disposition line —
 // "Disposition: clear — <reason>" or "Disposition: blocked — <reason>".
-const reviewDispositionMarker = "Disposition:"
+const reviewDispositionLabel = "Disposition"
 
 // ReviewDisposition returns the Disposition line of a /review-worktree verdict —
 // an assistant text block carrying the "## Review:" header — with its reason
 // verbatim (#44). The harness records it so a re-run's review over the same
 // commits is told what the prior review concluded instead of re-deriving it. The
-// last such line in the block wins; ok is false for any other line.
+// line comes back normalized to the plain "Disposition: <value> — <reason>" form
+// whatever markdown the reviewer wrapped it in (#304). The last such line in the
+// block wins; ok is false for any other line.
 func ReviewDisposition(line string) (string, bool) {
-	var e event
-	if err := json.Unmarshal([]byte(line), &e); err != nil || e.Type != "assistant" {
+	ds := verdictDispositions(line)
+	if len(ds) == 0 {
 		return "", false
 	}
-	disposition := ""
+	return ds[len(ds)-1].line, true
+}
+
+// disposition is one parsed Disposition line of a review verdict: value is the
+// lower-cased first word after the label ("clear", "blocked"), line the whole
+// line in its plain form.
+type disposition struct {
+	value string
+	line  string
+}
+
+// verdictDispositions returns every Disposition line in the stream-json line's
+// "## Review:" text blocks, in order; none for any other line.
+func verdictDispositions(line string) []disposition {
+	var e event
+	if err := json.Unmarshal([]byte(line), &e); err != nil || e.Type != "assistant" {
+		return nil
+	}
+	var ds []disposition
 	for _, block := range e.Message.Content {
 		if block.Type != "text" || !strings.Contains(block.Text, reviewVerdictMarker) {
 			continue
 		}
 		for _, l := range strings.Split(block.Text, "\n") {
-			if l = strings.TrimSpace(l); strings.HasPrefix(l, reviewDispositionMarker) {
-				disposition = l
+			if d, ok := parseDisposition(l); ok {
+				ds = append(ds, d)
 			}
 		}
 	}
-	return disposition, disposition != ""
+	return ds
+}
+
+// markdownEmphasis are the characters a reviewer may wrap a report label or value
+// in: bold/italic stars and underscores, and code backticks.
+const markdownEmphasis = "*_`"
+
+// parseDisposition reads one report line as a Disposition line, looking through
+// leading list or quote markers and the markdown emphasis around the label and its
+// value, so "**Disposition:** blocked — x", "__Disposition:__ clear",
+// "- Disposition: clear" and the plain form all parse (#304).
+func parseDisposition(l string) (disposition, bool) {
+	l = strings.TrimLeft(strings.TrimSpace(l), " \t-+>"+markdownEmphasis)
+	if len(l) < len(reviewDispositionLabel) || !strings.EqualFold(l[:len(reviewDispositionLabel)], reviewDispositionLabel) {
+		return disposition{}, false
+	}
+	rest := strings.TrimLeft(l[len(reviewDispositionLabel):], markdownEmphasis)
+	if !strings.HasPrefix(rest, ":") {
+		return disposition{}, false
+	}
+	rest = strings.TrimLeft(rest[1:], " \t"+markdownEmphasis)
+	end := strings.IndexFunc(rest, func(r rune) bool { return !unicode.IsLetter(r) })
+	if end < 0 {
+		end = len(rest)
+	}
+	value := strings.ToLower(rest[:end])
+	reason := strings.TrimLeft(rest[end:], markdownEmphasis)
+	return disposition{value: value, line: strings.TrimSpace(reviewDispositionLabel + ": " + value + reason)}, true
 }
 
 // turnZeroNoOpMaxTurns is the num_turns ceiling below which a subtype="success",

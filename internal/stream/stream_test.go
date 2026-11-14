@@ -622,3 +622,64 @@ func TestReviewDispositionExtractsTheVerdictLine(t *testing.T) {
 		}
 	}
 }
+
+// #304: the review session wrote its report labels in markdown bold, and the
+// literal "Disposition:" match missed them: the recorded disposition came out
+// empty, and a bold "**Disposition:** blocked" would not have blocked the push.
+// The disposition line is recognised through list/quote markers and emphasis, and
+// both parsers read it the same way.
+func TestReviewDispositionReadsThroughMarkdownEmphasis(t *testing.T) {
+	verdict := func(text string) string {
+		return mustJSON(t, map[string]any{
+			"type":    "assistant",
+			"message": map[string]any{"content": []any{map[string]any{"type": "text", "text": text}}},
+		})
+	}
+	// The incident's report shape: every label in bold.
+	incident := "## Review: #300 — Catalogue every ⚠ run-log warning in errors.md\n\n" +
+		"**Intent:** fail the gate on a ⚠ literal with no errors.md row\n\n" +
+		"**Findings:**\n- [fixed] docs: a row was missing\n\n" +
+		"**Gate:** make check green\n\n" +
+		"**Disposition:** clear — all findings resolved\n"
+	for name, tc := range map[string]struct {
+		text    string
+		want    string
+		blocked bool
+	}{
+		"incident bold clear": {incident, "Disposition: clear — all findings resolved", false},
+		"bold blocked":        {"## Review: #1\n\n**Disposition:** blocked — needs a human", "Disposition: blocked — needs a human", true},
+		"bold label only":     {"## Review: #1\n\n**Disposition**: blocked — x", "Disposition: blocked — x", true},
+		"bold value":          {"## Review: #1\n\nDisposition: **blocked** — x", "Disposition: blocked — x", true},
+		"underscore clear":    {"## Review: #1\n\n__Disposition:__ clear", "Disposition: clear", false},
+		"underscore blocked":  {"## Review: #1\n\n__Disposition:__ blocked — x", "Disposition: blocked — x", true},
+		"list item clear":     {"## Review: #1\n\n- Disposition: clear — fine", "Disposition: clear — fine", false},
+		"list item blocked":   {"## Review: #1\n\n- **Disposition:** blocked — x", "Disposition: blocked — x", true},
+		"quote blocked":       {"## Review: #1\n\n> Disposition: blocked — x", "Disposition: blocked — x", true},
+		"backticks blocked":   {"## Review: #1\n\n`Disposition: blocked` — x", "Disposition: blocked — x", true},
+		"plain clear":         {"## Review: #1\n\nDisposition: clear — fine", "Disposition: clear — fine", false},
+		"plain blocked":       {"## Review: #1\n\nDisposition: blocked — x", "Disposition: blocked — x", true},
+	} {
+		line := verdict(tc.text)
+		got, ok := ReviewDisposition(line)
+		if got != tc.want || !ok {
+			t.Errorf("%s: ReviewDisposition = %q, %v; want %q, true", name, got, ok, tc.want)
+		}
+		if IsReviewBlocked(line) != tc.blocked {
+			t.Errorf("%s: IsReviewBlocked = %v; want %v", name, !tc.blocked, tc.blocked)
+		}
+	}
+}
+
+// A blocked disposition anywhere in the verdict fails the push closed, even when a
+// later line reads clear: the two can only disagree by mistake, and the safe
+// reading of a contradictory report is to wait for a human.
+func TestIsReviewBlockedFailsClosedOnAnyBlockedLine(t *testing.T) {
+	line := mustJSON(t, map[string]any{
+		"type": "assistant",
+		"message": map[string]any{"content": []any{map[string]any{"type": "text",
+			"text": "## Review: #1\n\n**Disposition:** blocked — x\n\nDisposition: clear — y"}}},
+	})
+	if !IsReviewBlocked(line) {
+		t.Error("a verdict with any blocked Disposition line should be blocked")
+	}
+}
