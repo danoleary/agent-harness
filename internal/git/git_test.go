@@ -1934,7 +1934,7 @@ func scriptedOutput(stdout string, err error) (outputRunner, *[][]string) {
 	return run, &calls
 }
 
-// branchDocsOnly reads `git diff --name-only origin/main` and classifies the paths:
+// branchDocsOnly reads `git diff --name-only --no-renames origin/main` and classifies the paths:
 // an all-docs diff is docs-only.
 func TestBranchDocsOnlyTrueForAllDocsDiff(t *testing.T) {
 	run, calls := scriptedOutput("AGENTS.md\ndocs/adr/0026.md\n", nil)
@@ -1943,7 +1943,7 @@ func TestBranchDocsOnlyTrueForAllDocsDiff(t *testing.T) {
 		t.Fatal("a name-only diff of pure docs must classify as docs-only")
 	}
 	got := strings.Join((*calls)[0], " ")
-	want := "git -C " + wt.Path() + " diff --name-only origin/main"
+	want := "git -C " + wt.Path() + " diff --name-only --no-renames origin/main"
 	if got != want {
 		t.Fatalf("argv = %q, want %q", got, want)
 	}

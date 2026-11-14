@@ -652,10 +652,11 @@ func (w Worktree) DocsOnly(excludedRoots []string) bool {
 // DiffPaths lists the paths the worktree's tree differs from origin/main in,
 // committed or not (`git diff --name-only origin/main`): what [Worktree.DocsOnly]
 // classifies, and what a PR loop fix matches against a Gate's skip_when_only
-// (#221). An error means the diff could not be read, which a caller treats as
-// grounds to run the gate.
+// (#221). A rename lists both ends, so a file moved out of a path a gate reads
+// still counts as a change there. An error means the diff could not be read,
+// which a caller treats as grounds to run the gate.
 func (w Worktree) DiffPaths() ([]string, error) {
-	out, err := w.output("git", "-C", w.path, "diff", "--name-only", "origin/main")
+	out, err := w.output("git", "-C", w.path, "diff", "--name-only", "--no-renames", "origin/main")
 	if err != nil {
 		return nil, err
 	}

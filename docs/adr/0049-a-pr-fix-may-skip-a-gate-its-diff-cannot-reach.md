@@ -31,9 +31,10 @@ that gate host-side, logs it and why, and pushes. CI must pass before merge.**
   and run every gate. A skipped gate is also skipped over a CI fix's trial
   merge with origin/main. The red-base check still gates origin/main with every
   gate, because its verdict is shared with the ticket loop.
-- **What it matches.** `git diff --name-only origin/main` over the worktree,
-  the same diff the docs-only check reads. A diff that cannot be read, or is
-  empty, skips nothing. A path is matched segment by segment: `path.Match`
+- **What it matches.** `git diff --name-only --no-renames origin/main` over
+  the worktree, the same diff the docs-only check reads. A rename lists both
+  ends, so moving a file out of a path a gate reads runs that gate. A diff that
+  cannot be read, or is empty, skips nothing. A path is matched segment by segment: `path.Match`
   within a segment, and `**` for any number of whole segments.
 - **Why a push with no local gate is safe here.** The PR is already open, and
   main's ruleset requires the `Check, build` status on an up-to-date branch

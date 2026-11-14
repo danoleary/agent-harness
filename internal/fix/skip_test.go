@@ -1,6 +1,9 @@
 package fix
 
 import (
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -107,5 +110,24 @@ func TestAPRFixWhoseEveryGateIsSkippedIsGreen(t *testing.T) {
 	}
 	if len(h.Shells) != 0 {
 		t.Errorf("gates run = %q, want none", shellLabels(h))
+	}
+}
+
+// A file moved under a listed path still changed where it was: the diff names
+// both ends of a rename, so moving README.md into .github/ runs `check`.
+func TestAPRFixMovingAFileIntoTheListRunsTheGate(t *testing.T) {
+	e, h := skipEnv(t, true)
+	wt := e.Host.Worktree()
+	if err := os.MkdirAll(filepath.Join(wt.Path(), ".github"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("git", "-C", wt.Path(), "mv", "README.md", ".github/README.md")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git mv: %v\n%s", err, out)
+	}
+
+	e.Gates("gate")
+	if got := shellLabels(h); got != "gate-check,gate-build" {
+		t.Errorf("gates run = %q, want both", got)
 	}
 }
