@@ -104,3 +104,31 @@ edits the PR with that text.
   exists, so the PR is opened from the renumbered branch. The ticket loop's CI
   watch can also resolve a conflict after the PR is open, when a prerequisite
   merges (#82), and that resolution does not rewrite the description yet.
+
+## Amendment, 2026-11-14: a renumber goes into the commit that added the ADR (#347)
+
+The union that lets a replay through also hides what a renumber leaves behind.
+A PR the PR loop replayed three times in about 75 minutes took a number main had
+just landed each time, and each resolution renumbered the ADR in a new commit on
+top. The next replay cherry-picked the commit that added the ADR, and with it
+the index line under the old number. The union kept that line beside main's, no
+conflict was raised, and the later renumber commit did not remove it. Each
+replay left one more dead index line, which the session had to find and delete
+by hand before `check-adr` turned the re-gate red.
+
+The replay's conflict-resolution prompt now tells the session to renumber inside
+the commit that added the ADR: replay up to and including that commit, rename
+the file and edit its index line, amend, then replay the rest. The branch's
+history then only ever holds the current number, so a later replay has no old
+line to bring back.
+
+- **A branch an earlier session renumbered on top** still carries that commit.
+  The prompt says to skip it in the replay. As a backstop, it says to check
+  after the replay that every index line names an existing file, and to delete
+  a stale one with a fixed-string filter (`grep -vF`), not a `sed` regex that
+  can fail to match.
+- **It is a steer, not a mechanism.** The harness does not autosquash renumber
+  commits itself, and `check-adr` still catches a dead line the session leaves.
+- **The merge variant is unchanged.** A human's branch (ADR-0019) is merged,
+  not replayed, and its history may not be amended. A merge applies the two
+  tips once, so an earlier number in its history cannot come back.

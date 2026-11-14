@@ -266,3 +266,41 @@ func TestRebaseFixReconcilesWhatMainAddedUnderneathTheBranch(t *testing.T) {
 		t.Error("the merge variant is unchanged: it writes no overlap file (#255)")
 	}
 }
+
+// #347: a PR the PR loop replayed three times took an ADR number main had just
+// landed each time, and each resolution renumbered it in a NEW commit on top.
+// The ADR index merges by line union, so the next replay cherry-picked the
+// adding commit's index line, and every earlier renumber's, back in beside the
+// current one: dead links, one more per replay, that each session deleted by hand
+// (one lost a turn to a sed pattern that never matched). The replay variant must
+// say to renumber inside the commit that added the ADR, to skip an earlier
+// renumber commit, and, as a backstop, to check every index line names a file
+// and delete a stale one with a fixed-string filter. The merge variant replays
+// nothing and may not amend, so it carries none of it.
+func TestRebaseFixFoldsAnADRRenumberIntoTheCommitThatAddedIt(t *testing.T) {
+	p := For(RebaseFix, Context{Ticket: sample, Slug: "beh-362", BranchPrefix: "feat", WorktreePath: sampleWorktree})
+
+	for _, want := range []string{
+		"INSIDE the commit that added it, never in a new commit on top",
+		"git diff --name-only --diff-filter=A origin/main..._premerge -- docs/adr/",
+		"git log --format=%H --diff-filter=A origin/main.._premerge -- 'docs/adr/*-<slug>.md'",
+		"git cherry-pick origin/main..<adding commit>",
+		"git commit --amend --no-edit",
+		"git cherry-pick <adding commit>.._premerge",
+		"only renumbered that ADR",
+		"every line of the ADR index names a file that exists",
+		"grep -vF",
+	} {
+		if !strings.Contains(p, want) {
+			t.Errorf("replay prompt lacks %q", want)
+		}
+	}
+	if strings.Index(p, "git commit --amend --no-edit") > strings.Index(p, "git branch -D _premerge") {
+		t.Error("the renumber names _premerge, so it must come before the marker is dropped")
+	}
+
+	m := For(RebaseFix, Context{Ticket: sample, Slug: "pr-12", Branch: "alice/widget", WorktreePath: sampleWorktree, Merge: true})
+	if strings.Contains(m, "git commit --amend") {
+		t.Error("the merge variant must not tell a human's branch to amend (ADR-0019)")
+	}
+}
