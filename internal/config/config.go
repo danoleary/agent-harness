@@ -336,6 +336,14 @@ type Option func(*loadOptions)
 type loadOptions struct {
 	harnessVersion string
 	workingDir     string
+	committed      bool
+}
+
+// WithCommittedProject reads the Project half's config.toml from origin/main
+// ([LoadCommittedProject]) instead of the working tree. A run passes it: the
+// working tree is the one every sandbox can write (#332).
+func WithCommittedProject() Option {
+	return func(o *loadOptions) { o.committed = true }
 }
 
 // WithHarnessVersion overrides the harness version used for the compatibility
@@ -362,7 +370,7 @@ func Load(get Getenv, opts ...Option) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	project, err := loadProject(get, host.ProjectPath, options.harnessVersion)
+	project, err := loadProject(get, host.ProjectPath, options.harnessVersion, options.committed)
 	if err != nil {
 		return Config{}, err
 	}
@@ -579,8 +587,12 @@ func (h *Host) knobs(get Getenv) []knob {
 // committed config, the version pin it carries, and the per-Stage prompt bodies.
 // A missing or invalid file fails loud here, before any sandbox launches, rather
 // than surfacing as a wrong image or empty gate list later.
-func loadProject(get Getenv, checkout, harnessVersion string) (Project, error) {
-	pc, err := LoadProject(checkout)
+func loadProject(get Getenv, checkout, harnessVersion string, committed bool) (Project, error) {
+	load := LoadProject
+	if committed {
+		load = LoadCommittedProject
+	}
+	pc, err := load(checkout)
 	if err != nil {
 		return Project{}, err
 	}
@@ -774,11 +786,11 @@ func EnvFileCandidates(getenv Getenv, workingDir string) []string {
 }
 
 // InRepoEnvFile is the credential file a Consumer may commit-adjacent inside its
-// own checkout: `<checkout>/.agent-harness/.env`. It is the one path inside the
-// mount that every container masks, so it is the only in-repo location the harness
-// vouches for. It must stay in step with sandbox.ProjectDirName /
-// sandbox.CredentialFileName, which build the mask — the two are the same contract
-// seen from the host and from the container.
+// own checkout: `<checkout>/.agent-harness/.env`. Every container masks it, with
+// every other `.env*` file in the checkout (#332), and it is the only in-repo
+// location the harness vouches for. The sandbox's mask matches files by
+// EnvFileName, so the file the host reads and the files the container cannot are
+// the same contract seen from either side.
 func InRepoEnvFile(checkoutPath string) string {
 	return filepath.Join(checkoutPath, ProjectDirName, EnvFileName)
 }

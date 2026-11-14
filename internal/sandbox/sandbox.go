@@ -27,7 +27,11 @@ const PreflightTimeout = 30 * time.Second
 // ProbeRunner is the production runner for Preflight: each docker probe is bounded
 // by PreflightTimeout so a wedged daemon fails fast rather than hanging the run
 // (BEH-386). The three cmd/ tools all pass this; tests inject their own runner.
+// doctor runs its git probes through it too, so a git one carries [git.HostArgs].
 func ProbeRunner(name string, args ...string) ([]byte, error) {
+	if name == "git" {
+		args = git.HostArgs(args...)
+	}
 	return proc.CombinedOutput(PreflightTimeout, name, args...)
 }
 
@@ -569,12 +573,12 @@ const gitReadTimeout = 30 * time.Second
 // branch's own commits (or its uncommitted edits) changed it, rather than main
 // after the branch was cut.
 func branchChangedFile(worktreePath, rel string) (bool, error) {
-	out, _, err := proc.Output(gitReadTimeout, "git", "-C", worktreePath, "merge-base", "HEAD", git.BaseRef)
+	out, _, err := proc.Output(gitReadTimeout, "git", git.HostArgs("-C", worktreePath, "merge-base", "HEAD", git.BaseRef)...)
 	if err != nil {
 		return false, err
 	}
 	base := strings.TrimSpace(string(out))
-	out, _, err = proc.Output(gitReadTimeout, "git", "-C", worktreePath, "diff", "--name-only", base, "--", ":(literal)"+filepath.ToSlash(rel))
+	out, _, err = proc.Output(gitReadTimeout, "git", git.HostArgs("-C", worktreePath, "diff", "--name-only", base, "--", ":(literal)"+filepath.ToSlash(rel))...)
 	if err != nil {
 		return false, err
 	}
