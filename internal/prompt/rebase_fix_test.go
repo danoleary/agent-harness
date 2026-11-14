@@ -222,6 +222,7 @@ func TestRebaseFixLeavesARedBaseAloneAndReportsIt(t *testing.T) {
 		p := For(RebaseFix, Context{Ticket: sample, Slug: "beh-362", BranchPrefix: "feat", WorktreePath: sampleWorktree, Merge: merge})
 		for _, want := range []string{
 			"git worktree add --detach",
+			"the one exception to not creating a new worktree",
 			"Do NOT fix the base breakage",
 			"`BASE RED`",
 			"failing package or test",
