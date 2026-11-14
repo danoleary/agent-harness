@@ -509,7 +509,7 @@ func landedSection(landed []Landed) string {
 		// Defang the line: a commit subject is author text.
 		b.WriteString(defang("\n\n- `" + l.SHA + "` " + l.Subject + " — changed `" + strings.Join(l.Files, "`, `") + "`; read it with `git show " + l.SHA + "`."))
 	}
-	b.WriteString("\n\nBefore you plan or write any code, read each one and check whether it already does what the ticket asks. If one does, do not re-implement it: make no commit, say \"already fixed on main by <sha>\" in your handoff, and stop. If none does, carry on as usual.")
+	b.WriteString("\n\nBefore you plan or write any code, read each one and check whether it already does what the ticket asks. If one does, do not re-implement it: make no commit, write `/findings/resolved.json` as `{\"commit\": \"<sha>\", \"reason\": \"<why it already fixes this ticket>\"}` naming that commit, say \"already fixed on main by <sha>\" in your handoff, and stop. If none does, carry on as usual.")
 	return b.String()
 }
 

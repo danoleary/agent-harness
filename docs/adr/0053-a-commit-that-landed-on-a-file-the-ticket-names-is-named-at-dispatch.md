@@ -1,4 +1,4 @@
-# ADR-0052: A commit that landed on a file the ticket names is named at dispatch
+# ADR-0053: A commit that landed on a file the ticket names is named at dispatch
 
 - Status: Accepted
 - Date: 2026-11-14
@@ -36,7 +36,9 @@ commits in the envelope. It never skips the ticket.**
   changed on main since it was filed: …`. Every Implement variant names each
   commit and the files it changed, and tells the session to read them before
   writing code. If one already does what the ticket asks, the session makes no
-  commit, says "already fixed on main by <sha>" in its handoff, and stops.
+  commit, writes the `/findings/resolved.json` marker naming that commit (so the
+  run is ResolvedOnMain, ADR-0052), says "already fixed on main by <sha>" in its
+  handoff, and stops.
 
 ## Alternatives considered
 
