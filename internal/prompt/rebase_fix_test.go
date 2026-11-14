@@ -211,3 +211,26 @@ func TestRebaseFixLeavesTheFullGateToTheHost(t *testing.T) {
 		}
 	}
 }
+
+// #253: two sessions on the same red origin/main did opposite things — one left
+// the base breakage alone and said nothing, the other repaired it in a package the
+// branch never touched and folded that into an unrelated feature commit. Both
+// variants must say to check origin/main on its own, leave a red base alone and
+// report BASE RED with what failed, fixing only what the branch broke.
+func TestRebaseFixLeavesARedBaseAloneAndReportsIt(t *testing.T) {
+	for _, merge := range []bool{false, true} {
+		p := For(RebaseFix, Context{Ticket: sample, Slug: "beh-362", BranchPrefix: "feat", WorktreePath: sampleWorktree, Merge: merge})
+		for _, want := range []string{
+			"git worktree add --detach",
+			"the one exception to not creating a new worktree",
+			"Do NOT fix the base breakage",
+			"`BASE RED`",
+			"failing package or test",
+			"Fix only what this branch's own changes broke",
+		} {
+			if !strings.Contains(p, want) {
+				t.Errorf("merge=%v: prompt must carry the red-base rule; missing %q", merge, want)
+			}
+		}
+	}
+}

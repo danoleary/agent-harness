@@ -960,6 +960,14 @@ func withFixBody(c Context, lines []string) string {
 // they are the fast check that the hand-merged hunks compile.
 const leaveFullGateToHost = "After resolving, compile and run the tests of the packages you touched, and stop there. Do NOT run the project's full gate command: the harness runs it host-side on the resulting HEAD right after you stop and blocks the push if it is red, so running it here only pays the same gate twice."
 
+// leaveRedBaseAlone tells a conflict-resolution session what to do when origin/main
+// itself does not build (#253). Unsaid, two sessions on the same red base did
+// opposite things: one left it and the re-gate went red, the other repaired it in a
+// package the branch never touched and hid that fix in a feature commit. The policy
+// is to leave the base alone and report it: the host holds a PR over a red base
+// (ADR-0048) and repairing main is not this PR's job (ADR-0036).
+const leaveRedBaseAlone = "If a build or test you run after resolving fails, check whether origin/main fails it on its own before you touch it, in a throwaway scratch checkout (the one exception to not creating a new worktree; keep all your changes in the existing one): `git worktree add --detach /tmp/base-check origin/main`, run the same command in `/tmp/base-check`, then `git worktree remove --force /tmp/base-check`. If origin/main fails there too, the breakage is the base's, not this branch's. Do NOT fix the base breakage, not even in a separate commit: leave it as it is, and write `BASE RED` in your final report with the failing package or test and its error line. Fix only what this branch's own changes broke."
+
 // rebaseFix builds the `-p` prompt for the sandboxed conflict-resolution
 // session the review stage launches when the proactive pre-push rebase hits a
 // genuine content conflict (BEH-581). The branch already passed the cold review +
@@ -997,6 +1005,8 @@ func rebaseFix(c Context) string {
 		"Do NOT run `git cherry-pick --abort` (or `git rebase --abort`) or otherwise give up — aborting would strand the branch on its stale base, which is exactly the dead-end this session exists to fix. If a hunk is genuinely impossible to reconcile, make your best-effort merge and leave a clear note in the commit; the harness re-runs the full gate host-side and watches CI, so a mistake surfaces there rather than silently shipping.",
 		"",
 		leaveFullGateToHost,
+		"",
+		leaveRedBaseAlone,
 		"",
 		"Ticket context (the intent to preserve — already fetched for you):",
 		"",
@@ -1040,6 +1050,8 @@ func mergeFix(c Context) string {
 		"Do NOT run `git merge --abort` or otherwise give up — aborting leaves the PR conflicting, which is exactly the dead-end this session exists to fix. If a hunk is genuinely impossible to reconcile, make your best-effort merge and say so in the merge commit message; the harness re-runs the full gate host-side and watches CI, so a mistake surfaces there rather than silently shipping.",
 		"",
 		leaveFullGateToHost,
+		"",
+		leaveRedBaseAlone,
 		"",
 		"PR context (the intent to preserve — already fetched for you):",
 		"",
