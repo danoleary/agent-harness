@@ -288,10 +288,15 @@ func (w Worktree) Discard() error {
 // It returns the commits it moved from and to, or two empty strings when it left
 // the worktree alone: already current, commits ahead, or uncommitted work.
 func (w Worktree) FastForward() (from, to string, err error) {
-	// CommitsAhead reads a git failure as zero, so without origin/main to count
-	// against it cannot vouch that the branch holds no work.
+	// Count what the reset would move — the worktree's HEAD, not the branch ref
+	// [Worktree.CommitsAhead] reads — and read a failed count as work to keep, not
+	// as zero: a guess here is a `reset --hard` over someone's commits.
 	base := w.freshBase()
-	if base != "refs/remotes/origin/main" || w.CommitsAhead() > 0 || !w.Clean() {
+	if base != "refs/remotes/origin/main" || !w.Clean() {
+		return "", "", nil
+	}
+	ahead, err := w.output("git", "-C", w.path, "rev-list", "--count", base+"..HEAD")
+	if err != nil || strings.TrimSpace(string(ahead)) != "0" {
 		return "", "", nil
 	}
 	from, err = w.HeadSHA()

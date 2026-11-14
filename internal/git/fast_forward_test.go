@@ -65,6 +65,17 @@ func TestFastForwardLeavesWorkAlone(t *testing.T) {
 			repo.Dirty(wt)
 			return "uncommitted.txt"
 		},
+		// The branch ref sits on the base, but the worktree's HEAD carries a commit:
+		// the reset would move HEAD, so HEAD is what must be counted.
+		"commits on a detached HEAD": func(repo *gittest.Repo) string {
+			wt := repo.Worktree("gh-334")
+			if err := wt.Create(); err != nil {
+				t.Fatalf("Create: %v", err)
+			}
+			repo.Git(wt.Path(), "checkout", "-q", "--detach")
+			repo.Commit(wt, "detached.txt", "work\n", "work off the branch")
+			return ""
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			repo := gittest.New(t)
