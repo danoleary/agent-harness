@@ -72,6 +72,13 @@ doubling with each abort in a row up to 16. The `ticket-released` record in
 | `sandbox image "…" missing and the pull failed` | check the ref and `docker login` |
 | `is out of date with <Dockerfile> and the rebuild failed` | the same as a failed build |
 
+Once the image is ready, a session's own launch can still go wrong:
+
+| Message | Cause | Fix |
+|---|---|---|
+| `session ✗ docker could not start the container (exit 125): …` | docker refused the `docker run`. The reason follows the colon. Without one, it names the log that has docker's error: an agent session's `<session>-<run-id>.stderr.log`, or a step's `.log` | what docker's error says. A transient overlay2 or read-only-fs failure is retried on its own |
+| `Ignoring N permissions.allow entries from .claude/settings.json: this workspace has not been trusted`, in a session's `.stderr.log` | the sandbox image is built on a base image released before #305, whose entrypoint does not trust the session's working directory. Harmless: the session runs with `--dangerously-skip-permissions`, and stderr stays out of the `.jsonl` transcript | bump the base image tag your Dockerfile pins to a release that has #305 |
+
 ## Interrupted sessions
 
 `⏸ session interrupted by signal N` means a stop signal killed a session from

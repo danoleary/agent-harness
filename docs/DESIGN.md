@@ -1403,7 +1403,12 @@ own namespace with no edit to the workflow.
     stable key all three tools share; the run-id is a filename suffix for ordering
     and uniqueness when a ticket is worked more than once. This is what lets
     `retrospective BEH-NNN`, invoked separately, locate the implementation and
-    review transcripts.
+    review transcripts. It holds the session's stdout only, so every line is
+    JSON.
+  - `.agent-harness/logs/BEH-NNN/<session>-<run-id>.stderr.log` — that
+    session's stderr: docker's launch errors and any CLI warning. It is kept out
+    of the `.jsonl`, where a warning once became a non-JSON line 1 of every
+    transcript (#305).
   - `.agent-harness/logs/BEH-NNN/<step>-<run-id>.log` — a **raw-stdout step log**
     for the non-agent commands the harness runs around a session: the
     `postcreate-…`/`prep-…` worktree provisioning and the host-side

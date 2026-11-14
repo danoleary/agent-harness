@@ -2,7 +2,10 @@ package session
 
 import (
 	"bytes"
+	"encoding/json"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -476,5 +479,76 @@ func TestPumpStdoutReportsTheReviewDisposition(t *testing.T) {
 	none := pumpStdout(strings.NewReader(lineToolUse+"\n"+lineVerdict+"\n"+lineResult), "x.jsonl", false, &fakeLog{}, &bytes.Buffer{})
 	if none.reviewDisposition != "" {
 		t.Errorf("a verdict with no Disposition line reports none, got %q", none.reviewDisposition)
+	}
+}
+
+// fileLog is a Logger that keeps each teed line under the file it was teed to.
+type fileLog struct {
+	mu    sync.Mutex
+	files map[string][]string
+}
+
+func (f *fileLog) Event(string)                 {}
+func (f *fileLog) Structured(loopstream.Record) {}
+func (f *fileLog) TeeLine(file, raw string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.files == nil {
+		f.files = map[string][]string{}
+	}
+	f.files[file] = append(f.files[file], raw)
+}
+
+// #305: the pinned CLI writes this warning to stderr before its first stream-json
+// line, and it used to become line 1 of the transcript, so `jq` and every line-wise
+// JSON reader failed on it. A session with a StderrFile keeps its stderr there: the
+// transcript holds only the stream, and the warning still reaches the stderr tail.
+func TestPumpStreamsKeepsStderrOutOfTheTranscript(t *testing.T) {
+	const warning = `Ignoring 101 permissions.allow entries from .claude/settings.json: this workspace has not been trusted. Run Claude Code interactively here once and accept the trust dialog, or set projects["/Users/dan/herd/.claude/worktrees/beh-1363"].hasTrustDialogAccepted: true in /home/node/.claude.json.`
+	log := &fileLog{}
+
+	_, tail := pumpStreams(
+		strings.NewReader(lineSystem+"\n"+lineResult+"\n"),
+		strings.NewReader(warning+"\n"),
+		Options{TranscriptFile: "implementation-x.jsonl", StderrFile: "implementation-x.stderr.log", Log: log},
+		&bytes.Buffer{},
+	)
+
+	transcript := log.files["implementation-x.jsonl"]
+	if len(transcript) != 2 {
+		t.Fatalf("transcript = %q, want the two stream lines", transcript)
+	}
+	for i, line := range transcript {
+		if !json.Valid([]byte(line)) {
+			t.Errorf("transcript line %d is not JSON: %q", i+1, line)
+		}
+	}
+	if got := log.files["implementation-x.stderr.log"]; !slices.Equal(got, []string{warning}) {
+		t.Errorf("stderr log = %q, want the warning", got)
+	}
+	if !slices.Equal(tail, []string{warning}) {
+		t.Errorf("stderr tail = %q, want the warning", tail)
+	}
+}
+
+// A step log is a command's whole output, so without a StderrFile its stderr is
+// teed into the same file as its stdout, where the command printed it.
+func TestPumpStreamsTeesStderrIntoTheTranscriptByDefault(t *testing.T) {
+	log := &fileLog{}
+
+	pumpStreams(
+		strings.NewReader("ok\n"),
+		strings.NewReader("make: *** [check] Error 1\n"),
+		Options{TranscriptFile: "gate-check-x.log", Log: log},
+		&bytes.Buffer{},
+	)
+
+	got := log.files["gate-check-x.log"]
+	slices.Sort(got)
+	if !slices.Equal(got, []string{"make: *** [check] Error 1", "ok"}) {
+		t.Errorf("step log = %q, want both streams", got)
+	}
+	if len(log.files) != 1 {
+		t.Errorf("teed to %d files, want only the step log", len(log.files))
 	}
 }

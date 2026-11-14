@@ -63,6 +63,13 @@ func TranscriptName(session, runID string) string {
 	return session + "-" + runID + ".jsonl"
 }
 
+// StderrLogName is the filename for a session's stderr, beside its transcript
+// (e.g. "implementation-20260611-140805.stderr.log"). It is kept out of the .jsonl
+// so a CLI warning there is never a transcript line that is not JSON (#305).
+func StderrLogName(session, runID string) string {
+	return session + "-" + runID + ".stderr.log"
+}
+
 // StepLogName is the filename for a raw-stdout step log — the install/gate
 // commands the review tool runs around the agent session. Their content is piped
 // tool stdout (pnpm install / pnpm check), NOT a stream-json event stream, so
