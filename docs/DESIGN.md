@@ -1447,6 +1447,11 @@ own namespace with no edit to the workflow.
     session's stderr: docker's launch errors and any CLI warning. It is kept out
     of the `.jsonl`, where a warning once became a non-JSON line 1 of every
     transcript (#305).
+  - `.agent-harness/logs/BEH-NNN/<session>-<run-id>.prompt.md` — the prompt
+    that session was launched with (envelope, ticket body and context),
+    verbatim. The transcript starts at the first assistant turn and never
+    records it, so this is where a later ticket finds the ticket text an
+    incident was dispatched with, even where the sandbox has no `gh` (#341).
   - `.agent-harness/logs/BEH-NNN/<step>-<run-id>.log` — a **raw-stdout step log**
     for the non-agent commands the harness runs around a session: the
     `postcreate-…`/`prep-…` worktree provisioning and the host-side

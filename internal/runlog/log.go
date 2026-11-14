@@ -70,6 +70,15 @@ func StderrLogName(session, runID string) string {
 	return session + "-" + runID + ".stderr.log"
 }
 
+// PromptName is the filename for the prompt a session was launched with, beside
+// its transcript (e.g. "implementation-20260611-140805.prompt.md"). The stream-json
+// transcript starts at the first assistant turn and never records the prompt, so
+// without this the ticket text a session was dispatched with is nowhere on disk
+// for a later replay (#341).
+func PromptName(session, runID string) string {
+	return session + "-" + runID + ".prompt.md"
+}
+
 // StepLogName is the filename for a raw-stdout step log — the install/gate
 // commands the review tool runs around the agent session. Their content is piped
 // tool stdout (pnpm install / pnpm check), NOT a stream-json event stream, so
@@ -166,6 +175,12 @@ func (l *Logger) TeeLine(file, raw string) {
 		raw += "\n"
 	}
 	l.append(file, raw)
+}
+
+// Keep appends content to a file under the ticket dir verbatim, adding no
+// newline: a session's launch prompt, kept byte for byte (#341).
+func (l *Logger) Keep(file, content string) {
+	l.append(file, content)
 }
 
 func (l *Logger) append(file, content string) {

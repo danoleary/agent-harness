@@ -582,3 +582,51 @@ func TestShellDoesNotRecreateAMissingWorktreeForAnIsolatedPath(t *testing.T) {
 		t.Errorf("worktree %s was recreated (stat err %v)", wt, err)
 	}
 }
+
+// #341: the prompt a session was launched with is kept beside its transcript,
+// which starts at the first assistant turn and never records it. The incident:
+// a later ticket's replay test needed the ticket body #317 was dispatched with,
+// the sandbox has no `gh`, and the body was nowhere on disk. This prompt is
+// shaped like #317's: the /tdd envelope, the ticket body, the sandbox steering.
+func TestAgentKeepsItsLaunchPromptBesideItsTranscript(t *testing.T) {
+	r, _ := testRunner(t)
+	prompt := "/tdd Work on #317: Re-run a red gate once on more browser infrastructure signatures.\n\n" +
+		"Ticket context (already fetched for you — do not look it up):\n\n" +
+		"# #317: Re-run a red gate once on more browser infrastructure signatures\n\n" +
+		"**Kind:** bug\n\nA gate red on `browserType.launch: Target page, context or browser has been closed` was blamed on the branch.\n\n" +
+		"<!-- finding-key: gate-browser-infra-red-not-retried -->\n"
+
+	res := r.Agent(AgentRun{Label: "implementation", Prompt: prompt, Cap: time.Minute})
+
+	if res.Transcript != "implementation-20260920-101500.jsonl" {
+		t.Fatalf("transcript = %q", res.Transcript)
+	}
+	raw, err := os.ReadFile(filepath.Join(r.log.Dir, "implementation-20260920-101500.prompt.md"))
+	if err != nil {
+		t.Fatalf("no prompt beside the transcript: %v", err)
+	}
+	if string(raw) != prompt {
+		t.Errorf("kept prompt =\n%s\nwant the launch prompt verbatim:\n%s", raw, prompt)
+	}
+}
+
+// Each retry is its own launch with its own transcript, so each keeps its own
+// prompt: a reader who opens a retry's transcript finds the prompt beside it.
+func TestAgentRetryKeepsItsOwnPrompt(t *testing.T) {
+	r, _ := testRunner(t, session.Outcome{ExitCode: sandbox.ExitOOMKill}, session.Outcome{})
+
+	res := r.Agent(AgentRun{
+		Label: "implementation", Prompt: "do it\n",
+		Retry: Retry{MaxAttempts: 2, Backoff: session.ConstantBackoff(0)},
+	})
+
+	if res.Attempts != 2 {
+		t.Fatalf("attempts = %d, want 2", res.Attempts)
+	}
+	for _, name := range []string{"implementation-20260920-101500.prompt.md", "implementation-retry2-20260920-101500.prompt.md"} {
+		raw, err := os.ReadFile(filepath.Join(r.log.Dir, name))
+		if err != nil || string(raw) != "do it\n" {
+			t.Errorf("%s = %q, %v; want the launch prompt", name, raw, err)
+		}
+	}
+}
