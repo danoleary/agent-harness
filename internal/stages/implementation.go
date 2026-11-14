@@ -10,6 +10,7 @@ import (
 	gitpkg "github.com/danoleary/agent-harness/internal/git"
 	"github.com/danoleary/agent-harness/internal/hostio"
 	"github.com/danoleary/agent-harness/internal/lease"
+	"github.com/danoleary/agent-harness/internal/nowork"
 	"github.com/danoleary/agent-harness/internal/prompt"
 	"github.com/danoleary/agent-harness/internal/runlog"
 	"github.com/danoleary/agent-harness/internal/session"
@@ -84,6 +85,44 @@ func releaseClaim(l *lease.Lease, why string, log *runlog.Logger) {
 // Result.Retryable to decide whether to re-attempt the whole stage (BEH-543).
 func retryableEnvCrash(outcome session.Outcome, capAborted bool) bool {
 	return outcome.Retryable() && !capAborted
+}
+
+// foundNothing reports whether the session ran to completion and left nothing to
+// hand off: it exited 0 of its own accord after real turns, and the worktree is
+// clean with no commit ahead of origin/main. That is the session concluding there
+// is no work, often because the fix is already on main under another PR (#330).
+// A crash, a refusal, a cap or a $0 run says nothing about the work, and a second
+// run may well get further.
+func foundNothing(o session.Outcome, wt gitpkg.Worktree) bool {
+	if o.ExitCode != 0 || o.SpendingCapAbort || o.UsagePolicyRefusal || o.CapKilled || o.NoRealTurns || o.TurnZeroNoOp {
+		return false
+	}
+	return wt.Exists() && wt.Clean() && wt.CommitsAhead() == 0
+}
+
+// recordNoWork keeps the record selection reads to pass over a ticket whose last
+// run found nothing (#330, ADR-0053): the origin/main SHA the run worked against
+// and the ticket as its selection read it. Any other end clears it, so a record
+// only ever describes the latest run. A hand-passed run was not selected, so
+// there is no reading of the ticket to record. Best-effort: a failed write costs
+// at most one more run, as before the record existed.
+func recordNoWork(cfg config.Config, log *runlog.Logger, args Args, wt gitpkg.Worktree, o session.Outcome, ok bool) {
+	records := nowork.For(cfg)
+	if ok || args.Selected == "" || !foundNothing(o, wt) {
+		records.Clear(args.Identifier)
+		return
+	}
+	base, err := wt.RefSHA(gitpkg.BaseRef)
+	if err != nil {
+		log.Event("⚠ could not read origin/main to record that the run found no work (" + err.Error() + ") — the next poll may dispatch " + args.Identifier + " again")
+		records.Clear(args.Identifier)
+		return
+	}
+	if err := records.Write(args.Identifier, base, args.Selected); err != nil {
+		log.Event("⚠ could not record that the run found no work (" + err.Error() + ") — the next poll may dispatch " + args.Identifier + " again")
+		return
+	}
+	log.Event("tdd · the session ran to completion with no work against origin/main " + base[:min(12, len(base))] + " — " + args.Identifier + " is not dispatched again until main moves or the ticket changes (#330)")
 }
 
 // provisionWorktree creates the feature worktree + canonical branch host-side and
@@ -448,6 +487,11 @@ func Implementation(h hostio.Host, cfg config.Config, log *runlog.Logger, args A
 			result = verify.Tdd(wt)
 		}
 	}
+
+	// Before the checkpoint below can commit anything, note whether the session
+	// found nothing to hand off, so selection does not dispatch the ticket into the
+	// same nothing while main and the ticket stand still (#330).
+	recordNoWork(cfg, log, args, wt, outcome, result.OK)
 
 	// A session that found the ticket already fixed on origin/main stops without
 	// committing, as the skill sanctions, and names the fixing commit in its

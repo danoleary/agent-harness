@@ -436,6 +436,13 @@ func BaseVerdictsDir(checkoutPath string) string {
 	return filepath.Join(LocksDir(checkoutPath), "base-gates")
 }
 
+// NoWorkDir is where the loop instances of one Consumer record, per ticket, the
+// origin/main SHA a run found nothing to hand off against (#330), so selection
+// does not dispatch the ticket again while neither main nor the ticket moved.
+func NoWorkDir(checkoutPath string) string {
+	return filepath.Join(LocksDir(checkoutPath), "no-work")
+}
+
 // ClaimLockFile is the lock every loop instance of a Consumer holds while it
 // confirms and claims a selected ticket, so two never claim one ticket (#89).
 func ClaimLockFile(checkoutPath string) string {

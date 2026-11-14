@@ -14,6 +14,7 @@ import (
 	"github.com/danoleary/agent-harness/internal/hostlock"
 	"github.com/danoleary/agent-harness/internal/lease"
 	"github.com/danoleary/agent-harness/internal/loop"
+	"github.com/danoleary/agent-harness/internal/nowork"
 	"github.com/danoleary/agent-harness/internal/overlap"
 	"github.com/danoleary/agent-harness/internal/pipeline"
 	"github.com/danoleary/agent-harness/internal/runlog"
@@ -33,8 +34,8 @@ type TicketSource struct {
 	// prs, when set, are the open PRs selection screens a ticket against: a ticket
 	// that names files the harness's own PRs already change waits (#97).
 	prs OpenPRs
-	// screen is the overlap screen, built once so a deferral that stands poll
-	// after poll reaches the loop stream once (#281).
+	// screen is the selection's screens, built once so a deferral or skip that
+	// stands poll after poll reaches the loop stream once (#281).
 	screen pipeline.NextResolver
 	// held is why the last poll was held rather than empty ([loop.Holder]).
 	held string
@@ -67,7 +68,7 @@ func RepoPRs(cfg config.Config) *github.Pulls {
 // whose title or body names files an open harness PR, or a claimed ticket's
 // worktree, already changes. OVERLAP_THRESHOLD=0 leaves it off.
 func (s *TicketSource) WatchPRs(prs OpenPRs) *TicketSource {
-	s.prs = prs
+	s.prs, s.screen = prs, nil
 	return s
 }
 
@@ -75,6 +76,18 @@ func (s *TicketSource) WatchPRs(prs OpenPRs) *TicketSource {
 // so the source's git reads name the ticket and nothing else.
 func (s *TicketSource) checkout() gitpkg.Checkout {
 	return gitpkg.Open(s.cfg.ProjectPath, s.cfg.BranchPrefix)
+}
+
+// freshMain is origin/main after a best-effort fetch. The loop fetches only at
+// startup and after a ticket, so a queue the no-work record holds would otherwise
+// never see main move and pass over the ticket until a restart (#330). The screen
+// reads it only when the offered ticket has a record, so a poll without one makes
+// no network call.
+func (s *TicketSource) freshMain() (string, error) {
+	if err := s.checkout().FetchMain(); err != nil {
+		s.log.Event("⚠ could not fetch origin/main to check a ticket whose last run found no work (" + err.Error() + ") — comparing against the last fetch")
+	}
+	return s.checkout().MainSHA()
 }
 
 // CheckAccess proves the tracker's credential works via one side-effect-free
@@ -93,7 +106,8 @@ func (s *TicketSource) CheckAccess() error {
 // under the Consumer's claim lock, so another loop instance selecting at the same
 // moment can't grab the same ticket (#89). A selection/claim failure comes back as err, which the
 // daemon narrates as a failed read — not an empty queue — before re-polling. The
-// item's Branch is the slugged feature branch the Stages will create and push.
+// item's Branch is the slugged feature branch the Stages will create and push, and
+// its Context the ticket as selection read it (a [nowork.Fingerprint], #330).
 func (s *TicketSource) Next() (loop.WorkItem, *lease.Lease, bool, error) {
 	sel := pipeline.ResolveNext(s.Resolver(), hostlock.File(config.ClaimLockFile(s.cfg.ProjectPath)), false, s.cfg.Tracker.QueueHint(), s.log)
 	s.held = sel.Held
@@ -104,21 +118,22 @@ func (s *TicketSource) Next() (loop.WorkItem, *lease.Lease, bool, error) {
 		return loop.WorkItem{}, nil, false, nil
 	}
 	key := sel.Lease.Key()
-	item := loop.WorkItem{Key: key, Branch: s.checkout().Worktree(ticket.Slug(key)).Branch()}
+	item := loop.WorkItem{Key: key, Branch: s.checkout().Worktree(ticket.Slug(key)).Branch(), Context: sel.Fingerprint}
 	return item, sel.Lease, true, nil
 }
 
 // Resolver is the tracker selection Next claims through: screened against the
-// work in flight when the overlap check is on. `pipeline --next` selects through
-// it too, so a single-shot run defers what the loop would.
+// record of runs that found nothing to hand off (#330), and against the work in
+// flight when the overlap check is on. `pipeline --next` selects through it too,
+// so a single-shot run passes over and defers what the loop would.
 func (s *TicketSource) Resolver() pipeline.NextResolver {
-	if s.prs == nil {
-		return s.client
-	}
 	if s.screen == nil {
-		policy := overlap.Policy{Threshold: s.cfg.OverlapThreshold, EscapeLabel: s.cfg.OverlapEscapeLabel}
-		branch := func(key string) string { return s.checkout().Worktree(ticket.Slug(key)).Branch() }
-		s.screen = pipeline.DeferOverlaps(s.client, s.inFlight, branch, policy, s.log)
+		s.screen = pipeline.SkipNoWork(s.client, nowork.For(s.cfg), s.freshMain, s.log)
+		if s.prs != nil {
+			policy := overlap.Policy{Threshold: s.cfg.OverlapThreshold, EscapeLabel: s.cfg.OverlapEscapeLabel}
+			branch := func(key string) string { return s.checkout().Worktree(ticket.Slug(key)).Branch() }
+			s.screen = pipeline.DeferOverlaps(s.screen, s.inFlight, branch, policy, s.log)
+		}
 	}
 	return s.screen
 }
@@ -335,14 +350,16 @@ func (p *TicketPipeline) Run(item loop.WorkItem, claim *lease.Lease) stages.Resu
 		return stages.Result{}
 	}
 	defer HoldRun(cfg, item.Key, p.log)()
-	return pipeline.Run(ticketDeps(p.loop, cfg, log, runID, ticketArgs(p.loop, item.Key, claim)))
+	return pipeline.Run(ticketDeps(p.loop, cfg, log, runID, ticketArgs(p.loop, item, claim)))
 }
 
 // ticketArgs are the stage args for one claimed ticket on loop l. A loop without
 // watch_ci leaves the PR's CI to the PR loop, so its review stage returns once the
-// PR is open (#110).
-func ticketArgs(l config.Loop, key string, claim *lease.Lease) stages.Args {
-	return stages.Args{Identifier: key, Lease: claim, LeaveCIToPRLoop: l.LeavesCIToPRLoop()}
+// PR is open (#110). The ticket as selection read it goes to the implementation
+// stage, which records it if the run finds nothing to hand off (#330).
+func ticketArgs(l config.Loop, item loop.WorkItem, claim *lease.Lease) stages.Args {
+	selected, _ := item.Context.(nowork.Fingerprint)
+	return stages.Args{Identifier: item.Key, Lease: claim, LeaveCIToPRLoop: l.LeavesCIToPRLoop(), Selected: selected}
 }
 
 // ticketDeps binds the loop's Stages to one ticket through the composition root

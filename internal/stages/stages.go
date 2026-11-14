@@ -27,6 +27,7 @@ import (
 
 	"github.com/danoleary/agent-harness/internal/config"
 	"github.com/danoleary/agent-harness/internal/lease"
+	"github.com/danoleary/agent-harness/internal/nowork"
 	"github.com/danoleary/agent-harness/internal/runlog"
 	"github.com/danoleary/agent-harness/internal/sandbox"
 	"github.com/danoleary/agent-harness/internal/session"
@@ -118,6 +119,11 @@ type Args struct {
 	// its CI: a red check is left to a PR loop's CIRed candidate (#110). Set from a
 	// ticket loop that leaves out watch_ci (config.Loop.LeavesCIToPRLoop).
 	LeaveCIToPRLoop bool
+	// Selected is the ticket as the selection that dispatched this run read it
+	// (nowork.Of); empty on the hand-passed path. A run that finds nothing to hand
+	// off records it with the origin/main SHA it worked against, so selection
+	// passes over the ticket until main or the ticket moves (#330).
+	Selected nowork.Fingerprint
 }
 
 // ParseArgs parses argv (excluding the program name) into Args. tool names the

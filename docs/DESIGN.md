@@ -988,6 +988,16 @@ A ticket is eligible iff **all** hold:
   (…)`, not `queue empty`, and each deferral reaches `loop.jsonl` as an
   `item-skipped` record. A failed read of the work in flight
   is narrated and fails *open*, which is the behaviour before the check existed.
+- **not left unchanged since its last run found no work** (#330,
+  [ADR-0053](https://github.com/danoleary/agent-harness/blob/main/docs/adr/0053-a-ticket-whose-last-run-found-no-work-waits-for-main-or-the-ticket-to-move.md)).
+  When an implementation session exits 0 and leaves no commit ahead of
+  `origin/main`, the stage records the `origin/main` SHA it worked against and the
+  ticket's title, body and labels as selection read them, under
+  `.agent-harness/locks/no-work/<slug>`. Selection passes over the ticket
+  (logging `skipping #N: last run found no work against origin/main <sha>;
+  unchanged`) while `origin/main` is on that SHA and the ticket reads the same.
+  Once main moves or a human edits the ticket, it dispatches. A main that cannot
+  be read fails *open*. A hand-passed `pipeline <KEY>` is never screened.
 - **not gated on a telemetry re-measure**: a low-confidence perf *watch/confirm*
   ticket whose first acceptance criterion is to re-pull the metric over a wider
   Sentry window before any fix is excluded — the Implementation stage owns no

@@ -15,6 +15,7 @@ import (
 	"github.com/danoleary/agent-harness/internal/hostlock"
 	"github.com/danoleary/agent-harness/internal/loop"
 	"github.com/danoleary/agent-harness/internal/loopstream"
+	"github.com/danoleary/agent-harness/internal/nowork"
 	"github.com/danoleary/agent-harness/internal/ship"
 	"github.com/danoleary/agent-harness/internal/stages"
 	"github.com/danoleary/agent-harness/internal/ticket"
@@ -255,7 +256,8 @@ func TestNextClaimsTheSelectedTicket(t *testing.T) {
 		t.Fatalf("Next() = (%v, %v), want a held lease on PROJ-7", claim, ok)
 	}
 	// The item names the ticket and the slugged feature branch the Stages push.
-	if want := (loop.WorkItem{Key: "PROJ-7", Branch: "fix/proj-7"}); item != want {
+	// Its Context is the ticket as selection read it (#330).
+	if want := (loop.WorkItem{Key: "PROJ-7", Branch: "fix/proj-7", Context: nowork.Of(trk.next)}); item != want {
 		t.Errorf("item = %+v, want %+v", item, want)
 	}
 	if len(trk.Claimed) != 1 || trk.Claimed[0] != "PROJ-7" {
@@ -582,12 +584,12 @@ func TestTicketDepsFollowTheLoopsSteps(t *testing.T) {
 // its PR's CI; one that leaves out watch_ci hands CI to the PR loop.
 func TestTicketArgsLeaveCIToThePRLoopWithoutWatchCI(t *testing.T) {
 	builtIn, _ := config.Project{}.LoopNamed("")
-	if a := ticketArgs(builtIn, "PROJ-1", nil); a.Identifier != "PROJ-1" || a.LeaveCIToPRLoop {
+	if a := ticketArgs(builtIn, loop.WorkItem{Key: "PROJ-1"}, nil); a.Identifier != "PROJ-1" || a.LeaveCIToPRLoop {
 		t.Errorf("the built-in ticket loop watches CI in its review stage, got %+v", a)
 	}
 	noWatch := builtIn
 	noWatch.Steps = []config.Step{{Use: config.StepImplement}, {Use: config.StepReview}, {Use: config.StepRetro}}
-	if a := ticketArgs(noWatch, "PROJ-1", nil); !a.LeaveCIToPRLoop {
+	if a := ticketArgs(noWatch, loop.WorkItem{Key: "PROJ-1"}, nil); !a.LeaveCIToPRLoop {
 		t.Error("a ticket loop without watch_ci must leave CI to the PR loop")
 	}
 }

@@ -7,6 +7,7 @@ import (
 
 	"github.com/danoleary/agent-harness/internal/lease"
 	"github.com/danoleary/agent-harness/internal/loopstream"
+	"github.com/danoleary/agent-harness/internal/nowork"
 	"github.com/danoleary/agent-harness/internal/ticket"
 )
 
@@ -46,10 +47,14 @@ type NextSelection struct {
 	// same in the loop log, and a dead token idled as an empty queue for minutes.
 	Err error
 	// Held, on an empty selection, says the queue is not empty but held: the
-	// overlap screen deferred every ready ticket, e.g. `2 ticket(s) deferred by
+	// screens passed over every ready ticket, e.g. `2 ticket(s) deferred by
 	// overlaps (#1, #2)`. The loop idled as "queue empty" over 20 such tickets
 	// before it said so (#281).
 	Held string
+	// Fingerprint is the selected ticket as selection read it (nowork.Of). The
+	// implementation stage records it if the run finds nothing to hand off, so the
+	// next selection can tell whether the ticket changed since (#330).
+	Fingerprint nowork.Fingerprint
 }
 
 // ResolveNext implements `pipeline --next` ticket resolution (DESIGN.md
@@ -77,8 +82,8 @@ func ResolveNext(r NextResolver, lock lease.Locker, dryRun bool, queueHint strin
 		if !ok {
 			// A normal steady state, not a failure — the loop will later wrap --next and
 			// reads this exit-0 as "nothing to do" without remapping codes.
-			if h, ok := r.(heldQueue); ok && len(h.held()) > 0 {
-				held := heldReason(h.held())
+			if reasons := heldBy(r); len(reasons) > 0 {
+				held := strings.Join(reasons, "; ")
 				log.Event("no eligible ticket — queue held: " + held)
 				return NextSelection{ExitCode: 0, Held: held}
 			}
@@ -116,7 +121,7 @@ func ResolveNext(r NextResolver, lock lease.Locker, dryRun bool, queueHint strin
 			Ticket:  t.Identifier,
 			Message: fmt.Sprintf("selected %s (%s) — claimed → In Progress", t.Identifier, priorityOrNone(t.Priority)),
 		})
-		return NextSelection{Identifier: t.Identifier, Lease: claim, Proceed: true}
+		return NextSelection{Identifier: t.Identifier, Lease: claim, Proceed: true, Fingerprint: nowork.Of(t)}
 	}
 }
 

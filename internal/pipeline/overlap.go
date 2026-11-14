@@ -30,10 +30,20 @@ type overlapScreen struct {
 	streamed map[string]string
 }
 
-// heldQueue is a NextResolver that can say which tickets its last selection
-// deferred: an empty selection over them is a held queue, not an empty one.
+// heldQueue is a NextResolver that can say why its last selection passed over
+// ready tickets: an empty selection over them is a held queue, not an empty one.
+// Each reason names the tickets one screen held, and a screen adds the reasons of
+// the resolver it screens.
 type heldQueue interface {
 	held() []string
+}
+
+// heldBy is r's held reasons, none when r is not a screen.
+func heldBy(r NextResolver) []string {
+	if h, ok := r.(heldQueue); ok {
+		return h.held()
+	}
+	return nil
 }
 
 // DeferOverlaps screens r's selection against the work in flight (#97,
@@ -51,7 +61,12 @@ func DeferOverlaps(r NextResolver, inFlight InFlight, branch func(key string) st
 	return &overlapScreen{NextResolver: r, inFlight: inFlight, branch: branch, policy: p, log: log, streamed: map[string]string{}}
 }
 
-func (s *overlapScreen) held() []string { return s.deferred }
+func (s *overlapScreen) held() []string {
+	if len(s.deferred) == 0 {
+		return heldBy(s.NextResolver)
+	}
+	return append([]string{heldReason(s.deferred, "deferred by overlaps")}, heldBy(s.NextResolver)...)
+}
 
 // SelectNextTicket selects past every ticket the work in flight defers.
 func (s *overlapScreen) SelectNextTicket(skip ...string) (ticket.Ticket, bool, error) {
@@ -117,11 +132,12 @@ func (s *overlapScreen) forgetUndeferred() {
 // maxHeldKeys bounds the tickets a held-queue line names.
 const maxHeldKeys = 5
 
-// heldReason words a held queue: `2 ticket(s) deferred by overlaps (#1, #2)`.
-func heldReason(keys []string) string {
+// heldReason words the tickets one screen held, and why: `2 ticket(s) deferred
+// by overlaps (#1, #2)`.
+func heldReason(keys []string, why string) string {
 	named, more := keys, ""
 	if len(named) > maxHeldKeys {
 		named, more = named[:maxHeldKeys], fmt.Sprintf(" and %d more", len(keys)-maxHeldKeys)
 	}
-	return fmt.Sprintf("%d ticket(s) deferred by overlaps (%s%s)", len(keys), strings.Join(named, ", "), more)
+	return fmt.Sprintf("%d ticket(s) %s (%s%s)", len(keys), why, strings.Join(named, ", "), more)
 }
