@@ -96,6 +96,22 @@ func TestRunnerPinsTheRunsModel(t *testing.T) {
 	}
 }
 
+// #313: the Consumer's `[sandbox] shm_size` reaches every container the Runner
+// launches — agent sessions and worktree commands (gates, post_create) alike.
+func TestRunnerHandsTheConfiguredShmSizeToEveryContainer(t *testing.T) {
+	r, seen := testRunner(t)
+	r.cfg.ShmSize = "2g"
+
+	r.Agent(AgentRun{Label: "implementation", Prompt: "do it", Cap: time.Minute})
+	r.Shell(ShellRun{Label: "gate-check", Command: "go test ./...", WorktreePath: "/wt", Cap: time.Minute})
+
+	for i, l := range *seen {
+		if got := flagValue(l.args, "--shm-size"); got != "2g" {
+			t.Errorf("launch %d --shm-size = %q, want the configured 2g", i, got)
+		}
+	}
+}
+
 // The name carries the Consumer-derived prefix (so one host running several
 // projects never kills another project's containers), the run id, the pid (two
 // runs in the same second stay distinct) and the role label.
