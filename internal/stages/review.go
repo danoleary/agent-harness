@@ -485,12 +485,17 @@ func Review(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Res
 	// diagnose+fix happens in the sandbox, which is why Fix is the only thing the
 	// stage supplies.
 	log.Event("watching CI for " + wt.Branch() + " …")
+	opened := landing
 	ciResult := h.WatchCI(hostio.CIWatch{
 		Fix: fixes.CI(target),
 		Resolve: mergedPrerequisiteResolver(log, t,
 			func() (ticket.Ticket, error) { return client.FetchTicket(args.Identifier) },
 			func(trigger string) bool {
-				return resolveRebaseConflict(fixes, target, comment, trigger, gateStep+"-cirebase").OK
+				res := resolveRebaseConflict(fixes, target, comment, trigger, gateStep+"-cirebase")
+				if res.OK {
+					opened.Body = reportOverlapsOnPR(h, log, opened, res.Overlaps)
+				}
+				return res.OK
 			}),
 	})
 	// Zero-net-diff short-circuit (BEH-602): the branch became a no-op against the
@@ -672,22 +677,29 @@ func resolveRebaseConflict(fixes fix.Env, target fix.Target, comment func(string
 // against the old base, so it never saw these, and nothing re-reviews them: the
 // PR ships, and its reader decides.
 func overlapSection(overlaps []fix.Overlap) string {
-	if len(overlaps) == 0 {
-		return ""
-	}
-	var b strings.Builder
-	b.WriteString("## Overlap with `main`\n\n")
-	b.WriteString("While this branch was in review, `main` gained code that the branch also implements in a mechanism of its own. The conflict-resolution session that rebased the branch reported these and left the branch's version in place. The review above judged the branch against the old base, so it did not see them, and nothing has re-reviewed them since:\n")
-	for _, o := range overlaps {
-		b.WriteString("\n- `" + oneLine(o.File) + "`: `main` added " + oneLine(o.MainAdded) + "; the branch duplicates it with " + oneLine(o.BranchDuplicates) + ".")
-	}
-	return b.String()
+	return fix.OverlapSection("While this branch was in review, `main` gained code that the branch also implements in a mechanism of its own. The conflict-resolution session that rebased the branch reported these and left the branch's version in place. The review above judged the branch against the old base, so it did not see them, and nothing has re-reviewed them since:", overlaps)
 }
 
-// oneLine folds a session-written value onto one line, so it cannot break out of
-// its list item.
-func oneLine(s string) string {
-	return strings.TrimSuffix(strings.Join(strings.Fields(s), " "), ".")
+// reportOverlapsOnPR puts what the CI watch's reactive replay reported the branch
+// duplicates of main on the PR the landing opened, as its description's
+// `## Overlap with main` section (#344): the review's own section went out with
+// the PR before this replay ran (ADR-0050). It returns the description as it now
+// stands. The report never holds the push, so a failed edit is only narrated.
+func reportOverlapsOnPR(h hostio.Host, log *runlog.Logger, opened ship.Landing, overlaps []fix.Overlap) string {
+	body := fix.UpsertOverlapSection(opened.Body, fix.OverlapSection(fix.OpenPROverlapIntro, overlaps))
+	if body == opened.Body {
+		return body
+	}
+	n, err := hostio.PRNumber(opened.URL)
+	if err == nil {
+		err = h.EditPR(n, opened.Title, body)
+	}
+	if err != nil {
+		log.Event("review ⚠ could not put the conflict resolution's overlap report on the PR: " + err.Error() + " — it is in run.jsonl only (#344)")
+		return opened.Body
+	}
+	log.Event("review ⚑ put the conflict resolution's overlap report on the PR description (#344)")
+	return body
 }
 
 // reviewResolution is the review of what a pre-push conflict resolution wrote after

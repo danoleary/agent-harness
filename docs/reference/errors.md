@@ -192,6 +192,8 @@ How a review ends when it takes the branch to a PR (`ship.Land`).
 | `⚑ the conflict resolution reports the branch duplicates what origin/main added in …` | — | nothing blocks: the PR ships with an `Overlap with main` section listing what the branch reimplements of what `main` gained while it was in flight. Decide on the PR whether the branch should switch to `main`'s version (#255) |
 | `⚠ could not read the conflict resolution's overlap report (…)` | — | the session wrote `findings/rebasefix/overlaps.json` but not as a JSON array; the PR goes out without the overlap section. Read the file in the ticket's log dir (#255) |
 | `⚠ could not prepare the conflict resolution's overlap dropbox (…)` | — | the host could not create or clear `findings/rebasefix/` under the ticket's log dir, so the session had nowhere to report an overlap; check that dir's permissions (#255) |
+| `⚑ put the conflict resolution's overlap report on the PR description` | — | nothing blocks: the PR was already open (the PR loop's conflict fix, or the CI watch's reactive rebase), so the host wrote the report into its `Overlap with main` section, replacing an earlier one. Decide on the PR whether the branch should switch to `main`'s version (#344) |
+| `⚠ could not put the conflict resolution's overlap report on the PR` | — | the PR edit failed (a `gh` error, or a PR URL with no number), so the report is only in `run.jsonl`'s `⚑ … duplicates …` line; copy it onto the PR by hand (#344) |
 | `review ✗ push failed:` | PushFailed | usually the token: scope, SSO, or `workflow` for a workflow-file change |
 | `review ✗ gh pr create failed: … branch pushed, open the PR manually` | PRFailed | open the PR yourself |
 

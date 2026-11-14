@@ -63,7 +63,13 @@ branch and reports what it leaves duplicated. The PR body carries the report.**
 - Only the replay (`fix.Rebase`) gets the step. The merge variant, for a branch a
   human opted in to the PR loop, is unchanged and has no dropbox.
 - The PR loop's replay and the CI watch's reactive rebase use the same prompt, but
-  their PR is already open, so the report is only narrated in `run.jsonl`. They
-  can edit the PR body as #267 does if that turns out not to be enough.
+  their PR is already open, so the review's section is out of reach. They put the
+  report on the open PR instead (#344): once the resolution is cleared to push,
+  the host upserts an `## Overlap with main` section in the PR's description
+  through the same edit #267 uses, replacing one an earlier replay left rather
+  than stacking a second. A replay that reports nothing leaves an earlier section
+  in place, and a failed edit is only narrated: the push never waits on it. A
+  PR-loop resolution its gates held back and a later run pushes with no session
+  (#252) carries no report, as nothing re-reads the first session's dropbox.
 - The report is the session's say-so. Nothing checks that it found every overlap,
   so it narrows the gap rather than closing it.
