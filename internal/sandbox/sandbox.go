@@ -529,15 +529,21 @@ func BranchImageTag(image, fp string) string {
 }
 
 // WorktreeImage is the image a worktree command (post_create, a gate) runs in
-// (#61). When the worktree's copy of the Consumer Dockerfile differs from the
-// checkout's, the branch is changing its own sandbox, and running its prep and
-// gates in the checkout's pre-change image would test the branch against the
-// very environment it fixes: it returns the branch-scoped BranchImageTag and
+// (#61). When the branch has changed the Consumer Dockerfile itself, running its
+// prep and gates in the checkout's pre-change image would test the branch against
+// the very environment it fixes: it returns the branch-scoped BranchImageTag and
 // branch=true. Otherwise — no Dockerfile declared (a prebuilt image), the same
-// Dockerfile, or no Dockerfile in the worktree — it returns image unchanged.
+// Dockerfile as the checkout's, no Dockerfile in the worktree, or a Dockerfile
+// only the base changed — it returns image unchanged.
 //
-// Only the Dockerfile's bytes are compared (DockerfileFingerprint): a branch that
-// changes only a file the Dockerfile COPYs still runs in the checkout image.
+// "The branch changed it" takes two tests. The worktree's Dockerfile bytes must
+// differ from the checkout's (DockerfileFingerprint), so a branch that changes
+// only a file the Dockerfile COPYs still runs in the checkout image. And the
+// worktree must differ from its merge-base with origin/main at the Dockerfile
+// (branchChangedFile): a branch cut before main moved the Dockerfile on differs
+// from the checkout without having touched it, and building its stale copy would
+// run its gates on a superseded toolchain (#333). When git cannot answer — no
+// repository, no origin/main — the byte comparison alone decides, as before.
 func WorktreeImage(image, projectPath, worktreePath, dockerfileRel string) (tag string, branch bool) {
 	if dockerfileRel == "" || worktreePath == "" {
 		return image, false
@@ -549,7 +555,30 @@ func WorktreeImage(image, projectPath, worktreePath, dockerfileRel string) (tag 
 	if ours, err := DockerfileFingerprint(filepath.Join(projectPath, dockerfileRel)); err == nil && ours == theirs {
 		return image, false
 	}
+	if changed, err := branchChangedFile(worktreePath, dockerfileRel); err == nil && !changed {
+		return image, false
+	}
 	return BranchImageTag(image, theirs), true
+}
+
+// gitReadTimeout bounds the local git reads WorktreeImage makes.
+const gitReadTimeout = 30 * time.Second
+
+// branchChangedFile reports whether the worktree's copy of rel differs from the
+// one at its branch point, the merge-base of HEAD and origin/main: whether the
+// branch's own commits (or its uncommitted edits) changed it, rather than main
+// after the branch was cut.
+func branchChangedFile(worktreePath, rel string) (bool, error) {
+	out, _, err := proc.Output(gitReadTimeout, "git", "-C", worktreePath, "merge-base", "HEAD", git.BaseRef)
+	if err != nil {
+		return false, err
+	}
+	base := strings.TrimSpace(string(out))
+	out, _, err = proc.Output(gitReadTimeout, "git", "-C", worktreePath, "diff", "--name-only", base, "--", ":(literal)"+filepath.ToSlash(rel))
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(string(out)) != "", nil
 }
 
 // PullImage pulls a prebuilt sandbox image, streaming docker's progress. It is

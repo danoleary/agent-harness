@@ -1219,7 +1219,10 @@ A branch that edits the Consumer Dockerfile is changing its own sandbox, so its
 worktree commands — `post_create` and the host-side gate re-run — run in an image
 built from the **worktree's** Dockerfile, tagged `<image>:branch-<fingerprint>`
 (`sandbox.WorktreeImage`; ADR-0022). Otherwise a branch that fixes a missing
-toolchain could never turn its own gate green. The agent sessions still run in the
+toolchain could never turn its own gate green. The worktree's Dockerfile must
+differ both from the checkout's and from the branch's merge-base with
+`origin/main`, so a branch that is only behind a Dockerfile change on main runs in
+the checkout image (ADR-0052). The agent sessions still run in the
 checkout's image.
 
 ### Generalized toolchain cache
