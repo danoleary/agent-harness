@@ -69,7 +69,8 @@ func main() {
 		console := runlog.NewConsole(loopstream.NewStream(loopstream.PathUnder(stages.LogsRoot(cfg))))
 		// The claim lock is the one every loop instance on this Consumer takes, so a
 		// single-shot run beside a running loop cannot claim the loop's ticket (#89).
-		// Selection is screened against the open harness PRs as the loop's is (#97).
+		// Selection is screened against the open harness PRs and the runs that found
+		// no work as the loop's is (#97, #330).
 		resolver := loophost.NewTicketSource(cfg, console, client).WatchPRs(loophost.RepoPRs(cfg)).Resolver()
 		sel := pipeline.ResolveNext(resolver, hostlock.File(config.ClaimLockFile(cfg.ProjectPath)), args.DryRun, cfg.Tracker.QueueHint(), console)
 		if !sel.Proceed {
@@ -81,6 +82,7 @@ func main() {
 		}
 		args.Identifier = sel.Identifier
 		args.Lease = sel.Lease
+		args.Selected = sel.Fingerprint
 	} else if args.DryRun {
 		// Hand-passed --dry-run is pipeline-level: print the plan and exit without
 		// claiming the ticket, launching a container, or touching Linear (DESIGN.md).

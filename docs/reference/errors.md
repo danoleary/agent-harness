@@ -205,6 +205,11 @@ How a review ends when it takes the branch to a PR (`ship.Land`).
 | `loop already running (pid …)` | a second `start` of a running instance; STOP it, or use `--instance` |
 | `already resolved on main by <sha>; handing it to a human to close` | **ResolvedOnMain**: the ticket is labelled blocked and left In Progress, with the commit and the session's reason in a comment. Breaker-neutral. Confirm and close it |
 | `was claimed by another run first — selecting again` | not an error: another instance won the claim |
+| `skipping <KEY>: last run found no work against origin/main <sha>; unchanged` | the ticket's last run ended with no commit ahead of `origin/main`, and neither main nor the ticket's title, body or labels have changed since, so selection passes over it (#330). Often the fix is already on main under another PR: close the ticket. To dispatch it anyway, edit the ticket, run `pipeline <KEY>` by hand, or delete `.agent-harness/locks/no-work/<slug>` |
+| `queue held: N ticket(s) whose last run found no work on an unchanged main (…)` | every ready ticket was passed over as above; the loop idles rather than reporting an empty queue |
+| `<KEY>'s last run found no work against origin/main <sha>; main is now <sha> — dispatching it again` / `the ticket changed since — dispatching it again` | not an error: the record no longer stands, so the ticket is selected as usual |
+| `tdd · the session ran to completion with no work against origin/main <sha>` | the implementation session exited 0 and left nothing to hand off; the run is recorded so selection skips the ticket until main or the ticket moves |
+| `⚠ could not record that the run found no work (…)` / `⚠ could not read origin/main to record that the run found no work (…)` | the record under `.agent-harness/locks/no-work/` could not be written. A warning only | nothing: the next poll may run the ticket once more, as before #330 |
 | `releasing … back to Todo failed — move it out of In Progress manually` | the tracker refused the release; move the ticket by hand |
 
 For problems with no message of their own, such as a daemon that stalls on a Mac

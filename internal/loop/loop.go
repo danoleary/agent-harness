@@ -75,8 +75,9 @@ type WorkItem struct {
 	// slugged feature branch `<branch_prefix>/<slug>` the Stages create.
 	Branch string
 	// Context is the Source's own description of the item, which only its Pipeline
-	// reads: nil for a ticket (the Stages fetch it by Key), the PR and its failure
-	// kind for the PR loop. The daemon never looks inside it.
+	// reads: for a ticket, the ticket as selection read it (the Stages fetch the
+	// rest by Key, #330); the PR and its failure kind for the PR loop. The daemon
+	// never looks inside it.
 	Context any
 }
 
