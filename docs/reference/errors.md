@@ -177,6 +177,9 @@ How a review ends when it takes the branch to a PR (`ship.Land`).
 | `review ✗ pre-push rebase failed with no content conflict` | RebaseFailed | read git's output in the `ship …` lines of `run.jsonl`, fix what it names, and rebase the kept worktree onto `origin/main` by hand (#164) |
 | `conflict-resolution session left the worktree dirty` / `left the branch on its stale base` | Conflict | resolve the conflict by hand in the kept worktree |
 | `scoped review of the conflict resolution: …` | Conflict | the resolution changed files git did not flag, and their review did not clear them; read the breadcrumb's file list and the range-diff in the kept worktree (#114) |
+| `⚑ the conflict resolution reports the branch duplicates what origin/main added in …` | — | nothing blocks: the PR ships with an `Overlap with main` section listing what the branch reimplements of what `main` gained while it was in flight. Decide on the PR whether the branch should switch to `main`'s version (#255) |
+| `⚠ could not read the conflict resolution's overlap report (…)` | — | the session wrote `findings/rebasefix/overlaps.json` but not as a JSON array; the PR goes out without the overlap section. Read the file in the ticket's log dir (#255) |
+| `⚠ could not prepare the conflict resolution's overlap dropbox (…)` | — | the host could not create or clear `findings/rebasefix/` under the ticket's log dir, so the session had nowhere to report an overlap; check that dir's permissions (#255) |
 | `review ✗ push failed:` | PushFailed | usually the token: scope, SSO, or `workflow` for a workflow-file change |
 | `review ✗ gh pr create failed: … branch pushed, open the PR manually` | PRFailed | open the PR yourself |
 

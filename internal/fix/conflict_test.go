@@ -10,6 +10,7 @@ import (
 	"github.com/danoleary/agent-harness/internal/config"
 	"github.com/danoleary/agent-harness/internal/gittest"
 	"github.com/danoleary/agent-harness/internal/hostio"
+	"github.com/danoleary/agent-harness/internal/prompt"
 	"github.com/danoleary/agent-harness/internal/session"
 )
 
@@ -221,5 +222,91 @@ func TestARedReGateGatesTheBaseAndFindsItGreen(t *testing.T) {
 	}
 	if v, ok := basegate.For(e.Cfg).Read(base); !ok || !v.Green() {
 		t.Errorf("recorded verdict = %+v, %v; want green", v, ok)
+	}
+}
+
+// overlapsFrom is a resolution session that resolves the conflict and writes
+// report, verbatim, as its overlap file; "" writes none.
+func overlapsFrom(t *testing.T, report string) (Env, *hostio.Fake) {
+	t.Helper()
+	e, repo := conflictEnv(t, func(repo *gittest.Repo, h *hostio.Fake) {
+		repo.Resolve(h.Worktree())
+		run := h.Agents[len(h.Agents)-1]
+		if report == "" {
+			return
+		}
+		if run.FindingsDir == "" {
+			t.Fatal("the replay session was given no /findings dropbox to report an overlap in")
+		}
+		if err := os.WriteFile(filepath.Join(run.FindingsDir, prompt.OverlapsFile), []byte(report), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	})
+	repo.Conflict("proj-1")
+	if err := e.Host.FetchMain(); err != nil {
+		t.Fatal(err)
+	}
+	return e, e.Host.(*hostio.Fake)
+}
+
+// #255, replayed: while the branch was in flight, main merged a hand-off-to-a-
+// human capability (a new port method and a Disposition) in the area where the
+// branch had built its own hand-off path. The session resolved the conflict but
+// left the branch's parallel path in place, and reported it. The host reads that
+// report back, so the PR can say so, and still clears the push.
+func TestAResolutionCarriesTheOverlapItsSessionReported(t *testing.T) {
+	e, _ := overlapsFrom(t, `[{"file": "internal/hostio/hostio.go", "main_added": "Host.HandToHuman and the NeedsHuman Disposition", "branch_duplicates": "Host.Escalate and its blocked-label breadcrumb"}]`)
+
+	res := e.ResolveConflict(Conflict{Strategy: Rebase, Regate: func() GateResult { return GateResult{} }})
+
+	if !res.OK {
+		t.Fatalf("a reported overlap does not hold the push, got %+v", res)
+	}
+	want := []Overlap{{File: "internal/hostio/hostio.go", MainAdded: "Host.HandToHuman and the NeedsHuman Disposition", BranchDuplicates: "Host.Escalate and its blocked-label breadcrumb"}}
+	if len(res.Overlaps) != 1 || res.Overlaps[0] != want[0] {
+		t.Errorf("Overlaps = %+v, want %+v", res.Overlaps, want)
+	}
+	if got := runLog(t, e); !strings.Contains(got, "internal/hostio/hostio.go") || !strings.Contains(got, "#255") {
+		t.Errorf("run.jsonl must name the overlapping file; got %s", got)
+	}
+}
+
+// No file, an empty one or an empty list means no overlap; a file the host
+// cannot parse is narrated and carries none. A report a prior resolution left in
+// the dropbox is cleared before the session, so it is never carried twice.
+func TestAResolutionWithNoUsableOverlapReportCarriesNone(t *testing.T) {
+	for name, report := range map[string]string{"no file": "", "empty file": " \n", "empty list": "[]", "malformed": "{not json"} {
+		t.Run(name, func(t *testing.T) {
+			e, _ := overlapsFrom(t, report)
+			stale := filepath.Join(e.Log.FindingsDir("rebasefix"), prompt.OverlapsFile)
+			if err := os.MkdirAll(filepath.Dir(stale), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if report == "" {
+				if err := os.WriteFile(stale, []byte(`[{"file": "stale.go", "main_added": "x", "branch_duplicates": "y"}]`), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			res := e.ResolveConflict(Conflict{Strategy: Rebase, Regate: func() GateResult { return GateResult{} }})
+
+			if !res.OK || len(res.Overlaps) != 0 {
+				t.Fatalf("want a clear push with no overlap, got %+v", res)
+			}
+			if got := runLog(t, e); (name == "malformed") != strings.Contains(got, "could not read the conflict resolution's overlap report") {
+				t.Errorf("only a malformed report is narrated as unreadable; got %s", got)
+			}
+		})
+	}
+}
+
+// The merge variant is unchanged (#255): it gets no dropbox to write a report in.
+func TestAMergeResolutionMountsNoOverlapDropbox(t *testing.T) {
+	e, h := overlapsFrom(t, "")
+
+	e.ResolveConflict(Conflict{Strategy: Merge, Regate: func() GateResult { return GateResult{} }})
+
+	if got := h.Agents[0].FindingsDir; got != "" {
+		t.Errorf("merge resolution FindingsDir = %q, want none", got)
 	}
 }

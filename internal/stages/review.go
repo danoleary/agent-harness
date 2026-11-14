@@ -396,12 +396,17 @@ func Review(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Res
 	reviewedBase, _ := wt.BaseSHA()
 	reviewedHead, _ := wt.HeadSHA()
 	landing := ship.Land(h, log, t, func(conflicted []string) ship.Resolution {
-		if !resolveRebaseConflict(fixes, target, comment, "pre-push rebase", gateStep+"-postrebase") {
+		resolved := resolveRebaseConflict(fixes, target, comment, "pre-push rebase", gateStep+"-postrebase")
+		if !resolved.OK {
 			return ship.Resolution{}
 		}
-		return reviewResolution(fixes, comment, reviewedBase, reviewedHead, conflicted, func(base string, r *prompt.Resolution) session.Outcome {
+		r := reviewResolution(fixes, comment, reviewedBase, reviewedHead, conflicted, func(base string, r *prompt.Resolution) session.Outcome {
 			return launchReview(resolutionReviewRun(cfg, subject, base, r), "scoped review of the conflict resolution")
 		})
+		if section := overlapSection(resolved.Overlaps); r.OK && section != "" {
+			r.Note += "\n\n" + section
+		}
+		return r
 	})
 	switch landing.Verdict {
 	case ship.Disjoint:
@@ -485,7 +490,7 @@ func Review(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Res
 		Resolve: mergedPrerequisiteResolver(log, t,
 			func() (ticket.Ticket, error) { return client.FetchTicket(args.Identifier) },
 			func(trigger string) bool {
-				return resolveRebaseConflict(fixes, target, comment, trigger, gateStep+"-cirebase")
+				return resolveRebaseConflict(fixes, target, comment, trigger, gateStep+"-cirebase").OK
 			}),
 	})
 	// Zero-net-diff short-circuit (BEH-602): the branch became a no-op against the
@@ -623,10 +628,11 @@ func mergedPrerequisiteResolver(
 // fully-reviewed, gate-green branch in a worktree with no autonomous recovery. The
 // branch is the harness's own, so it is replayed (fix.Rebase) and force-pushed. It
 // returns true only when the resolution is verified and the re-gate (gateLabel)
-// over the rewritten tree is green, authorising the push. Any other failure keeps
+// over the rewritten tree is green, authorising the push; its Overlaps are what
+// the session reported the branch duplicates of main (#255). Any other failure keeps
 // the worktree and leaves a tracker breadcrumb so the work surfaces (a
 // spending-cap abort defers quietly — it retries after reset, not a conflict).
-func resolveRebaseConflict(fixes fix.Env, target fix.Target, comment func(string), trigger, gateLabel string) bool {
+func resolveRebaseConflict(fixes fix.Env, target fix.Target, comment func(string), trigger, gateLabel string) fix.ConflictResult {
 	fixes.Log.Event("review ↻ " + trigger + " hit a content conflict — launching a sandboxed conflict-resolution session (BEH-581)")
 	res := fixes.ResolveConflict(fix.Conflict{
 		Target:   target,
@@ -657,7 +663,31 @@ func resolveRebaseConflict(fixes fix.Env, target fix.Target, comment func(string
 			trigger, branch, res.Reason,
 		))
 	}
-	return res.OK
+	return res
+}
+
+// overlapSection is the PR body's own section for what a pre-push conflict
+// resolution reported the branch duplicates of what origin/main gained underneath
+// it (#255); "" when it reported nothing. The earlier review judged the branch
+// against the old base, so it never saw these, and nothing re-reviews them: the
+// PR ships, and its reader decides.
+func overlapSection(overlaps []fix.Overlap) string {
+	if len(overlaps) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("## Overlap with `main`\n\n")
+	b.WriteString("While this branch was in review, `main` gained code that the branch also implements in a mechanism of its own. The conflict-resolution session that rebased the branch reported these and left the branch's version in place. The review above judged the branch against the old base, so it did not see them, and nothing has re-reviewed them since:\n")
+	for _, o := range overlaps {
+		b.WriteString("\n- `" + oneLine(o.File) + "`: `main` added " + oneLine(o.MainAdded) + "; the branch duplicates it with " + oneLine(o.BranchDuplicates) + ".")
+	}
+	return b.String()
+}
+
+// oneLine folds a session-written value onto one line, so it cannot break out of
+// its list item.
+func oneLine(s string) string {
+	return strings.TrimSuffix(strings.Join(strings.Fields(s), " "), ".")
 }
 
 // reviewResolution is the review of what a pre-push conflict resolution wrote after

@@ -12,6 +12,7 @@ import (
 	gitpkg "github.com/danoleary/agent-harness/internal/git"
 	"github.com/danoleary/agent-harness/internal/gittest"
 	"github.com/danoleary/agent-harness/internal/hostio"
+	"github.com/danoleary/agent-harness/internal/prompt"
 	"github.com/danoleary/agent-harness/internal/runlog"
 	"github.com/danoleary/agent-harness/internal/sandbox"
 	"github.com/danoleary/agent-harness/internal/session"
@@ -1071,6 +1072,45 @@ func TestReviewRedGateNarratesTheStepLogTailAndPath(t *testing.T) {
 	} {
 		if !strings.Contains(said, want) {
 			t.Errorf("run.jsonl should carry %q; got %s", want, said)
+		}
+	}
+}
+
+// #255, replayed: main merged a hand-off-to-a-human capability while the branch,
+// which built its own hand-off path, was in review. The resolution session left
+// the branch's path in place and reported the overlap. The PR still ships, and its
+// body carries the report in a section of its own, so its reader sees the two
+// parallel mechanisms the earlier review, judged against the old base, never saw.
+func TestReviewCarriesAReportedOverlapWithMainIntoThePRBody(t *testing.T) {
+	h, repo := handedOff(t, "PROJ-19")
+	repo.Conflict("proj-19")
+	h.AgentFn = func(_ int, run hostio.AgentRun) session.Outcome {
+		if run.Label == "rebasefix" {
+			repo.Resolve(h.Worktree())
+			report := `[{"file": "internal/hostio/hostio.go", "main_added": "Host.HandToHuman and the NeedsHuman Disposition", "branch_duplicates": "Host.Escalate, the branch's own hand-off path"}]`
+			if err := os.WriteFile(filepath.Join(run.FindingsDir, prompt.OverlapsFile), []byte(report), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			return session.Outcome{}
+		}
+		return session.Outcome{ReviewVerdictEmitted: true}
+	}
+
+	res := Review(h, stageCfg(), stageLog(t, "PROJ-19"), Args{Identifier: "PROJ-19"})
+
+	if !res.OK || res.Disposition != Shipped {
+		t.Fatalf("a reported overlap does not hold the PR (#255), got %+v", res)
+	}
+	if got := labels(h.Agents); len(got) != 2 {
+		t.Errorf("agent runs = %v, want no review re-run over a reported overlap", got)
+	}
+	if len(h.PRBodies) != 1 {
+		t.Fatalf("PR bodies = %v, want one PR", h.PRBodies)
+	}
+	body := h.PRBodies[0]
+	for _, want := range []string{"## Overlap with `main`", "`internal/hostio/hostio.go`", "Host.HandToHuman and the NeedsHuman Disposition", "Host.Escalate, the branch's own hand-off path"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("PR body lacks %q:\n%s", want, body)
 		}
 	}
 }
