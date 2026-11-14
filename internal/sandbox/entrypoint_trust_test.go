@@ -62,7 +62,7 @@ func trusted(doc map[string]any, dir string) bool {
 // directory (docker's -w: the checkout or the ticket's worktree), not a parent, so
 // the entrypoint trusts that one.
 func TestEntrypointTrustsTheSessionsWorkDir(t *testing.T) {
-	workDir := t.TempDir()
+	workDir := realTempDir(t)
 	home := t.TempDir()
 
 	doc := runEntrypointAsSession(t, workDir, home)
@@ -75,7 +75,7 @@ func TestEntrypointTrustsTheSessionsWorkDir(t *testing.T) {
 // The file is the CLI's own state (onboarding, caches, other projects): trust is
 // merged into it, never written over it.
 func TestEntrypointMergesTrustIntoAnExistingClaudeJSON(t *testing.T) {
-	workDir := t.TempDir()
+	workDir := realTempDir(t)
 	home := t.TempDir()
 	existing := `{"hasCompletedOnboarding":true,"projects":{"/elsewhere":{"allowedTools":["Read"]}}}`
 	if err := os.WriteFile(filepath.Join(home, ".claude.json"), []byte(existing), 0o600); err != nil {
@@ -98,7 +98,7 @@ func TestEntrypointMergesTrustIntoAnExistingClaudeJSON(t *testing.T) {
 // A ~/.claude.json jq cannot parse costs only the warning: the session still
 // starts, and the file is left as the CLI wrote it.
 func TestEntrypointLeavesAnUnparseableClaudeJSONAlone(t *testing.T) {
-	workDir := t.TempDir()
+	workDir := realTempDir(t)
 	home := t.TempDir()
 	path := filepath.Join(home, ".claude.json")
 	if err := os.WriteFile(path, []byte("{not json"), 0o600); err != nil {
@@ -111,4 +111,18 @@ func TestEntrypointLeavesAnUnparseableClaudeJSONAlone(t *testing.T) {
 	if raw, _ := os.ReadFile(path); string(raw) != "{not json" {
 		t.Errorf("~/.claude.json = %q, want it untouched", raw)
 	}
+}
+
+// realTempDir is t.TempDir() with symlinks resolved. entrypoint.sh keys trust on
+// $PWD, which bash derives from getcwd() — the resolved path — when the
+// environment carries no PWD. On macOS t.TempDir() sits under /var, a symlink to
+// /private/var, so an unresolved workDir never matches the key the entrypoint
+// wrote. Linux temp dirs have no symlink, which is why CI stayed green.
+func realTempDir(t *testing.T) string {
+	t.Helper()
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dir
 }
