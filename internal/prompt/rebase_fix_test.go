@@ -288,6 +288,7 @@ func TestRebaseFixFoldsAnADRRenumberIntoTheCommitThatAddedIt(t *testing.T) {
 		"git commit --amend --no-edit",
 		"git cherry-pick <adding commit>.._premerge",
 		"only renumbered that ADR",
+		"After ANY replay, whether or not you renumbered",
 		"every line of the ADR index names a file that exists",
 		"grep -vF",
 	} {
