@@ -15,6 +15,10 @@ loop.pid
 .agent-harness/logs/
 .agent-harness/locks/
 .agent-harness/STOP
+.agent-harness/STOP-*
+# Named loops and instances: loop-<name>.pid / loop-<id>.pid and their logs.
+.agent-harness/loop-*.log
+.agent-harness/loop-*.pid
 .agent-harness/harness-findings/
 .claude/worktrees/
 .claude/settings.local.json
