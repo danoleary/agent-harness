@@ -277,7 +277,7 @@ func (h *Real) CreatePR(title, body string) (string, error) {
 // creates a label the repository does not have yet; `gh pr edit --add-label`
 // refuses one.
 func (h *Real) LabelPR(url, label string) error {
-	n, err := prNumber(url)
+	n, err := PRNumber(url)
 	if err != nil {
 		return err
 	}
@@ -289,9 +289,9 @@ func (h *Real) EditPR(number int, title, body string) error {
 	return github.NewPulls(github.NewGhTransport(h.cfg.ProjectPath), "{owner}/{repo}").Edit(number, title, body)
 }
 
-// prNumber reads the PR number off the URL `gh pr create` printed
+// PRNumber reads the PR number off the URL `gh pr create` printed
 // (`https://github.com/<owner>/<repo>/pull/<n>`).
-func prNumber(url string) (int, error) {
+func PRNumber(url string) (int, error) {
 	i := strings.LastIndex(url, "/pull/")
 	if i < 0 {
 		return 0, fmt.Errorf("no PR number in %q", url)

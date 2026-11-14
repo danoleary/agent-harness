@@ -643,6 +643,8 @@ pipeline (one PR, worktree .claude/worktrees/pr-<n> on the PR's head branch):
   conflict: RebaseFix session            // internal/fix, shared with review
     harness branch: replay onto origin/main;  human branch: merge origin/main in
     verify.RebaseResolution -> all gates -> push --force-with-lease | push
+    pushed replay whose session reported overlaps with main -> upsert the PR      // #344, ADR-0050
+      description's `## Overlap with main` section (the CI watch's reactive rebase too)
     a gate red over the resolution: is origin/main red on that gate by itself?  // #250, ADR-0048
       the base verdict record (shared with the ticket loop) answers, or gate origin/main
       alone in .claude/worktrees/pr-<n>.base (red confirmed by a re-run)

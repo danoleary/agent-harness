@@ -166,12 +166,14 @@ const (
 	PRFailed
 )
 
-// Landing is what [Land] did: the verdict, the PR's URL when Landed, and the git or
-// gh error behind a PushFailed or PRFailed.
+// Landing is what [Land] did: the verdict, the PR's URL, title and body when
+// Landed, and the git or gh error behind a PushFailed or PRFailed. The title and
+// body are what a later edit of the open PR starts from (#344).
 type Landing struct {
-	Verdict Verdict
-	URL     string
-	Err     error
+	Verdict     Verdict
+	URL         string
+	Title, Body string
+	Err         error
 }
 
 // Resolve is a caller's conflict hook: given a replay that hit a content conflict
@@ -266,9 +268,10 @@ func finish(h Port, log EventSink, opening Opening, note string) Landing {
 	}
 	log.Event("pushed " + h.Worktree().Branch() + " to origin")
 
-	url, err := h.CreatePR(opening.Title, opening.Body(h.Worktree().CommitSubjects(), note))
+	body := opening.Body(h.Worktree().CommitSubjects(), note)
+	url, err := h.CreatePR(opening.Title, body)
 	if err != nil {
 		return Landing{Verdict: PRFailed, Err: err}
 	}
-	return Landing{Verdict: Landed, URL: url}
+	return Landing{Verdict: Landed, URL: url, Title: opening.Title, Body: body}
 }

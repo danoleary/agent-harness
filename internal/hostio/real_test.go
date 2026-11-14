@@ -296,13 +296,13 @@ func TestPRNumberReadsTheCreatedPRsURL(t *testing.T) {
 		"https://github.com/acme/widgets/pull/42":  42,
 		"https://github.com/acme/widgets/pull/42/": 42,
 	} {
-		if got, err := prNumber(url); err != nil || got != want {
-			t.Errorf("prNumber(%q) = %d, %v; want %d", url, got, err, want)
+		if got, err := PRNumber(url); err != nil || got != want {
+			t.Errorf("PRNumber(%q) = %d, %v; want %d", url, got, err, want)
 		}
 	}
 	for _, url := range []string{"", "https://github.com/acme/widgets/issues/42", "https://github.com/acme/widgets/pull/x"} {
-		if _, err := prNumber(url); err == nil {
-			t.Errorf("prNumber(%q) = nil error, want one", url)
+		if _, err := PRNumber(url); err == nil {
+			t.Errorf("PRNumber(%q) = nil error, want one", url)
 		}
 	}
 }

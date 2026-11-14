@@ -220,6 +220,9 @@ type run struct {
 	sessions bool
 	// pushed marks a run that changed the branch on origin.
 	pushed bool
+	// overlaps is what the replay's session reported the resolved branch
+	// duplicates of what origin/main added under it (#255), for the PR (#344).
+	overlaps []fix.Overlap
 }
 
 // repair fixes what is wrong with the PR and watches CI to a verdict.
@@ -240,6 +243,7 @@ func (r *run) repair() stages.Result {
 		r.h.Worktree().DropResolutions()
 		r.log.Event(fmt.Sprintf("%s ✓ pushed the resolved %s (%s)", who, r.it.PR.HeadBranch, r.it.Strategy()))
 		r.renumberDescription()
+		r.reportOverlaps()
 	}
 	if !r.watchCI {
 		if r.pushed {
@@ -281,6 +285,7 @@ func (r *run) resolve() (out stages.Result, ok bool) {
 	})
 	switch {
 	case res.OK:
+		r.overlaps = res.Overlaps
 		return stages.Result{}, true
 	case res.SpendingCapAbort:
 		return stages.Result{Disposition: stages.CapAborted}, false
@@ -323,7 +328,27 @@ func (r *run) renumberDescription() {
 		r.log.Event(fmt.Sprintf("%s ⚠ the resolution renumbered %s, but the PR description could not be updated: %v — it still cites the old number (#267)", who, strings.Join(names, ", "), err))
 		return
 	}
+	r.it.PR.Title, r.it.PR.Body = title, body
 	r.log.Event(fmt.Sprintf("%s ✓ updated the PR title and description for the renumbered %s (#267)", who, strings.Join(names, ", ")))
+}
+
+// reportOverlaps puts the overlap report the pushed resolution's session wrote
+// on the open PR, as its description's `## Overlap with main` section, in place
+// of one an earlier replay left (#344). The review stage's own section is out of
+// reach here, since the PR is already open (ADR-0050), and the report is a
+// design question for whoever merges it, not for run.jsonl alone. The branch is
+// already pushed, so a failure is only narrated.
+func (r *run) reportOverlaps() {
+	body := fix.UpsertOverlapSection(r.it.PR.Body, fix.OverlapSection(fix.OpenPROverlapIntro, r.overlaps))
+	if body == r.it.PR.Body {
+		return
+	}
+	if err := r.h.EditPR(r.it.PR.Number, r.it.PR.Title, body); err != nil {
+		r.log.Event(fmt.Sprintf("%s ⚠ could not put the conflict resolution's overlap report on the PR: %v — it is in run.jsonl only (#344)", who, err))
+		return
+	}
+	r.it.PR.Body = body
+	r.log.Event(fmt.Sprintf("%s ⚑ put the conflict resolution's overlap report on the PR description (#344)", who))
 }
 
 // adrRef is an `ADR-NNNN` reference.

@@ -1127,3 +1127,78 @@ func TestFixSkipsAGateWhoseSkipWhenOnlyCoversTheWholeDiff(t *testing.T) {
 		t.Errorf("the run log must say check was skipped; got %s", ev)
 	}
 }
+
+// overlapHost is prHost whose conflict-resolution session also writes report as
+// its overlap file (#255).
+func overlapHost(t *testing.T, it Item, report string) (*hostio.Fake, Item) {
+	t.Helper()
+	h, it, repo := prHost(t, it)
+	h.AgentFn = func(_ int, run hostio.AgentRun) session.Outcome {
+		if run.Label == "rebasefix" {
+			repo.Resolve(h.Worktree())
+			if run.FindingsDir == "" {
+				t.Fatal("the replay session was given no /findings dropbox to report an overlap in")
+			}
+			if err := os.WriteFile(filepath.Join(run.FindingsDir, "overlaps.json"), []byte(report), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return h.AgentOutcome
+	}
+	return h, it
+}
+
+// #344, replayed: the PR loop's replay of an open PR reported that the rebased
+// branch duplicates a mechanism main added while it was in flight, and both now
+// fire on the same run. The host narrated it in run.jsonl only, pushed and watched
+// CI green, and the human merging the PR never saw it. Now the pushed resolution
+// puts the report on the PR itself: an `## Overlap with main` section in its
+// description carrying each reported line, above the harness trailer, and one a
+// previous replay left there is replaced, not stacked.
+func TestFixPutsTheReplaysOverlapReportOnTheOpenPR(t *testing.T) {
+	report := `[{"file": "internal/fix/fix.go", "main_added": "the already-resolved-on-main Disposition (ADR-0052)", "branch_duplicates": "its own resolved.json short-circuit in the tdd stage"}, {"file": "internal/stages/tdd.go", "main_added": "verify.AlreadyResolved", "branch_duplicates": "a second already-on-main check"}]`
+	it := harnessItem(Conflict)
+	it.PR.Body = "Resolves #7.\n\n## Commits\n\n- a commit\n\n## Overlap with `main`\n\nAn earlier replay's report:\n\n- `stale.go`: `main` added x; the branch duplicates it with y.\n\n---\n\n🤖 trailer\n"
+	h, it := overlapHost(t, it, report)
+
+	res := Fix(h, pipelineCfg(), pipelineLog(t), it, prDoctor())
+
+	if !res.OK || res.Disposition != stages.Shipped {
+		t.Fatalf("a reported overlap does not hold the push, got %+v", res)
+	}
+	if len(h.PREdits) != 1 {
+		t.Fatalf("want one PR edit carrying the overlap report, got %+v", h.PREdits)
+	}
+	edit := h.PREdits[0]
+	if edit.Number != 12 || edit.Title != it.PR.Title {
+		t.Errorf("the edit keeps the PR's number and title, got %+v", edit)
+	}
+	for _, want := range []string{
+		"## Overlap with `main`",
+		"`internal/fix/fix.go`: `main` added the already-resolved-on-main Disposition (ADR-0052); the branch duplicates it with its own resolved.json short-circuit in the tdd stage.",
+		"`internal/stages/tdd.go`: `main` added verify.AlreadyResolved; the branch duplicates it with a second already-on-main check.",
+	} {
+		if !strings.Contains(edit.Body, want) {
+			t.Errorf("PR body missing %q:\n%s", want, edit.Body)
+		}
+	}
+	if n := strings.Count(edit.Body, "## Overlap with `main`"); n != 1 || strings.Contains(edit.Body, "stale.go") {
+		t.Errorf("the section replaces the earlier replay's rather than stacking on it:\n%s", edit.Body)
+	}
+	if !strings.HasPrefix(edit.Body, "Resolves #7.\n\n## Commits\n\n- a commit\n\n") || !strings.HasSuffix(edit.Body, "\n---\n\n🤖 trailer\n") {
+		t.Errorf("the rest of the description is kept, the trailer last:\n%s", edit.Body)
+	}
+	got := calls(h)
+	if strings.Index(got, "edit-pr") < strings.Index(got, "push-force") {
+		t.Errorf("the PR is edited after the push that carries the resolution; calls = %v", h.Calls)
+	}
+}
+
+// A replay that reports no overlap leaves the PR's description alone.
+func TestFixLeavesThePRAloneWhenTheReplayReportsNoOverlap(t *testing.T) {
+	h, it := overlapHost(t, harnessItem(Conflict), "[]")
+	Fix(h, pipelineCfg(), pipelineLog(t), it, prDoctor())
+	if strings.Contains(calls(h), "edit-pr") {
+		t.Errorf("no overlap was reported, so the PR is not edited; calls = %v", h.Calls)
+	}
+}
