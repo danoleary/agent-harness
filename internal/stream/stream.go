@@ -290,11 +290,12 @@ func verdictDispositions(line string) []disposition {
 const markdownEmphasis = "*_`"
 
 // parseDisposition reads one report line as a Disposition line, looking through
-// leading list or quote markers and the markdown emphasis around the label and its
-// value, so "**Disposition:** blocked — x", "__Disposition:__ clear",
-// "- Disposition: clear" and the plain form all parse (#304).
+// leading list, quote or heading markers and the markdown emphasis around the label
+// and its value, so "**Disposition:** blocked — x", "__Disposition:__ clear",
+// "- Disposition: clear", "### Disposition: blocked" and the plain form all parse
+// (#304).
 func parseDisposition(l string) (disposition, bool) {
-	l = strings.TrimLeft(strings.TrimSpace(l), " \t-+>"+markdownEmphasis)
+	l = strings.TrimLeft(strings.TrimSpace(l), " \t-+>#"+markdownEmphasis)
 	if len(l) < len(reviewDispositionLabel) || !strings.EqualFold(l[:len(reviewDispositionLabel)], reviewDispositionLabel) {
 		return disposition{}, false
 	}

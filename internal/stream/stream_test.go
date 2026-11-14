@@ -655,6 +655,7 @@ func TestReviewDispositionReadsThroughMarkdownEmphasis(t *testing.T) {
 		"list item clear":     {"## Review: #1\n\n- Disposition: clear — fine", "Disposition: clear — fine", false},
 		"list item blocked":   {"## Review: #1\n\n- **Disposition:** blocked — x", "Disposition: blocked — x", true},
 		"quote blocked":       {"## Review: #1\n\n> Disposition: blocked — x", "Disposition: blocked — x", true},
+		"heading blocked":     {"## Review: #1\n\n### Disposition: blocked — x", "Disposition: blocked — x", true},
 		"backticks blocked":   {"## Review: #1\n\n`Disposition: blocked` — x", "Disposition: blocked — x", true},
 		"plain clear":         {"## Review: #1\n\nDisposition: clear — fine", "Disposition: clear — fine", false},
 		"plain blocked":       {"## Review: #1\n\nDisposition: blocked — x", "Disposition: blocked — x", true},
