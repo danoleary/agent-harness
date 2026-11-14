@@ -101,7 +101,7 @@ runnable by hand against a ticket id before the next is added:
    leave a question open if the work does not need it, otherwise decide, record
    and flag the decision for review in the handoff.
    A fifth advisory (`git.LandedSince`, #335,
-   [ADR-0054](https://github.com/danoleary/agent-harness/blob/main/docs/adr/0054-a-commit-that-landed-on-a-file-the-ticket-names-is-named-at-dispatch.md))
+   [ADR-0055](https://github.com/danoleary/agent-harness/blob/main/docs/adr/0055-a-commit-that-landed-on-a-file-the-ticket-names-is-named-at-dispatch.md))
    catches a fix that landed under another number without naming the ticket, as
    #318 did for #317. It lists the commits that reached `origin/main` since the
    tracker says the ticket was filed and changed a file the ticket names. It logs

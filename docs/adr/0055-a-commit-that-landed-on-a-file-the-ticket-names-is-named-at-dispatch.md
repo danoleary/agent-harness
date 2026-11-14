@@ -1,4 +1,4 @@
-# ADR-0054: A commit that landed on a file the ticket names is named at dispatch
+# ADR-0055: A commit that landed on a file the ticket names is named at dispatch
 
 - Status: Accepted
 - Date: 2026-11-14
