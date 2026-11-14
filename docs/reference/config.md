@@ -7,7 +7,11 @@ Never put a credential here; credentials are
 
 ## How it is checked
 
-The harness loads the file before any sandbox launches.
+The harness loads the file before any sandbox launches. A run reads it from
+`origin/main` (`git show origin/main:.agent-harness/config.toml`), never from the
+working tree: every sandbox can write the working tree, and the host runs
+commands this file declares (ADR-0057). Commit and push a change before a run
+picks it up. `agent-harness doctor` checks the working-tree copy.
 
 - A syntax error is reported at its `config.toml:line:column`.
 - Every validation problem is listed in one error,

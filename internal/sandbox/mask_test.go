@@ -186,3 +186,88 @@ func indexOfVolume(args []string, spec string) int {
 }
 
 func hasVolume(args []string, spec string) bool { return indexOfVolume(args, spec) >= 0 }
+
+// writeFile lays body down at rel inside dir, making its parents.
+func writeFile(t *testing.T, dir, rel, body string) string {
+	t.Helper()
+	path := filepath.Join(dir, rel)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	return path
+}
+
+// A Consumer keeps more credentials in its tree than the harness's own: a
+// service's infra/x/.env, a web app's .env.local. Every container mounts the whole
+// checkout, so the mask is every `.env*` file in it, not one path (#332). A
+// `.env.example` is committed documentation and stays readable.
+func TestCredentialMaskHidesEveryEnvFileInTheCheckout(t *testing.T) {
+	project := t.TempDir()
+	secret := []string{".agent-harness/.env", "infra/x/.env", "web/.env.local", ".env.production", "api/.envrc", ".claude/worktrees/t/.env"}
+	for _, rel := range secret {
+		writeFile(t, project, rel, "TOKEN=secret\n")
+	}
+	writeFile(t, project, ".env.example", "TOKEN=\n")
+	writeFile(t, project, "infra/x/.env.example", "TOKEN=\n")
+	writeFile(t, project, "infra/x/env.go", "package x\n")
+
+	got := map[string]bool{}
+	for _, m := range defaultCredentialMask(project) {
+		got[m.Target] = true
+		if info, err := os.Stat(m.Source); err != nil || info.Size() != 0 {
+			t.Errorf("mask source %s for %s is not an empty file", m.Source, m.Target)
+		}
+	}
+	for _, rel := range secret {
+		if !got[filepath.Join(project, rel)] {
+			t.Errorf("%s is not masked; masks: %v", rel, got)
+		}
+	}
+	if len(got) != len(secret) {
+		t.Errorf("masked %d files, want %d: %v", len(got), len(secret), got)
+	}
+}
+
+// The session container is the one that runs the model: a nested infra/x/.env is
+// mounted over, read-only, with the empty file, after the checkout mount, so the
+// container reads it empty.
+func TestBuildDockerRunArgsMasksANestedEnvFile(t *testing.T) {
+	project := t.TempDir()
+	env := writeFile(t, project, "infra/x/.env", "TOKEN=secret\n")
+
+	args := BuildDockerRunArgs(Config{Image: "img", ProjectPath: project, Prompt: "hi"})
+	mask := -1
+	for i := 0; i < len(args)-1; i++ {
+		if args[i] == "-v" && strings.HasSuffix(args[i+1], ":"+env+":ro") {
+			mask = i
+			source := strings.TrimSuffix(args[i+1], ":"+env+":ro")
+			if info, err := os.Stat(source); err != nil || info.Size() != 0 {
+				t.Errorf("%s is mounted over with %s, not an empty file", env, source)
+			}
+		}
+	}
+	if checkout := indexOfVolume(args, project+":"+project); mask < 0 || mask < checkout {
+		t.Errorf("no read-only mask of %s after the checkout mount (%d):\n%v", env, checkout, args)
+	}
+}
+
+// The walk masks files that are there and creates none: Docker would create a
+// missing mount target, so a directory with no .env must still have none after the
+// masks are built. Nor does it descend into .git or node_modules, which hold no
+// operator credentials and are where a large checkout's file count is.
+func TestCredentialMaskCreatesNothingAndSkipsGitAndNodeModules(t *testing.T) {
+	project := t.TempDir()
+	writeFile(t, project, "infra/y/main.tf", "")
+	writeFile(t, project, "node_modules/pkg/.env", "X=1\n")
+	writeFile(t, project, ".git/.env", "X=1\n")
+
+	if masks := defaultCredentialMask(project); len(masks) != 0 {
+		t.Errorf("got %+v, want no masks", masks)
+	}
+	if _, err := os.Stat(filepath.Join(project, "infra", "y", ".env")); err == nil {
+		t.Error("building the masks created infra/y/.env")
+	}
+}

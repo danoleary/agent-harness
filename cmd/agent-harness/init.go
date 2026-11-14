@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"strings"
 
+	"github.com/danoleary/agent-harness/internal/git"
 	"github.com/danoleary/agent-harness/internal/scaffold"
 )
 
@@ -65,7 +66,7 @@ func runInit(args []string, dir string, in io.Reader, out, errOut io.Writer) int
 // from a subdirectory still lands where the harness reads it; outside git it is
 // the working directory.
 func checkoutRoot() string {
-	if top, err := exec.Command("git", "rev-parse", "--show-toplevel").Output(); err == nil {
+	if top, err := exec.Command("git", git.HostArgs("rev-parse", "--show-toplevel")...).Output(); err == nil {
 		return strings.TrimSpace(string(top))
 	}
 	wd, err := os.Getwd()
@@ -76,6 +77,6 @@ func checkoutRoot() string {
 }
 
 func originURL(dir string) (string, error) {
-	url, err := exec.Command("git", "-C", dir, "remote", "get-url", "origin").Output()
+	url, err := exec.Command("git", git.HostArgs("-C", dir, "remote", "get-url", "origin")...).Output()
 	return strings.TrimSpace(string(url)), err
 }

@@ -21,10 +21,13 @@ these files that exists:
 `agent-harness doctor` names the file it read and every candidate it skipped.
 
 `.agent-harness/.env` is inside the checkout every Stage bind-mounts, so the
-harness mounts an empty file over that exact path in every container: the
-session, each gate and `post_create`. Gitignore it; the mask stops the sandbox
-reading it, not your git history. A credential file anywhere *else* in your repo
-is not masked, and the agent session can read it.
+harness mounts an empty file over it in every container: the session, each gate
+and `post_create`. It does the same for every other file in the checkout whose
+name starts `.env` (`infra/x/.env`, `web/.env.local`, `.envrc`), except
+`.env.example`, and outside `.git` and `node_modules` (ADR-0057). Gitignore
+them; the mask stops the sandbox reading them, not your git history. A
+credential file under any other name is not masked, and the agent session can
+read it.
 
 ## Credentials and paths
 

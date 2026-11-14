@@ -64,3 +64,4 @@ catches a duplicate there.
 - [ADR-0054](0054-a-branch-image-needs-a-dockerfile-the-branch-itself-changed.md): A branch image needs a Dockerfile the branch itself changed
 - [ADR-0055](0055-a-commit-that-landed-on-a-file-the-ticket-names-is-named-at-dispatch.md): A commit that landed on a file the ticket names is named at dispatch
 - [ADR-0056](0056-a-ticket-skipped-as-already-merged-on-main-leaves-the-queue.md): A ticket skipped as already merged on main leaves the queue
+- [ADR-0057](0057-the-host-runs-no-code-the-sandbox-can-write.md): The host runs no code the sandbox can write
