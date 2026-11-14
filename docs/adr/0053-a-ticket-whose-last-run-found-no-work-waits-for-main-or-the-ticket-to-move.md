@@ -40,8 +40,10 @@ selection read it. Selection passes over the ticket while both still stand.**
    ahead of `origin/main`. Any other end of the stage clears the record, so it
    only ever describes the latest run.
 4. **The screen** (`pipeline.SkipNoWork`) wraps the tracker's selection, inside
-   the overlap screen. It reads the record of each ticket it is offered. If
-   `origin/main` in the primary checkout is still the recorded SHA and the
+   the overlap screen. It reads the record of each ticket it is offered. When
+   one has a record, it fetches `origin/main` first, because the idle loop does
+   not fetch and would never see main move. If `origin/main` in the primary
+   checkout is still the recorded SHA and the
    fingerprint matches, it logs `skipping #N: last run found no work against
    origin/main <sha>; unchanged` and selects past the ticket. The skip streams to
    `loop.jsonl` once as `item-skipped`. A poll whose every ready ticket is

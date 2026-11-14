@@ -78,6 +78,18 @@ func (s *TicketSource) checkout() gitpkg.Checkout {
 	return gitpkg.Open(s.cfg.ProjectPath, s.cfg.BranchPrefix)
 }
 
+// freshMain is origin/main after a best-effort fetch. The loop fetches only at
+// startup and after a ticket, so a queue the no-work record holds would otherwise
+// never see main move and pass over the ticket until a restart (#330). The screen
+// reads it only when the offered ticket has a record, so a poll without one makes
+// no network call.
+func (s *TicketSource) freshMain() (string, error) {
+	if err := s.checkout().FetchMain(); err != nil {
+		s.log.Event("⚠ could not fetch origin/main to check a ticket whose last run found no work (" + err.Error() + ") — comparing against the last fetch")
+	}
+	return s.checkout().MainSHA()
+}
+
 // CheckAccess proves the tracker's credential works via one side-effect-free
 // selection read — the same call every poll makes, so passing here means polls
 // can succeed. The daemon runs it at startup, after the GH_TOKEN check
@@ -116,7 +128,7 @@ func (s *TicketSource) Next() (loop.WorkItem, *lease.Lease, bool, error) {
 // so a single-shot run passes over and defers what the loop would.
 func (s *TicketSource) Resolver() pipeline.NextResolver {
 	if s.screen == nil {
-		s.screen = pipeline.SkipNoWork(s.client, nowork.For(s.cfg), s.checkout().MainSHA, s.log)
+		s.screen = pipeline.SkipNoWork(s.client, nowork.For(s.cfg), s.freshMain, s.log)
 		if s.prs != nil {
 			policy := overlap.Policy{Threshold: s.cfg.OverlapThreshold, EscapeLabel: s.cfg.OverlapEscapeLabel}
 			branch := func(key string) string { return s.checkout().Worktree(ticket.Slug(key)).Branch() }

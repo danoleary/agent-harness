@@ -20,7 +20,8 @@ var issue330 = ticket.Ticket{
 // #330, replayed through the Source: the ticket's last run found nothing against
 // the origin/main that is still current, the loop released it to Todo, and the
 // next poll offers it again. Next passes over it instead of claiming it; once a
-// sibling merge moves main and the loop fetches, it is dispatched again.
+// sibling merge moves main, the next poll sees it without the loop fetching (the
+// idle loop does not) and dispatches the ticket again.
 func TestNextPassesOverATicketWhoseLastRunFoundNothingUntilMainMoves(t *testing.T) {
 	repo := gittest.New(t)
 	cfg := config.Config{Project: config.Project{BranchPrefix: gittest.Prefix}}
@@ -51,9 +52,6 @@ func TestNextPassesOverATicketWhoseLastRunFoundNothingUntilMainMoves(t *testing.
 	}
 
 	repo.Merge("other.txt", "a sibling\n", "Land a sibling")
-	if err := repo.Checkout().FetchMain(); err != nil {
-		t.Fatal(err)
-	}
 	if item, _, ok, err := s.Next(); !ok || err != nil || item.Key != "#330" {
 		t.Fatalf("Next() = (%+v, %v, %v), want #330 dispatched once main moved", item, ok, err)
 	}

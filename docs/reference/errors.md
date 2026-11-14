@@ -209,7 +209,8 @@ How a review ends when it takes the branch to a PR (`ship.Land`).
 | `queue held: N ticket(s) whose last run found no work on an unchanged main (…)` | every ready ticket was passed over as above; the loop idles rather than reporting an empty queue |
 | `<KEY>'s last run found no work against origin/main <sha>; main is now <sha> — dispatching it again` / `the ticket changed since — dispatching it again` | not an error: the record no longer stands, so the ticket is selected as usual |
 | `tdd · the session ran to completion with no work against origin/main <sha>` | the implementation session exited 0 and left nothing to hand off; the run is recorded so selection skips the ticket until main or the ticket moves |
-| `⚠ could not record that the run found no work (…)` / `⚠ could not read origin/main to record that the run found no work (…)` | the record under `.agent-harness/locks/no-work/` could not be written. A warning only | nothing: the next poll may run the ticket once more, as before #330 |
+| `⚠ could not record that the run found no work (…)` / `⚠ could not read origin/main to record that the run found no work (…)` | the record under `.agent-harness/locks/no-work/` could not be written. A warning only: the next poll may run the ticket once more, as before #330 |
+| `⚠ could not fetch origin/main to check a ticket whose last run found no work (…)` | the fetch before comparing a skipped ticket's recorded base failed. A warning only: the screen compares against the last fetch, so the ticket may stay skipped until a fetch succeeds |
 | `releasing … back to Todo failed — move it out of In Progress manually` | the tracker refused the release; move the ticket by hand |
 
 For problems with no message of their own, such as a daemon that stalls on a Mac
