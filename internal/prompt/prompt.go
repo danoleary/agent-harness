@@ -1037,6 +1037,18 @@ const OverlapsFile = "overlaps.json"
 // overlapsProtocol is the overlap report's contract the host reads.
 const overlapsProtocol = "Write each overlap you did NOT switch to `/findings/" + OverlapsFile + "` as ONE JSON array: `[{\"file\": \"...\", \"main_added\": \"...\", \"branch_duplicates\": \"...\"}]`. `file` is the path, `main_added` names what origin/main added there, and `branch_duplicates` names the branch's own code that does the same thing. One short line each: the harness puts the report in the PR body for a human, and it still opens the PR. No overlap left: write `[]` or no file at all."
 
+// foldADRRenumber keeps an earlier ADR number out of a replayed branch's history
+// (#347). A PR the PR loop replayed three times took a number main had just
+// landed each time, and each resolution renumbered the ADR in a new commit on
+// top. The ADR index merges by line union (ADR-0034), so every later replay
+// cherry-picked the adding commit's index line, and each earlier renumber's,
+// back in beside the current one without a conflict: one more dead link per
+// replay, each deleted by hand, once with a sed pattern that never matched.
+// Renumbering inside the adding commit leaves the history holding only the
+// current number; the index check and fixed-string delete are the backstop for
+// a branch an earlier session already renumbered on top.
+const foldADRRenumber = "If origin/main already has the number of an ADR this branch adds (compare `git diff --name-only --diff-filter=A origin/main..._premerge -- docs/adr/` with `git ls-tree --name-only origin/main docs/adr/`), give it the next free number on origin/main INSIDE the commit that added it, never in a new commit on top. The ADR index merges by line union in a replay, so a renumber in a later commit lets the next replay bring the adding commit's old index line back beside the new one, with no conflict to warn you. In place of the single cherry-pick above: `git log --format=%H --diff-filter=A origin/main.._premerge -- 'docs/adr/*-<slug>.md'` names the adding commit (match the slug, not the number, which an earlier renumber may have changed); run `git cherry-pick origin/main..<adding commit>`, `git mv` the file to the new number, update its heading and its index line, `git add` them and `git commit --amend --no-edit`, then `git cherry-pick <adding commit>.._premerge` for the rest. `git cherry-pick --skip` a later commit that only renumbered that ADR (an earlier resolution's), and fix the old number in anything the later commits add in one last commit. After ANY replay, whether or not you renumbered (a branch an earlier session renumbered on top can bring an old line back with no collision today), check that every line of the ADR index names a file that exists in `docs/adr/`, and delete a stale line with a fixed-string filter, e.g. `grep -vF '(<old file>)' docs/adr/README.md > /tmp/adr-index && mv /tmp/adr-index docs/adr/README.md`, not a `sed` regex, where an unescaped `.`, `[` or `/` can keep the pattern from matching and the line stays."
+
 // rebaseFix builds the `-p` prompt for the sandboxed conflict-resolution
 // session the review stage launches when the proactive pre-push rebase hits a
 // genuine content conflict (BEH-581). The branch already passed the cold review +
@@ -1062,6 +1074,7 @@ func rebaseFix(c Context) string {
 		"  1. `git branch _premerge HEAD` — mark the current feature tip so the replay range can name it.",
 		"  2. `git reset --hard origin/main` — move the branch onto the fresh base (this is the full-tree move `git rebase` botches in a linked worktree, but `reset --hard` does cleanly).",
 		"  3. `git cherry-pick origin/main.._premerge` — replay your feature commits onto the new base. cherry-pick's three-way merge surfaces only the genuine conflicts.",
+		"     " + foldADRRenumber,
 		"  4. For each conflict: resolve it by hand, `git add` the resolved files, then `git cherry-pick --continue`. Repeat until the cherry-pick finishes and `git status` is clean.",
 		"  5. Reconcile what origin/main gained underneath the branch, not just where the text conflicted (#255). `git diff --name-only origin/main HEAD` names the files the branch touches, and `git diff _premerge...origin/main -- <those files>` shows what origin/main added to them since the branch's old base: new interface methods, Dispositions, helpers. For each one the branch reimplements in a parallel mechanism of its own: when switching the branch to main's version is small and mechanical, make the switch and commit it. Otherwise leave the branch's version in place and report the overlap (step 6).",
 		"  6. " + overlapsProtocol,
