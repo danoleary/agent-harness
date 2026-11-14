@@ -81,7 +81,9 @@ prompt around this skill tells you the ticket, the worktree and the branch.
   so only the sandbox runs it (#261). When you change the Claude CLI argv or
   settings, look the flag up in `claude --help` in the sandbox first. For
   inline `--settings` JSON, run `claude --settings '<json>' --help`: it exits 1
-  on a value it can't parse.
+  on a value it can't parse. To read the CLI's own code, search the binary for
+  a fixed string as `docs/how-to/sandbox-image.md` §Searching the bundled
+  Claude CLI shows; a `.{N}literal` context regex on it runs for minutes (#310).
 - A changed `scripts/<name>.sh` that has a sibling `scripts/test-<name>.sh` must
   change that test too (CI checks this), and `check-scripts` runs every
   `scripts/test-*.sh`.
