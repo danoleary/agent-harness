@@ -140,6 +140,8 @@ what it found, it warns and dispatches rather than hold a ticket on a guess.
 | Message | Cause | Fix |
 |---|---|---|
 | ``could not execute `…` (exit 127)`` or `(exit 126)`, `the command is not on PATH in the worktree-command container` | `post_create` names a tool the image's `PATH` lacks | put it on `PATH` with `ENV` in the Dockerfile ([sandbox image](../how-to/sandbox-image.md#3-put-every-tool-on-the-image-path)) |
+| `fast-forwarded … from … to … — it had no commits ahead, so it now starts from current origin/main` | a reused worktree's branch held no work and sat on a base origin/main has moved past, so the harness reset it onto current origin/main before `post_create` and the base gate (#334) | nothing; a branch with commits ahead, or a tree with uncommitted work, is left where it is |
+| `⚠ could not fast-forward the reused worktree onto origin/main (…)` | git could not read or reset the reused worktree | the session runs on its old base; if it repeats, check the worktree with `git -C <path> status` |
 | `⚠ post_create exited N` | `post_create` failed some other way | a warning only; the session installs what's missing |
 | `gate re-run could not execute … toolchain missing in the gate shell` | the same PATH problem, in a gate | the same |
 | `harness gate re-run is red — not pushing` | a gate failed on the host | read the gate output in the review log |

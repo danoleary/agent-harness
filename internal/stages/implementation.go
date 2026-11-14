@@ -124,6 +124,15 @@ func provisionWorktree(h hostio.Host, cfg config.Config, log *runlog.Logger) (pr
 			reused += " — re-running post_create so a resumed tree opens with its toolchain deps present"
 		}
 		log.Event(reused)
+		// A reused branch with nothing ahead has nothing to preserve: move it onto
+		// current origin/main before post_create and the base gate, so neither speaks
+		// for a base main has left behind (#334). Best-effort — a failure leaves the
+		// tree where it was, which is what reuse did before.
+		if from, to, err := wt.FastForward(); err != nil {
+			log.Event("⚠ could not fast-forward the reused worktree onto origin/main (" + err.Error() + ") — the session starts from its old base")
+		} else if from != "" {
+			log.Event(fmt.Sprintf("fast-forwarded %s from %s to %s — it had no commits ahead, so it now starts from current origin/main (#334)", wt.Branch(), from[:12], to[:12]))
+		}
 	}
 	if cfg.PostCreate != "" {
 		return runPostCreate(h, cfg, log)
