@@ -49,6 +49,11 @@ type Env struct {
 	Cfg  config.Config
 	Log  *runlog.Logger
 	Who  string
+	// SkipWhenOnly makes the gates honour each Gate's skip_when_only: a gate whose
+	// list matches every path of the diff against origin/main is skipped, and CI is
+	// left to check it before merge (#221, ADR-0049). Only the PR loop sets it; the
+	// stages and the security-alerts loop run every gate.
+	SkipWhenOnly bool
 }
 
 // Target is the branch a fix session works on: the slug the prompt names it by,
@@ -182,12 +187,41 @@ func (e Env) gates(labelPrefix string, fixed []string) GateResult {
 		e.Log.Event(e.Who + " · host gate skipped — diff touches only docs/prose paths no gate depends on (BEH-687)")
 		return GateResult{}
 	}
-	return e.gatesIn(wt.Path(), labelPrefix, fixed)
+	gates := e.toRun(wt, true)
+	if len(gates) == 0 {
+		return GateResult{}
+	}
+	return e.gatesIn(wt.Path(), gates, labelPrefix, fixed)
 }
 
-// gatesIn runs the gates over the worktree at worktreePath: the ticket's own, or
-// a trial merge of it (#259).
-func (e Env) gatesIn(worktreePath, labelPrefix string, fixed []string) GateResult {
+// toRun is the gates to run over wt: all of them, less, when the Env honours
+// skip_when_only, each gate whose list matches every path wt's diff against
+// origin/main touches (#221). A diff that cannot be read, or is empty, skips
+// nothing. narrate logs each skip and why.
+func (e Env) toRun(wt gitpkg.Worktree, narrate bool) []config.Gate {
+	if !e.SkipWhenOnly {
+		return e.Cfg.Gates
+	}
+	paths, err := wt.DiffPaths()
+	if err != nil {
+		return e.Cfg.Gates
+	}
+	var run []config.Gate
+	for _, g := range e.Cfg.Gates {
+		if !g.SkipsOver(paths) {
+			run = append(run, g)
+			continue
+		}
+		if narrate {
+			e.Log.Event(fmt.Sprintf("%s · gate %q skipped — every path the fix changes against %s matches its skip_when_only (%s); CI checks it before merge (#221)", e.Who, g.Name, gitpkg.BaseRef, strings.Join(g.SkipWhenOnly, ", ")))
+		}
+	}
+	return run
+}
+
+// gatesIn runs gates over the worktree at worktreePath: the ticket's own, or a
+// trial merge of it (#259).
+func (e Env) gatesIn(worktreePath string, gates []config.Gate, labelPrefix string, fixed []string) GateResult {
 	// Only so many runs gate at once across the loop instances sharing the lock
 	// dir (#89). The wait is for the gate step alone: a run implements and reviews
 	// while another gates, and queues here.
@@ -204,7 +238,7 @@ func (e Env) gatesIn(worktreePath, labelPrefix string, fixed []string) GateResul
 	defer release()
 	// RunGates stops at the first red, so the last gate run is the failing one.
 	var lastLog string
-	res := RunGates(e.Cfg.Gates, func(g config.Gate) session.Outcome {
+	res := RunGates(gates, func(g config.Gate) session.Outcome {
 		e.Log.Event(fmt.Sprintf("%s · gate %q: %s", e.Who, g.Name, g.Command))
 		run := GateRun(e.Cfg, worktreePath, labelPrefix, g)
 		run.Retry = hostio.Retry{
@@ -358,6 +392,11 @@ func (g *GatedCI) mergeGate(label string) error {
 	if wt.IsRebasedOnto(gitpkg.BaseRef) || wt.DocsOnly(e.Cfg.DocsOnlyExcludedRoots) {
 		return nil
 	}
+	// The gates the branch skipped are skipped merged too, without saying so again.
+	gates := e.toRun(wt, false)
+	if len(gates) == 0 {
+		return nil
+	}
 	m, err := wt.TrialMerge(gitpkg.BaseRef)
 	if err != nil {
 		return fmt.Errorf("could not merge auto-fix %d with %s to gate it as CI will (%v) — not pushing", g.Attempts, gitpkg.BaseRef, err)
@@ -374,7 +413,7 @@ func (g *GatedCI) mergeGate(label string) error {
 	if !e.provisionIn(m.Path(), "prep-"+strings.TrimPrefix(label, "gate-")+"-merge") {
 		return fmt.Errorf("post_create could not run in the trial merge of auto-fix %d — not pushing", g.Attempts)
 	}
-	gate := e.gatesIn(m.Path(), label+"-merge", nil)
+	gate := e.gatesIn(m.Path(), gates, label+"-merge", nil)
 	if gate.Green() {
 		return nil
 	}
@@ -647,10 +686,10 @@ func (e Env) redBase(regate GateResult) *BaseRed {
 	if !e.provisionIn(b.Path(), "prep-"+baseGateStep) {
 		return nil
 	}
-	res := e.gatesIn(b.Path(), baseGateStep, nil)
+	res := e.gatesIn(b.Path(), e.Cfg.Gates, baseGateStep, nil)
 	if !res.Green() && !environmental(res) {
 		e.Log.Event(fmt.Sprintf("%s ↻ base gate %q is red (exit %d) — re-running the gates once before the base counts as red (#189)", e.Who, res.FailedGate, res.Outcome.ExitCode))
-		res = e.gatesIn(b.Path(), baseConfirmStep, nil)
+		res = e.gatesIn(b.Path(), e.Cfg.Gates, baseConfirmStep, nil)
 	}
 	if environmental(res) {
 		e.Log.Event(fmt.Sprintf("%s ⚠ base gate %q failed environmentally (exit %d) — that says nothing about the base; the red re-gate stays the branch's", e.Who, res.FailedGate, res.Outcome.ExitCode))

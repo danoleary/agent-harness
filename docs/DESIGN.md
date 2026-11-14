@@ -622,6 +622,8 @@ pipeline (one PR, worktree .claude/worktrees/pr-<n> on the PR's head branch):
       void marker takes the attempt back, label blocked + comment naming the worktree and git's error
   origin's tip != the polled sha -> stop (the next poll sees the new head)
   post_create (warn-only; 127/126 stops)
+  "all gates" below skips a gate whose skip_when_only globs match every path   // #221, ADR-0049
+    of the diff against origin/main (logged; CI must still pass before merge)
   conflict: RebaseFix session            // internal/fix, shared with review
     harness branch: replay onto origin/main;  human branch: merge origin/main in
     verify.RebaseResolution -> all gates -> push --force-with-lease | push

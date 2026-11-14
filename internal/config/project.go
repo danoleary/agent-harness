@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -213,6 +214,74 @@ type CacheConfig struct {
 type Gate struct {
 	Name    string `toml:"name"`
 	Command string `toml:"command"`
+	// SkipWhenOnly lists repo-relative glob paths (`*`, `?` and `[...]` within a
+	// segment, `**` across segments) a PR loop fix may skip this gate over: when
+	// every path the fix's diff against origin/main touches matches one, the PR
+	// loop does not run it host-side and leans on CI, which must pass before merge
+	// (#221, ADR-0049). The implementation and review stages ignore it, and an
+	// empty list skips nothing.
+	SkipWhenOnly []string `toml:"skip_when_only"`
+}
+
+// SkipsOver reports whether every one of paths matches the gate's SkipWhenOnly.
+// No paths, or no list, never skips: there is no diff to judge, or nothing a diff
+// could match.
+func (g Gate) SkipsOver(paths []string) bool {
+	if len(paths) == 0 || len(g.SkipWhenOnly) == 0 {
+		return false
+	}
+	for _, p := range paths {
+		if !g.skipsPath(p) {
+			return false
+		}
+	}
+	return true
+}
+
+func (g Gate) skipsPath(p string) bool {
+	for _, pattern := range g.SkipWhenOnly {
+		if globMatch(pattern, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// globMatch matches a slash-separated path against pattern segment by segment:
+// `**` stands for any number of whole segments, zero included, and every other
+// segment is a [path.Match] pattern.
+func globMatch(pattern, p string) bool {
+	return matchSegments(strings.Split(pattern, "/"), strings.Split(p, "/"))
+}
+
+func matchSegments(pattern, p []string) bool {
+	if len(pattern) == 0 {
+		return len(p) == 0
+	}
+	if pattern[0] == "**" {
+		return matchSegments(pattern[1:], p) || (len(p) > 0 && matchSegments(pattern, p[1:]))
+	}
+	if len(p) == 0 {
+		return false
+	}
+	ok, err := path.Match(pattern[0], p[0])
+	return ok && err == nil && matchSegments(pattern[1:], p[1:])
+}
+
+// skipPatternProblem is what is wrong with one skip_when_only pattern, or "".
+func skipPatternProblem(pattern string) string {
+	switch {
+	case pattern == "":
+		return "is empty"
+	case strings.HasPrefix(pattern, "/"):
+		return "is absolute; paths are relative to the repo root"
+	}
+	for _, seg := range strings.Split(pattern, "/") {
+		if _, err := path.Match(seg, ""); err != nil {
+			return "is not a valid glob"
+		}
+	}
+	return ""
 }
 
 // TrackerConfig is the non-secret tracker selection surface. The API key stays
@@ -544,6 +613,11 @@ func (pc *ProjectConfig) validate() []string {
 		}
 		if g.Command == "" {
 			problems = append(problems, fmt.Sprintf("gates[%d] (%q) has no command", i, g.Name))
+		}
+		for _, pattern := range g.SkipWhenOnly {
+			if why := skipPatternProblem(pattern); why != "" {
+				problems = append(problems, fmt.Sprintf("gates[%d] (%q) skip_when_only pattern %q %s", i, g.Name, pattern, why))
+			}
 		}
 	}
 	// The generalized cache surface has no implicit mount path — a Consumer that

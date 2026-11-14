@@ -104,7 +104,8 @@ func (Pipeline) Recover(loop.WorkItem) (stages.Result, bool) { return stages.Res
 //     then every gate, and pushes to the existing branch — force-with-lease after a
 //     rebase, plain after a merge. A resolution the gates hold back is saved, and
 //     the next run at the same head, on the same origin/main, re-gates and pushes
-//     it with no session (#252). A pushed resolution that renumbered one of the
+//     it with no session (#252). A gate whose skip_when_only matches every path of
+//     the diff against origin/main is skipped, here and over a CI fix (#221). A pushed resolution that renumbered one of the
 //     branch's ADRs has the PR's title and description rewritten to the new
 //     number (#267);
 //  3. watch_ci: watch CI to a verdict, and a red check gets a CIFix session over
@@ -124,7 +125,7 @@ func Fix(h hostio.Host, cfg config.Config, log *runlog.Logger, it Item, l config
 	l.ApplyPrompts(&cfg.Prompts)
 	key := Key(it.PR.Number)
 	slug := ticket.Slug(key)
-	fixes := fix.Env{Host: h, Cfg: cfg, Log: log, Who: who}
+	fixes := fix.Env{Host: h, Cfg: cfg, Log: log, Who: who, SkipWhenOnly: true}
 	target := fix.Target{Slug: slug, Ticket: prTicket(key, it.PR), Branch: it.PR.HeadBranch}
 	log.Structured(loopstream.Record{Kind: loopstream.KindStageStart, Ticket: key, Stage: who, Message: fmt.Sprintf("run %s — %s %s on %s at %s (%s)", h.RunID(), it.Kind.describe(), key, it.PR.HeadBranch, short(it.PR.HeadSHA), it.Strategy())})
 

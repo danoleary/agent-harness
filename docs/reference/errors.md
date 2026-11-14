@@ -43,6 +43,7 @@ Nothing restarts a stopped loop. The `loop` exit code tells a deliberate stop
 | `invalid project config <path> (N problems):` | the listed validation problems | fix each one; see [config reference](config.md) |
 | `a sandbox image source is required` | neither `image` nor `dockerfile` | set one |
 | `at least one [[gates]] entry is required` | no gates | add one |
+| `gates[i] ("name") skip_when_only pattern "…" is empty` / `is absolute` / `is not a valid glob` | a `skip_when_only` glob that could never match a repo-relative path | fix the glob; see [config reference](config.md#gates) |
 | `tracker.team_key is required for kind=linear` / `tracker.ready_label is required for kind=linear` | — | set them |
 | `tracker.repo must be "owner/name"` | — | set `repo` |
 | `warning: … unknown key <name>, ignored` | a misspelled key, or one from a newer harness | fix the spelling, or upgrade |
@@ -137,6 +138,7 @@ what it found, it warns and dispatches rather than hold a ticket on a guess.
 | `harness gate re-run is red — not pushing` | a gate failed on the host | read the gate output in the review log |
 | `↻ gate "…" is red (exit N) with … — re-running it once` | the gate's log shows an environment failure (the test browser's connection closed, an out-of-memory kill or SIGKILL, a download failure, the gate cap), or a PR loop CI fix's gate failed only in files the fix did not touch | nothing; only a second red counts. If the re-run is red too, read its log (`gate-…-rerun-*.log`) |
 | `✗ gate "…" is red over auto-fix N merged with origin/main, though green on the branch alone — not pushing` | a CI fix passes the gates on its branch but not merged with origin/main, which is what CI checks (#259) | nothing; the next CI fix attempt gets that gate's output (`gate-cifixN-merge-*.log`). A fix that conflicts with origin/main is refused too; the PR loop's next poll resolves the conflict |
+| `pr-fix · gate "…" skipped — every path the fix changes against origin/main matches its skip_when_only (…); CI checks it before merge` | a PR loop fix touched only paths that gate's `skip_when_only` lists, so it was not run host-side (#221) | nothing; CI runs the check before merge. To gate such a fix locally, narrow or drop the gate's `skip_when_only` |
 | `review ✗ no worktree at … — run implementation first` | `review` was run alone | run `implementation` first |
 | `⚠ could not strip <paths> from the worktree (…)` | after a green handoff, the `handoff_strip_paths` build artifacts could not be removed. A warning only; the handoff stands | the reviewer re-runs `post_create`; if its gates crash on a stale artifact, delete the paths in the worktree by hand |
 

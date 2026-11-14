@@ -50,9 +50,14 @@ findings_label = "harness-finding"
 project = "agent-harness"
 
 # `make check` is the same gate CI runs: fmt, vet, the script guards, the tests.
+# A PR loop fix that touches only .github/** (a Dependabot action bump, say)
+# skips it host-side: nothing the Go gate checks reads those files, and main's
+# ruleset requires CI's `Check, build` on an up-to-date branch before merge
+# (#221, ADR-0049). The stages ignore the key and run it anyway.
 [[gates]]
 name = "check"
 command = "make check"
+skip_when_only = [".github/**"]
 
 [[gates]]
 name = "build"
