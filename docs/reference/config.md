@@ -125,7 +125,6 @@ Opt-in upstreaming of Harness findings to the public harness repo (ADR-0011). Se
 | `upstream` | `"off"` | `"off"` keeps Harness findings in `.agent-harness/harness-findings/`; `"github"` files them as issues. |
 | `repo` | — | `"owner/name"`. Required when `upstream = "github"`. |
 | `findings_label` | none | Label applied to upstreamed issues, and the scope dedup searches. |
-| `ready_label` | none | Also applied to each upstreamed finding that is agent-ready: not `needs_human`, not a probable duplicate (ADR-0033). Empty keeps every upstreamed finding behind a human. |
 | `project` | the ticket Key | The reporting project's name, stamped on each filing. |
 
 ## `[sentry]`

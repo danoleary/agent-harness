@@ -24,9 +24,8 @@ human or reads as a probable duplicate of an open one.**
   `!needs_human`, and to `false` when the finding is flagged as a probable
   duplicate (#65), since a person should merge or close it first.
 - **Adapter.** The GitHub adapter adds its configured ready label when `Ready`
-  is set. The upstream sink has a ready label only when the reporting project
-  sets `feedback.ready_label`. Without it, findings filed into the public
-  harness repo from other projects stay behind a human.
+  is set. The upstream sink has no ready label configured, so findings filed into
+  the public harness repo from other projects stay behind a human.
 
 ## Alternatives considered
 
@@ -44,15 +43,3 @@ human or reads as a probable duplicate of an open one.**
   option when it is needed.
 - A finding the session misclassifies runs unattended. Review and the PR gates
   still apply, and ADR-0028 warns on any open-questions section left in its body.
-
-## Amendment (2026-11-14): an opt-in ready label for the upstream sink
-
-The harness repo works its own backlog and upstreams its own findings into
-itself. With no ready label on the upstream sink, each of those findings
-waited for a relabel, the same idle queue this ADR fixed for the tracker.
-
-`[feedback]` takes an optional `ready_label`. When it is set, the upstream sink
-adds that label to every finding the router marks Ready. The router rules do not
-change: a `needs_human` finding or a probable duplicate is still filed without
-it. The key is empty by default. Only the reporting project can set it, so a
-project that files into a repo it does not own leaves it empty.

@@ -27,11 +27,6 @@ findings_label = "harness-finding"
 project = "myproject"
 ```
 
-To have the receiving repo's loop work those findings without a relabel, also
-set `ready_label = "ready-for-agent"`. The harness still files a finding that
-needs a human, or that reads as a probable duplicate, without it. Set it only
-when you own the receiving repo.
-
 There is no separate credential: the harness files the issues with your
 `GH_TOKEN`, so they appear under that token's account (see
 [token scopes](../reference/tokens.md)). Each key is listed under
