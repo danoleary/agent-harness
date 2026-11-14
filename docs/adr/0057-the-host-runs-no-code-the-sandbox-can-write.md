@@ -74,7 +74,10 @@ can write.**
   host push today.
 - Not closed here: git filters (`filter.<name>.smudge` with a `.gitattributes`
   entry) and other command-valued keys in `.git/config` still run on host
-  checkouts, the host's own git included. A host-run Consumer command can still
-  unset `GIT_CONFIG_COUNT` before it starts git, but that command comes from
-  origin/main, not the working tree. The prompt bodies are read from the working
-  tree; they reach the session, not the host shell.
+  checkouts. ADR-0058 closes this for the host's own git: it refuses to run
+  while the repository's config names a command. The `git` that a host-run
+  Consumer command starts gets the overrides through `git.HostEnv` but not that
+  check, and the command can still unset `GIT_CONFIG_COUNT` before it starts
+  git, but that command comes from origin/main, not the working tree. The prompt
+  bodies are read from the working tree; they reach the session, not the host
+  shell.
