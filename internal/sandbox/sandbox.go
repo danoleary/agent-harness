@@ -227,6 +227,9 @@ type Config struct {
 	// project config declares. A session that drives no browser (a CI fix) would
 	// otherwise idle the browser-verification servers beside its test runs (#248).
 	NoMCP bool
+	// ShmSize is the container's `--shm-size`, the Consumer's `[sandbox]
+	// shm_size`. Empty takes DefaultShmSize.
+	ShmSize string
 }
 
 // BuildDockerRunArgs builds the argv (everything after `docker`) to run one
@@ -236,7 +239,7 @@ type Config struct {
 // real host path (ADR-0002) so a worktree's absolute `.git` pointer resolves
 // identically inside the container and on the host.
 func BuildDockerRunArgs(c Config) []string {
-	args := []string{"run", "--rm", "--init"}
+	args := []string{"run", "--rm", "--init", "--shm-size", shmSize(c.ShmSize)}
 
 	if c.ContainerName != "" {
 		args = append(args, "--name", c.ContainerName)
@@ -349,6 +352,9 @@ type GateConfig struct {
 	CacheMountPath string
 	// ContainerName is an optional `--name` so the harness can `docker kill` it on timeout.
 	ContainerName string
+	// ShmSize is the container's `--shm-size`, as Config.ShmSize. Empty takes
+	// DefaultShmSize.
+	ShmSize string
 }
 
 // BuildWorktreeCommandArgs builds the argv (everything after `docker`) for a
@@ -383,7 +389,7 @@ type GateConfig struct {
 // For the gate case this is the harness's OWN ground truth — never the agent's
 // self-report — and the push gate (DESIGN.md).
 func BuildWorktreeCommandArgs(c GateConfig, command string) []string {
-	args := []string{"run", "--rm", "--init"}
+	args := []string{"run", "--rm", "--init", "--shm-size", shmSize(c.ShmSize)}
 
 	if c.ContainerName != "" {
 		args = append(args, "--name", c.ContainerName)
@@ -409,6 +415,22 @@ func BuildWorktreeCommandArgs(c GateConfig, command string) []string {
 	)
 
 	return args
+}
+
+// DefaultShmSize is the /dev/shm every sandbox and worktree command container
+// gets unless the Consumer's `[sandbox] shm_size` sets another. Docker's own
+// default is 64 MB, and headless Chrome keeps its tabs' renderer memory there,
+// so a browser-driven story crashed its tabs (#313). The size is a ceiling on a
+// tmpfs, not a reservation: an idle container costs nothing for it. A private
+// shm rather than --ipc=host, which would hand the container the host's IPC
+// namespace.
+const DefaultShmSize = "1g"
+
+func shmSize(configured string) string {
+	if configured == "" {
+		return DefaultShmSize
+	}
+	return configured
 }
 
 // gitStatArgs makes git inside the container ignore the stat fields a bind mount

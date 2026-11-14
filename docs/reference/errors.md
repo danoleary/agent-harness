@@ -44,6 +44,7 @@ Nothing restarts a stopped loop. The `loop` exit code tells a deliberate stop
 | `a sandbox image source is required` | neither `image` nor `dockerfile` | set one |
 | `at least one [[gates]] entry is required` | no gates | add one |
 | `gates[i] ("name") skip_when_only pattern "…" is empty` / `is absolute` / `is not a valid glob` | a `skip_when_only` glob that could never match a repo-relative path | fix the glob; see [config reference](config.md#gates) |
+| `sandbox.shm_size "…" is not a size` | a `[sandbox] shm_size` docker's `--shm-size` would not take: no number, zero, a space, or a unit other than `b`, `k`, `m`, `g` | write it as e.g. `"2g"` or `"512m"`; see [config reference](config.md#sandbox) |
 | `tracker.team_key is required for kind=linear` / `tracker.ready_label is required for kind=linear` | — | set them |
 | `tracker.repo must be "owner/name"` | — | set `repo` |
 | `warning: … unknown key <name>, ignored` | a misspelled key, or one from a newer harness | fix the spelling, or upgrade |

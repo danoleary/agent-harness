@@ -225,6 +225,7 @@ func (r *Runner) agentArgs(name string, a AgentRun) []string {
 		Model:          a.Model,
 		ContainerName:  name,
 		NoMCP:          a.NoMCP,
+		ShmSize:        r.cfg.ShmSize,
 	})
 }
 
@@ -237,6 +238,7 @@ func (r *Runner) shellArgs(name string, s ShellRun) []string {
 		CacheVolume:    r.cfg.CacheVolume,
 		CacheMountPath: r.cfg.CacheMountPath,
 		ContainerName:  name,
+		ShmSize:        r.cfg.ShmSize,
 	}, s.Command)
 }
 

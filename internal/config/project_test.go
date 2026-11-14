@@ -92,6 +92,20 @@ project = "myproject"
 	}
 }
 
+func TestLoadSurfacesSandboxShmSize(t *testing.T) {
+	checkout := testCheckout(t, testConfigTOML+`
+[sandbox]
+shm_size = "2g"
+`)
+	cfg, err := Load(envAt(checkout, nil))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.ShmSize != "2g" {
+		t.Errorf("ShmSize = %q, want 2g from [sandbox] shm_size", cfg.ShmSize)
+	}
+}
+
 func TestLoadPropagatesProjectConfigError(t *testing.T) {
 	// A checkout with no .agent-harness/config.toml at all.
 	if _, err := Load(envAt(t.TempDir(), nil)); err == nil {
@@ -883,6 +897,52 @@ func TestLoadProjectSentryValidation(t *testing.T) {
 			_, err := LoadProject(dir)
 			if err == nil || !strings.Contains(err.Error(), "sentry.") {
 				t.Errorf("want a sentry.* error for %s, got %v", name, err)
+			}
+		})
+	}
+}
+
+// `[sandbox] shm_size` sizes every container's /dev/shm (#313). It is handed to
+// `docker run --shm-size`, so a value docker would reject fails here, at load,
+// rather than as an exit 125 after the ticket is claimed.
+func TestLoadProjectSandboxShmSize(t *testing.T) {
+	for _, tc := range []struct {
+		name, table, want string
+		wantErr           bool
+	}{
+		{"absent", "", "", false},
+		{"gigabytes", "[sandbox]\nshm_size = \"2g\"\n", "2g", false},
+		{"megabytes", "[sandbox]\nshm_size = \"512m\"\n", "512m", false},
+		{"upper-case unit", "[sandbox]\nshm_size = \"2G\"\n", "2G", false},
+		{"bytes", "[sandbox]\nshm_size = \"1073741824\"\n", "1073741824", false},
+		{"no number", "[sandbox]\nshm_size = \"g\"\n", "", true},
+		{"zero", "[sandbox]\nshm_size = \"0\"\n", "", true},
+		{"unknown unit", "[sandbox]\nshm_size = \"2gigs\"\n", "", true},
+		{"spaces", "[sandbox]\nshm_size = \"2 g\"\n", "", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeProjectConfig(t, dir, `
+image = "x"
+[tracker]
+kind = "github"
+repo = "o/r"
+[[gates]]
+name = "check"
+command = "c"
+`+tc.table)
+			pc, err := LoadProject(dir)
+			if tc.wantErr {
+				if err == nil || !strings.Contains(err.Error(), "sandbox.shm_size") {
+					t.Fatalf("want a sandbox.shm_size error, got %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("LoadProject: %v", err)
+			}
+			if pc.Sandbox.ShmSize != tc.want {
+				t.Errorf("Sandbox.ShmSize = %q, want %q", pc.Sandbox.ShmSize, tc.want)
 			}
 		})
 	}

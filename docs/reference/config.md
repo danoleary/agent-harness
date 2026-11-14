@@ -75,6 +75,15 @@ container. Omit the table if your toolchain has no useful cache.
 | `path` | absolute path in the container | — | Required when `volume` is set. |
 | `prune_command` | shell command | none | Runs **on the host** between tickets when free disk is still low after pruning merged worktrees, before a Docker prune. `pnpm store prune`, `go clean -modcache`, `dotnet nuget locals all --clear`. |
 
+## `[sandbox]`
+
+Settings for every container the harness starts: each sandboxed session and
+each gate and `post_create` run. Omit the table to take the defaults.
+
+| Key | Type | Default | Notes |
+|---|---|---|---|
+| `shm_size` | size string, e.g. `"2g"`, `"512m"` | `"1g"` | The container's `/dev/shm`, passed as `docker run --shm-size`. Docker's own default is 64 MB, which crashes headless Chrome tabs. A positive whole number with an optional `b`, `k`, `m` or `g` unit; anything else fails the load. |
+
 ## `[tracker]`
 
 Which tracker supplies the tickets, and its non-secret names. The API credential

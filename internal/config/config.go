@@ -227,6 +227,10 @@ type Project struct {
 	// CachePruneCommand is the Consumer's host-side cache-reclaim command, run by
 	// the loop between tickets (ADR-0027). Empty skips that reclaim rung.
 	CachePruneCommand string
+	// ShmSize is the /dev/shm size every sandbox and worktree command container
+	// gets, from the project config's `[sandbox] shm_size` (#313). Empty takes the
+	// sandbox default.
+	ShmSize string
 	// BranchPrefix is the canonical worktree branch prefix (from the project
 	// config's branch_prefix, default "feat"). The harness keys verify/push/PR/
 	// dispatch-guards off `<BranchPrefix>/<slug>` (ADR-0008).
@@ -613,6 +617,7 @@ func loadProject(get Getenv, checkout, harnessVersion string) (Project, error) {
 		CacheVolume:           cacheVolume,
 		CacheMountPath:        cachePath,
 		CachePruneCommand:     pc.Cache.PruneCommand,
+		ShmSize:               pc.Sandbox.ShmSize,
 		BranchPrefix:          pc.BranchPrefix,
 		PostCreate:            pc.PostCreate,
 		Gates:                 pc.Gates,

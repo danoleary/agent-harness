@@ -42,6 +42,9 @@ type ProjectConfig struct {
 	// historical /pnpm-store mount, so herd's committed config keeps working
 	// unchanged (BEH-635). New Consumers should use `[cache]`.
 	PnpmStoreVolume string `toml:"pnpm_store_volume"`
+	// Sandbox tunes the containers the harness starts: every sandboxed session and
+	// every gate or post_create run (#313).
+	Sandbox SandboxConfig `toml:"sandbox"`
 	// BranchPrefix is the canonical worktree branch prefix (was the hardcoded
 	// "feat"); the harness keys verify/push/PR/dispatch-guards off
 	// `<branch_prefix>/<slug>`.
@@ -209,6 +212,19 @@ type CacheConfig struct {
 	// with the same care as any command you would put in a Makefile.
 	PruneCommand string `toml:"prune_command"`
 }
+
+// SandboxConfig tunes every container the harness starts (#313).
+type SandboxConfig struct {
+	// ShmSize is the containers' /dev/shm, handed to `docker run --shm-size`: a
+	// whole number of bytes, optionally suffixed b, k, m or g ("2g", "512m").
+	// Empty takes the harness default, sandbox.DefaultShmSize (1g).
+	ShmSize string `toml:"shm_size"`
+}
+
+// shmSizeRE is the subset of docker's --shm-size syntax the key accepts: a
+// positive whole number with an optional single-letter unit. Narrower than docker
+// (which also takes "1.5g" or "1gb"), so whatever passes here docker takes too.
+var shmSizeRE = regexp.MustCompile(`^(?i)0*[1-9][0-9]*[bkmg]?$`)
 
 // Gate is one named host-side gate command.
 type Gate struct {
@@ -624,6 +640,11 @@ func (pc *ProjectConfig) validate() []string {
 	// declares a volume must declare where it mounts (BEH-635).
 	if pc.Cache.Volume != "" && pc.Cache.Path == "" {
 		problems = append(problems, "cache.path is required when cache.volume is set")
+	}
+	// A value docker rejects would otherwise surface as an exit 125 on the first
+	// container, after the ticket is claimed.
+	if pc.Sandbox.ShmSize != "" && !shmSizeRE.MatchString(pc.Sandbox.ShmSize) {
+		problems = append(problems, fmt.Sprintf("sandbox.shm_size %q is not a size: use a positive whole number with an optional b, k, m or g unit, e.g. \"2g\"", pc.Sandbox.ShmSize))
 	}
 	if err := pc.Feedback.validate(); err != nil {
 		problems = append(problems, err.Error())
