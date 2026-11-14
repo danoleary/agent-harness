@@ -169,18 +169,77 @@ func TestImplementationDispatchesOnceMainMovesPastARedBase(t *testing.T) {
 	}
 }
 
-// The ways past the hold: --force, the repair ticket the hold filed (it is the
-// work that turns main green, so holding it would hold main red), and a resumed
-// branch that already carries commits (its base is not untouched).
+// #278, replayed: a base-repair ticket (it carries the base-gates-red finding key)
+// waited in the queue while another PR turned main green. Before, the stage did
+// not gate the base for it, so the implementation and review sessions each spent
+// their first turns finding out by hand that the base was already green. Now the
+// stage gates the base anyway, and on a green one still launches the session, but
+// tells it the base gates pass at that SHA, so it only adds what the ticket asks
+// for beyond the repair.
+func TestImplementationTellsABaseRepairSessionTheBaseIsGreen(t *testing.T) {
+	h, repo := fresh(t, "#278")
+	h.Trk.Ticket.Description = "main fails its gates.\n\n" + findings.KeyMarker(basegate.FindingKey)
+	h.AgentFn = commitsHandoff(h, repo)
+	log := stageLog(t, "#278")
+
+	res := Implementation(h, sharedCfg(t), log, Args{Identifier: "#278"})
+
+	if !res.OK || res.Disposition == BaseRed {
+		t.Fatalf("a base-repair ticket on a green base must dispatch, got %+v", res)
+	}
+	if got := gateRuns(h, baseGateLabel); got != 1 {
+		t.Errorf("gated the base %d times, want once", got)
+	}
+	if len(h.Agents) != 1 {
+		t.Fatalf("agent runs = %v, want the /tdd session", labels(h.Agents))
+	}
+	base := repo.OnOrigin("main")
+	if p := h.Agents[0].Prompt; !strings.Contains(p, "base gates are green at `"+base+"`") {
+		t.Errorf("the session's envelope must say the base gates are green at %s; got:\n%s", base, p)
+	}
+	if said := narration(t, log); !strings.Contains(said, "already green") {
+		t.Errorf("run.jsonl should say the base the ticket repairs is already green; got %s", said)
+	}
+}
+
+// A base-repair ticket on a base that is still red is the work that turns main
+// green, so it is gated but not held: its session launches as before, with no
+// green-base line, and no second base-gates-red finding is filed for it.
+func TestImplementationDispatchesABaseRepairOnARedBase(t *testing.T) {
+	h, repo := fresh(t, "PROJ-31")
+	h.Trk.Ticket.Description = "main fails its gates.\n\n" + findings.KeyMarker(basegate.FindingKey)
+	redOnBase(h)
+	h.AgentFn = commitsHandoff(h, repo)
+
+	log := stageLog(t, "PROJ-31")
+	res := Implementation(h, sharedCfg(t), log, Args{Identifier: "PROJ-31"})
+
+	if !res.OK || res.Disposition == BaseRed {
+		t.Fatalf("a base-repair ticket on a red base must dispatch, got %+v", res)
+	}
+	if got := gateRuns(h, baseGateLabel); got != 1 {
+		t.Errorf("gated the base %d times, want once", got)
+	}
+	if len(h.Agents) != 1 {
+		t.Fatalf("agent runs = %v, want the /tdd session", labels(h.Agents))
+	}
+	if p := h.Agents[0].Prompt; strings.Contains(p, "base gates are green") {
+		t.Errorf("a red base must not be called green in the envelope; got:\n%s", p)
+	}
+	dropbox, _ := os.ReadFile(filepath.Join(runlog.FindingsDir(log.Dir, implementationSession), "out.json"))
+	if strings.Contains(string(dropbox), basegate.FindingKey) {
+		t.Errorf("findings dropbox = %s, want no %s finding: the repair ticket is the red base's finding", dropbox, basegate.FindingKey)
+	}
+}
+
+// The ways past the hold: --force, and a resumed branch that already carries
+// commits (its base is not untouched).
 func TestImplementationSkipsTheBaseCheck(t *testing.T) {
 	cases := []struct {
 		name  string
 		setup func(h *hostio.Fake, repo *gittest.Repo, args *Args)
 	}{
 		{"force", func(_ *hostio.Fake, _ *gittest.Repo, args *Args) { args.Force = true }},
-		{"repair ticket", func(h *hostio.Fake, _ *gittest.Repo, _ *Args) {
-			h.Trk.Ticket.Description = "main fails its gates.\n\n" + findings.KeyMarker(basegate.FindingKey)
-		}},
 		{"resumed branch", func(h *hostio.Fake, repo *gittest.Repo, _ *Args) {
 			repo.Handoff(ticket.Slug("PROJ-30"))
 		}},
