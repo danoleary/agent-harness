@@ -42,6 +42,7 @@ host-side, in the sandbox image, before the harness pushes and opens the PR.
 | `name` | string | yes |
 | `command` | shell command, run as `bash -c` | yes |
 | `skip_when_only` | list of repo-relative glob paths | no |
+| `cache_isolate` | list of worktree-relative directories | no |
 
 ```toml
 [[gates]]
@@ -63,6 +64,27 @@ A glob is matched segment by segment: `*`, `?` and `[...]` match within one
 path segment, and a `**` segment matches any number of segments, none included.
 `.github/**` matches every file under `.github/`; `**/*.md` matches markdown
 anywhere; `*.md` matches only markdown at the root.
+
+`cache_isolate` names caches inside the worktree that the gate's host run must
+not share with the sandbox session. For each gate run (base gate, review gate,
+PR loop re-gate), the harness creates the directory host-side if it is missing
+and mounts a fresh, empty tmpfs over it in that gate's container alone. The gate
+rebuilds the cache in memory, it is discarded when the container exits, and the
+session's copy in the worktree is never touched. herd's Storybook gate rebuilds
+the Vite dependency cache, which the session also writes, and a rebuild there
+could fail every story file:
+
+```toml
+[[gates]]
+name = "test-storybook"
+command = "cd web && pnpm test-storybook"
+cache_isolate = ["web/node_modules/.vite"]
+```
+
+A path must be relative, stay inside the worktree (no `..` out of it, not the
+worktree itself) and carry no comma. A bad path fails config validation. The
+tmpfs counts against the gate container's memory, so list cache directories,
+not whole dependency trees. With the key absent, nothing changes.
 
 ## `[cache]`
 

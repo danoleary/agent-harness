@@ -149,7 +149,7 @@ func RunGates(gates []config.Gate, runOne func(config.Gate) session.Outcome) Gat
 // GateRun is the container one Gate runs in. labelPrefix distinguishes a re-gate
 // (after a review re-launch or a resolved conflict) from the first gate run.
 func GateRun(cfg config.Config, worktreePath, labelPrefix string, g config.Gate) hostio.ShellRun {
-	return hostio.ShellRun{Label: labelPrefix + "-" + g.Name, Command: g.Command, WorktreePath: worktreePath, Cap: cfg.ReviewTimeout}
+	return hostio.ShellRun{Label: labelPrefix + "-" + g.Name, Command: g.Command, WorktreePath: worktreePath, Cap: cfg.ReviewTimeout, Isolate: g.CacheIsolate}
 }
 
 // Gates re-runs the config-declared named gate list host-side in throwaway

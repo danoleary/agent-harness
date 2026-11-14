@@ -355,6 +355,11 @@ type GateConfig struct {
 	// ShmSize is the container's `--shm-size`, as Config.ShmSize. Empty takes
 	// DefaultShmSize.
 	ShmSize string
+	// IsolatePaths are worktree-relative directories this container must not
+	// share with the sandbox session: each gets an empty tmpfs mounted over it
+	// (a gate's cache_isolate, #314, ADR-0051). Config validation keeps them
+	// inside the worktree.
+	IsolatePaths []string
 }
 
 // BuildWorktreeCommandArgs builds the argv (everything after `docker`) for a
@@ -407,6 +412,13 @@ func BuildWorktreeCommandArgs(c GateConfig, command string) []string {
 	if c.CacheVolume != "" {
 		args = append(args, "-v", c.CacheVolume+":"+c.CacheMountPath)
 		args = append(args, "-e", "HARNESS_CACHE_PATH="+c.CacheMountPath)
+	}
+	// A cache the gate must not share with the session (herd's Vite dependency
+	// cache) is shadowed by a fresh tmpfs, so the gate rebuilds its own and the
+	// session's copy in the checkout is never touched (#314). Mode 1777 lets the
+	// unprivileged runtime uid write it; the tmpfs goes with the container.
+	for _, p := range c.IsolatePaths {
+		args = append(args, "--mount", "type=tmpfs,dst="+filepath.Join(c.WorktreePath, filepath.FromSlash(p))+",tmpfs-mode=1777")
 	}
 	args = append(args,
 		"-w", c.WorktreePath,
