@@ -171,6 +171,9 @@ type Repo interface {
 	// Worktree is the ticket this Host is bound to, as git sees it.
 	Worktree() gitpkg.Worktree
 	TicketAlreadyOnMain(key string) bool
+	// LandedSince lists the commits on origin/main that landed after since, with
+	// the files each changed (#335).
+	LandedSince(since time.Time) []gitpkg.Landed
 	ResolvedAdvisory(key, description string) string
 }
 

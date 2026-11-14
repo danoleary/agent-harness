@@ -62,3 +62,4 @@ catches a duplicate there.
 - [ADR-0052](0052-a-sessions-already-resolved-on-main-stop-is-handed-to-a-human.md): A session's already-resolved-on-main stop is handed to a human, not failed
 - [ADR-0053](0053-a-ticket-whose-last-run-found-no-work-waits-for-main-or-the-ticket-to-move.md): A ticket whose last run found no work waits for main or the ticket to move
 - [ADR-0054](0054-a-branch-image-needs-a-dockerfile-the-branch-itself-changed.md): A branch image needs a Dockerfile the branch itself changed
+- [ADR-0055](0055-a-commit-that-landed-on-a-file-the-ticket-names-is-named-at-dispatch.md): A commit that landed on a file the ticket names is named at dispatch

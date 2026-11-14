@@ -124,6 +124,11 @@ type Context struct {
 	// has been fixed since. The Implement envelope says so; empty says nothing.
 	GreenBase string
 
+	// Landed is the commits that reached main after the ticket was filed and
+	// changed a file it names (#335): one may be its fix under another number.
+	// The Implement envelope names them; empty says nothing.
+	Landed []Landed
+
 	// Resume selects the Implement variant.
 	Resume Resume
 	// Filed lists the finding classes already filed, for a Retrospective re-run.
@@ -441,6 +446,7 @@ func implement(c Context) string {
 		sentrySection(c.Sentry),
 		greenBaseSection(c.GreenBase),
 		prerequisitesSection(c.Ticket.Prerequisites),
+		landedSection(c.Landed),
 		openQuestionsSection(c.Ticket.OpenQuestions()),
 		adrNumberSection(c.Ticket.ADRFiles()),
 		"---",
@@ -478,6 +484,32 @@ func prerequisitesSection(prs []ticket.Prerequisite) string {
 		b.WriteString(defang("\n\n- " + p.Identifier + " " + p.Title + " (" + p.URL + ") on branch `" + p.Branch + "` (`origin/" + p.Branch + "`); read its version of a file with `git show origin/" + p.Branch + ":<path>`."))
 	}
 	b.WriteString("\n\nDo not assume your PR and that one are disjoint. For any shared file — a design doc, an ADR, `CONTEXT.md`, a README — either base your edit on that branch's version of the file, or leave the shared file alone and say so in your handoff. If the branch ref is not in your checkout, leave shared docs alone.")
+	return b.String()
+}
+
+// Landed is one commit on main the Implement envelope names: its short SHA, its
+// subject, and the files the ticket names that it changed.
+type Landed struct {
+	SHA     string
+	Subject string
+	Files   []string
+}
+
+// landedSection names each commit that landed on main after the ticket was filed
+// and changed a file the ticket names (#335). #318 fixed #317 without naming it,
+// so the own-key scan let #317 through, and six sessions each spent their turns
+// finding the fix on main by hand. Empty when nothing landed on those files.
+func landedSection(landed []Landed) string {
+	if len(landed) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("Since this ticket was filed, these commits landed on `main` and changed files it names. One of them may already be its fix under another number, without naming this ticket:")
+	for _, l := range landed {
+		// Defang the line: a commit subject is author text.
+		b.WriteString(defang("\n\n- `" + l.SHA + "` " + l.Subject + " — changed `" + strings.Join(l.Files, "`, `") + "`; read it with `git show " + l.SHA + "`."))
+	}
+	b.WriteString("\n\nBefore you plan or write any code, read each one and check whether it already does what the ticket asks. If one does, do not re-implement it: make no commit, write `/findings/resolved.json` as `{\"commit\": \"<sha>\", \"reason\": \"<why it already fixes this ticket>\"}` naming that commit, say \"already fixed on main by <sha>\" in your handoff, and stop. If none does, carry on as usual.")
 	return b.String()
 }
 

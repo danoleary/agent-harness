@@ -210,6 +210,10 @@ func (h *Real) TicketAlreadyOnMain(key string) bool {
 	return h.checkout().TicketAlreadyOnMain(key)
 }
 
+func (h *Real) LandedSince(since time.Time) []gitpkg.Landed {
+	return h.checkout().LandedSince(since)
+}
+
 // ResolvedAdvisory warns when a ticket cites code symbols that no longer exist
 // under the Consumer's declared source roots (BEH-544). A Consumer that declares
 // no `source_roots` gets no advisory rather than a scan of a guessed path

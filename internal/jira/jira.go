@@ -21,6 +21,7 @@ package jira
 import (
 	"encoding/json"
 	"net/url"
+	"time"
 
 	"github.com/danoleary/agent-harness/internal/ticket"
 	"github.com/danoleary/agent-harness/internal/tracker"
@@ -112,6 +113,8 @@ type issue struct {
 	Fields struct {
 		Summary     string `json:"summary"`
 		Description string `json:"description"`
+		// Created is when the issue was filed, in Jira's own layout (#335).
+		Created string `json:"created"`
 		// Labels are read by selection only (the overlap check's escape label, #97).
 		Labels   []string `json:"labels"`
 		Subtasks []struct {
@@ -127,7 +130,7 @@ type issue struct {
 // GET. Jira has no cross-tracker priority concept the port carries, so Priority
 // is left empty (LCD).
 func (c *Client) FetchTicket(key string) (ticket.Ticket, error) {
-	data, err := c.transport("GET", c.issuePath(key, "fields=summary,description,subtasks"), nil)
+	data, err := c.transport("GET", c.issuePath(key, "fields=summary,description,subtasks,created"), nil)
 	if err != nil {
 		return ticket.Ticket{}, err
 	}
@@ -141,6 +144,7 @@ func (c *Client) FetchTicket(key string) (ticket.Ticket, error) {
 		Description: iss.Fields.Description,
 		URL:         c.browseURL(iss.Key),
 		TeamID:      c.opts.ProjectKey,
+		Created:     jiraTime(iss.Fields.Created),
 	}
 	// Follow sub-tasks so an umbrella issue's real work is inlined into the prompt
 	// host-side — the sandbox never reaches Jira (ADR-0002/BEH-619). The subtask
@@ -153,6 +157,20 @@ func (c *Client) FetchTicket(key string) (ticket.Ticket, error) {
 		t.SubIssues = append(t.SubIssues, child)
 	}
 	return t, nil
+}
+
+// jiraLayout is the timestamp layout Jira's REST API writes: RFC 3339 but with
+// no colon in the zone offset (`2026-11-14T14:40:00.000+1100`).
+const jiraLayout = "2006-01-02T15:04:05.000-0700"
+
+// jiraTime parses a Jira timestamp to UTC, or zero when it is missing or
+// malformed: the filed time only bounds an advisory scan (#335).
+func jiraTime(s string) time.Time {
+	t, err := time.Parse(jiraLayout, s)
+	if err != nil {
+		return time.Time{}
+	}
+	return t.UTC()
 }
 
 // fetchChild resolves one sub-task to a SubIssue (summary + description).

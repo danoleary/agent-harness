@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/danoleary/agent-harness/internal/findings"
 	"github.com/danoleary/agent-harness/internal/ticket"
@@ -76,6 +77,7 @@ const fetchTicketQuery = `
 			description
 			url
 			priorityLabel
+			createdAt
 			team {
 				id
 			}
@@ -211,11 +213,12 @@ func (c *Client) FetchTicket(identifier string) (ticket.Ticket, error) {
 
 	var resp struct {
 		Issue *struct {
-			Identifier    string  `json:"identifier"`
-			Title         string  `json:"title"`
-			Description   *string `json:"description"`
-			URL           *string `json:"url"`
-			PriorityLabel *string `json:"priorityLabel"`
+			Identifier    string    `json:"identifier"`
+			Title         string    `json:"title"`
+			Description   *string   `json:"description"`
+			URL           *string   `json:"url"`
+			PriorityLabel *string   `json:"priorityLabel"`
+			CreatedAt     time.Time `json:"createdAt"`
 			Team          *struct {
 				ID string `json:"id"`
 			} `json:"team"`
@@ -235,7 +238,7 @@ func (c *Client) FetchTicket(identifier string) (ticket.Ticket, error) {
 		return ticket.Ticket{}, fmt.Errorf("Linear issue not found: %s", identifier)
 	}
 
-	t := ticket.Ticket{Identifier: resp.Issue.Identifier, Title: resp.Issue.Title}
+	t := ticket.Ticket{Identifier: resp.Issue.Identifier, Title: resp.Issue.Title, Created: resp.Issue.CreatedAt.UTC()}
 	if resp.Issue.Description != nil {
 		t.Description = *resp.Issue.Description
 	}

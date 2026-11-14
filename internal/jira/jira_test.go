@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"testing"
+	"time"
 )
 
 // call records one transport invocation so tests can assert the adapter issued
@@ -43,11 +44,12 @@ const baseURL = "https://acme.atlassian.net"
 // and the findings project is surfaced as the TeamID.
 func TestFetchTicketMapsIssue(t *testing.T) {
 	tr, calls := fakeTransport(map[string]any{
-		"GET /rest/api/2/issue/PROJ-123?fields=summary,description,subtasks": map[string]any{
+		"GET /rest/api/2/issue/PROJ-123?fields=summary,description,subtasks,created": map[string]any{
 			"key": "PROJ-123",
 			"fields": map[string]any{
 				"summary":     "Fix the thing",
 				"description": "Do the work",
+				"created":     "2026-11-14T14:40:00.000+1100",
 			},
 		},
 	})
@@ -72,6 +74,10 @@ func TestFetchTicketMapsIssue(t *testing.T) {
 	if got.TeamID != "PROJ" {
 		t.Errorf("TeamID = %q, want PROJ", got.TeamID)
 	}
+	// #335: Jira's timestamp has no colon in its offset, which RFC 3339 requires.
+	if want := time.Date(2026, 11, 14, 3, 40, 0, 0, time.UTC); !got.Created.Equal(want) {
+		t.Errorf("Created = %v, want %v", got.Created, want)
+	}
 	if len(*calls) != 1 {
 		t.Fatalf("expected exactly one transport call, got %d: %+v", len(*calls), *calls)
 	}
@@ -84,7 +90,7 @@ func TestFetchTicketMapsIssue(t *testing.T) {
 // a sandboxed session never reaches Jira.
 func TestFetchTicketPullsSubtaskChildren(t *testing.T) {
 	tr, _ := fakeTransport(map[string]any{
-		"GET /rest/api/2/issue/PROJ-10?fields=summary,description,subtasks": map[string]any{
+		"GET /rest/api/2/issue/PROJ-10?fields=summary,description,subtasks,created": map[string]any{
 			"key": "PROJ-10",
 			"fields": map[string]any{
 				"summary":     "Umbrella",

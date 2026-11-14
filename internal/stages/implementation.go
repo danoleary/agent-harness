@@ -11,6 +11,7 @@ import (
 	"github.com/danoleary/agent-harness/internal/hostio"
 	"github.com/danoleary/agent-harness/internal/lease"
 	"github.com/danoleary/agent-harness/internal/nowork"
+	"github.com/danoleary/agent-harness/internal/overlap"
 	"github.com/danoleary/agent-harness/internal/prompt"
 	"github.com/danoleary/agent-harness/internal/runlog"
 	"github.com/danoleary/agent-harness/internal/session"
@@ -67,6 +68,38 @@ func releaseClaim(l *lease.Lease, why string, log *runlog.Logger) {
 		return
 	}
 	log.Event("↩ released " + l.Key() + " back to Todo — " + why)
+}
+
+// maxLanded bounds the commits the landed-commit advisory names, newest first, so
+// a ticket naming a busy file does not flood the log or the prompt.
+const maxLanded = 5
+
+// landedOnNamedFiles is the commits that landed on origin/main after t was filed
+// and changed a file t names, each with only those files (#335). A ticket whose
+// tracker gave no filed time, or that names no file, has none.
+func landedOnNamedFiles(h hostio.Host, t ticket.Ticket) []prompt.Landed {
+	var out []prompt.Landed
+	for _, c := range h.LandedSince(t.Created) {
+		if files := overlap.Named(t, c.Files); len(files) > 0 {
+			out = append(out, prompt.Landed{SHA: c.SHA, Subject: c.Subject, Files: files})
+			if len(out) == maxLanded {
+				break
+			}
+		}
+	}
+	return out
+}
+
+// landedAdvisory is the run-log line for the commits landedOnNamedFiles found.
+func landedAdvisory(key string, landed []prompt.Landed) string {
+	commits := make([]string, len(landed))
+	for i, l := range landed {
+		commits[i] = fmt.Sprintf("%s %s (%s)", l.SHA, l.Subject, strings.Join(l.Files, ", "))
+	}
+	return fmt.Sprintf(
+		"⚠ %s names files that changed on main since it was filed: %s — one may already be its fix under another number; dispatching anyway, and the session is told to check them first. Close the ticket if one is its fix.",
+		key, strings.Join(commits, "; "),
+	)
 }
 
 // retryableEnvCrash reports whether a failed implementation attempt crashed
@@ -336,6 +369,18 @@ func Implementation(h hostio.Host, cfg config.Config, log *runlog.Logger, args A
 			args.Identifier,
 		))
 		return Result{OK: true}
+	}
+
+	// Advisory + prompt section (#335): a fix can land under another number without
+	// naming the ticket (#318 fixed #317), which the own-key scan above cannot see.
+	// A commit that landed since the ticket was filed and changed a file it names is
+	// not proof of a fix, so the run still dispatches, but the operator is warned and
+	// the session is told which commits to check before it writes any code. This
+	// reads the origin/main TicketAlreadyOnMain just fetched.
+	if landed := landedOnNamedFiles(h, t); len(landed) > 0 {
+		log.Event(landedAdvisory(t.Identifier, landed))
+		subject.Landed = landed
+		sessionRun = implementationRun(cfg, subject, resume)
 	}
 
 	// Fail fast if Docker can't run the container, so we never claim a ticket we

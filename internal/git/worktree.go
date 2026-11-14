@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/danoleary/agent-harness/internal/proc"
 )
@@ -1133,6 +1134,49 @@ func (c Checkout) TicketAlreadyOnMain(key string) bool {
 		return false
 	}
 	return mainHistoryReferences(string(out), key)
+}
+
+// Landed is one commit that reached origin/main, and the files it changed.
+type Landed struct {
+	SHA     string
+	Subject string
+	Files   []string
+}
+
+// LandedSince lists the commits that reached origin/main after since (by committer
+// date, the time a squash or merge landed), newest first, within the same lookback
+// as TicketAlreadyOnMain. It reads the origin/main the last fetch left and fetches
+// nothing itself. #318 fixed #317 without naming it, so the own-key scan saw nothing
+// and the ticket was dispatched again and again (#335). The files each commit
+// changed are what a caller matches against the files a ticket names.
+//
+// Like TicketAlreadyOnMain it fails OPEN: a zero since (the tracker gave no filed
+// time) or any git error lists nothing, because the caller only advises.
+func (c Checkout) LandedSince(since time.Time) []Landed {
+	if since.IsZero() {
+		return nil
+	}
+	out, err := c.output("git", "-C", c.path, "log", "--name-only", "--format=%x00%h%x09%s",
+		"--since="+since.UTC().Format(time.RFC3339), "-"+strconv.Itoa(mainHistoryLookback), "origin/main")
+	if err != nil {
+		return nil
+	}
+	var landed []Landed
+	for _, rec := range strings.Split(string(out), "\x00") {
+		header, files, _ := strings.Cut(rec, "\n")
+		sha, subject, ok := strings.Cut(header, "\t")
+		if !ok {
+			continue
+		}
+		l := Landed{SHA: sha, Subject: subject}
+		for _, f := range strings.Split(files, "\n") {
+			if f = strings.TrimSpace(f); f != "" {
+				l.Files = append(l.Files, f)
+			}
+		}
+		landed = append(landed, l)
+	}
+	return landed
 }
 
 // TicketHasRemoteBranch reports whether a branch referencing the ticket Key has been

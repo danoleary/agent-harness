@@ -12,7 +12,7 @@ import (
 // that an opaque PROJ-123 Key round-trips — the harness never assumes a BEH- shape.
 func TestClientSatisfiesTrackerPort(t *testing.T) {
 	tr, calls := fakeTransport(map[string]any{
-		"GET /rest/api/2/issue/PROJ-7?fields=summary,description,subtasks": map[string]any{
+		"GET /rest/api/2/issue/PROJ-7?fields=summary,description,subtasks,created": map[string]any{
 			"key":    "PROJ-7",
 			"fields": map[string]any{"summary": "A ticket keyed by a Jira issue key"},
 		},
@@ -27,7 +27,7 @@ func TestClientSatisfiesTrackerPort(t *testing.T) {
 	if got.Identifier != "PROJ-7" {
 		t.Errorf("Identifier = %q, want PROJ-7", got.Identifier)
 	}
-	if len(*calls) != 1 || (*calls)[0].path != "/rest/api/2/issue/PROJ-7?fields=summary,description,subtasks" {
+	if len(*calls) != 1 || (*calls)[0].path != "/rest/api/2/issue/PROJ-7?fields=summary,description,subtasks,created" {
 		t.Errorf("expected one fetch keyed by the opaque PROJ-7 Key, got %+v", *calls)
 	}
 }

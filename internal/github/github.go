@@ -19,6 +19,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/danoleary/agent-harness/internal/ticket"
 	"github.com/danoleary/agent-harness/internal/tracker"
@@ -131,7 +132,9 @@ type issue struct {
 	Title   string `json:"title"`
 	Body    string `json:"body"`
 	HTMLURL string `json:"html_url"`
-	Labels  []struct {
+	// CreatedAt is when the issue was filed (#335).
+	CreatedAt time.Time `json:"created_at"`
+	Labels    []struct {
 		Name string `json:"name"`
 	} `json:"labels"`
 	// PullRequest is present only when this "issue" is actually a pull request
@@ -170,6 +173,7 @@ func (c *Client) FetchTicket(key string) (ticket.Ticket, error) {
 		Description: iss.Body,
 		URL:         iss.HTMLURL,
 		TeamID:      c.slug(),
+		Created:     iss.CreatedAt.UTC(),
 	}
 	// Follow task-list children so an umbrella issue's real work is inlined into
 	// the prompt host-side — the sandbox never reaches GitHub (ADR-0002/BEH-619).

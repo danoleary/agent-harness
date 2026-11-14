@@ -163,6 +163,7 @@ session's prompt tells it what to do about each.
 |---|---|---|
 | `⚠ <KEY> still lists open questions for a human ("…") — dispatching anyway` | the ticket is ready-labelled but its body still has an open-questions section | settle them in the ticket, or drop the ready label if they block the work. The session records any it has to decide and flags them |
 | `⚠ <KEY> cites symbol(s) absent from source: … — likely already resolved` | code identifiers the ticket names are not in the source tree, often because a sibling ticket's merge removed them | check the premise still holds; close the ticket if the work has landed |
+| `⚠ <KEY> names files that changed on main since it was filed: … — one may already be its fix under another number` | a commit landed on `origin/main` after the ticket was filed and changed a file the ticket names, without the commit naming the ticket. The session is told to check those commits first | read the named commits; if one is the fix, close the ticket |
 | `⚠ <KEY> already has commit(s) on feat/<slug> ahead of origin/main referencing it` | a resumed worktree's branch already carries commits for this ticket, likely a complete fix that never reached a PR | review `git log origin/main..feat/<slug>` and the diff; if it is done, let the session verify and hand off, or open the PR |
 | `⚠ <KEY> cites Sentry <ref> but it could not be fetched: <reason>` | the ticket links a Sentry issue the harness could not read, so the session runs without its stack trace | check the Sentry token and the link; the reason names which failed |
 
