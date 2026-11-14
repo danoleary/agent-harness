@@ -51,10 +51,16 @@ every SHA on it, so a SHA in the message would dangle in the PR. Do not change u
 
 No real finding means no commit. A cosmetic tidy-up is not a finding.
 
+No commit also means no `make check`. Write `Gate: deferred to host re-run` in
+the report instead. The harness re-runs every gate host-side over the same HEAD
+before it pushes, and that run is the one that decides the push, so a run here
+over an unchanged HEAD cannot change the outcome (#285).
+
 If the prompt says the branch is UNCHANGED SINCE THE LAST REVIEW and
 `git rev-parse HEAD` matches the HEAD it names, the diff already has a verdict:
-skip the lenses, run `make check`, and re-emit the prior Disposition line in your
-report. Commit only for a real defect, and name it.
+skip the lenses and re-emit the prior Disposition line in your report. Commit
+only for a real defect, and name it. As above, run `make check` only if you
+commit; otherwise the Gate line is `Gate: deferred to host re-run`.
 
 ## 4. Report
 
@@ -66,7 +72,7 @@ Intent: <one line>
 Findings:
 - [fixed|accepted] <lens>: <what, where, and why it matters>
 
-Gate: make check <green|red>
+Gate: make check <green|red>   (or: Gate: deferred to host re-run, when you made no commit)
 
 Disposition: clear — <reason>
 ```

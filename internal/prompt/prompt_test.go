@@ -971,6 +971,21 @@ func TestReviewOverAnUnchangedBranchCarriesThePriorVerdict(t *testing.T) {
 	assertEnvelopeContract(t, p, "review over an unchanged branch", "feat/beh-362")
 }
 
+// #285: over an unchanged branch the host re-runs the gate on the same HEAD, so a
+// session that commits nothing defers the gate to it instead of running it too.
+func TestReviewOverAnUnchangedBranchDefersTheGateToTheHost(t *testing.T) {
+	p := For(Review, Context{
+		Ticket: sample, Slug: "beh-362", WorktreePath: sampleWorktree, BranchPrefix: testPrefix, Body: exampleBody(t, "review"),
+		PriorReview: &PriorReview{Head: "abc1234", Disposition: "Disposition: clear — all findings resolved"},
+	})
+	if !strings.Contains(p, "Gate: deferred to host re-run") {
+		t.Errorf("prompt does not tell a no-commit review to defer the gate:\n%s", p)
+	}
+	if strings.Contains(p, "run the gate, then emit") {
+		t.Errorf("prompt still runs the gate over an unchanged HEAD:\n%s", p)
+	}
+}
+
 // A first review — or one whose branch moved since the last — gets no prior-review
 // section: it reviews cold, exactly as before.
 func TestReviewWithoutAPriorVerdictIsCold(t *testing.T) {

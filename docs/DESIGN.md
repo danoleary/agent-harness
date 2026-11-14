@@ -306,7 +306,9 @@ loop:
   # re-run over an unchanged branch (#44): the stage records each verdict's Disposition line
   # and the HEAD it covered in logs/<KEY>/review-verdict.json (re-recorded at the landed tip).
   # When HEAD still matches and that verdict was clear (a blocked one waits on a human), the envelope tells the session the prior verdict and the range
-  # origin/main..<head>: run the gate, re-emit that Disposition, commit only for a real defect.
+  # origin/main..<head>: re-emit that Disposition, commit only for a real defect.
+  # A review that commits no fix skips the gate and reports `Gate: deferred to host re-run` (#285):
+  # the host re-run below gates the same HEAD and is the only one that decides the push.
 
   --- review ground truth + push gate (harness, host-side) ---
   re-run each config-declared named gate (BEH-634) in its own throwaway container, in

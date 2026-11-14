@@ -175,3 +175,23 @@ They also carry a line that names the worktree and the branch it is really on**
 (#220). The stage runner now hands the retrospective the worktree path, as it
 already did for review. Both facts sit in the envelope because only the host knows
 them for certain, and a body may not name them or may not render.
+
+## Amendment, 2026-11-14: a review that commits nothing defers the gate to the host
+
+A clean run paid the full gate four times: the base gate, the implementation
+session after its commit, the review session, and the host re-run before the
+push. When the review session made no fix commit, its run gated the same HEAD
+the host re-run then gated again. The host run is the one that authorises the
+push (ADR-0002), so the session's run could not change the outcome. It cost
+1–2 minutes of the review cap on every ticket.
+
+**A review session that makes no fix commit no longer runs the gate. It reports
+`Gate: deferred to host re-run`, and the harness reads that verdict as it would
+read `Gate: make check green`** (#285). The verdict parser keys only off the
+`## Review:` header and the Disposition line, so the deferred Gate line changes
+nothing host-side, and a test pins that. A session that commits a fix still runs
+the gate before it stops. The unchanged-branch section from the #44 amendment
+above told the session to run the gate before it re-emitted the prior verdict.
+It now applies the same rule: the session runs the gate only if it commits.
+Keeping the session's run as a second check of the host gate was rejected, since
+both runs check the same commit.
