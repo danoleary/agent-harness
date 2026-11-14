@@ -28,6 +28,9 @@ type Subject struct {
 	// Sentry is what the host fetched of the Sentry issues the ticket cites, for
 	// the implementation and review prompts (#211); nil when the feature is off.
 	Sentry *sentry.Snapshot
+	// GreenBase is the base SHA a base-repair ticket's implementation stage
+	// gated green before its session (#278); empty otherwise.
+	GreenBase string
 }
 
 // NewSubject resolves identifier's worktree and branch through p — the run's Host,
@@ -162,7 +165,7 @@ func postCreateRun(cfg config.Config, worktreePath string) hostio.ShellRun {
 // ticket session it starts in the worktree (#245), so the envelope names the
 // worktree by its absolute path.
 func implementationRun(cfg config.Config, s Subject, resume prompt.Resume) hostio.AgentRun {
-	pctx := prompt.Context{Ticket: s.Ticket, Slug: s.Slug, BranchPrefix: cfg.BranchPrefix, Tracker: cfg.Tracker.Kind, WorktreePath: s.WorktreePath, Body: cfg.Prompts.Implement, Resume: resume, Sentry: s.Sentry}
+	pctx := prompt.Context{Ticket: s.Ticket, Slug: s.Slug, BranchPrefix: cfg.BranchPrefix, Tracker: cfg.Tracker.Kind, WorktreePath: s.WorktreePath, Body: cfg.Prompts.Implement, Resume: resume, Sentry: s.Sentry, GreenBase: s.GreenBase}
 	return hostio.AgentRun{
 		Label:       implementationSession,
 		Model:       cfg.ImplementationModel,

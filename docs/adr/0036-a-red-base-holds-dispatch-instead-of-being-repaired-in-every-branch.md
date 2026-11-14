@@ -3,6 +3,7 @@
 - Status: Accepted
 - Date: 2026-11-01
 - Amends: ADR-0030 (adds a Disposition, BaseRed)
+- Amended: 2026-11-14 (#278: a base-repair ticket is gated, not held)
 
 ## Context
 
@@ -27,8 +28,17 @@ and a red base holds the ticket without launching one.**
 - **When.** After the worktree is created and `post_create` succeeds, if the
   branch carries no commits and no uncommitted work, the stage runs the
   configured Gates over it (`basegate-<name>`), under the gate slots
-  (ADR-0024). A failed `post_create`, a resumed branch, `--force` and a ticket
-  carrying the `base-gates-red` finding key all skip the check.
+  (ADR-0024). A failed `post_create`, a resumed branch and `--force` skip the
+  check.
+- **A base-repair ticket is gated but never held** (#278). A ticket carrying
+  the `base-gates-red` finding key is the change that turns `main` green, so a
+  red base dispatches it as before and files nothing more. But `main` may have
+  gone green while the ticket waited in the queue. Its sessions then spent their
+  first turns finding that out by hand. So on a green base the session still
+  launches, and its envelope says the base gates are green at that SHA, so it
+  adds only the regression test or hardening the ticket asks for. Skipping the
+  session and reporting the ticket resolved was the alternative; a human would
+  still have to confirm it, and the ticket may ask for more than the repair.
 - **Verdict per base SHA.** The result is recorded under
   `.agent-harness/locks/base-gates/<sha>`, shared by the loop instances of one
   Consumer. A red run is confirmed before it is recorded: the Gates run once

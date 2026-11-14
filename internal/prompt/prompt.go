@@ -119,6 +119,11 @@ type Context struct {
 	// context; nil (no `[sentry]` table) leaves the prompt as it was.
 	Sentry *sentry.Snapshot
 
+	// GreenBase is the base SHA the host gated green before launching a
+	// base-repair ticket's session (#278): the red base the ticket was filed for
+	// has been fixed since. The Implement envelope says so; empty says nothing.
+	GreenBase string
+
 	// Resume selects the Implement variant.
 	Resume Resume
 	// Filed lists the finding classes already filed, for a Retrospective re-run.
@@ -425,12 +430,25 @@ func implement(c Context) string {
 		worktreeState,
 		ticketContext(c.Ticket),
 		sentrySection(c.Sentry),
+		greenBaseSection(c.GreenBase),
 		prerequisitesSection(c.Ticket.Prerequisites),
 		openQuestionsSection(c.Ticket.OpenQuestions()),
 		adrNumberSection(c.Ticket.ADRFiles()),
 		"---",
 		tddFooter(c.Ticket.Identifier, c.Tracker, c.BranchPrefix, c.Slug),
 	)
+}
+
+// greenBaseSection tells a base-repair ticket's session that the base it was
+// filed to repair already passes its gates (#278). The #278 sessions each spent
+// their first turns finding that out by hand — git log -S, fetching origin/main,
+// building — because another PR had fixed main while the ticket waited. Empty
+// when the host did not find the base green.
+func greenBaseSection(sha string) string {
+	if sha == "" {
+		return ""
+	}
+	return "This ticket repairs a red base, but the harness gated the base before this session and the base gates are green at `" + sha + "`: another change has already fixed what the ticket reports. Do not re-diagnose or re-fix the red gate. Add only what the ticket asks for beyond the repair: a regression test or hardening that keeps that red from recurring. Say in your handoff and commit body that the base was already green at that commit."
 }
 
 // prerequisitesSection names each still-open PR the ticket builds on (#82).

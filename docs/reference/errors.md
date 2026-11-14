@@ -110,7 +110,12 @@ re-check time.
 
 Fix: repair `main`. Or dispatch the finding's issue by hand
 (`agent-harness pipeline <KEY>`), since an issue carrying that finding key is
-exempt from the hold. `--force` also skips the check. A red verdict is trusted
+exempt from the hold: its base is still gated, but a red one logs
+`base <sha> is red, as <KEY> reports — dispatching the repair` and launches the
+session. If the base is green by then, the run logs `base <sha> that <KEY>
+repairs is already green` and the session's envelope says so, so it adds only
+the regression test or hardening the issue asks for (#278). Close the issue
+once that lands. `--force` also skips the check. A red verdict is trusted
 for 30 minutes, so a gate that flaked on both runs is gated again after that. The verdicts live under
 `.agent-harness/locks/base-gates/`; delete one to re-gate its base now. A
 running loop keeps idling on the hold it recorded until the re-check time, so
