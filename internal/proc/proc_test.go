@@ -44,6 +44,18 @@ func TestCombinedOutputInDirRunsInGivenDirectory(t *testing.T) {
 	}
 }
 
+func TestCombinedOutputInDirWithEnvAddsToTheInheritedEnvironment(t *testing.T) {
+	t.Setenv("PROC_INHERITED", "kept")
+	t.Setenv("PROC_OVERRIDDEN", "inherited")
+	out, err := CombinedOutputInDirWithEnv(5*time.Second, "", []string{"PROC_OVERRIDDEN=given"}, "sh", "-c", "echo $PROC_INHERITED $PROC_OVERRIDDEN")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := strings.TrimSpace(string(out)); got != "kept given" {
+		t.Fatalf("output = %q, want %q", got, "kept given")
+	}
+}
+
 func TestCombinedOutputReturnsOutputWhenCommandFinishesInTime(t *testing.T) {
 	out, err := CombinedOutput(5*time.Second, "echo", "hello")
 	if err != nil {

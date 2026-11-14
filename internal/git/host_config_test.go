@@ -2,6 +2,7 @@ package git_test
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 
@@ -91,4 +92,22 @@ func TestHostArgsPutTheOverridesAheadOfTheCommand(t *testing.T) {
 			t.Fatalf("HostArgs = %q, want %q", got, want)
 		}
 	}
+}
+
+// A Consumer command the host runs starts its own git, which no -c reaches. With
+// HostEnv in its environment, that git ignores a core.hooksPath the sandbox set
+// too (#350).
+func TestHostEnvStopsAHookInAGitTheHostDidNotStart(t *testing.T) {
+	repo := gittest.New(t)
+	ran := filepath.Join(t.TempDir(), "ran")
+	hooks := filepath.Join(t.TempDir(), "hooks")
+	plant(t, filepath.Join(hooks, "post-checkout"), ran)
+	repo.Git(repo.Dir, "config", "core.hooksPath", hooks)
+
+	cmd := exec.Command("git", "-C", repo.Dir, "checkout", "-q", "-b", "probe")
+	cmd.Env = append(os.Environ(), gitpkg.HostEnv()...)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git checkout: %v: %s", err, out)
+	}
+	assertNotRun(t, ran)
 }

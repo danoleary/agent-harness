@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -32,10 +33,20 @@ func CombinedOutput(timeout time.Duration, name string, args ...string) ([]byte,
 // `gh pr create` reads the origin repo from herdPath — which must still be bounded
 // so a stalled network or blocking auth fails fast rather than hanging (BEH-386).
 func CombinedOutputInDir(timeout time.Duration, dir, name string, args ...string) ([]byte, error) {
+	return CombinedOutputInDirWithEnv(timeout, dir, nil, name, args...)
+}
+
+// CombinedOutputInDirWithEnv is CombinedOutputInDir with env, KEY=value entries,
+// added to the inherited environment; an entry beats an inherited one of the same
+// key. Used for a Consumer command the host runs, which gets git.HostEnv (#350).
+func CombinedOutputInDirWithEnv(timeout time.Duration, dir string, env []string, name string, args ...string) ([]byte, error) {
 	ctx, cancel := withTimeout(timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = dir
+	if env != nil {
+		cmd.Env = append(os.Environ(), env...)
+	}
 	out, err := cmd.CombinedOutput()
 	return out, wrapTimeout(ctx, name, timeout, err)
 }

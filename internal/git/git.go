@@ -97,6 +97,20 @@ func HostArgs(args ...string) []string {
 	return append(append([]string(nil), hostSafeConfig...), args...)
 }
 
+// HostEnv is [HostArgs] as environment: GIT_CONFIG_COUNT/KEY_n/VALUE_n entries,
+// which git ranks with a command-line -c. A Consumer command the host runs — the
+// prune script, [cache] prune_command — starts git calls of its own that HostArgs
+// cannot reach; in its environment, these reach them, and gh's too (#350).
+func HostEnv() []string {
+	env := []string{fmt.Sprintf("GIT_CONFIG_COUNT=%d", len(hostSafeConfig)/2)}
+	for i := 1; i < len(hostSafeConfig); i += 2 {
+		key, value, _ := strings.Cut(hostSafeConfig[i], "=")
+		n := i / 2
+		env = append(env, fmt.Sprintf("GIT_CONFIG_KEY_%d=%s", n, key), fmt.Sprintf("GIT_CONFIG_VALUE_%d=%s", n, value))
+	}
+	return env
+}
+
 // hostSafe wraps each command shape so that a `git` command gets [HostArgs].
 func (r runners) hostSafe() runners {
 	run, output, combined, pipe := r.run, r.output, r.combined, r.pipe

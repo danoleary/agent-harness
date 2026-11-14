@@ -234,7 +234,8 @@ const pruneScript = "scripts/prune-merged-worktrees.sh"
 // there. The merged/clean classification stays entirely in the script (single
 // source of truth); here we only parse how many it removed for the daemon's
 // narration. A non-zero exit (e.g. gh unreachable) surfaces as an error the loop
-// logs and swallows — reclaim is never a ticket outcome.
+// logs and swallows — reclaim is never a ticket outcome. The script's own git
+// calls read the checkout's .git/config, so it runs with [gitpkg.HostEnv] (#350).
 func (h *Daemon) PruneMergedWorktrees() (int, error) {
 	body, err := gitpkg.Open(h.cfg.ProjectPath, "").ShowOnBase(pruneScript)
 	if err != nil {
@@ -245,7 +246,7 @@ func (h *Daemon) PruneMergedWorktrees() (int, error) {
 		return 0, err
 	}
 	defer func() { _ = os.Remove(script) }()
-	out, err := proc.CombinedOutputInDir(pruneTimeout, h.cfg.ProjectPath, script, "--yes")
+	out, err := proc.CombinedOutputInDirWithEnv(pruneTimeout, h.cfg.ProjectPath, gitpkg.HostEnv(), script, "--yes")
 	if err != nil {
 		return 0, fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
 	}
@@ -277,12 +278,13 @@ func committedScript(body []byte) (string, error) {
 // Shell-interpreted (`sh -c`) because a Consumer writes a command line, not an
 // argv, and run on the HOST rather than in a sandbox: the caches it reclaims are
 // the host's, the same reason the worktree and Docker prunes run host-side. The
-// checkout anchors the call; a toolchain whose cache is global ignores cwd.
+// checkout anchors the call; a toolchain whose cache is global ignores cwd. A git
+// the command starts gets the host-side overrides through [gitpkg.HostEnv].
 func (h *Daemon) CachePrune() error {
 	if h.cfg.CachePruneCommand == "" {
 		return nil
 	}
-	out, err := proc.CombinedOutputInDir(cachePruneTimeout, h.cfg.ProjectPath, "sh", "-c", h.cfg.CachePruneCommand)
+	out, err := proc.CombinedOutputInDirWithEnv(cachePruneTimeout, h.cfg.ProjectPath, gitpkg.HostEnv(), "sh", "-c", h.cfg.CachePruneCommand)
 	if err != nil {
 		return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
 	}
