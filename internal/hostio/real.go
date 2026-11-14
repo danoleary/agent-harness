@@ -164,13 +164,7 @@ func (h *Real) upstream() *filing.Upstream {
 		return nil
 	}
 	sink, err := trackers.New(
-		config.TrackerConfig{
-			Kind: "github",
-			Repo: h.cfg.Feedback.Repo,
-			// The GitHub adapter reads findings_label_id as a label NAME, which is
-			// exactly what feedback.findings_label carries.
-			FindingsLabelID: h.cfg.Feedback.FindingsLabel,
-		},
+		upstreamTrackerConfig(h.cfg.Feedback),
 		trackers.Secrets{GitHubToken: h.cfg.GitHubToken},
 	)
 	if err != nil {
@@ -180,6 +174,19 @@ func (h *Real) upstream() *filing.Upstream {
 		Sink:      sink,
 		Container: h.cfg.Feedback.Repo,
 		Project:   h.cfg.Feedback.Project,
+	}
+}
+
+// upstreamTrackerConfig maps [feedback] onto the GitHub adapter's tracker config.
+// The adapter reads findings_label_id as a label NAME, which is exactly what
+// feedback.findings_label carries. feedback.ready_label is opt-in: without it a
+// finding the router marks Ready still files human-gated (ADR-0033).
+func upstreamTrackerConfig(fb config.FeedbackConfig) config.TrackerConfig {
+	return config.TrackerConfig{
+		Kind:            "github",
+		Repo:            fb.Repo,
+		FindingsLabelID: fb.FindingsLabel,
+		ReadyLabel:      fb.ReadyLabel,
 	}
 }
 

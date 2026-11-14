@@ -1070,8 +1070,9 @@ the backstop that keeps the public sink safe regardless of classification; only
 `needs_human`, which the retrospective sets only when the fix needs a person's
 decision, a credential or a dashboard step. The router files every other finding
 with the ready label too (GitHub tracker only), unless it reads as a probable
-duplicate of an open one. The upstream sink has no ready label, so findings
-filed into the public harness repo still wait for a human.
+duplicate of an open one. The upstream sink has a ready label only when
+`feedback.ready_label` sets one. Without it, findings filed into the public
+harness repo still wait for a human.
 
 **Re-run dedup context (BEH-539).** When a ticket goes through the pipeline more
 than once, an earlier run's retrospective may have already filed findings. The
