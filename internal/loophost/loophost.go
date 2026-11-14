@@ -222,20 +222,51 @@ func (h *Daemon) CheckAccess() error {
 // worktrees under it, so it is the cheap gate for the whole reclaim ladder.
 func (h *Daemon) FreeDisk() (uint64, error) { return sandbox.FreeDiskBytes(h.cfg.ProjectPath) }
 
+// pruneScript is the Consumer's merged-worktree reclaimer, relative to its
+// checkout root.
+const pruneScript = "scripts/prune-merged-worktrees.sh"
+
 // PruneMergedWorktrees shells out to the checkout's prune-merged-worktrees.sh
-// --yes, the existing, tested, squash-merge-aware reclaimer. It runs with the
-// Consumer checkout as its cwd so the script's `git rev-parse --show-toplevel`
-// resolves there. The merged/clean classification stays entirely in the script
-// (single source of truth); here we only parse how many it removed for the
-// daemon's narration. A non-zero exit (e.g. gh unreachable) surfaces as an error
-// the loop logs and swallows — reclaim is never a ticket outcome.
+// --yes, the existing, tested, squash-merge-aware reclaimer. It runs the copy on
+// origin/main, never the working tree's: every sandbox can write that one, and the
+// host would run it next to GH_TOKEN (#332, ADR-0057). It runs with the Consumer
+// checkout as its cwd so the script's `git rev-parse --show-toplevel` resolves
+// there. The merged/clean classification stays entirely in the script (single
+// source of truth); here we only parse how many it removed for the daemon's
+// narration. A non-zero exit (e.g. gh unreachable) surfaces as an error the loop
+// logs and swallows — reclaim is never a ticket outcome.
 func (h *Daemon) PruneMergedWorktrees() (int, error) {
-	script := filepath.Join(h.cfg.ProjectPath, "scripts", "prune-merged-worktrees.sh")
+	body, err := gitpkg.Open(h.cfg.ProjectPath, "").ShowOnBase(pruneScript)
+	if err != nil {
+		return 0, fmt.Errorf("reading %s from %s: %w", pruneScript, gitpkg.BaseRef, err)
+	}
+	script, err := committedScript(body)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = os.Remove(script) }()
 	out, err := proc.CombinedOutputInDir(pruneTimeout, h.cfg.ProjectPath, script, "--yes")
 	if err != nil {
 		return 0, fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
 	}
 	return parsePrunedCount(string(out)), nil
+}
+
+// committedScript writes body, a script read from origin/main, to an executable
+// file outside the checkout, so its shebang picks the interpreter as it would in
+// the tree. The caller removes the file.
+func committedScript(body []byte) (string, error) {
+	f, err := os.CreateTemp("", "agent-harness-prune-*")
+	if err != nil {
+		return "", err
+	}
+	_, werr := f.Write(body)
+	cerr := f.Close()
+	if err := errors.Join(werr, cerr, os.Chmod(f.Name(), 0o700)); err != nil {
+		_ = os.Remove(f.Name())
+		return "", err
+	}
+	return f.Name(), nil
 }
 
 // CachePrune runs the Consumer's declared `cache.prune_command` — the cheap,

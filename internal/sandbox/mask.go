@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"github.com/danoleary/agent-harness/internal/config"
+	"github.com/danoleary/agent-harness/internal/git"
+	"github.com/danoleary/agent-harness/internal/proc"
 )
 
 // MaskMount is a read-only bind mount that hides Target — a path inside the
@@ -29,7 +31,7 @@ var credentialMaskLookup = defaultCredentialMask
 
 // defaultCredentialMask returns a mask for every credential file in the checkout
 // at projectPath: each regular file whose name starts `.env`, except the committed
-// `.env.example` (#332). The harness's own `.agent-harness/.env` is one;
+// `.env.example` and any file git tracks (#332). The harness's own `.agent-harness/.env` is one;
 // a Consumer's infra/x/.env or web/.env.local are others, and every container
 // mounts the whole checkout, so hiding only the harness's file would leave the
 // rest readable to a session steered by prompt injection.
@@ -64,10 +66,13 @@ func defaultCredentialMask(projectPath string) []MaskMount {
 // stats through a symlink, as Docker's mount does, and masks only a regular file:
 // mounting a file over a directory fails the container. It does not descend into
 // .git or node_modules: neither holds an operator's credentials, and node_modules
-// is where a large checkout's file count is. An unreadable directory is skipped
-// rather than failing the launch. config owns the harness's own credential path
-// (config.InRepoEnvFile), which the pattern covers, so the file the harness is
-// willing to READ from the repo is always one it HIDES from the sandbox.
+// is where a large checkout's file count is. Nor does it name a file git tracks: its
+// content is in .git's objects, which the sandbox reads anyway, and a mount over a
+// committed `.env` would show the session an empty file that its `git add -A`
+// then commits. An unreadable directory is skipped rather than failing the launch.
+// config owns the harness's own credential path (config.InRepoEnvFile), which the
+// pattern covers and the scaffold gitignores, so the file the harness is willing to
+// READ from the repo is one it HIDES from the sandbox.
 func credentialFiles(projectPath string) []string {
 	var found []string
 	_ = filepath.WalkDir(projectPath, func(path string, d fs.DirEntry, err error) error {
@@ -86,12 +91,19 @@ func credentialFiles(projectPath string) []string {
 		if !isCredentialFile(d.Name()) {
 			return nil
 		}
-		if info, err := os.Stat(path); err == nil && info.Mode().IsRegular() {
+		if info, err := os.Stat(path); err == nil && info.Mode().IsRegular() && !tracked(path) {
 			found = append(found, path)
 		}
 		return nil
 	})
 	return found
+}
+
+// tracked reports whether the git checkout holding path tracks it. Outside a
+// checkout, or on any git error, the file counts as untracked, so it is masked.
+func tracked(path string) bool {
+	return proc.Run(gitReadTimeout, "git", git.HostArgs("-C", filepath.Dir(path),
+		"ls-files", "--error-unmatch", "--", ":(literal)"+filepath.Base(path))...) == nil
 }
 
 // isCredentialFile is the mask's deny-list, `.env*` (`.env`, `.env.local`,

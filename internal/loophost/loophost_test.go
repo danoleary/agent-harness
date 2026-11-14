@@ -452,6 +452,42 @@ func TestPruneMergedWorktreesSurfacesAMissingScript(t *testing.T) {
 	}
 }
 
+// The sandbox mounts the checkout read-write, so a session can rewrite the prune
+// script the host runs between tickets. The host runs the copy on origin/main,
+// which only a merged PR changes (#332).
+func TestPruneMergedWorktreesRunsTheScriptOnOriginMain(t *testing.T) {
+	repo := gittest.New(t)
+	script := filepath.Join(repo.Dir, "scripts", "prune-merged-worktrees.sh")
+	write := func(body string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("#!/bin/sh\necho 'Pruned 2 worktree(s).'\n")
+	repo.Git(repo.Dir, "add", "-A")
+	repo.Git(repo.Dir, "commit", "-q", "-m", "add the prune script")
+	repo.Git(repo.Dir, "push", "-q", "origin", "main")
+	ran := filepath.Join(t.TempDir(), "ran")
+	write("#!/bin/sh\ntouch '" + ran + "'\necho 'Pruned 9 worktree(s).'\n")
+
+	var cfg config.Config
+	cfg.ProjectPath = repo.Dir
+	removed, err := hostFor(t, cfg).PruneMergedWorktrees()
+	if err != nil {
+		t.Fatalf("PruneMergedWorktrees: %v", err)
+	}
+	if removed != 2 {
+		t.Errorf("removed = %d, want origin/main's script's 2", removed)
+	}
+	if _, err := os.Stat(ran); err == nil {
+		t.Error("the working tree's prune script ran on the host")
+	}
+}
+
 // The PR loop keys its lease on the branch (ADR-0019), so it asks the ticket loop
 // which branches it holds: the slugged branch of every agent-claimed In Progress
 // ticket whose run is live, holding its run lock (#231). A ticket stays In

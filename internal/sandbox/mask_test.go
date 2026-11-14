@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/danoleary/agent-harness/internal/gittest"
 )
 
 // The credential file may live in the Consumer checkout — `.agent-harness/.env` is
@@ -269,5 +271,22 @@ func TestCredentialMaskCreatesNothingAndSkipsGitAndNodeModules(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(project, "infra", "y", ".env")); err == nil {
 		t.Error("building the masks created infra/y/.env")
+	}
+}
+
+// A `.env` the Consumer commits — a Vite app's defaults, say — is no secret: its
+// content is in .git's objects, which the sandbox reads. Masking it would show the
+// session an empty file that its `git add -A` then commits, so the mask hides only
+// the `.env*` files git does not track.
+func TestCredentialMaskLeavesACommittedEnvFileReadable(t *testing.T) {
+	repo := gittest.New(t)
+	writeFile(t, repo.Dir, "web/.env", "VITE_API=/api\n")
+	repo.Git(repo.Dir, "add", "-A")
+	repo.Git(repo.Dir, "commit", "-q", "-m", "commit the web defaults")
+	secret := writeFile(t, repo.Dir, "web/.env.local", "TOKEN=secret\n")
+
+	masks := defaultCredentialMask(repo.Dir)
+	if len(masks) != 1 || masks[0].Target != secret {
+		t.Errorf("masks = %+v, want only the untracked %s", masks, secret)
 	}
 }

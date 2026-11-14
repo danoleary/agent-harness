@@ -24,10 +24,11 @@ these files that exists:
 harness mounts an empty file over it in every container: the session, each gate
 and `post_create`. It does the same for every other file in the checkout whose
 name starts `.env` (`infra/x/.env`, `web/.env.local`, `.envrc`), except
-`.env.example`, and outside `.git` and `node_modules` (ADR-0057). Gitignore
-them; the mask stops the sandbox reading them, not your git history. A
-credential file under any other name is not masked, and the agent session can
-read it.
+`.env.example`, and outside `.git` and `node_modules` (ADR-0057). It masks
+only files git does not track: a committed `.env` is in the history the sandbox
+already reads, so it stays readable. Gitignore your credential files; the mask
+stops the sandbox reading them, not your git history. A credential file under
+any other name is not masked, and the agent session can read it.
 
 ## Credentials and paths
 

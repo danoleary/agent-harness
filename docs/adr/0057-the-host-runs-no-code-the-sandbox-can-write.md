@@ -41,10 +41,15 @@ can write.**
   changes. It reads the remote-tracking ref the last fetch left. A config in the
   working tree that was never pushed is an error that says to push it. `doctor`
   and `init` still read the working tree: the operator runs them, on the
-  checkout they are editing.
+  checkout they are editing. The loop's between-ticket
+  `scripts/prune-merged-worktrees.sh` is likewise origin/main's copy, written to
+  a temp file outside the checkout and run from there.
 - **The mask is every `.env*` file in the checkout except `.env.example`.** The
   walk skips `.git` and `node_modules`, and masks only regular files it found, so
-  Docker never creates a missing mount target in the checkout.
+  Docker never creates a missing mount target in the checkout. It skips a file
+  git tracks: its content is in the objects the sandbox reads anyway, and an
+  empty mount over a committed `.env` would get the truncation committed by the
+  session's `git add -A`.
 
 ## Alternatives considered
 
@@ -64,5 +69,7 @@ can write.**
   host push today.
 - Not closed here: git filters (`filter.<name>.smudge` with a `.gitattributes`
   entry) and other command-valued keys in `.git/config` still run on host
-  checkouts. The prompt bodies are read from the working tree; they reach the
+  checkouts. The `git` that a host-run Consumer command starts —
+  `prune_command`, the prune script, or `gh` — reads the repository's config
+  without the overrides. The prompt bodies are read from the working tree; they reach the
   session, not the host shell.
