@@ -122,7 +122,8 @@ built-in one is `security-alerts`.
 
 **Contract envelope**:
 The non-overridable prompt scaffolding the harness wraps every Project body in —
-the findings-dropbox protocol, the tracker-off steer, the branch/handoff contract,
+the findings contract (the dropbox protocol for the retrospective, "write no
+findings" for every other Stage), the tracker-off steer, the branch/handoff contract,
 the sanitize rule, and the injected ticket context. The envelope is the harness's
 public API surface (ADR-0009).
 _Avoid_: wrapper, header, system prompt.

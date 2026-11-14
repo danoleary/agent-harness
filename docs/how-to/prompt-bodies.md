@@ -1,9 +1,9 @@
 # Write the prompt bodies
 
 Each Stage's prompt is the harness's **contract envelope** wrapped around your
-**Project body** (ADR-0009). The envelope carries the findings-dropbox protocol,
-the tracker-off steer, the branch and handoff contract, the sanitize rule and the
-injected ticket context. You can't remove it. Your body says which skill to
+**Project body** (ADR-0009). The envelope carries the findings contract (only
+the retrospective writes findings), the tracker-off steer, the branch and handoff
+contract, the sanitize rule and the injected ticket context. You can't remove it. Your body says which skill to
 invoke and what your project's conventions are.
 
 ## 1. Create the three files

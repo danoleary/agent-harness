@@ -23,8 +23,8 @@ import (
 //
 // The preflight and the findings filing stay in the bodies: each Stage answers a
 // failed preflight differently (only implementation releases the claim and
-// reports PreflightAborted), and the implementation stage files its dropbox
-// audience-blind while the retrospective routes it by audience (ADR-0011).
+// reports PreflightAborted), and only the retrospective files its dropbox,
+// routed by audience (ADR-0011); the implementation stage files none (#336).
 type frame struct {
 	h   hostio.Host
 	log *runlog.Logger

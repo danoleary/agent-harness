@@ -620,13 +620,10 @@ func Implementation(h hostio.Host, cfg config.Config, log *runlog.Logger, args A
 		}
 	}
 
-	// File any harness-improvement findings the session dropped (after every session, per ADR-0001).
-	// Dedup runs exact-match first, then a best-effort semantic pass; a match is
-	// recorded as a recurrence on the existing issue instead of re-filed (BEH-573).
-	// Only the retrospective classifies findings by audience (ADR-0011): the tdd
-	// dropbox protocol asks for harness/environment friction only and is not taught to
-	// classify, so it stays on the plain tracker filer rather than the audience router.
-	h.FileFindings(findingsDir, t.TeamID, args.Identifier)
+	// The session's dropbox is not filed: the retrospective owns findings (#336).
+	// Its envelope alone carries the settled finding classes and the audience and
+	// sanitize rules (ADR-0011), so a finding this session wrote against its steer
+	// would skip both. The red-base finding checkBase writes files itself.
 
 	// Surface an environmental no-worktree crash to the pipeline so it can
 	// re-attempt the whole stage once rather than discarding the slice (BEH-543).
