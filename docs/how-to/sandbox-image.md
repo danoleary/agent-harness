@@ -91,16 +91,19 @@ message) can read it inside the sandbox. `/usr/local/bin/claude` is a symlink to
 `/usr/local/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe`, a single
 native executable of a few hundred MB. Try `claude --help` first.
 
-Search it for a **fixed string**, and cut the context out by byte offset:
+Search it for a **fixed string**, and cut the context out by byte offset. Run
+each line as its own Bash call with the path written out: a shell variable set
+and used in one sandbox Bash call can expand empty.
 
 ```bash
-BIN=/usr/local/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe
-grep -a -b -o -F 'dangerously-skip-permissions' "$BIN" | head   # OFFSET:match, under a second
-tail -c +92625001 "$BIN" | head -c 600 | tr -c '[:print:]\n' '.'  # 600 bytes from ~200 before an OFFSET
-strings -n 8 "$BIN" | grep -F 'dangerously-skip-permissions'     # whole printable lines, a few seconds
+grep -a -b -o -F 'dangerously-skip-permissions' /usr/local/bin/claude | head   # OFFSET:match, under a second
+tail -c +92625002 /usr/local/bin/claude | head -c 600 | tr -c '[:print:]\n' '.' # 600 bytes from 200 before OFFSET 92625201
+strings -n 8 /usr/local/bin/claude | grep -F 'dangerously-skip-permissions'     # whole printable lines, a few seconds
 ```
 
-`dd if="$BIN" bs=1 skip=<OFFSET-200> count=600 2>/dev/null` cuts the same window.
+`grep -b` counts from 0 and `tail -c +K` from 1, so `tail` takes `OFFSET-199`
+to start 200 bytes before the match. `dd if=/usr/local/bin/claude bs=1
+skip=<OFFSET-200> count=600 2>/dev/null` cuts the same window.
 
 **Never** put a wildcard context pattern such as `grep -a -o '.{500}literal.{500}'`
 on that file. With `-o` and a bounded repeat in front of the literal, grep tries
