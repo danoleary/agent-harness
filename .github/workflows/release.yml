@@ -33,7 +33,7 @@ env:
 
 jobs:
   binaries:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     name: Cross-platform binaries
     permissions:
       contents: write # create the release and upload assets
@@ -151,7 +151,7 @@ jobs:
           gh release upload "$version" dist/*.tar.gz dist/checksums.txt install.sh --clobber
 
   base-image:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     name: Sandbox base image
     permissions:
       contents: read
