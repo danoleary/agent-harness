@@ -39,6 +39,12 @@ type Options struct {
 	// TranscriptFile is the filename (under the ticket's log dir) the stream-json
 	// transcript is teed to.
 	TranscriptFile string
+	// StderrFile is the filename (under the ticket's log dir) the container's
+	// stderr is teed to. Empty tees it into TranscriptFile, which suits a step log:
+	// the command's whole output. A stream-json session sets it, because a CLI
+	// warning on stderr would otherwise land in the .jsonl as a line that is not
+	// JSON (#305).
+	StderrFile string
 	// Timeout is the hard cap on active (monotonic) session time; on expiry the
 	// container is killed. It is measured against the monotonic clock, which freezes
 	// during host sleep, so time the host spent asleep does NOT count toward it
@@ -464,33 +470,19 @@ func Run(dockerArgs []string, opts Options) Outcome {
 	}()
 	defer close(watchdogDone)
 
-	var (
-		wg    sync.WaitGroup
-		tail  []string
-		flags streamFlags
-	)
-	wg.Add(2)
-	go func() {
-		defer wg.Done()
-		flags = pumpStdout(tappedStdout, opts.TranscriptFile, opts.Verbose, opts.Log, os.Stdout)
-	}()
-	go func() {
-		defer wg.Done()
-		tail = pumpStderr(stderr, opts.TranscriptFile, opts.Log, stderrTailLines)
-	}()
-	wg.Wait()
+	flags, tail := pumpStreams(tappedStdout, stderr, opts, os.Stdout)
 
 	exitCode := waitExitCode(cmd.Wait())
 
 	// Exit 125 means docker couldn't start the container at all (daemon down,
-	// image missing, bad flag). The reason is teed only to the transcript, so
+	// image missing, bad flag). The reason is teed only to a log file, so
 	// echo the real cause to the console (BEH-316).
 	dockerReason := ""
 	if exitCode == sandbox.ExitCannotStart {
 		dockerReason = sandbox.DockerErrorReason(strings.Join(tail, "\n"))
 		hint := dockerReason
 		if hint == "" {
-			hint = "see transcript for docker's error"
+			hint = "see " + opts.stderrFile() + " for docker's error"
 		}
 		opts.Log.Event("session ✗ docker could not start the container (exit 125): " + hint)
 	}
@@ -504,6 +496,35 @@ func Run(dockerArgs []string, opts Options) Outcome {
 	}
 
 	return Outcome{ExitCode: exitCode, CapKilled: capKilled.Load(), UsagePolicyRefusal: flags.usagePolicyRefusal, SpendingCapAbort: flags.spendingCapAbort, SpendingCapResetTime: flags.spendingCapResetTime, ReviewVerdictEmitted: flags.reviewVerdictEmitted, ReviewBlocked: flags.reviewBlocked, ReviewDisposition: flags.reviewDisposition, TurnZeroNoOp: flags.turnZeroNoOp, NoRealTurns: flags.noRealTurns, DockerReason: dockerReason, StderrTail: strings.Join(tail, "\n")}
+}
+
+// stderrFile is the file the container's stderr is teed to.
+func (o Options) stderrFile() string {
+	if o.StderrFile != "" {
+		return o.StderrFile
+	}
+	return o.TranscriptFile
+}
+
+// pumpStreams drains the container's stdout and stderr side by side until both
+// close: stdout to the transcript, stderr to its stderrFile.
+func pumpStreams(stdout, stderr io.Reader, opts Options, echo io.Writer) (streamFlags, []string) {
+	var (
+		wg    sync.WaitGroup
+		tail  []string
+		flags streamFlags
+	)
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		flags = pumpStdout(stdout, opts.TranscriptFile, opts.Verbose, opts.Log, echo)
+	}()
+	go func() {
+		defer wg.Done()
+		tail = pumpStderr(stderr, opts.stderrFile(), opts.Log, stderrTailLines)
+	}()
+	wg.Wait()
+	return flags, tail
 }
 
 // pumpStdout scans claude's stream-json stdout: it tees every line raw to the

@@ -110,6 +110,7 @@ func (r *Runner) Agent(a AgentRun) Result {
 		out := r.run(r.agentArgs(name, a), session.Options{
 			ContainerName:  name,
 			TranscriptFile: transcript,
+			StderrFile:     runlog.StderrLogName(label, r.runID),
 			Timeout:        a.Cap,
 			IdleTimeout:    r.cfg.SessionIdleTimeout,
 			Verbose:        r.verbose,

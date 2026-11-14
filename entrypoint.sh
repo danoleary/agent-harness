@@ -3,9 +3,10 @@
 #   1. As root: pick the unprivileged user to run as (the bind-mounted Consumer
 #      checkout's owner, so worktree writes succeed regardless of host uid),
 #      hand it the writable surfaces it needs, then re-exec under gosu.
-#   2. As that user: set the commit identity, trust the repo, then exec the
-#      claude session. The container never pushes (ADR-0002) — no push auth is
-#      wired, and GH_TOKEN never enters the container.
+#   2. As that user: set the commit identity, trust the repo and the session's
+#      working directory, then exec the claude session. The container never
+#      pushes (ADR-0002) — no push auth is wired, and GH_TOKEN never enters the
+#      container.
 # claude --dangerously-skip-permissions refuses to run as root, so pass 1 must
 # always drop privileges (BEH-316).
 set -euo pipefail
@@ -78,7 +79,9 @@ if [ "$(id -u)" = "0" ]; then
 fi
 
 # --- below here runs as the unprivileged target user ---
-export HOME=/home/node
+# HARNESS_SESSION_HOME exists for internal/sandbox's test of this pass, which must
+# not write the real home; the harness never sets it.
+export HOME="${HARNESS_SESSION_HOME:-/home/node}"
 
 git config --global user.name "Agent Harness"
 git config --global user.email "agent-harness@users.noreply.github.com"
@@ -86,5 +89,22 @@ git config --global user.email "agent-harness@users.noreply.github.com"
 # The repo is bind-mounted from the host; without this git refuses to operate
 # ("detected dubious ownership") when the worktree's owner doesn't match.
 git config --global --add safe.directory '*'
+
+# Trust the session's working directory (docker's -w: the checkout, or the
+# ticket's worktree) the way accepting Claude Code's trust dialog would. An
+# untrusted one makes the CLI print "Ignoring N permissions.allow entries …" on
+# stderr before its stream (#305). The CLI matches the exact directory, not a
+# parent. Merged into the CLI's own state; a file jq cannot parse is left as is,
+# since the cost is only that warning. The file can hold the CLI's account
+# state, so nothing here is written readable by others.
+claude_json="$HOME/.claude.json"
+saved_umask="$(umask)"
+umask 077
+[ -s "$claude_json" ] || printf '{}\n' > "$claude_json"
+if jq --arg dir "$PWD" '.projects[$dir].hasTrustDialogAccepted = true' "$claude_json" > "$claude_json.tmp"; then
+	cat "$claude_json.tmp" > "$claude_json"
+fi
+rm -f "$claude_json.tmp"
+umask "$saved_umask"
 
 exec "$@"

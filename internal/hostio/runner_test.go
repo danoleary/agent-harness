@@ -130,6 +130,23 @@ func TestRunnerDerivesTheTranscriptFromTheSameLabel(t *testing.T) {
 	}
 }
 
+// #305: an agent session's stderr goes to a sibling .stderr.log, so a CLI warning
+// can never be line 1 of its .jsonl transcript. A shell step keeps its stderr in
+// its step log, beside the stdout it interleaves with.
+func TestRunnerKeepsAnAgentsStderrBesideItsTranscript(t *testing.T) {
+	r, seen := testRunner(t)
+
+	r.Agent(AgentRun{Label: "implementation"})
+	r.Shell(ShellRun{Label: "gate-lint", Command: "true"})
+
+	if got := (*seen)[0].opts.StderrFile; got != "implementation-20260920-101500.stderr.log" {
+		t.Errorf("agent stderr file = %q", got)
+	}
+	if got := (*seen)[1].opts.StderrFile; got != "" {
+		t.Errorf("shell stderr file = %q, want none: its stderr belongs in its step log", got)
+	}
+}
+
 // A transient failure (the 137 OOM-kill, or a retryable exit-125 launch failure)
 // is retried under a FRESH name: a wedged container's `--rm` teardown may have
 // failed, leaving the old name taken.
