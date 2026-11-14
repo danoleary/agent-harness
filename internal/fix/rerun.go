@@ -11,14 +11,20 @@ import (
 
 // infraSignatures are the log lines that say a gate died of its environment, not
 // of the diff, each with the cause the narration names (#167): the test browser's
-// connection closing under a test, a process killed for memory, a toolchain or
-// package download failing on the network. Matched case-insensitively.
+// connection closing under a test or never opening, a story timing out, Vite
+// re-optimising its dependencies and reloading the page mid-run (#312), a process
+// killed for memory, a toolchain or package download failing on the network.
+// They are built in, not Consumer config. Matched case-insensitively.
 var infraSignatures = []struct{ cause, needle string }{
 	{"the test browser's connection closed", "browser connection was closed"},
 	{"the test browser's connection closed", "rpc is closed"},
 	{"the test browser's connection closed", "page closed unexpectedly"},
 	{"the test browser's connection closed", "browser has disconnected"},
 	{"the test browser's connection closed", "target page, context or browser has been closed"},
+	{"no test browser session", "failed to connect to the browser session"},
+	{"a test timeout", "test timed out in"},
+	{"a Vite reload", "optimized dependencies changed"},
+	{"a Vite reload", "failed to fetch dynamically imported module"},
 	{"an out-of-memory kill", "cannot allocate memory"},
 	{"an out-of-memory kill", "out of memory"},
 	{"a SIGKILL", "sigkill"},

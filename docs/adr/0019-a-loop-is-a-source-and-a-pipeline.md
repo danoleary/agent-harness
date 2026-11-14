@@ -477,3 +477,20 @@ and another CI round, for a failure the host could have found itself.
 - The merge gate runs the plain gates. A red in a file the fix did not touch is
   not re-run as it is on the branch (#167): origin/main's changes are exactly what
   a merge can break. A docs-only branch is not merge-gated, as it is not gated.
+
+## Amendment, 2026-11-14: more browser signatures earn the re-run, and each red is narrated with its class (#312)
+
+Storybook gates on herd went red for the browser's environment in ways the #167
+signatures did not name, and each such red cost a fix attempt.
+
+- **The built-in signatures grow**: a test timeout (`Test timed out in 30000ms`, a
+  per-story timeout), a Vite re-optimise and reload (`optimized dependencies
+  changed`, `Failed to fetch dynamically imported module`), and a browser session
+  that never opened (`Failed to connect to the browser session`). Each earns the
+  same single re-run. They stay built in, not Consumer config.
+- **Every red is narrated with its class.** An infrastructure red says `infra —
+  re-running it once`. A red with no signature, a real assertion, says `test
+  failure` and is final; so is an infrastructure red that is red again on its
+  re-run. An exit 137 the OOM-retry schedule spent is narrated by that schedule.
+- The re-run does not wait for sibling sandboxes to finish; it runs at once, in
+  the gate slot the first run held.
