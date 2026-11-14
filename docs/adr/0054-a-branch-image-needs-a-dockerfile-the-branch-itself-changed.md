@@ -1,4 +1,4 @@
-# ADR-0053: A branch image needs a Dockerfile the branch itself changed
+# ADR-0054: A branch image needs a Dockerfile the branch itself changed
 
 - Status: Accepted
 - Date: 2026-11-14
