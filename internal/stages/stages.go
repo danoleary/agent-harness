@@ -414,7 +414,7 @@ func LoadConfig() (config.Config, error) {
 	envFile := config.ResolveEnvFile(os.Getenv, wd)
 	config.LoadDotEnv(envFile)
 
-	cfg, err := config.Load(os.Getenv, config.WithWorkingDir(wd))
+	cfg, err := config.Load(os.Getenv, config.WithWorkingDir(wd), config.WithCommittedProject())
 	if err != nil {
 		return cfg, config.WithDoctorHint(err)
 	}

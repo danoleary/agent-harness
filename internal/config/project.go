@@ -13,6 +13,8 @@ import (
 	"strings"
 
 	toml "github.com/pelletier/go-toml/v2"
+
+	gitpkg "github.com/danoleary/agent-harness/internal/git"
 )
 
 // ProjectConfig is the committed, per-Consumer configuration read from the
@@ -485,11 +487,52 @@ func LoadProject(checkoutPath string) (ProjectConfig, error) {
 	if err != nil {
 		return ProjectConfig{}, fmt.Errorf("reading project config %s: %w", path, err)
 	}
+	return parseProject(raw, path, dir)
+}
 
+// committedConfigPath is config.toml's path in the Consumer's tree, the form
+// `git show <ref>:<path>` takes.
+const committedConfigPath = ProjectDirName + "/config.toml"
+
+// LoadCommittedProject is [LoadProject] over the config.toml on origin/main
+// rather than the one in the checkout's working tree. Every sandbox mounts that
+// working tree read-write, so a session steered by prompt injection could rewrite
+// a command the config declares — [cache] prune_command, which the host runs
+// with `sh -c` — and the host would run it on the next reload. The copy on
+// origin/main changes only when a PR merges (#332, ADR-0057). It reads the
+// remote-tracking ref as the last fetch left it; it does not fetch.
+func LoadCommittedProject(checkoutPath string) (ProjectConfig, error) {
+	raw, err := gitpkg.Open(checkoutPath, "").ShowOnBase(committedConfigPath)
+	if err != nil {
+		return ProjectConfig{}, notOnMainError(checkoutPath, err)
+	}
+	return parseProject(raw, gitpkg.BaseRef+":"+committedConfigPath, ProjectDir(checkoutPath))
+}
+
+// notOnMainError is the committed config's missing-file error. A config in the
+// working tree that was never pushed is the newcomer's case, so it says to push
+// it; with no config anywhere it is [LoadProject]'s missing-config error.
+func notOnMainError(checkoutPath string, err error) error {
+	dir := ProjectDir(checkoutPath)
+	path := filepath.Join(dir, "config.toml")
+	if _, statErr := os.Stat(path); errors.Is(statErr, fs.ErrNotExist) {
+		return missingConfigError(checkoutPath, dir, path)
+	}
+	return fmt.Errorf(
+		"cannot read %s from %s in %s (%v).\n"+
+			"The harness runs the commands config.toml declares on the host, so it reads them from %s, which only a merged PR changes, never from the working tree a sandbox can write.\n"+
+			"Fix: commit %s and push it to main (then `git fetch origin`)",
+		committedConfigPath, gitpkg.BaseRef, checkoutPath, err, gitpkg.BaseRef, committedConfigPath)
+}
+
+// parseProject decodes, defaults and validates raw, the config.toml read from
+// path (a file, or a `<ref>:<path>` blob); dir is the .agent-harness/ directory
+// the loops' prompt paths resolve against.
+func parseProject(raw []byte, path, dir string) (ProjectConfig, error) {
 	var pc ProjectConfig
 	dec := toml.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
-	err = dec.Decode(&pc)
+	err := dec.Decode(&pc)
 	// The strict decoder still fills every key it knows before it reports the ones
 	// it does not, so an unknown key costs a warning and nothing else.
 	var unknown *toml.StrictMissingError

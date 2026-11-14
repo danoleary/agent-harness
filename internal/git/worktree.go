@@ -2,8 +2,10 @@ package git
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -46,6 +48,32 @@ func Open(path, branchPrefix string) Checkout {
 // never calls it.
 func (c Checkout) WithoutRemoteRetry() Checkout {
 	c.once = true
+	return c
+}
+
+// ShowOnBase is the content of path, relative to the repository root, as
+// origin/main holds it: `git show origin/main:<path>`. It reads the ref the last
+// fetch left; it does not fetch.
+func (c Checkout) ShowOnBase(path string) ([]byte, error) {
+	out, err := c.output("git", "-C", c.path, "show", BaseRef+":"+path)
+	if err != nil {
+		var exit *exec.ExitError
+		if errors.As(err, &exit) && len(bytes.TrimSpace(exit.Stderr)) > 0 {
+			return nil, fmt.Errorf("%w: %s", err, bytes.TrimSpace(exit.Stderr))
+		}
+		return nil, err
+	}
+	return out, nil
+}
+
+// WithRepoHooks is the Checkout with host git reading the repository's hooks and
+// core.fsmonitor as the repository configures them, without [HostArgs]. It is for
+// a test that makes git fail through a hook (gittest's InTheWayOfReplay); a
+// production Checkout never has it, since any hook in the Consumer checkout may be
+// one a sandbox session wrote (#332).
+func (c Checkout) WithRepoHooks() Checkout {
+	raw := repoConfigRunners()
+	c.run, c.output, c.combined, c.pipe = raw.run, raw.output, raw.combined, raw.pipe
 	return c
 }
 
@@ -1199,7 +1227,7 @@ func (c Checkout) LandedSince(since time.Time) []Landed {
 // there a false positive drops work; here a false negative would reap live work, so
 // each fails in its own safe direction.
 func (c Checkout) TicketHasRemoteBranch(key string) bool {
-	out, _, err := proc.OutputInDir(remoteOpTimeout, c.path, "git", "ls-remote", "--heads", "origin")
+	out, _, err := proc.OutputInDir(remoteOpTimeout, c.path, "git", HostArgs("ls-remote", "--heads", "origin")...)
 	if err != nil {
 		return true
 	}

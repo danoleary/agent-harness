@@ -39,6 +39,7 @@ Nothing restarts a stopped loop. The `loop` exit code tells a deliberate stop
 | Message | Cause | Fix |
 |---|---|---|
 | `has no .agent-harness/ directory` | the project was never scaffolded | `agent-harness init` |
+| `cannot read .agent-harness/config.toml from origin/main` | the config is in the working tree but not on `origin/main`, or the checkout has no fetched `origin/main`. A run reads only the pushed copy (ADR-0057) | commit the config, push it to main, then `git fetch origin` |
 | `parsing project config <path>:<line>:<col>` | a TOML syntax error | fix it at that position |
 | `invalid project config <path> (N problems):` | the listed validation problems | fix each one; see [config reference](config.md) |
 | `a sandbox image source is required` | neither `image` nor `dockerfile` | set one |

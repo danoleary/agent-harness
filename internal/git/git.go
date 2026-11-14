@@ -65,9 +65,55 @@ type runners struct {
 	once bool
 }
 
-// execRunners is the production seam: the real git binary, the real clock.
+// execRunners is the production seam: the real git binary, the real clock. Every
+// `git` command it runs carries [HostArgs], so a call site added later cannot run
+// git on the host without them (#332).
 func execRunners() runners {
+	return repoConfigRunners().hostSafe()
+}
+
+// repoConfigRunners is execRunners without [HostArgs]: git as the repository's own
+// config has it, hooks and fsmonitor included. Only [Checkout.WithRepoHooks] uses
+// it, for a test that injects a fault through a hook.
+func repoConfigRunners() runners {
 	return runners{run: execRun, output: execOutput, combined: execCombined, pipe: execPipe, sleep: time.Sleep, now: time.Now}
+}
+
+// hostSafeConfig are the `-c` overrides every host-side git command carries. The
+// sandbox mounts the Consumer checkout read-write, .git included, so a session
+// steered by prompt injection can plant a hook (.git/hooks/post-checkout,
+// reference-transaction, …), point core.hooksPath at a directory of its own, or
+// name a core.fsmonitor command, and the host's next `worktree add`, `reset` or
+// `status` would run it with GH_TOKEN and the tracker key in its environment.
+// `--no-verify` stops only pre-commit and commit-msg. A command-line -c beats every
+// config file, the repository's .git/config included (#332, ADR-0057).
+var hostSafeConfig = []string{"-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"}
+
+// HostArgs puts the host-side overrides ahead of args, a host-side `git` command's
+// arguments. The runners here add them themselves; a package that runs git on the
+// host without a [Checkout] — `exec.Command("git", git.HostArgs(...)...)`,
+// `proc.Output(t, "git", git.HostArgs(...)...)` — calls this.
+func HostArgs(args ...string) []string {
+	return append(append([]string(nil), hostSafeConfig...), args...)
+}
+
+// hostSafe wraps each command shape so that a `git` command gets [HostArgs].
+func (r runners) hostSafe() runners {
+	run, output, combined, pipe := r.run, r.output, r.combined, r.pipe
+	r.run = func(name string, args ...string) error { return run(name, hostArgs(name, args)...) }
+	r.output = func(name string, args ...string) ([]byte, error) { return output(name, hostArgs(name, args)...) }
+	r.combined = func(name string, args ...string) ([]byte, error) { return combined(name, hostArgs(name, args)...) }
+	r.pipe = func(stdin []byte, name string, args ...string) ([]byte, error) {
+		return pipe(stdin, name, hostArgs(name, args)...)
+	}
+	return r
+}
+
+func hostArgs(name string, args []string) []string {
+	if name != "git" {
+		return args
+	}
+	return HostArgs(args...)
 }
 
 func execOutput(name string, args ...string) ([]byte, error) {

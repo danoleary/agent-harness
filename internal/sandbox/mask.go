@@ -1,10 +1,14 @@
 package sandbox
 
 import (
+	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/danoleary/agent-harness/internal/config"
+	"github.com/danoleary/agent-harness/internal/git"
+	"github.com/danoleary/agent-harness/internal/proc"
 )
 
 // MaskMount is a read-only bind mount that hides Target — a path inside the
@@ -25,23 +29,23 @@ type MaskMount struct {
 // ProjectPath inside the builders makes masking the default rather than an opt-in.
 var credentialMaskLookup = defaultCredentialMask
 
-// defaultCredentialMask returns the mask for <projectPath>/.agent-harness/.env
-// when that file exists, and nothing otherwise.
+// defaultCredentialMask returns a mask for every credential file in the checkout
+// at projectPath: each regular file whose name starts `.env`, except the committed
+// `.env.example` and any file git tracks (#332). The harness's own `.agent-harness/.env` is one;
+// a Consumer's infra/x/.env or web/.env.local are others, and every container
+// mounts the whole checkout, so hiding only the harness's file would leave the
+// rest readable to a session steered by prompt injection.
 //
 // The empty source file lives in the OS temp dir, never in the checkout: a source
 // inside the checkout would be mounted over itself. Docker creates a missing bind
-// mount target, so masking a path that does not exist would litter a stray empty
-// .env into a Consumer checkout that never had one — hence the stat.
+// mount target, so the walk masks only files it found — it never names a path
+// that is not there.
 func defaultCredentialMask(projectPath string) []MaskMount {
 	if projectPath == "" {
 		return nil
 	}
-	// config owns the path so the host-side lookup and this container-side mask
-	// cannot drift: the file the harness is willing to READ from the repo must be
-	// exactly the file it HIDES from the sandbox.
-	target := config.InRepoEnvFile(projectPath)
-	info, err := os.Stat(target)
-	if err != nil || !info.Mode().IsRegular() {
+	targets := credentialFiles(projectPath)
+	if len(targets) == 0 {
 		return nil
 	}
 	empty, err := emptyMaskFile()
@@ -51,7 +55,62 @@ func defaultCredentialMask(projectPath string) []MaskMount {
 		// a failed run; a silent nil here would be the exact leak the mask prevents.
 		panic("agent-harness: cannot create the credential mask file: " + err.Error())
 	}
-	return []MaskMount{{Source: empty, Target: target}}
+	masks := make([]MaskMount, 0, len(targets))
+	for _, target := range targets {
+		masks = append(masks, MaskMount{Source: empty, Target: target})
+	}
+	return masks
+}
+
+// credentialFiles walks projectPath for the files [isCredentialFile] names. It
+// stats through a symlink, as Docker's mount does, and masks only a regular file:
+// mounting a file over a directory fails the container. It does not descend into
+// .git or node_modules: neither holds an operator's credentials, and node_modules
+// is where a large checkout's file count is. Nor does it name a file git tracks: its
+// content is in .git's objects, which the sandbox reads anyway, and a mount over a
+// committed `.env` would show the session an empty file that its `git add -A`
+// then commits. An unreadable directory is skipped rather than failing the launch.
+// config owns the harness's own credential path (config.InRepoEnvFile), which the
+// pattern covers and the scaffold gitignores, so the file the harness is willing to
+// READ from the repo is one it HIDES from the sandbox.
+func credentialFiles(projectPath string) []string {
+	var found []string
+	_ = filepath.WalkDir(projectPath, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			if d != nil && d.IsDir() && path != projectPath {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if d.IsDir() {
+			if name := d.Name(); path != projectPath && (name == ".git" || name == "node_modules") {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if !isCredentialFile(d.Name()) {
+			return nil
+		}
+		if info, err := os.Stat(path); err == nil && info.Mode().IsRegular() && !tracked(path) {
+			found = append(found, path)
+		}
+		return nil
+	})
+	return found
+}
+
+// tracked reports whether the git checkout holding path tracks it. Outside a
+// checkout, or on any git error, the file counts as untracked, so it is masked.
+func tracked(path string) bool {
+	return proc.Run(gitReadTimeout, "git", git.HostArgs("-C", filepath.Dir(path),
+		"ls-files", "--error-unmatch", "--", ":(literal)"+filepath.Base(path))...) == nil
+}
+
+// isCredentialFile is the mask's deny-list, `.env*` (`.env`, `.env.local`,
+// direnv's `.envrc`), less its allow-list, `.env.example`: the one dotenv file a
+// repository commits on purpose, as documentation with no values.
+func isCredentialFile(name string) bool {
+	return strings.HasPrefix(name, config.EnvFileName) && name != ".env.example"
 }
 
 // maskFileName is the fixed name of the empty file mounted over a credential file.
