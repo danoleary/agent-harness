@@ -241,6 +241,12 @@ type Gate struct {
 	// (#221, ADR-0049). The implementation and review stages ignore it, and an
 	// empty list skips nothing.
 	SkipWhenOnly []string `toml:"skip_when_only"`
+	// CacheIsolate lists worktree-relative directories the gate's host run must
+	// not share with the sandbox: each is mounted over by an empty tmpfs for the
+	// gate's container alone, so a cache the session also writes (herd's Vite
+	// dependency cache, `web/node_modules/.vite`) is rebuilt fresh rather than
+	// half-reused (#314, ADR-0051). An empty list mounts nothing.
+	CacheIsolate []string `toml:"cache_isolate"`
 }
 
 // SkipsOver reports whether every one of paths matches the gate's SkipWhenOnly.
@@ -300,6 +306,26 @@ func skipPatternProblem(pattern string) string {
 		if _, err := path.Match(seg, ""); err != nil {
 			return "is not a valid glob"
 		}
+	}
+	return ""
+}
+
+// cacheIsolateProblem is what is wrong with one cache_isolate path, or "". A path
+// must name a directory strictly inside the worktree, and carry no comma, which
+// would end the `--mount` value it is written into.
+func cacheIsolateProblem(p string) string {
+	clean := path.Clean(p)
+	switch {
+	case p == "":
+		return "is empty"
+	case strings.HasPrefix(p, "/"):
+		return "is absolute; paths are relative to the worktree"
+	case clean == ".":
+		return "is the worktree itself; name a directory inside it"
+	case clean == ".." || strings.HasPrefix(clean, "../"):
+		return "leaves the worktree"
+	case strings.Contains(p, ","):
+		return "contains a comma, which docker's --mount cannot carry"
 	}
 	return ""
 }
@@ -637,6 +663,11 @@ func (pc *ProjectConfig) validate() []string {
 		for _, pattern := range g.SkipWhenOnly {
 			if why := skipPatternProblem(pattern); why != "" {
 				problems = append(problems, fmt.Sprintf("gates[%d] (%q) skip_when_only pattern %q %s", i, g.Name, pattern, why))
+			}
+		}
+		for _, p := range g.CacheIsolate {
+			if why := cacheIsolateProblem(p); why != "" {
+				problems = append(problems, fmt.Sprintf("gates[%d] (%q) cache_isolate path %q %s", i, g.Name, p, why))
 			}
 		}
 	}

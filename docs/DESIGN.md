@@ -1214,6 +1214,12 @@ Consumer that declares none mounts no cache volume. The deprecated
 `pnpm_store_volume` key still maps onto `[cache]` with the historical `/pnpm-store`
 mount for back-compat.
 
+A cache that lives **inside the worktree** is the opposite case: the session and
+the gate container see the same files through the checkout mount. A gate may list
+such paths in `cache_isolate` (herd: `web/node_modules/.vite`), and its host run
+mounts an empty tmpfs over each, so the gate rebuilds its own copy and never
+rewrites the session's (#314, ADR-0051).
+
 - **Commit identity:** `Agent Harness <agent-harness@users.noreply.github.com>`. The
   skills' existing `Co-Authored-By: Claude` trailer stays.
 

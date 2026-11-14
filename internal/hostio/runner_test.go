@@ -551,3 +551,34 @@ func TestAgentPreviewStartsInTheWorktree(t *testing.T) {
 		t.Errorf("preview -w = %q, want %q", got, wt)
 	}
 }
+
+// A gate run's isolated paths reach the launched argv as tmpfs mounts, and each
+// is created host-side first: docker would otherwise create a missing mountpoint
+// through the checkout bind as root, leaving a directory the sandbox session
+// could not write its own cache into (#314).
+func TestShellIsolatesTheRunsCachePathsAndCreatesThemHostSide(t *testing.T) {
+	r, seen := testRunner(t)
+	wt := t.TempDir()
+
+	r.Shell(ShellRun{Label: "gate-storybook", Command: "pnpm test-storybook", WorktreePath: wt, Isolate: []string{"web/node_modules/.vite"}})
+
+	want := "type=tmpfs,dst=" + wt + "/web/node_modules/.vite,tmpfs-mode=1777"
+	if got := flagValue((*seen)[0].args, "--mount"); got != want {
+		t.Errorf("--mount = %q, want %q", got, want)
+	}
+	if info, err := os.Stat(filepath.Join(wt, "web", "node_modules", ".vite")); err != nil || !info.IsDir() {
+		t.Errorf("isolated path not created host-side: %v", err)
+	}
+}
+
+// A worktree gone from disk is not recreated just to hold an isolated path.
+func TestShellDoesNotRecreateAMissingWorktreeForAnIsolatedPath(t *testing.T) {
+	r, _ := testRunner(t)
+	wt := filepath.Join(t.TempDir(), "gone")
+
+	r.Shell(ShellRun{Label: "gate-storybook", Command: "true", WorktreePath: wt, Isolate: []string{"web/.vite"}})
+
+	if _, err := os.Stat(wt); !os.IsNotExist(err) {
+		t.Errorf("worktree %s was recreated (stat err %v)", wt, err)
+	}
+}

@@ -80,6 +80,10 @@ type ShellRun struct {
 	WorktreePath string
 	Cap          time.Duration
 	Retry        Retry
+	// Isolate are the worktree-relative cache paths the run must not share with
+	// the sandbox session (a gate's cache_isolate, #314): each is mounted over by
+	// an empty tmpfs for this container alone.
+	Isolate []string
 }
 
 // Retry is the transient-failure retry schedule for one launch: re-run while the

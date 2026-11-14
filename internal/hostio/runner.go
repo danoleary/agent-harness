@@ -3,6 +3,7 @@ package hostio
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -133,6 +134,7 @@ func (r *Runner) Shell(s ShellRun) Result {
 		reason := err.Error()
 		return Result{Outcome: session.Outcome{ExitCode: sandbox.ExitCannotStart, DockerReason: reason, StderrTail: reason}, Attempts: 1}
 	}
+	createIsolatedPaths(s)
 	return r.attempts(s.Label, s.Retry, func(label string) Result {
 		name := r.name(label)
 		transcript := runlog.StepLogName(label, r.runID)
@@ -147,6 +149,20 @@ func (r *Runner) Shell(s ShellRun) Result {
 		r.log.TeeLine(transcript, runlog.StepFooter(out.ExitCode))
 		return Result{Outcome: out, Container: name, Transcript: transcript}
 	})
+}
+
+// createIsolatedPaths makes each of the run's isolated paths in the worktree, as
+// the operator, before docker mounts a tmpfs over it. docker would otherwise
+// create a missing mountpoint through the checkout bind as root, and the sandbox
+// session could not then write its own cache there (#314). A worktree that is
+// gone is left gone, and a path that cannot be made is left to docker.
+func createIsolatedPaths(s ShellRun) {
+	if info, err := os.Stat(s.WorktreePath); err != nil || !info.IsDir() {
+		return
+	}
+	for _, p := range s.Isolate {
+		_ = os.MkdirAll(filepath.Join(s.WorktreePath, filepath.FromSlash(p)), 0o755)
+	}
 }
 
 // settleWorkDir decides where a session starts at launch. A worktree that has
@@ -239,6 +255,7 @@ func (r *Runner) shellArgs(name string, s ShellRun) []string {
 		CacheMountPath: r.cfg.CacheMountPath,
 		ContainerName:  name,
 		ShmSize:        r.cfg.ShmSize,
+		IsolatePaths:   s.Isolate,
 	}, s.Command)
 }
 

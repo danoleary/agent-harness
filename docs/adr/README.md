@@ -58,3 +58,4 @@ catches a duplicate there.
 - [ADR-0048](0048-a-red-re-gate-over-a-red-base-holds-the-pr-instead-of-blaming-it.md): A red re-gate over a red base holds the PR instead of blaming it
 - [ADR-0049](0049-a-pr-fix-may-skip-a-gate-its-diff-cannot-reach.md): A PR fix may skip a gate its diff cannot reach
 - [ADR-0050](0050-a-replays-resolution-reports-what-the-branch-duplicates-of-main.md): A replay's resolution reports what the branch duplicates of main
+- [ADR-0051](0051-a-gate-may-isolate-a-worktree-cache-from-the-sandbox.md): A gate may isolate a worktree cache from the sandbox

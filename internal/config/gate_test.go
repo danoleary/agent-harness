@@ -95,3 +95,53 @@ func TestGlobDoubleStarMatchesWholeSegments(t *testing.T) {
 		}
 	}
 }
+
+// A gate's cache_isolate list is read from its [[gates]] entry (#314), and a
+// gate without the key isolates nothing.
+func TestLoadProjectReadsAGatesCacheIsolate(t *testing.T) {
+	dir := t.TempDir()
+	writeProjectConfig(t, dir, `
+image = "x"
+[tracker]
+kind = "github"
+repo = "o/r"
+[[gates]]
+name = "test-storybook"
+command = "pnpm test-storybook"
+cache_isolate = ["web/node_modules/.vite", "web/node_modules/.cache/storybook"]
+[[gates]]
+name = "build"
+command = "make build"
+`)
+	pc, err := LoadProject(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := pc.Gates[0].CacheIsolate; len(got) != 2 || got[0] != "web/node_modules/.vite" || got[1] != "web/node_modules/.cache/storybook" {
+		t.Errorf("gates[0].cache_isolate = %q", got)
+	}
+	if got := pc.Gates[1].CacheIsolate; got != nil {
+		t.Errorf("gates[1].cache_isolate = %q, want none", got)
+	}
+}
+
+// A cache_isolate path must name a directory strictly inside the worktree: an
+// empty, absolute, escaping or whole-worktree path is a config error at load,
+// not a mount over the wrong tree at the first gate run.
+func TestLoadProjectRejectsACacheIsolatePathOutsideTheWorktree(t *testing.T) {
+	for _, p := range []string{"", "/tmp/vite", "../vite", "web/../../vite", ".", "web/..", "web,dst=/x"} {
+		dir := t.TempDir()
+		writeProjectConfig(t, dir, `
+image = "x"
+[tracker]
+kind = "github"
+repo = "o/r"
+[[gates]]
+name = "check"
+command = "make check"
+cache_isolate = ["`+p+`"]
+`)
+		_, err := LoadProject(dir)
+		assertMentions(t, err, `gates[0] ("check") cache_isolate path "`+p+`"`)
+	}
+}
