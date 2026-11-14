@@ -277,6 +277,41 @@ func (w Worktree) Discard() error {
 	return w.run("git", "-C", w.repo, "branch", "-D", w.branch)
 }
 
+// FastForward moves a reused worktree that holds no work onto current origin/main
+// (#334). A branch with nothing ahead of origin/main and a clean tree has nothing to
+// preserve, yet left alone it sits on the base it was cut from however far main has
+// moved since: the session reads superseded code and the base gate speaks for a
+// commit main has left behind. It refreshes origin/main (best-effort, like
+// [Worktree.Create]) and resets the worktree onto it — `reset --hard`, not a merge,
+// for the linked-worktree reason [Worktree.Rebase] gives (BEH-618).
+//
+// It returns the commits it moved from and to, or two empty strings when it left
+// the worktree alone: already current, commits ahead, or uncommitted work.
+func (w Worktree) FastForward() (from, to string, err error) {
+	// CommitsAhead reads a git failure as zero, so without origin/main to count
+	// against it cannot vouch that the branch holds no work.
+	base := w.freshBase()
+	if base != "refs/remotes/origin/main" || w.CommitsAhead() > 0 || !w.Clean() {
+		return "", "", nil
+	}
+	from, err = w.HeadSHA()
+	if err != nil {
+		return "", "", err
+	}
+	out, err := w.output("git", "-C", w.repo, "rev-parse", "--verify", "-q", base)
+	if err != nil {
+		return "", "", err
+	}
+	to = strings.TrimSpace(string(out))
+	if from == to {
+		return "", "", nil
+	}
+	if err := w.run("git", "-C", w.path, "reset", "-q", "--hard", to); err != nil {
+		return "", "", err
+	}
+	return from, to, nil
+}
+
 // HeadSHA returns the commit SHA at the worktree's HEAD, read host-side via the
 // real-path mount (the same seam Clean/Checkpoint use). It lets a caller capture
 // the tip before a session and tell afterwards whether that session actually

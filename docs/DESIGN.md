@@ -284,6 +284,7 @@ loop:
 
   --- host-side worktree provisioning (BEH-636) ---
   git worktree add -b <branch_prefix>/beh-nnn <worktrees_dir>/beh-nnn (based on origin/main)  // harness owns creation; skipped when the worktree already exists
+  reused worktree with 0 commits ahead + clean tree: fetch, reset --hard origin/main  // nothing to preserve; else the session + base gate read a superseded base (#334)
   post_create hook: throwaway container runs the Consumer's toolchain setup in the worktree  // herd: env links + pnpm install + Playwright. warn-only.
   # EXCEPT exit 127/126 — the shell could not find/execute the command (#46): the command is not on PATH in the
   # worktree-command container, which the session's container cannot fix. Fail fast: log the command + stderr tail,

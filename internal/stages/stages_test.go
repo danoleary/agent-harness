@@ -57,6 +57,43 @@ func TestProvisionWorktreeReprovisionsExistingWorktree(t *testing.T) {
 	}
 }
 
+// #334: a re-dispatch reused a worktree whose branch had nothing ahead of the base
+// it was cut from, while origin/main had moved several commits on. The session read
+// and tested superseded code and the base gate reported the old base. A branch with
+// no handoff has nothing to preserve, so the reuse path moves it onto current
+// origin/main before post_create runs (and so before the base gate), and says so.
+func TestProvisionWorktreeFastForwardsAReusedWorktreeWithNothingAhead(t *testing.T) {
+	h, repo := fresh(t, "gh-334")
+	if err := h.Worktree().Create(); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	stale, _ := h.Worktree().HeadSHA()
+	repo.Merge("one.txt", "1\n", "a sibling lands")
+	repo.Merge("two.txt", "2\n", "another sibling lands")
+	repo.Merge("three.txt", "3\n", "a third sibling lands")
+	current := repo.OnOrigin("main")
+	var atPostCreate string
+	h.ShellFn = func(int, hostio.ShellRun) session.Outcome {
+		atPostCreate, _ = h.Worktree().HeadSHA()
+		return session.Outcome{}
+	}
+	cfg := config.Config{Project: config.Project{BranchPrefix: "feat", PostCreate: "make deps"}}
+	log := newProvisionLog(t, "gh-334")
+
+	if _, err := provisionWorktree(h, cfg, log); err != nil {
+		t.Fatalf("provisionWorktree: %v", err)
+	}
+	if atPostCreate != current {
+		t.Errorf("post_create ran at %s, want current origin/main %s (stale base %s)", atPostCreate, current, stale)
+	}
+	if base, _ := h.Worktree().BaseSHA(); base != current {
+		t.Errorf("base = %s, want %s: the base gate must speak for current main", base, current)
+	}
+	if got := narration(t, log); !strings.Contains(got, "fast-forwarded "+h.Worktree().Branch()+" from "+stale[:12]+" to "+current[:12]) {
+		t.Errorf("run log does not say the worktree was refreshed:\n%s", got)
+	}
+}
+
 // The fresh-ticket path is unchanged by BEH-796: an absent worktree is created
 // host-side and then provisioned, in that order.
 func TestProvisionWorktreeCreatesThenProvisionsFreshWorktree(t *testing.T) {

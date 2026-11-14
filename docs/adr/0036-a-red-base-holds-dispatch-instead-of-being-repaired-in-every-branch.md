@@ -30,6 +30,12 @@ and a red base holds the ticket without launching one.**
   configured Gates over it (`basegate-<name>`), under the gate slots
   (ADR-0024). A failed `post_create`, a resumed branch and `--force` skip the
   check.
+- **The base is current `main`** (#334). A reused worktree whose branch has no
+  commits ahead and a clean tree holds nothing to preserve, so before
+  `post_create` the stage fetches `origin/main` and resets the worktree onto
+  it. Left on the base it was cut from, the session would read superseded code
+  and the verdict would be recorded for a SHA `main` had already left behind. A
+  branch with commits or uncommitted work stays where it is.
 - **A base-repair ticket is gated but never held** (#278). A ticket carrying
   the `base-gates-red` finding key is the change that turns `main` green, so a
   red base dispatches it as before and files nothing more. But `main` may have
