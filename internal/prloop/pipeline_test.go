@@ -1087,3 +1087,43 @@ func TestRenumberADRsMovesEachReferenceOnce(t *testing.T) {
 		t.Errorf("renumberADRs = %q, want %q", got, want)
 	}
 }
+
+// PR-217 (#221): a conflict whose resolved diff against origin/main is one
+// workflow file. The PR loop skips the gate whose skip_when_only covers it, runs
+// the one that has no list, and pushes; CI checks the rest before merge.
+func TestFixSkipsAGateWhoseSkipWhenOnlyCoversTheWholeDiff(t *testing.T) {
+	it := harnessItem(Conflict)
+	repo := gittest.New(t)
+	it.PR.HeadSHA = repo.PublishFile(it.PR.HeadBranch, ".github/workflows/ci.yml", "uses: actions/checkout@v4.3.0\n")
+	repo.Merge("other.txt", "unrelated\n", "main moved on")
+	h := hostio.NewFake(repo.Checkout(), ticket.Slug(Key(it.PR.Number)))
+	h.Branch = it.PR.HeadBranch
+	h.AgentFn = func(_ int, run hostio.AgentRun) session.Outcome {
+		if run.Label == "rebasefix" {
+			repo.Resolve(h.Worktree())
+		}
+		return h.AgentOutcome
+	}
+	cfg := pipelineCfg()
+	cfg.Gates = []config.Gate{
+		{Name: "check", Command: "make check", SkipWhenOnly: []string{".github/**"}},
+		{Name: "build", Command: "make build"},
+	}
+	log := pipelineLog(t)
+
+	res := Fix(h, cfg, log, it, prDoctor())
+
+	if !res.OK {
+		t.Fatalf("a resolved workflow-only conflict ships, got %+v", res)
+	}
+	got := calls(h)
+	if strings.Contains(got, "shell gate-check|") {
+		t.Errorf("gate check must be skipped over a .github-only diff: %v", h.Calls)
+	}
+	if !strings.Contains(got, "shell gate-build|") || !strings.Contains(got, "push-force|") {
+		t.Errorf("gate build runs and the resolution is pushed: %v", h.Calls)
+	}
+	if ev := readEvents(t, log); !strings.Contains(ev, `gate \"check\" skipped`) {
+		t.Errorf("the run log must say check was skipped; got %s", ev)
+	}
+}

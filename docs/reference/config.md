@@ -41,12 +41,28 @@ host-side, in the sandbox image, before the harness pushes and opens the PR.
 |---|---|---|
 | `name` | string | yes |
 | `command` | shell command, run as `bash -c` | yes |
+| `skip_when_only` | list of repo-relative glob paths | no |
 
 ```toml
 [[gates]]
 name = "test"
 command = "go test ./..."
+skip_when_only = [".github/**"]
 ```
+
+`skip_when_only` applies to PR loop fixes only (`pr-doctor` and any
+`github_prs` loop): a conflict resolution, or a CI fix. When every path in the
+fix's diff against origin/main matches one of the globs, the loop skips that
+gate host-side, logs that it did and why, and pushes. CI must still pass
+before merge, so only use it where CI runs the same check and a required status
+check guards main. The implementation and review stages, and the
+security-alerts loop, ignore it and run every gate. With no list, or an empty
+diff, nothing is skipped.
+
+A glob is matched segment by segment: `*`, `?` and `[...]` match within one
+path segment, and a `**` segment matches any number of segments, none included.
+`.github/**` matches every file under `.github/`; `**/*.md` matches markdown
+anywhere; `*.md` matches only markdown at the root.
 
 ## `[cache]`
 

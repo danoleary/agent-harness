@@ -642,9 +642,22 @@ func (w Worktree) DiffEmpty() bool {
 // never inert (ADR-0008). An empty list disables the short-circuit entirely — see
 // [DocsOnlyPaths] for why that is the safe default.
 func (w Worktree) DocsOnly(excludedRoots []string) bool {
-	out, err := w.output("git", "-C", w.path, "diff", "--name-only", "origin/main")
+	paths, err := w.DiffPaths()
 	if err != nil {
 		return false
+	}
+	return DocsOnlyPaths(paths, excludedRoots)
+}
+
+// DiffPaths lists the paths the worktree's tree differs from origin/main in,
+// committed or not (`git diff --name-only origin/main`): what [Worktree.DocsOnly]
+// classifies, and what a PR loop fix matches against a Gate's skip_when_only
+// (#221). An error means the diff could not be read, which a caller treats as
+// grounds to run the gate.
+func (w Worktree) DiffPaths() ([]string, error) {
+	out, err := w.output("git", "-C", w.path, "diff", "--name-only", "origin/main")
+	if err != nil {
+		return nil, err
 	}
 	var paths []string
 	for _, line := range strings.Split(string(out), "\n") {
@@ -652,7 +665,7 @@ func (w Worktree) DocsOnly(excludedRoots []string) bool {
 			paths = append(paths, p)
 		}
 	}
-	return DocsOnlyPaths(paths, excludedRoots)
+	return paths, nil
 }
 
 // ChangedFiles lists the paths the worktree has changed since it left origin/main,
