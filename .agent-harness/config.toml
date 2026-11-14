@@ -47,6 +47,8 @@ in_progress_label = "in-progress"
 upstream = "github"
 repo = "danoleary/agent-harness"
 findings_label = "harness-finding"
+# Queue every agent-sized finding at once, as the tracker sink does (ADR-0033).
+ready_label = "ready-for-agent"
 project = "agent-harness"
 
 # `make check` is the same gate CI runs: fmt, vet, the script guards, the tests.

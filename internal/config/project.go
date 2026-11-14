@@ -142,6 +142,10 @@ type FeedbackConfig struct {
 	// SearchFindings dedups within), the upstream twin of tracker.findings_label_id.
 	// Optional — an empty label files/dedups without one.
 	FindingsLabel string `toml:"findings_label"`
+	// ReadyLabel is added to an upstreamed finding the router marks Ready, so the
+	// receiving repo's loop works it unattended (ADR-0033). Optional — empty keeps
+	// every upstreamed finding behind a human, the default for a public repo.
+	ReadyLabel string `toml:"ready_label"`
 	// Project is the reporting-project name stamped on upstreamed filings and
 	// recurrence comments, so a cross-project recurrence reads "Recurred in <project>"
 	// (ADR-0011's project-tagged dedup). Optional — empty falls back to the worked

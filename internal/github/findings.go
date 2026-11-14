@@ -35,8 +35,8 @@ func (c *Client) FileFinding(f findings.Finding, opts tracker.FileFindingOptions
 	}
 
 	// A Ready finding also carries the ready label so the loop picks it up
-	// without a human relabelling it (ADR-0033). The upstream sink has no ready
-	// label configured, so findings filed into the public repo stay human-gated.
+	// without a human relabelling it (ADR-0033). The upstream sink gets a ready
+	// label only from feedback.ready_label, so by default it stays human-gated.
 	labels := []string{c.opts.Findings}
 	if opts.Ready && c.opts.Ready != "" {
 		labels = append(labels, c.opts.Ready)

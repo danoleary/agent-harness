@@ -94,6 +94,27 @@ func TestUpstreamGitHubBuildsRepoBoundSink(t *testing.T) {
 	}
 }
 
+// The upstream sink carries feedback.ready_label, so a finding the router marks
+// Ready reaches the receiving repo's queue (ADR-0033). Empty keeps it human-gated.
+func TestUpstreamTrackerConfigCarriesTheFeedbackReadyLabel(t *testing.T) {
+	tc := upstreamTrackerConfig(config.FeedbackConfig{
+		Upstream: "github", Repo: "example-org/agent-harness",
+		FindingsLabel: "harness-finding", ReadyLabel: "ready-for-agent",
+	})
+	if tc.Kind != "github" || tc.Repo != "example-org/agent-harness" {
+		t.Errorf("tracker config = %+v, want a github tracker on the feedback repo", tc)
+	}
+	if tc.FindingsLabelID != "harness-finding" {
+		t.Errorf("FindingsLabelID = %q, want the feedback findings label", tc.FindingsLabelID)
+	}
+	if tc.ReadyLabel != "ready-for-agent" {
+		t.Errorf("ReadyLabel = %q, want the feedback ready label", tc.ReadyLabel)
+	}
+	if got := upstreamTrackerConfig(config.FeedbackConfig{Upstream: "github", Repo: "a/b"}).ReadyLabel; got != "" {
+		t.Errorf("ReadyLabel with no feedback.ready_label = %q, want empty (human-gated)", got)
+	}
+}
+
 // A malformed repo never reaches here (config validates the shape), and
 // trackers.New rejects it again; that defensive failure degrades to the local
 // sink rather than filing nowhere.
