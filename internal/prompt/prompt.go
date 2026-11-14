@@ -362,11 +362,14 @@ func trackerOffSteer(id, kind string) string {
 	return id + " is already claimed and moved to In Progress for you. " + trackerOff(kind)
 }
 
-// findingsDropboxProtocol is the envelope's findings-dropbox contract for the
-// implementation stage: harness/environment friction goes to `/findings/out.json`
-// in the `{title, body, kind, key}` shape the host-side filer reads, never to the
-// tracker directly.
-const findingsDropboxProtocol = "If you hit problems with the harness or environment itself (setup friction, systemic gaps, missing patterns) during your session retrospective, do NOT file issues in the tracker yourself. Instead append them to `/findings/out.json` as a JSON array of `{title, body, kind, key}` objects (kind is a free-form category; key is a stable, lowercase failure-class slug like `sandbox-playwright-missing-deps` used to dedup re-runs — pick the same key any session would for this class of problem). The harness reads this file after the session and files the issues for you, skipping any whose key already has an open issue. If you have no findings, leave the file untouched."
+// implementFindingsSteer is the implementation stage's findings contract: write
+// none. The retrospective owns findings (docs/DESIGN.md), the way the review,
+// conflict-resolution and merge stages already leave them to it. Only its
+// envelope carries the settled finding classes to reuse keys from and the
+// audience and sanitize rules (ADR-0011), so a finding an implementation session
+// filed skipped both and filed a duplicate issue (#336). The friction the
+// session hits still reaches the retrospective, which reads its transcript.
+const implementFindingsSteer = "Do NOT emit or file any harness-improvement findings, and do NOT write `/findings/out.json`. The retrospective tool owns findings: it reads this session's transcript afterwards, so friction you hit with the harness or environment reaches it there."
 
 // branchHandoffContract is the envelope's branch/handoff contract: the whole
 // pipeline (verify, push, PR, CI, review, rebase) keys off the canonical
@@ -414,12 +417,12 @@ func worktreeAt(slug, worktreePath string) string {
 // tddFooter is the shared contract footer for every implementation-stage prompt
 // (fresh, resumed-branch, retry). It structurally guarantees the four
 // non-overridable envelope items: branch/handoff contract, tracker-off steer,
-// findings-dropbox protocol, and bash-quirk steer.
+// findings steer, and bash-quirk steer.
 func tddFooter(id, kind, branchPrefix, slug string) string {
 	return join(
 		branchHandoffContract(branchPrefix, slug),
 		trackerOffSteer(id, kind),
-		findingsDropboxProtocol,
+		implementFindingsSteer,
 		bashQuirkSteer,
 	)
 }

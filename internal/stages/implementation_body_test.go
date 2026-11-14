@@ -109,8 +109,8 @@ func labels(runs []hostio.AgentRun) []string {
 }
 
 // The happy path, end to end: claim → provision → session → ground truth → strip
-// the handoff artifacts → file findings. Every one of those is a host-side effect
-// the stage no longer performs itself.
+// the handoff artifacts. Every one of those is a host-side effect the stage no
+// longer performs itself.
 func TestImplementationHappyPathClaimsProvisionsAndVerifies(t *testing.T) {
 	h, repo := fresh(t, "PROJ-1")
 	cfg := stageCfg()
@@ -136,8 +136,32 @@ func TestImplementationHappyPathClaimsProvisionsAndVerifies(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(h.Worktree().Path(), "node_modules")); !os.IsNotExist(err) {
 		t.Errorf("a passing handoff must strip the Consumer's build artifacts before the reviewer sees it (BEH-412); stat = %v", err)
 	}
-	if got := h.Filed; len(got) != 1 || got[0] != "PROJ-1" {
-		t.Errorf("filed = %v, want the dropbox filed to the tracker after every session (ADR-0001)", got)
+}
+
+// #336: the retrospective owns findings. An implementation session that writes
+// one anyway, as the sixth session of the incident run did under a key it made
+// up for a class already open, with ticket numbers, commit hashes and repo paths
+// in it, is not filed: that path skipped the settled-key list and the audience
+// and sanitize rules the retrospective carries, and filed a duplicate issue.
+func TestImplementationDoesNotFileAFindingTheSessionWrote(t *testing.T) {
+	h, repo := fresh(t, "PROJ-1")
+	h.AgentFn = func(call int, run hostio.AgentRun) session.Outcome {
+		finding := `[{"title":"Ticket #317 redispatched after #318 already merged at 1c93699",` +
+			`"body":"internal/stages/implementation.go launched a sixth session on unchanged main.",` +
+			`"kind":"harness","key":"sixth-redispatch-of-resolved-ticket"}]`
+		if err := os.WriteFile(filepath.Join(run.FindingsDir, "out.json"), []byte(finding), 0o644); err != nil {
+			t.Fatalf("write dropbox: %v", err)
+		}
+		return commitsHandoff(h, repo)(call, run)
+	}
+
+	res := Implementation(h, stageCfg(), stageLog(t, "PROJ-1"), Args{Identifier: "PROJ-1"})
+
+	if !res.OK {
+		t.Fatalf("a worktree ahead of main is a passing handoff, got %+v", res)
+	}
+	if len(h.Filed) != 0 || len(h.Routed) != 0 {
+		t.Errorf("filed = %v, routed = %v: an implementation session's findings must not be filed; the retrospective owns findings (#336)", h.Filed, h.Routed)
 	}
 }
 

@@ -406,7 +406,7 @@ func TestImplementResumedBranchSteersToVerifyExistingCommits(t *testing.T) {
 }
 
 // The resumed-branch prompt must keep every cross-cutting steer the standard tdd
-// prompt carries — off the tracker, findings to the dropbox, and the bash-quirk
+// prompt carries — off the tracker, findings left to the retrospective, and the bash-quirk
 // workaround — so swapping it in never silently drops a guard.
 func TestImplementResumedBranchKeepsStandardSteers(t *testing.T) {
 	p := bResumed(t, sample, "beh-362")
@@ -414,9 +414,7 @@ func TestImplementResumedBranchKeepsStandardSteers(t *testing.T) {
 	if !regexp.MustCompile(`(?i)do not touch the issue tracker`).MatchString(p) {
 		t.Error("resumed-branch prompt does not steer off the tracker")
 	}
-	if !strings.Contains(p, "/findings/out.json") {
-		t.Error("resumed-branch prompt missing the findings dropbox path")
-	}
+	assertLeavesFindingsToRetro(t, p, "resumed-branch prompt")
 	assertCarriesBashQuirkSteer(t, p, "tdd resumed-branch prompt")
 }
 
@@ -452,22 +450,30 @@ func TestImplementAfterRefusalInlinesSubIssues(t *testing.T) {
 	}
 }
 
-func TestImplementRedirectsFindingsToDropbox(t *testing.T) {
-	p := bImpl(t, sample, "beh-362")
+// assertLeavesFindingsToRetro checks an implementation prompt carries the steer
+// the review, conflict-resolution and merge prompts carry: write no findings, the
+// retrospective owns them (#336). Only the retrospective gets the settled finding
+// classes and the audience and sanitize rules, so a finding written anywhere else
+// skips both and files as a duplicate.
+func assertLeavesFindingsToRetro(t *testing.T, p, label string) {
+	t.Helper()
+	if !strings.Contains(p, "do NOT write `/findings/out.json`") || !strings.Contains(p, "The retrospective tool owns findings") {
+		t.Errorf("%s: does not steer findings to the retrospective", label)
+	}
+	if strings.Contains(p, "append them to `/findings/out.json`") || regexp.MustCompile(`\{title, body, kind, key\}`).MatchString(p) {
+		t.Errorf("%s: still invites the session to write findings to the dropbox", label)
+	}
+}
 
-	if !strings.Contains(p, "/findings/out.json") {
-		t.Error("prompt missing the findings dropbox path")
-	}
-	if !regexp.MustCompile(`title.*body.*kind.*key`).MatchString(p) {
-		t.Error("prompt missing the {title, body, kind, key} finding shape")
-	}
+func TestImplementLeavesFindingsToTheRetrospective(t *testing.T) {
+	assertLeavesFindingsToRetro(t, bImpl(t, sample, "beh-362"), "tdd prompt")
 }
 
 // On a retry after a usage-policy refusal (BEH-389), the worktree and branch
 // already exist with the surviving diff. The resume prompt must steer the agent
 // to continue in that existing worktree and commit the work — never to recreate
 // it (which would fail on the already-existing branch) — while keeping every
-// other steer (tracker off, findings to the dropbox).
+// other steer (tracker off, findings left to the retrospective).
 func TestImplementAfterRefusalSteersToExistingWorktree(t *testing.T) {
 	p := bResume(t, sample, "beh-362", sampleWorktree)
 
@@ -510,15 +516,13 @@ func TestImplementAfterRefusalCarriesBashQuirkSteer(t *testing.T) {
 	assertCarriesBashQuirkSteer(t, bResume(t, sample, "beh-362", sampleWorktree), "tdd resume prompt")
 }
 
-func TestImplementAfterRefusalStillSteersOffTrackerAndToDropbox(t *testing.T) {
+func TestImplementAfterRefusalStillSteersOffTrackerAndFindings(t *testing.T) {
 	p := bResume(t, sample, "beh-362", sampleWorktree)
 
 	if !regexp.MustCompile(`(?i)do not touch the issue tracker`).MatchString(p) {
 		t.Error("resume prompt does not steer off the tracker")
 	}
-	if !strings.Contains(p, "/findings/out.json") {
-		t.Error("resume prompt missing the findings dropbox path")
-	}
+	assertLeavesFindingsToRetro(t, p, "resume prompt")
 }
 
 func TestRetrospectiveInvokesSkillOnTicket(t *testing.T) {

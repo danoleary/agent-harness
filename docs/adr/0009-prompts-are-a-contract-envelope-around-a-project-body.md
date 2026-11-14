@@ -195,3 +195,23 @@ above told the session to run the gate before it re-emitted the prior verdict.
 It now applies the same rule: the session runs the gate only if it commits.
 Keeping the session's run as a second check of the host gate was rejected, since
 both runs check the same commit.
+
+## Amendment, 2026-11-14: only the retrospective envelope carries the findings-dropbox protocol
+
+The implementation envelope still invited its session to write findings to
+`/findings/out.json`, and the stage filed that dropbox after the session. The
+review, conflict-resolution and merge envelopes already said the opposite: write
+no findings, the retrospective owns them. The implementation path also skipped
+the two rules only the retrospective envelope carries: the settled finding classes,
+whose keys a finding must reuse, and the audience and sanitize rules (ADR-0011).
+So a session that hit a class already open made up a new key for it and filed a
+duplicate issue, with ticket numbers, commit hashes and repo paths in its body
+(#336).
+
+**The implementation envelope now carries the same "do NOT write
+`/findings/out.json`; the retrospective tool owns findings" steer as the other
+non-retrospective stages, and the stage no longer files the session's dropbox.**
+The session still mounts `/findings` for `/findings/resolved.json` (ADR-0052), and
+the red-base finding the harness writes itself before any session still files
+(ADR-0036). Friction the session hits reaches the retrospective through its
+transcript, which the retrospective reads.
