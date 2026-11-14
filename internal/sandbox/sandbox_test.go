@@ -3,6 +3,7 @@ package sandbox
 import (
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -1065,5 +1066,66 @@ func TestEveryContainerCarriesAShmSize(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// gitIn runs git in dir, cut off from the operator's own config (which may sign
+// commits), and fails the test on error.
+func gitIn(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", dir, "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"}, args...)...)
+	cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v: %s", args, err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// staleBranchWorktree is the #333 incident on disk: a worktree whose branch was
+// cut from a base with Dockerfile v1, after which origin/main moved on to v2 (a
+// release bumping the toolchain pin) and the host checkout pulled it. The branch
+// itself has no commits. It returns the checkout and the worktree.
+func staleBranchWorktree(t *testing.T, rel string) (checkout, worktree string) {
+	t.Helper()
+	worktree = t.TempDir()
+	gitIn(t, worktree, "init", "-q", "-b", "feat/gh-333")
+	writeDockerfile(t, worktree, rel, "FROM base:0.11.2\n")
+	gitIn(t, worktree, "add", "-A")
+	gitIn(t, worktree, "commit", "-q", "-m", "base")
+	gitIn(t, worktree, "checkout", "-q", "-b", "main")
+	writeDockerfile(t, worktree, rel, "FROM base:0.11.3\n")
+	gitIn(t, worktree, "commit", "-q", "-am", "Release v0.11.3")
+	gitIn(t, worktree, "update-ref", "refs/remotes/origin/main", "HEAD")
+	gitIn(t, worktree, "checkout", "-q", "feat/gh-333")
+	checkout = t.TempDir()
+	writeDockerfile(t, checkout, rel, "FROM base:0.11.3\n")
+	return checkout, worktree
+}
+
+// #333: a branch that is merely behind origin/main sees a different Dockerfile
+// than the checkout's, but it changed nothing — main did. Its prep and gates run
+// in the checkout image main ships, and no branch image is built.
+func TestWorktreeImageIgnoresADockerfileOnlyTheBaseChanged(t *testing.T) {
+	const rel = ".agent-harness/Dockerfile"
+	checkout, worktree := staleBranchWorktree(t, rel)
+
+	if got, branch := WorktreeImage("img:latest", checkout, worktree, rel); got != "img:latest" || branch {
+		t.Errorf("WorktreeImage = %q, %v; want the checkout image for a branch with no Dockerfile commits", got, branch)
+	}
+}
+
+// The other side of #333: once the stale branch commits its own Dockerfile
+// change, it does get its own image.
+func TestWorktreeImageBuildsForADockerfileTheBranchCommitted(t *testing.T) {
+	const rel = ".agent-harness/Dockerfile"
+	checkout, worktree := staleBranchWorktree(t, rel)
+	p := writeDockerfile(t, worktree, rel, "FROM base:0.11.2\nRUN install-go\n")
+	gitIn(t, worktree, "commit", "-q", "-am", "Install go in the sandbox")
+	fp, _ := DockerfileFingerprint(p)
+
+	got, branch := WorktreeImage("img:latest", checkout, worktree, rel)
+	if want := BranchImageTag("img:latest", fp); got != want || !branch {
+		t.Errorf("WorktreeImage = %q, %v; want %q, true", got, branch, want)
 	}
 }

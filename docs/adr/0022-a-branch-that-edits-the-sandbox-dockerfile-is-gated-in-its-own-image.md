@@ -3,6 +3,7 @@
 - Status: Accepted
 - Date: 2026-10-25
 - Extends: ADR-0008, ADR-0016
+- Extended by: ADR-0054 (the branch's own history must change the Dockerfile too)
 
 ## Context
 
