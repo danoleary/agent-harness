@@ -256,10 +256,17 @@ func (e Env) gatesIn(worktreePath string, gates []config.Gate, labelPrefix strin
 			},
 		}
 		r := e.Host.Shell(run)
+		// Each red is narrated with its class (#312): infra, re-run once, or a test
+		// failure, which is final. An infra red that is red again is final too.
+		again := ""
 		if why := rerunReason(r.Outcome, e.gateLog(r.Transcript), fixed); why != "" {
-			e.Log.Event(fmt.Sprintf("%s ↻ gate %q is red (exit %d) with %s — re-running it once before it counts as red (#167)", e.Who, g.Name, r.ExitCode, why))
+			e.Log.Event(fmt.Sprintf("%s ↻ gate %q is red (exit %d) with %s: infra — re-running it once before it counts as red (#167)", e.Who, g.Name, r.ExitCode, why))
 			run.Label += "-rerun"
 			r = e.Host.Shell(run)
+			again = " again on its re-run"
+		}
+		if r.ExitCode != 0 && !r.Retryable() {
+			e.Log.Event(fmt.Sprintf("%s ✗ gate %q is red%s (exit %d): test failure (#312)", e.Who, g.Name, again, r.ExitCode))
 		}
 		lastLog = r.Transcript
 		return r.Outcome

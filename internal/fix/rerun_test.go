@@ -103,6 +103,10 @@ func TestAGateIsRerunOnlyOverAnInfrastructureSignature(t *testing.T) {
 		{"network reset", gateScript{log: "npm ERR! code ECONNRESET\n", out: session.Outcome{ExitCode: 1}}, true},
 		{"gate cap", gateScript{log: "running…\n", out: session.Outcome{ExitCode: sandbox.ExitOOMKill, CapKilled: true}}, true},
 		{"stderr only", gateScript{out: session.Outcome{ExitCode: 1, StderrTail: "Error: [vitest] Browser connection was closed while running tests."}}, true},
+		{"a per-story timeout", gateScript{log: " FAIL  src/routes/call/-components/more-tray.stories.tsx > Open\nError: Test timed out in 30000ms.\nIf this is a long-running test, pass a timeout value as the last argument or configure it globally with \"testTimeout\".\n", out: session.Outcome{ExitCode: 1}}, true},
+		{"vite re-optimised its dependencies", gateScript{log: "[vite] ✨ optimized dependencies changed. reloading\n", out: session.Outcome{ExitCode: 1}}, true},
+		{"vite reloaded a dynamic import", gateScript{log: "TypeError: Failed to fetch dynamically imported module: http://localhost:63315/src/routes/call/-components/more-tray.stories.tsx\n", out: session.Outcome{ExitCode: 1}}, true},
+		{"no browser session", gateScript{log: "Error: Failed to connect to the browser session \"chromium\" within the timeout.\n", out: session.Outcome{ExitCode: 1}}, true},
 		{"a real red", gateScript{log: "--- FAIL: TestThing (0.00s)\n    thing_test.go:12: got 1, want 2\nFAIL\n", out: session.Outcome{ExitCode: 1}}, false},
 	}
 	for _, c := range cases {
@@ -116,6 +120,44 @@ func TestAGateIsRerunOnlyOverAnInfrastructureSignature(t *testing.T) {
 			}
 			if got, want := len(h.Shells), map[bool]int{true: 2, false: 1}[c.rerun]; got != want {
 				t.Errorf("gate runs = %s, want %d", shellLabels(h), want)
+			}
+		})
+	}
+}
+
+// The run log names the class of each red: an infrastructure red is re-run, a
+// real assertion failing is a test failure and final, and so is an infrastructure
+// red that is red again on its re-run (#312).
+func TestTheRunLogNamesTheClassOfARed(t *testing.T) {
+	assertion := gateScript{log: "FAIL src/widgets/thing.test.ts > renders\nAssertionError: expected 1 to be 2\n", out: session.Outcome{ExitCode: 1}}
+	timeout := gateScript{log: "Error: Test timed out in 30000ms.\n", out: session.Outcome{ExitCode: 1}}
+	cases := []struct {
+		name   string
+		script []gateScript
+		runs   int
+		want   []string
+	}{
+		{"a real assertion", []gateScript{assertion}, 1, []string{`gate \"storybook\" is red (exit 1): test failure`}},
+		{"infra, green on its re-run", []gateScript{timeout, {log: "ok\n"}}, 2, []string{"infra — re-running it once"}},
+		{"infra, red again", []gateScript{timeout}, 2, []string{"infra — re-running it once", `gate \"storybook\" is red again on its re-run (exit 1): test failure`}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			e, h := scriptedGates(t, storybook, c.script...)
+
+			e.Gates("gate")
+
+			if len(h.Shells) != c.runs {
+				t.Errorf("gate runs = %s, want %d", shellLabels(h), c.runs)
+			}
+			raw, _ := os.ReadFile(filepath.Join(e.Log.Dir, "run.jsonl"))
+			for _, w := range c.want {
+				if !strings.Contains(string(raw), w) {
+					t.Errorf("run log lacks %q:\n%s", w, raw)
+				}
+			}
+			if c.runs == 2 && len(c.want) == 1 && strings.Contains(string(raw), "test failure") {
+				t.Errorf("a red the re-run washed out is no test failure:\n%s", raw)
 			}
 		})
 	}
