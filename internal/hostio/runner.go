@@ -99,7 +99,9 @@ func (r *Runner) name(label string) string {
 
 // Agent launches one sandboxed claude session and returns its outcome together
 // with the names it was given, narrating the run's Warnings first — and, for a
-// session that starts in the host checkout, any skill drift there (#245).
+// session that starts in the host checkout, any skill drift there (#245). Each
+// attempt keeps the prompt it launched with beside its transcript, which never
+// records it, so a later ticket can replay the ticket text (#341).
 func (r *Runner) Agent(a AgentRun) Result {
 	a = r.settleWorkDir(a)
 	for _, w := range a.Warnings {
@@ -108,6 +110,7 @@ func (r *Runner) Agent(a AgentRun) Result {
 	return r.attempts(a.Label, a.Retry, func(label string) Result {
 		name := r.name(label)
 		transcript := runlog.TranscriptName(label, r.runID)
+		r.log.Keep(runlog.PromptName(label, r.runID), a.Prompt)
 		out := r.run(r.agentArgs(name, a), session.Options{
 			ContainerName:  name,
 			TranscriptFile: transcript,
