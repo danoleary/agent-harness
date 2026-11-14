@@ -810,11 +810,13 @@ func review(c Context) string {
 // same cold envelope as a first pass, re-derived a verdict that already existed, and
 // — to have something to fix — stacked a cosmetic "Review fixes" commit on the last
 // one. Empty when there is no prior verdict: a first review reads as it always did.
+// With no fix commit the session leaves the gate to the host re-run on the same
+// HEAD rather than paying it twice (#285).
 func priorReviewSection(p *PriorReview) string {
 	if p == nil {
 		return ""
 	}
-	return "IMPORTANT — UNCHANGED SINCE THE LAST REVIEW: a prior review of this ticket already covered exactly the commits now on the branch (`origin/main.." + p.Head + "`, HEAD `" + p.Head + "`) and emitted:\n\n    " + defang(p.Disposition) + "\n\nNo commit has landed since. Confirm HEAD is still `" + p.Head + "` (`git rev-parse HEAD`); if it is not, ignore this note and review cold. If it is, do NOT re-review the diff from scratch and do NOT commit just to have something to show: run the gate, then emit your `## Review:` report and re-emit that same Disposition line. Commit a fix ONLY for a real defect — a spec, correctness or invariant failure, not a cosmetic tidy-up — and name it in the report."
+	return "IMPORTANT — UNCHANGED SINCE THE LAST REVIEW: a prior review of this ticket already covered exactly the commits now on the branch (`origin/main.." + p.Head + "`, HEAD `" + p.Head + "`) and emitted:\n\n    " + defang(p.Disposition) + "\n\nNo commit has landed since. Confirm HEAD is still `" + p.Head + "` (`git rev-parse HEAD`); if it is not, ignore this note and review cold. If it is, do NOT re-review the diff from scratch and do NOT commit just to have something to show: emit your `## Review:` report and re-emit that same Disposition line. Commit a fix ONLY for a real defect — a spec, correctness or invariant failure, not a cosmetic tidy-up — and name it in the report. Run the gate only if you commit a fix; with no commit, do NOT run it and write `Gate: deferred to host re-run` in the report, because the harness re-runs every gate host-side over this same HEAD before it pushes."
 }
 
 // redGateSection hands the re-launched review the host gate that went red over

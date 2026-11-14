@@ -671,6 +671,34 @@ func TestReviewDispositionReadsThroughMarkdownEmphasis(t *testing.T) {
 	}
 }
 
+// #285: a review session that commits no fix leaves the gate to the host re-run on
+// the same HEAD and reports "Gate: deferred to host re-run". The verdict reads as
+// it would over "Gate: make check green": a completed review, its Disposition
+// recorded, and a clear one does not block the push.
+func TestReviewVerdictWithADeferredGateReadsAsGreen(t *testing.T) {
+	verdict := func(gate string) string {
+		return mustJSON(t, map[string]any{
+			"type": "assistant",
+			"message": map[string]any{"content": []any{map[string]any{"type": "text", "text": "## Review: #285\n\n" +
+				"Intent: skip the review's own gate when it commits nothing\n\n" +
+				"Findings:\n- none\n\n" + gate + "\n\n" +
+				"Disposition: clear — no findings\n"}}},
+		})
+	}
+	green, deferred := verdict("Gate: make check green"), verdict("Gate: deferred to host re-run")
+	for name, line := range map[string]string{"green": green, "deferred": deferred} {
+		if !IsReviewVerdict(line) {
+			t.Errorf("%s: IsReviewVerdict = false; want true", name)
+		}
+		if IsReviewBlocked(line) {
+			t.Errorf("%s: IsReviewBlocked = true; want false", name)
+		}
+		if got, ok := ReviewDisposition(line); got != "Disposition: clear — no findings" || !ok {
+			t.Errorf("%s: ReviewDisposition = %q, %v; want the clear line", name, got, ok)
+		}
+	}
+}
+
 // A blocked disposition anywhere in the verdict fails the push closed, even when a
 // later line reads clear: the two can only disagree by mistake, and the safe
 // reading of a contradictory report is to wait for a human.
