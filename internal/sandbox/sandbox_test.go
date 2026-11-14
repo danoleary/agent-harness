@@ -1037,3 +1037,33 @@ func TestWorktreeImageIsBranchScopedOnlyWhenTheBranchChangedTheDockerfile(t *tes
 		}
 	})
 }
+
+// Headless Chrome keeps its tabs' renderer memory in /dev/shm, and Docker's 64 MB
+// default crashes them mid-story (#313). Every session and every worktree command
+// container gets a bigger one: 1g unless the Consumer's `[sandbox] shm_size` says
+// otherwise. Never --ipc=host, which would share the host's IPC namespace.
+func TestEveryContainerCarriesAShmSize(t *testing.T) {
+	for _, tc := range []struct {
+		name, shmSize, want string
+	}{
+		{"default", "", "1g"},
+		{"override", "2g", "2g"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := baseConfig()
+			c.ShmSize = tc.shmSize
+			gc := GateConfig{Image: "img", ProjectPath: "/src/p", WorktreePath: "/src/p/wt", ShmSize: tc.shmSize}
+			for kind, args := range map[string][]string{
+				"session":          BuildDockerRunArgs(c),
+				"worktree command": BuildWorktreeCommandArgs(gc, "go test ./..."),
+			} {
+				if got := valuesForFlag(args, "--shm-size"); !slices.Equal(got, []string{tc.want}) {
+					t.Errorf("%s container --shm-size = %v, want [%s]", kind, got, tc.want)
+				}
+				if slices.ContainsFunc(args, func(a string) bool { return strings.HasPrefix(a, "--ipc") }) {
+					t.Errorf("%s container must not share the host IPC namespace, got %v", kind, args)
+				}
+			}
+		})
+	}
+}

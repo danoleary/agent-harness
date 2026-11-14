@@ -57,6 +57,11 @@ path = "/root/.nuget/packages"
 # Omitting it skips that rung of the reclaim ladder.
 prune_command = "dotnet nuget locals all --clear"
 
+# Every sandbox and gate container's /dev/shm (default "1g"; Docker's own 64 MB
+# crashes headless Chrome tabs). Omit the section to take the default.
+[sandbox]
+shm_size = "1g"
+
 # Tracker selection plus its NON-SECRET names. The API credential is env-only.
 [tracker]
 kind = "github"
