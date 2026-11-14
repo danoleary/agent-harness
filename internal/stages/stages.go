@@ -283,6 +283,15 @@ const (
 	// close it, and the breaker stays blind. ResolvedBy and ResolvedWhy carry
 	// them.
 	ResolvedOnMain
+	// AlreadyOnMain — the implementation stage's pre-dispatch own-key scan found a
+	// recent origin/main commit that names the ticket, so it launched no session
+	// (BEH-528, #331). Only the implementation stage produces it, OK, with the
+	// commit's full SHA in ResolvedBy and its subject in ResolvedWhy. No session
+	// ran, so the pipeline ends the slice there: no review, no retrospective. The
+	// loop does not release the ticket, which would select it again within
+	// seconds; it keeps the claim, labels the ticket blocked and comments the
+	// commit for a human to close, as for ResolvedOnMain. The breaker stays blind.
+	AlreadyOnMain
 )
 
 func (d Disposition) String() string {
@@ -305,6 +314,8 @@ func (d Disposition) String() string {
 		return "checkout-blocked"
 	case ResolvedOnMain:
 		return "resolved-on-main"
+	case AlreadyOnMain:
+		return "already-on-main"
 	default:
 		return "no-pr"
 	}
@@ -353,7 +364,8 @@ type Result struct {
 	Refusal string
 	// ResolvedBy is the full SHA of the origin/main commit that already fixes the
 	// ticket, and ResolvedWhy the session's reason, when Disposition is
-	// ResolvedOnMain (#329); empty otherwise.
+	// ResolvedOnMain (#329), or the commit's subject when it is AlreadyOnMain
+	// (#331); empty otherwise.
 	ResolvedBy  string
 	ResolvedWhy string
 }

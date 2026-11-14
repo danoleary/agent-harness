@@ -59,6 +59,25 @@ func TestRetrospectiveRoutesFindingsAndReapsTheWorktree(t *testing.T) {
 	}
 }
 
+// #331: a run that never made a worktree (implementation skipped a ticket whose
+// branch had already merged) has nothing to reap. Asking git to remove it logged
+// "worktree kept — removal failed … is not a working tree", a failure that was not one.
+func TestRetrospectiveReapsNothingWhenNoWorktreeExists(t *testing.T) {
+	h := shipped(t, "PROJ-9")
+	if err := h.Worktree().Remove(); err != nil {
+		t.Fatalf("remove worktree: %v", err)
+	}
+	h.AgentFn = writesDropbox("[]")
+	log := stageLog(t, "PROJ-9")
+
+	if res := Retrospective(h, stageCfg(), log, Args{Identifier: "PROJ-9"}); !res.OK {
+		t.Fatalf("the retrospective itself succeeded, got %+v", res)
+	}
+	if got := narration(t, log); strings.Contains(got, "worktree kept") || strings.Contains(got, "worktree removed") {
+		t.Errorf("run.jsonl = %s, want no reap narrated over a worktree that does not exist", got)
+	}
+}
+
 // An empty `[]` is a valid "ran, found nothing" — an ABSENT file is what means the
 // step never ran (DESIGN.md "Success is ground-truth").
 func TestRetrospectiveAbsentDropboxIsNeverRan(t *testing.T) {

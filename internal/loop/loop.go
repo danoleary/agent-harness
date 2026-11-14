@@ -560,6 +560,8 @@ func Run(d Deps) int {
 			d.handToHuman(key, outcome.Refusal)
 		case stages.ResolvedOnMain:
 			d.handResolvedToHuman(key, outcome.ResolvedBy, outcome.ResolvedWhy)
+		case stages.AlreadyOnMain:
+			d.handMergedToHuman(key, outcome.ResolvedBy, outcome.ResolvedWhy)
 		case stages.NoPR:
 			// Release-on-no-PR (BEH-590): a run that finished WITHOUT opening a pushed PR —
 			// any non-cap failure mode: OOM, sandbox crash, a review stage that died before
@@ -693,16 +695,36 @@ func (d Deps) handToHuman(key, why string) {
 // human can close it without digging through the transcript.
 func (d Deps) handResolvedToHuman(key, sha, why string) {
 	d.Log.Structured(loopstream.Record{Kind: loopstream.KindRecommendClose, Ticket: key, Message: "loop — " + key + " already resolved on main by " + shortSHA(sha) + "; handing it to a human to close — labelled blocked, left In Progress, not released (#329)"})
-	label := "It is labelled blocked and was left In Progress rather than released to Todo, so it will not be re-run to the same conclusion."
-	if err := d.Source.Block(key); err != nil {
-		d.Log.Event("loop … warning: could not label " + key + " blocked: " + err.Error())
-		label = "It was left In Progress rather than released to Todo, but it could not be labelled blocked (" + err.Error() + "), so please label it blocked by hand to keep a later run from picking it up."
-	}
+	label := d.blockForClose(key)
 	reason := ""
 	if why != "" {
 		reason = " The session's reason: " + why
 	}
 	d.comment(key, "Autonomous run found this ticket already resolved on `main` by commit `"+sha+"`, so it stopped without committing anything; there is nothing to ship."+reason+" Please confirm and close this ticket, or remove the blocked label and say what is still missing if that commit does not fix it. "+label)
+}
+
+// handMergedToHuman settles a run the implementation stage skipped because a
+// recent origin/main commit already names the ticket (#331): its PR merged but the
+// tracker left it in Todo. Releasing it would select it again within seconds, pass
+// after pass, until the breaker tripped. The match is on the ticket's key in a
+// commit subject, which a commit that only mentions the ticket also makes, so the
+// loop does not close it: as for a ResolvedOnMain stop it keeps the claim, labels
+// the ticket blocked, and names the commit so a human can close it.
+func (d Deps) handMergedToHuman(key, sha, subject string) {
+	d.Log.Structured(loopstream.Record{Kind: loopstream.KindRecommendClose, Ticket: key, Message: "loop — " + key + " already merged on main in " + shortSHA(sha) + "; handing it to a human to close — labelled blocked, left In Progress, not released (#331)"})
+	label := d.blockForClose(key)
+	d.comment(key, "Autonomous run skipped this ticket: commit `"+sha+"` on `main` (\""+subject+"\") already names it, so its work looks merged and no session was launched. Please confirm and close this ticket. If that commit does not fix it, remove the blocked label and say what is still missing; to dispatch it anyway, run `agent-harness pipeline "+key+" --force`. "+label)
+}
+
+// blockForClose labels a ticket blocked so selection passes over it while a human
+// confirms it is done, and words the breadcrumb sentence that says so, or, when the
+// label failed, asks the human to apply it.
+func (d Deps) blockForClose(key string) string {
+	if err := d.Source.Block(key); err != nil {
+		d.Log.Event("loop … warning: could not label " + key + " blocked: " + err.Error())
+		return "It was left In Progress rather than released to Todo, but it could not be labelled blocked (" + err.Error() + "), so please label it blocked by hand to keep a later run from picking it up."
+	}
+	return "It is labelled blocked and was left In Progress rather than released to Todo, so it will not be re-run to the same conclusion."
 }
 
 // reclaimDisk proactively frees host disk between items when free space has

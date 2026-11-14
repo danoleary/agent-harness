@@ -2470,3 +2470,54 @@ func TestResolvedOnMainHandsTheTicketToAHumanToClose(t *testing.T) {
 		t.Errorf("events = %v, want the resolved stop narrated and the breaker untouched", r.events)
 	}
 }
+
+// #331, replaying BEH-1391: a merged ticket the tracker left in Todo is offered
+// by selection every poll. The implementation stage skips it as already merged on
+// main. Before the fix the loop released it to Todo and selected it again within
+// seconds, until the breaker tripped. Now one pass settles it: the claim is kept,
+// the ticket is labelled blocked with the merge commit on it, and the breaker does
+// not count it.
+func TestAlreadyOnMainSettlesTheTicketInOnePass(t *testing.T) {
+	r := &recorder{}
+	var released, blocked, comments []string
+	runs := 0
+	code := Run(Deps{
+		Host: &fakeHost{stopRequested: stopAfter(4)},
+		Source: &fakeSource{
+			// Selection offers the ticket for as long as it sits in Todo unblocked.
+			next: func() (string, bool) {
+				if len(blocked) > 0 {
+					return "", false
+				}
+				return "BEH-1391", true
+			},
+			release: func(id string) error { released = append(released, id); return nil },
+			block:   func(id string) error { blocked = append(blocked, id); return nil },
+			comment: func(id, body string) error { comments = append(comments, body); return nil },
+		},
+		Pipeline: &fakePipeline{
+			run: func(string) stages.Result {
+				runs++
+				return stages.Result{OK: true, Disposition: stages.AlreadyOnMain, ResolvedBy: "6996419aabbccddeeff00112233445566778899", ResolvedWhy: "BEH-1391: the fix (#88)"}
+			},
+		},
+		Limits: Limits{PollInterval: time.Minute, TickInterval: 2 * time.Second, MaxConsecutiveFailures: 1},
+		Clock:  testClock{sleep: func(time.Duration) {}},
+		Log:    r,
+	})
+	if code != 0 || runs != 1 {
+		t.Errorf("code = %d, runs = %d; want one pass and a clean stop", code, runs)
+	}
+	if len(released) != 0 {
+		t.Errorf("released = %v, want none: released, it is selected again", released)
+	}
+	if want := []string{"BEH-1391"}; !reflect.DeepEqual(blocked, want) {
+		t.Errorf("blocked = %v, want %v", blocked, want)
+	}
+	if len(comments) != 1 || !strings.Contains(comments[0], "6996419aabbccddeeff00112233445566778899") || !strings.Contains(comments[0], "BEH-1391: the fix (#88)") {
+		t.Errorf("comments = %q, want one breadcrumb naming the merge commit", comments)
+	}
+	if !r.saw("already merged on main") || r.saw("circuit breaker") {
+		t.Errorf("events = %v, want the skip narrated and the breaker untouched", r.events)
+	}
+}

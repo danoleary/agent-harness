@@ -53,6 +53,9 @@ runnable by hand against a ticket id before the next is added:
    `origin/main` history for the key, fetching first) — re-dispatching it would
    burn a worktree + install to discover an empty diff and wrongly flip a done
    ticket to In Progress (BEH-528). `--force` overrides for a false positive.
+   The skip is the run's **AlreadyOnMain** Disposition, naming the commit: the
+   slice ends there, and the loop labels the ticket blocked for a human to close
+   rather than releasing it to be selected again (ADR-0056).
    It also logs an *advisory* (never a skip) when the ticket cites code symbols
    that no longer exist in `web/src` (`git.ResolvedAdvisory`) — the BEH-544
    signal that the work likely already merged, often under a *sibling* ticket the
@@ -507,6 +510,8 @@ loop:
   // held its ticket on a red base makes the run BaseRed; review and retrospective don't run (ADR-0036).
   // An implementation whose session found the ticket already resolved on main makes the run
   // ResolvedOnMain; review doesn't run, the retrospective does, and the slice exits 0 (ADR-0052).
+  // An implementation that skipped the ticket because a commit on main names it makes the run
+  // AlreadyOnMain; review and retrospective don't run, and the slice exits 0 (ADR-0056).
 
   // SPENDING-CAP ABORT is a control-flow signal, NOT a ticket failure (see invariant below).
   // Any stage aborted by an external Anthropic spending cap, with nothing shipped:
@@ -596,13 +601,16 @@ loop:
   else if Disposition == ResolvedOnMain:
     label ticket blocked              // not closed on the session's word; a human confirms
     comment on ticket: the fixing commit + the session's reason, please close (#329) // claim KEPT
+  else if Disposition == AlreadyOnMain:
+    label ticket blocked              // a key in a commit subject is not proof; a human confirms
+    comment on ticket: the commit naming it, please close (#331) // claim KEPT, never released
   else if Disposition == NoPR:
     release ticket -> Todo            // don't strand it In Progress; a later run re-grabs it
     comment on ticket: run produced no PR, released to Todo (breadcrumb, BEH-590)
 
   // breaker signal = the run's Disposition, NOT the pipeline exit code
   if Disposition == Shipped    -> reset consecutive-failure counter to 0
-  else if Disposition in {CapAborted, PreflightAborted, RecommendClose, Interrupted, BaseRed, CheckoutBlocked, ResolvedOnMain} -> neutral (neither increment nor reset)
+  else if Disposition in {CapAborted, PreflightAborted, RecommendClose, Interrupted, BaseRed, CheckoutBlocked, ResolvedOnMain, AlreadyOnMain} -> neutral (neither increment nor reset)
   else /* NoPR, NeedsHuman */  -> increment consecutive-failure counter
   // a retrospective-only failure (PR shipped) and a CI-red-after-budget (a reviewable PR
   // exists) do NOT count as failures; only "never produced a PR" does.

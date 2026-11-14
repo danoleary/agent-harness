@@ -97,6 +97,21 @@ func TestBreakerNeutralOnResolvedOnMain(t *testing.T) {
 	}
 }
 
+// #331: a ticket the implementation stage skipped because main already carries a
+// commit naming it is done work, not a failure to ship: neutral.
+func TestBreakerNeutralOnAlreadyOnMain(t *testing.T) {
+	b := newBreaker(2)
+	b.record("BEH-1", stages.Result{})
+	b.record("BEH-2", stages.Result{OK: true, Disposition: stages.AlreadyOnMain})
+	if b.tripped() {
+		t.Error("already-on-main must not advance the counter")
+	}
+	b.record("BEH-3", stages.Result{})
+	if !b.tripped() {
+		t.Error("already-on-main must not reset the counter either")
+	}
+}
+
 // A Docker-preflight abort is neutral: like a cap abort it did no ticket work (the
 // host couldn't launch a sandbox before any work began), so it must neither increment
 // nor reset. This is the fix for the observed pattern where the same poison

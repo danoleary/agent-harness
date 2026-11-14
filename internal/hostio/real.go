@@ -206,7 +206,7 @@ func (h *Real) Worktree() gitpkg.Worktree {
 	return h.checkout().Worktree(h.slug)
 }
 
-func (h *Real) TicketAlreadyOnMain(key string) bool {
+func (h *Real) TicketAlreadyOnMain(key string) (gitpkg.Landed, bool) {
 	return h.checkout().TicketAlreadyOnMain(key)
 }
 
