@@ -234,3 +234,35 @@ func TestRebaseFixLeavesARedBaseAloneAndReportsIt(t *testing.T) {
 		}
 	}
 }
+
+// #255: textual conflicts are not the only overlap a replay can surface. main may
+// have gained, in the files the branch touches, the very mechanism the branch
+// built for itself (an interface method, a Disposition, a helper). The replay
+// variant asks the session to list what main added since the old base there,
+// switch the branch to main's version when that is small and mechanical, and
+// report the rest in the overlap file the host reads. The merge variant is
+// unchanged.
+func TestRebaseFixReconcilesWhatMainAddedUnderneathTheBranch(t *testing.T) {
+	p := For(RebaseFix, Context{Ticket: sample, Slug: "beh-362", BranchPrefix: "feat", WorktreePath: sampleWorktree})
+
+	for _, want := range []string{
+		"git diff --name-only origin/main HEAD",
+		"git diff _premerge...origin/main --",
+		"interface methods",
+		"small and mechanical",
+		"/findings/" + OverlapsFile,
+		`"file"`, `"main_added"`, `"branch_duplicates"`,
+	} {
+		if !strings.Contains(p, want) {
+			t.Errorf("replay prompt lacks %q", want)
+		}
+	}
+	if strings.Index(p, "/findings/"+OverlapsFile) > strings.Index(p, "git branch -D _premerge") {
+		t.Error("the overlap step must come before the marker it diffs against is dropped")
+	}
+
+	m := For(RebaseFix, Context{Ticket: sample, Slug: "pr-12", Branch: "alice/widget", WorktreePath: sampleWorktree, Merge: true})
+	if strings.Contains(m, OverlapsFile) {
+		t.Error("the merge variant is unchanged: it writes no overlap file (#255)")
+	}
+}

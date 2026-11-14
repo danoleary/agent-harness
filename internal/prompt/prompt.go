@@ -968,6 +968,14 @@ const leaveFullGateToHost = "After resolving, compile and run the tests of the p
 // (ADR-0048) and repairing main is not this PR's job (ADR-0036).
 const leaveRedBaseAlone = "If a build or test you run after resolving fails, check whether origin/main fails it on its own before you touch it, in a throwaway scratch checkout (the one exception to not creating a new worktree; keep all your changes in the existing one): `git worktree add --detach /tmp/base-check origin/main`, run the same command in `/tmp/base-check`, then `git worktree remove --force /tmp/base-check`. If origin/main fails there too, the breakage is the base's, not this branch's. Do NOT fix the base breakage, not even in a separate commit: leave it as it is, and write `BASE RED` in your final report with the failing package or test and its error line. Fix only what this branch's own changes broke."
 
+// OverlapsFile is where a replay's conflict-resolution session reports what the
+// branch duplicates of what origin/main added underneath it, under the /findings
+// dropbox the host mounts for it (#255). The host reads it back into the PR body.
+const OverlapsFile = "overlaps.json"
+
+// overlapsProtocol is the overlap report's contract the host reads.
+const overlapsProtocol = "Write each overlap you did NOT switch to `/findings/" + OverlapsFile + "` as ONE JSON array: `[{\"file\": \"...\", \"main_added\": \"...\", \"branch_duplicates\": \"...\"}]`. `file` is the path, `main_added` names what origin/main added there, and `branch_duplicates` names the branch's own code that does the same thing. One short line each: the harness puts the report in the PR body for a human, and it still opens the PR. No overlap left: write `[]` or no file at all."
+
 // rebaseFix builds the `-p` prompt for the sandboxed conflict-resolution
 // session the review stage launches when the proactive pre-push rebase hits a
 // genuine content conflict (BEH-581). The branch already passed the cold review +
@@ -994,7 +1002,9 @@ func rebaseFix(c Context) string {
 		"  2. `git reset --hard origin/main` — move the branch onto the fresh base (this is the full-tree move `git rebase` botches in a linked worktree, but `reset --hard` does cleanly).",
 		"  3. `git cherry-pick origin/main.._premerge` — replay your feature commits onto the new base. cherry-pick's three-way merge surfaces only the genuine conflicts.",
 		"  4. For each conflict: resolve it by hand, `git add` the resolved files, then `git cherry-pick --continue`. Repeat until the cherry-pick finishes and `git status` is clean.",
-		"  5. `git branch -D _premerge` to drop the marker.",
+		"  5. Reconcile what origin/main gained underneath the branch, not just where the text conflicted (#255). `git diff --name-only origin/main HEAD` names the files the branch touches, and `git diff _premerge...origin/main -- <those files>` shows what origin/main added to them since the branch's old base: new interface methods, Dispositions, helpers. For each one the branch reimplements in a parallel mechanism of its own: when switching the branch to main's version is small and mechanical, make the switch and commit it. Otherwise leave the branch's version in place and report the overlap (step 6).",
+		"  6. " + overlapsProtocol,
+		"  7. `git branch -D _premerge` to drop the marker.",
 		"",
 		"If `git cherry-pick` (or `--continue`) reports `The previous cherry-pick is now empty` / `the previous cherry-pick is now empty`, that is NOT a conflict to resolve — that feature commit's change is already present identically in origin/main (a sibling PR merged the same change, or it was cherry-picked to main). Run `git cherry-pick --skip` to drop the now-redundant commit and continue the replay. Do NOT `git add` an empty tree or try to force an empty commit; just `--skip` it (BEH-622).",
 		"",
@@ -1020,7 +1030,7 @@ func rebaseFix(c Context) string {
 		"",
 		trackerOff(c.Tracker),
 		"",
-		"Do NOT emit or file any harness-improvement findings, and do NOT write `/findings/out.json`. The retrospective tool owns findings — your only output is the resolved, rebased worktree.",
+		"Do NOT emit or file any harness-improvement findings, and do NOT write `/findings/out.json`. The retrospective tool owns findings — your only output is the resolved, rebased worktree and the overlap report of step 6.",
 		"",
 		bashQuirkSteer,
 	}

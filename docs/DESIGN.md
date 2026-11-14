@@ -376,7 +376,11 @@ loop:
                      whose changed lines differ, beyond the ones git flagged as conflicted, get a
                      scoped review session over the range-diff before the push (a blocked or absent
                      verdict keeps the worktree + breadcrumb), and the PR body says what was
-                     written after review.
+                     written after review. The session also lists what main added in the
+                     branch's files since the old base, switches the branch to main's version
+                     where that is mechanical, and reports the overlaps it left in
+                     /findings/overlaps.json; the PR body carries them in their own section,
+                     with no second review (#255, ADR-0050).
                git -C $PROJECT_PATH push origin feat/beh-nnn
                gh pr create --repo <origin> --head feat/beh-nnn --base main \
                             --title <templated> --body <templated: ticket id + commit subjects>

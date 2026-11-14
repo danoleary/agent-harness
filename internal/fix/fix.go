@@ -13,7 +13,11 @@
 package fix
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -551,7 +555,46 @@ type ConflictResult struct {
 	// origin/main alone too (#250): the base is red, not the branch, so the caller
 	// holds the work until main moves rather than count the failure against it.
 	BaseRed *BaseRed
+	// Overlaps is what a replay's session reported the branch duplicates of what
+	// origin/main added underneath it and left in place (#255). It never holds the
+	// push: the caller carries it into the PR body.
+	Overlaps []Overlap
 }
+
+// Overlap is one entry of the overlap report a replay's conflict-resolution
+// session writes to /findings/[prompt.OverlapsFile] (#255): a mechanism origin/main
+// gained in a file the branch touches, which the branch reimplements.
+type Overlap struct {
+	File             string `json:"file"`
+	MainAdded        string `json:"main_added"`
+	BranchDuplicates string `json:"branch_duplicates"`
+}
+
+// ReadOverlaps reads an overlap report. No file, a blank one or an empty list is
+// no overlap; an entry with no file is dropped.
+func ReadOverlaps(path string) ([]Overlap, error) {
+	raw, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) || (err == nil && strings.TrimSpace(string(raw)) == "") {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var all []Overlap
+	if err := json.Unmarshal(raw, &all); err != nil {
+		return nil, err
+	}
+	var out []Overlap
+	for _, o := range all {
+		if o.File = strings.TrimSpace(o.File); o.File != "" {
+			out = append(out, o)
+		}
+	}
+	return out, nil
+}
+
+// overlapDropbox is the dropbox a replay's resolution session reports overlaps in.
+const overlapDropbox = "rebasefix"
 
 // BaseRed is origin/main failing, with nothing of the branch on it, the Gate a
 // resolved branch's re-gate failed (#250).
@@ -598,13 +641,15 @@ func (e Env) ResolveConflict(c Conflict) ConflictResult {
 	e.Log.Event(fmt.Sprintf("launching conflict-resolution session (%s onto origin/main, cap %d min active)", c.Strategy, int(e.Cfg.ReviewTimeout.Minutes())))
 	pctx := e.promptContext(c.Target)
 	pctx.Merge = c.Strategy == Merge
+	dropbox := e.overlapDropbox(c.Strategy)
 	res := e.Host.Agent(hostio.AgentRun{
-		Label:    "rebasefix",
-		Model:    e.Cfg.ReviewModel,
-		Prompt:   prompt.For(prompt.RebaseFix, pctx),
-		Warnings: prompt.BodyWarnings(pctx),
-		Cap:      e.Cfg.ReviewTimeout,
-		WorkDir:  wt.Path(),
+		Label:       "rebasefix",
+		Model:       e.Cfg.ReviewModel,
+		Prompt:      prompt.For(prompt.RebaseFix, pctx),
+		Warnings:    prompt.BodyWarnings(pctx),
+		FindingsDir: dropbox,
+		Cap:         e.Cfg.ReviewTimeout,
+		WorkDir:     wt.Path(),
 	})
 	e.Log.Event(fmt.Sprintf("conflict-resolution session exited (code %d)", res.ExitCode))
 
@@ -624,6 +669,8 @@ func (e Env) ResolveConflict(c Conflict) ConflictResult {
 		e.Log.Event(e.Who + " ✓ " + verdict.Reason)
 	}
 
+	overlaps := e.readOverlaps(dropbox)
+
 	// The resolution rewrote the tree, so any earlier gate result is stale — re-run
 	// the gates before trusting the push. Push only on a green gate over a
 	// still-clean worktree.
@@ -632,16 +679,61 @@ func (e Env) ResolveConflict(c Conflict) ConflictResult {
 		if base := e.redBase(gate); base != nil {
 			reason := fmt.Sprintf("post-resolution gate %q is red (exit %d), and origin/main %s fails it too with nothing of the branch on it", gate.FailedGate, gate.Outcome.ExitCode, shortSHA(base.SHA))
 			e.Log.Event(e.Who + " ⏸ " + reason + " — base is red, not the branch; nothing pushed (#250)")
-			return ConflictResult{Resolved: true, Reason: reason, Gate: gate, BaseRed: base}
+			return ConflictResult{Resolved: true, Reason: reason, Gate: gate, BaseRed: base, Overlaps: overlaps}
 		}
 	}
 	if !gate.Green() || !wt.Clean() {
 		reason := fmt.Sprintf("post-resolution gate re-run failed (exit %d)", gate.Outcome.ExitCode)
 		e.Log.Event(e.Who + " ✗ " + reason + " — nothing pushed")
-		return ConflictResult{Resolved: true, Reason: reason, Gate: gate}
+		return ConflictResult{Resolved: true, Reason: reason, Gate: gate, Overlaps: overlaps}
 	}
 	e.Log.Event(e.Who + " ✓ post-resolution gate re-run is green — clear to push")
-	return ConflictResult{OK: true, Resolved: true, Gate: gate}
+	return ConflictResult{OK: true, Resolved: true, Gate: gate, Overlaps: overlaps}
+}
+
+// overlapDropbox is the dropbox a replay's resolution session writes its overlap
+// report in (#255), cleared of a report an earlier resolution of this ticket left,
+// so none is carried twice. The merge variant reports none, so it gets none, and
+// neither does a replay whose dropbox could not be made ready: the session then
+// has nowhere to report, and the PR goes out without the section.
+func (e Env) overlapDropbox(s Strategy) string {
+	if s != Rebase || e.Log == nil {
+		return ""
+	}
+	dir := e.Log.FindingsDir(overlapDropbox)
+	err := os.MkdirAll(dir, 0o755)
+	if err == nil {
+		if rerr := os.Remove(filepath.Join(dir, prompt.OverlapsFile)); !errors.Is(rerr, os.ErrNotExist) {
+			err = rerr
+		}
+	}
+	if err != nil {
+		e.Log.Event(fmt.Sprintf("%s ⚠ could not prepare the conflict resolution's overlap dropbox (%v) — any overlap with origin/main goes unreported (#255)", e.Who, err))
+		return ""
+	}
+	return dir
+}
+
+// readOverlaps reads back the overlap report the session wrote in dropbox and
+// narrates it. A report it cannot parse is narrated and carries none: the push
+// does not wait on it either way.
+func (e Env) readOverlaps(dropbox string) []Overlap {
+	if dropbox == "" {
+		return nil
+	}
+	overlaps, err := ReadOverlaps(filepath.Join(dropbox, prompt.OverlapsFile))
+	if err != nil {
+		e.Log.Event(fmt.Sprintf("%s ⚠ could not read the conflict resolution's overlap report (%v) — the PR goes out without it (#255)", e.Who, err))
+		return nil
+	}
+	if len(overlaps) > 0 {
+		files := make([]string, len(overlaps))
+		for i, o := range overlaps {
+			files[i] = o.File
+		}
+		e.Log.Event(fmt.Sprintf("%s ⚑ the conflict resolution reports the branch duplicates what origin/main added in %s — left in place, not re-reviewed (#255)", e.Who, strings.Join(files, ", ")))
+	}
+	return overlaps
 }
 
 // redBase reports whether origin/main itself fails the Gate the re-gate over a
