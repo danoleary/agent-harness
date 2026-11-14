@@ -557,6 +557,8 @@ func Run(d Deps) int {
 			d.comment(key, "Autonomous run found this branch makes zero net change against `main` (an empty diff) — there is nothing to ship. "+note+" If a PR was already opened (the branch only became a no-op after the pre-push rebase) it is a no-op and should be closed too. It was deliberately NOT released to Todo so it won't be re-picked and re-run to the same conclusion. See the run logs for the cause.")
 		case stages.NeedsHuman:
 			d.handToHuman(key, outcome.Refusal)
+		case stages.ResolvedOnMain:
+			d.handResolvedToHuman(key, outcome.ResolvedBy, outcome.ResolvedWhy)
 		case stages.NoPR:
 			// Release-on-no-PR (BEH-590): a run that finished WITHOUT opening a pushed PR —
 			// any non-cap failure mode: OOM, sandbox crash, a review stage that died before
@@ -680,6 +682,26 @@ func (d Deps) handToHuman(key, why string) {
 		label = "It was left In Progress rather than released to Todo, but it could not be labelled blocked (" + err.Error() + "), so please label it blocked by hand to keep a later run from picking it up."
 	}
 	d.comment(key, "Autonomous run left a committed branch with no PR, and the harness refused to push it: "+why+". A human needs to resolve that before this ticket can ship — the branch is waiting in its worktree. "+label+" Remove the label once it is resolved. See the run logs for the review and gate output.")
+}
+
+// handResolvedToHuman settles a run whose session found the ticket already
+// fixed on origin/main and stopped without committing (#329). Releasing it would
+// re-run it to the same stop, and closing it would take the session's word for a
+// verdict a human should confirm, so the claim is kept, the ticket is labelled
+// blocked, and the breadcrumb names the commit and the session's reason so the
+// human can close it without digging through the transcript.
+func (d Deps) handResolvedToHuman(key, sha, why string) {
+	d.Log.Structured(loopstream.Record{Kind: loopstream.KindRecommendClose, Ticket: key, Message: "loop — " + key + " already resolved on main by " + shortSHA(sha) + "; handing it to a human to close — labelled blocked, left In Progress, not released (#329)"})
+	label := "It is labelled blocked and was left In Progress rather than released to Todo, so it will not be re-run to the same conclusion."
+	if err := d.Source.Block(key); err != nil {
+		d.Log.Event("loop … warning: could not label " + key + " blocked: " + err.Error())
+		label = "It was left In Progress rather than released to Todo, but it could not be labelled blocked (" + err.Error() + "), so please label it blocked by hand to keep a later run from picking it up."
+	}
+	reason := ""
+	if why != "" {
+		reason = " The session's reason: " + why
+	}
+	d.comment(key, "Autonomous run found this ticket already resolved on `main` by commit `"+sha+"`, so it stopped without committing anything; there is nothing to ship."+reason+" Please confirm and close this ticket, or remove the blocked label and say what is still missing if that commit does not fix it. "+label)
 }
 
 // reclaimDisk proactively frees host disk between items when free space has

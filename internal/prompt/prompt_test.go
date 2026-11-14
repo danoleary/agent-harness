@@ -1206,3 +1206,20 @@ func TestCleanBodyHasNoWarnings(t *testing.T) {
 		}
 	}
 }
+
+// #329: the Fresh envelope gives a session that finds the ticket already fixed on
+// origin/main a way to say so — the resolved marker, naming the commit — so the
+// host can record the stop as its own outcome instead of a failed tdd run. The
+// resumed-branch variant has its own already-fixed-on-branch steer and does not
+// get it: a branch with commits ahead is a handoff, not a resolved-on-main stop.
+func TestImplementFreshTellsTheSessionHowToReportAlreadyResolvedOnMain(t *testing.T) {
+	p := bImpl(t, sample, "beh-362")
+	for _, want := range []string{"/findings/resolved.json", `"commit"`, `"reason"`, "origin/main", "without committing"} {
+		if !strings.Contains(p, want) {
+			t.Errorf("fresh implement prompt missing %q", want)
+		}
+	}
+	if strings.Contains(bResumed(t, sample, "beh-362"), "/findings/resolved.json") {
+		t.Error("the resumed-branch prompt must not offer the resolved-on-main marker")
+	}
+}

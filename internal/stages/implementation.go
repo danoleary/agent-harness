@@ -259,6 +259,9 @@ func Implementation(h hostio.Host, cfg config.Config, log *runlog.Logger, args A
 	if res, ok := f.dropbox(findingsDir); !ok {
 		return res
 	}
+	if err := clearResolved(findingsDir); err != nil {
+		return Result{Err: err}
+	}
 
 	// A multi-file extract-and-rewire refactor gets a larger active-time cap: it is
 	// inherently sequential (extract N modules, then rewire N call sites) and
@@ -437,7 +440,23 @@ func Implementation(h hostio.Host, cfg config.Config, log *runlog.Logger, args A
 		}
 	}
 
-	if result.OK {
+	// A session that found the ticket already fixed on origin/main stops without
+	// committing, as the skill sanctions, and names the fixing commit in its
+	// resolved marker (#329). Only a clean tree with nothing ahead can be that
+	// stop; the marker is the session's word, and the commit must be on
+	// origin/main for it to hold. A marker that does not hold stays a failure.
+	var resolved Result
+	if !result.OK && !capAborted && !outcome.NoRealTurns && wt.Exists() && wt.Clean() && wt.CommitsAhead() == 0 {
+		if r, ok, mErr := resolvedOnMain(wt, findingsDir); ok && mErr == nil {
+			resolved = r
+		} else if ok {
+			result.Reason += "; the session's " + ResolvedMarker + " does not hold: " + mErr.Error()
+		}
+	}
+
+	if resolved.Disposition == ResolvedOnMain {
+		log.Event(fmt.Sprintf("tdd ≡ already resolved on main by %s — recommend close: %s", shortCommit(resolved.ResolvedBy), resolved.ResolvedWhy))
+	} else if result.OK {
 		log.Event("tdd ✓ " + result.Reason)
 		// The worktree now goes to a (possibly non-Linux) reviewer. Strip the
 		// Consumer-declared build artifacts the sandbox produced, so their
@@ -511,10 +530,21 @@ func Implementation(h hostio.Host, cfg config.Config, log *runlog.Logger, args A
 	// A successful run is never retryable. Surface a spending-cap abort too so the
 	// loop classifies a capped implementation as retry-after-reset (breaker-neutral)
 	// rather than a ship failure.
+	if resolved.Disposition == ResolvedOnMain {
+		return resolved
+	}
 	res := Result{OK: result.OK, Retryable: !result.OK && retryableEnvCrash(outcome, capAborted)}
 	if capAborted {
 		res.Disposition = CapAborted
 		res.CapResetAt = outcome.SpendingCapResetTime
 	}
 	return res
+}
+
+// shortCommit abbreviates a commit SHA for narration.
+func shortCommit(sha string) string {
+	if len(sha) > 12 {
+		return sha[:12]
+	}
+	return sha
 }

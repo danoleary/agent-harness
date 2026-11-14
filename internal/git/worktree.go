@@ -550,6 +550,27 @@ func (w Worktree) IsRebasedOnto(ref string) bool {
 	return w.run("git", "-C", w.path, "merge-base", "--is-ancestor", ref, "HEAD") == nil
 }
 
+// OnBase resolves commit (a full or abbreviated SHA) in the main checkout and
+// reports its full SHA when origin/main contains it. It is the ground truth
+// behind a session's "already resolved on main by <commit>" report (#329): the
+// session's word names the commit, and git decides whether main has it. A commit
+// that does not resolve, is not on origin/main, or looks like a flag reads as
+// not on the base.
+func (w Worktree) OnBase(commit string) (string, bool) {
+	if commit == "" || strings.HasPrefix(commit, "-") {
+		return "", false
+	}
+	out, err := w.output("git", "-C", w.repo, "rev-parse", "--verify", "-q", commit+"^{commit}")
+	if err != nil {
+		return "", false
+	}
+	sha := strings.TrimSpace(string(out))
+	if w.run("git", "-C", w.repo, "merge-base", "--is-ancestor", sha, BaseRef) != nil {
+		return "", false
+	}
+	return sha, true
+}
+
 // IsDisjointFrom reports whether the worktree's HEAD shares NO common ancestor
 // with ref (e.g. "origin/main") — the disjoint-history condition (BEH-597) that
 // passed the tdd gate as a 963-commits-ahead "success" in BEH-355. `git

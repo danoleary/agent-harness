@@ -386,6 +386,15 @@ func freshWorktreeInstr(slug, worktreePath, branchPrefix string) string {
 	return "The worktree for slug `" + slug + "` has already been created for you at `" + worktreeAt(slug, worktreePath) + "` on branch `" + branch + "` — the harness owns worktree and branch creation, so do NOT run `scripts/new-worktree.sh` and do NOT create a new worktree or branch. `cd` into that worktree and do all your work there, committing your handoff on `" + branch + "` verbatim regardless of the ticket type (bug-fix, chore, docs, …)."
 }
 
+// resolvedOnMainProtocol is how a fresh implementation session reports a ticket
+// it found already fixed on origin/main (#329). Stopping without a commit is a
+// sanctioned outcome, but on its own the host can only read it as a run with no
+// handoff commit, a failure. The marker names the fixing commit, which the host
+// checks is on origin/main before recording the stop as already resolved and
+// handing the ticket to a human to close. The resumed-branch variant has its own
+// already-fixed-on-branch steer instead.
+const resolvedOnMainProtocol = "If you find the ticket is already fixed on `origin/main` (for example by a commit for a different ticket that never names this one), stop without committing and write `/findings/resolved.json` as one JSON object `{\"commit\": \"<sha>\", \"reason\": \"<why that commit already fixes this ticket>\"}`, naming the `origin/main` commit that fixes it. The harness checks that commit is on `origin/main`, records the run as already resolved rather than failed, and asks a human to close the ticket with your reason. Do not write the file in any other case: a ticket that still needs work needs a handoff commit."
+
 // worktreeAt is where the envelope says the worktree is: its absolute path, since
 // the session starts in the worktree rather than in the checkout a relative path
 // resolves from (#245). A Context built without one — a test's — falls back to
@@ -423,7 +432,7 @@ func implement(c Context) string {
 	case AfterRefusal:
 		worktreeState = resumeWorktreeState(c.Slug, c.WorktreePath, c.BranchPrefix)
 	default:
-		worktreeState = freshWorktreeInstr(c.Slug, c.WorktreePath, c.BranchPrefix)
+		worktreeState = join(freshWorktreeInstr(c.Slug, c.WorktreePath, c.BranchPrefix), resolvedOnMainProtocol)
 	}
 	return join(
 		body(c),

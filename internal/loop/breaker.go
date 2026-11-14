@@ -31,15 +31,16 @@ func newBreaker(threshold int) *breaker { return &breaker{threshold: threshold} 
 // breaker in seconds on identical 2s failures); a recommend-close is a correct
 // terminal no-op, neither a ship nor a failure (BEH-603); an interruption is a
 // session a stop signal killed from outside, which says nothing about the item (#99);
-// a red-base hold is main's fault, shared by every item cut from it (#125); and a
+// a red-base hold is main's fault, shared by every item cut from it (#125); a
 // checkout git refused on the host's local state launched no session and says
-// nothing about the item (#247).
+// nothing about the item (#247); and a ticket the session found already resolved
+// on main is the sanctioned stop the tdd skill asks for (#329).
 func (b *breaker) record(key string, o stages.Result) {
 	switch o.Disposition {
 	case stages.Shipped:
 		b.streak = nil
 	case stages.CapAborted, stages.PreflightAborted, stages.RecommendClose, stages.Interrupted, stages.BaseRed,
-		stages.CheckoutBlocked:
+		stages.CheckoutBlocked, stages.ResolvedOnMain:
 		// neutral — blind by design
 	default:
 		b.streak = append(b.streak, key)

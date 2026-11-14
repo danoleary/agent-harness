@@ -45,7 +45,9 @@ func main() {
 		fmt.Fprintf(os.Stderr, "%v\n", res.Err)
 		os.Exit(1)
 	}
-	if !res.OK {
+	// A ticket the session found already resolved on main handed nothing off, but
+	// the Stage did its job (#329).
+	if !res.OK && res.Disposition != stages.ResolvedOnMain {
 		os.Exit(1)
 	}
 }

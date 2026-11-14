@@ -266,6 +266,17 @@ const (
 	// a human so it is not selected into the same refusal again, the loop backs off
 	// one poll, and the breaker stays blind to it.
 	CheckoutBlocked
+	// ResolvedOnMain — the implementation session found the ticket already fixed
+	// on origin/main, by a commit the pre-dispatch own-key skip could not see
+	// (one naming a different ticket), and stopped without committing, leaving
+	// the resolved marker that names the commit (#329). Only the implementation
+	// stage produces it, and only once git confirms origin/main contains that
+	// commit. Nothing was handed off, so the stage is not OK and review does not
+	// run, but it is no failure: the loop keeps the claim, labels the ticket
+	// blocked and comments the commit and the session's reason for a human to
+	// close it, and the breaker stays blind. ResolvedBy and ResolvedWhy carry
+	// them.
+	ResolvedOnMain
 )
 
 func (d Disposition) String() string {
@@ -286,6 +297,8 @@ func (d Disposition) String() string {
 		return "needs-human"
 	case CheckoutBlocked:
 		return "checkout-blocked"
+	case ResolvedOnMain:
+		return "resolved-on-main"
 	default:
 		return "no-pr"
 	}
@@ -332,6 +345,11 @@ type Result struct {
 	// Refusal says why the committed-fix recovery would not land the branch when
 	// Disposition is NeedsHuman (#230); empty otherwise.
 	Refusal string
+	// ResolvedBy is the full SHA of the origin/main commit that already fixes the
+	// ticket, and ResolvedWhy the session's reason, when Disposition is
+	// ResolvedOnMain (#329); empty otherwise.
+	ResolvedBy  string
+	ResolvedWhy string
 }
 
 // ExitCode is the process exit code this Result means: 0 iff the work it reports
