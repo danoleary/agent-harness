@@ -60,6 +60,10 @@ runnable by hand against a ticket id before the next is added:
    is heuristic (a cited symbol can be absent because the ticket asks to *create*
    it); the `/tdd` prompt separately steers the in-session agent to verify the
    premise still holds and recommend close rather than fabricate a no-op change.
+   A session that finds the ticket already fixed on `origin/main` stops without
+   committing and names the fixing commit in `/findings/resolved.json`; once git
+   confirms `origin/main` contains it, the run is **ResolvedOnMain** rather than a
+   failed `tdd ✗` (ADR-0052).
    To keep the "recommend close" verdict from firing on valid tickets (BEH-629),
    extraction reads only inline-code spans outside fenced blocks, pairing
    backtick runs by length so a fence can't shift the pairing onto prose (#66);
@@ -492,6 +496,8 @@ loop:
   // implementation or review makes the run Interrupted; an interrupted retrospective is left
   // out of the fold, so the earlier stages' verdict stands (ADR-0030). An implementation that
   // held its ticket on a red base makes the run BaseRed; review and retrospective don't run (ADR-0036).
+  // An implementation whose session found the ticket already resolved on main makes the run
+  // ResolvedOnMain; review doesn't run, the retrospective does, and the slice exits 0 (ADR-0052).
 
   // SPENDING-CAP ABORT is a control-flow signal, NOT a ticket failure (see invariant below).
   // Any stage aborted by an external Anthropic spending cap, with nothing shipped:
@@ -578,13 +584,16 @@ loop:
   else if Disposition == NeedsHuman:
     label ticket blocked              // selection screens it out until a person removes the label
     comment on ticket: the refusal's reason (breadcrumb, #230) // the claim is KEPT, never released
+  else if Disposition == ResolvedOnMain:
+    label ticket blocked              // not closed on the session's word; a human confirms
+    comment on ticket: the fixing commit + the session's reason, please close (#329) // claim KEPT
   else if Disposition == NoPR:
     release ticket -> Todo            // don't strand it In Progress; a later run re-grabs it
     comment on ticket: run produced no PR, released to Todo (breadcrumb, BEH-590)
 
   // breaker signal = the run's Disposition, NOT the pipeline exit code
   if Disposition == Shipped    -> reset consecutive-failure counter to 0
-  else if Disposition in {CapAborted, PreflightAborted, RecommendClose, Interrupted, BaseRed, CheckoutBlocked} -> neutral (neither increment nor reset)
+  else if Disposition in {CapAborted, PreflightAborted, RecommendClose, Interrupted, BaseRed, CheckoutBlocked, ResolvedOnMain} -> neutral (neither increment nor reset)
   else /* NoPR, NeedsHuman */  -> increment consecutive-failure counter
   // a retrospective-only failure (PR shipped) and a CI-red-after-budget (a reviewable PR
   // exists) do NOT count as failures; only "never produced a PR" does.

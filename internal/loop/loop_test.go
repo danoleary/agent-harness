@@ -2429,3 +2429,44 @@ func TestHeldQueueIdlesSayingWhy(t *testing.T) {
 		t.Errorf("held idle kind = %q (found=%v), want %q; events = %v", k, ok, loopstream.KindIdle, r.events)
 	}
 }
+
+// #329: a run whose session found the ticket already fixed on main by another
+// ticket's commit is not released (it would re-run to the same stop) and not
+// closed on the session's word: the loop keeps the claim, labels it blocked and
+// comments the commit and the session's reason, asking a human to close it.
+func TestResolvedOnMainHandsTheTicketToAHumanToClose(t *testing.T) {
+	r := &recorder{}
+	var released, blocked, comments []string
+	code := Run(Deps{
+		Host: &fakeHost{stopRequested: stopAfter(1)},
+		Source: &fakeSource{
+			next:    func() (string, bool) { return "BEH-329", true },
+			release: func(id string) error { released = append(released, id); return nil },
+			block:   func(id string) error { blocked = append(blocked, id); return nil },
+			comment: func(id, body string) error { comments = append(comments, body); return nil },
+		},
+		Pipeline: &fakePipeline{
+			run: func(string) stages.Result {
+				return stages.Result{Disposition: stages.ResolvedOnMain, ResolvedBy: "0123456789abcdef", ResolvedWhy: "BEH-314 added the helper"}
+			},
+		},
+		Limits: Limits{PollInterval: time.Minute, TickInterval: 2 * time.Second, MaxConsecutiveFailures: 1},
+		Clock:  testClock{sleep: func(time.Duration) {}},
+		Log:    r,
+	})
+	if code != 0 {
+		t.Errorf("exit code = %d, want 0", code)
+	}
+	if len(released) != 0 {
+		t.Errorf("released = %v, want none", released)
+	}
+	if want := []string{"BEH-329"}; !reflect.DeepEqual(blocked, want) {
+		t.Errorf("blocked = %v, want %v", blocked, want)
+	}
+	if len(comments) != 1 || !strings.Contains(comments[0], "0123456789abcdef") || !strings.Contains(comments[0], "BEH-314 added the helper") || !strings.Contains(comments[0], "close") {
+		t.Errorf("comments = %q, want one breadcrumb naming the commit and the reason and asking for a close", comments)
+	}
+	if !r.saw("already resolved on main") || r.saw("circuit breaker") {
+		t.Errorf("events = %v, want the resolved stop narrated and the breaker untouched", r.events)
+	}
+}

@@ -82,6 +82,21 @@ func TestBreakerNeutralOnRecommendClose(t *testing.T) {
 	}
 }
 
+// #329: a ticket the session found already resolved on main is a sanctioned
+// stop, not a failure to ship, and no proof of a ship either: neutral.
+func TestBreakerNeutralOnResolvedOnMain(t *testing.T) {
+	b := newBreaker(2)
+	b.record("BEH-1", stages.Result{})
+	b.record("BEH-2", stages.Result{Disposition: stages.ResolvedOnMain})
+	if b.tripped() {
+		t.Error("resolved-on-main must not advance the counter")
+	}
+	b.record("BEH-3", stages.Result{})
+	if !b.tripped() {
+		t.Error("resolved-on-main must not reset the counter either")
+	}
+}
+
 // A Docker-preflight abort is neutral: like a cap abort it did no ticket work (the
 // host couldn't launch a sandbox before any work began), so it must neither increment
 // nor reset. This is the fix for the observed pattern where the same poison

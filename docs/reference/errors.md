@@ -147,6 +147,8 @@ what it found, it warns and dispatches rather than hold a ticket on a guess.
 | `✗ gate "…" is red (exit N): test failure` or `✗ gate "…" is red again on its re-run (exit N): test failure` | the gate failed with no environment signature (a real assertion), or it was re-run over one and failed again; either red is final (#312) | read the gate's log (`gate-…-*.log`, or `gate-…-rerun-*.log` after a re-run) |
 | `✗ gate "…" is red over auto-fix N merged with origin/main, though green on the branch alone — not pushing` | a CI fix passes the gates on its branch but not merged with origin/main, which is what CI checks (#259) | nothing; the next CI fix attempt gets that gate's output (`gate-cifixN-merge-*.log`). A fix that conflicts with origin/main is refused too; the PR loop's next poll resolves the conflict |
 | `pr-fix · gate "…" skipped — every path the fix changes against origin/main matches its skip_when_only (…); CI checks it before merge` | a PR loop fix touched only paths that gate's `skip_when_only` lists, so it was not run host-side (#221) | nothing; CI runs the check before merge. To gate such a fix locally, narrow or drop the gate's `skip_when_only` |
+| `tdd ≡ already resolved on main by <sha> — recommend close: <reason>` | **ResolvedOnMain**: the session found the ticket already fixed by that `origin/main` commit and stopped without committing, and git confirmed `main` has it (ADR-0052). Not a failure; the loop labels the ticket blocked and comments the reason | check the commit fixes the ticket and close it; if it does not, remove the blocked label and say on the ticket what is missing |
+| `the session's resolved.json does not hold: …` | the session stopped without a handoff commit and wrote `/findings/resolved.json`, but its commit is not on `origin/main` (or the file is not `{commit, reason}` JSON). The run fails as a no-handoff run | read the session's transcript for the commit it meant; close the ticket by hand if it is fixed, or let a later run implement it |
 | `review ✗ no worktree at … — run implementation first` | `review` was run alone | run `implementation` first |
 | `⚠ could not strip <paths> from the worktree (…)` | after a green handoff, the `handoff_strip_paths` build artifacts could not be removed. A warning only; the handoff stands | the reviewer re-runs `post_create`; if its gates crash on a stale artifact, delete the paths in the worktree by hand |
 
@@ -199,6 +201,7 @@ How a review ends when it takes the branch to a PR (`ship.Land`).
 | `circuit breaker tripped: … failed N× — start here` | the same ticket failed every time; start with it |
 | `circuit breaker tripped: N consecutive tickets failed to reach a pushed PR` | something environmental is failing every run; fix it and relaunch |
 | `loop already running (pid …)` | a second `start` of a running instance; STOP it, or use `--instance` |
+| `already resolved on main by <sha>; handing it to a human to close` | **ResolvedOnMain**: the ticket is labelled blocked and left In Progress, with the commit and the session's reason in a comment. Breaker-neutral. Confirm and close it |
 | `was claimed by another run first — selecting again` | not an error: another instance won the claim |
 | `releasing … back to Todo failed — move it out of In Progress manually` | the tracker refused the release; move the ticket by hand |
 

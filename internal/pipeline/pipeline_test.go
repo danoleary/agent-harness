@@ -520,3 +520,26 @@ func TestRunEndsTheSliceAtARedBaseHold(t *testing.T) {
 		t.Errorf("stage order = %v, want %v (a red-base hold ends the slice)", r.order, want)
 	}
 }
+
+// #329: an implementation that found the ticket already resolved on main handed
+// nothing off, so review is skipped, but the slice did its job: it exits 0 and
+// carries ResolvedOnMain, with the commit and reason, to the loop.
+func TestRunImplementationResolvedOnMainSkipsReviewAndIsNoFailure(t *testing.T) {
+	r := &recorder{}
+	out := Run(Deps{
+		FetchMain:      func() error { return nil },
+		Implementation: r.stage("impl", stages.Result{Disposition: stages.ResolvedOnMain, ResolvedBy: "abc123", ResolvedWhy: "PROJ-99 fixed it"}),
+		Review:         r.stage("review", stages.Result{OK: true}),
+		Retrospective:  r.stage("retro", stages.Result{OK: true}),
+		Log:            r,
+	})
+	if want := []string{"impl", "retro"}; !reflect.DeepEqual(r.order, want) {
+		t.Errorf("stage order = %v, want %v (nothing to review; retro still runs)", r.order, want)
+	}
+	if out.ExitCode() != 0 || out.Disposition != stages.ResolvedOnMain || out.ResolvedBy != "abc123" || out.ResolvedWhy != "PROJ-99 fixed it" {
+		t.Errorf("out = %+v, want an exit-0 ResolvedOnMain carrying the commit and reason", out)
+	}
+	if r.saw("implementation failed") || !r.saw("already resolved on main") {
+		t.Errorf("events = %v, want the resolved stop narrated, not a failure", r.events)
+	}
+}

@@ -513,3 +513,116 @@ func TestImplementationIsQuietWhenTheTicketHasNoOpenQuestions(t *testing.T) {
 		t.Errorf("a ticket with no open-questions section logged an advisory:\n%s", got)
 	}
 }
+
+// resolvedBy is a /tdd session that finds the ticket already fixed on main and
+// stops without committing, as the skill's step 1 sanctions, leaving the
+// resolved marker in its findings dropbox naming commit (#329).
+func resolvedBy(t *testing.T, commit string) func(int, hostio.AgentRun) session.Outcome {
+	return func(_ int, run hostio.AgentRun) session.Outcome {
+		marker := `{"commit": "` + commit + `", "reason": "PROJ-99 added the helper this ticket asks for"}`
+		if err := os.WriteFile(filepath.Join(run.FindingsDir, ResolvedMarker), []byte(marker), 0o644); err != nil {
+			t.Fatalf("write marker: %v", err)
+		}
+		return session.Outcome{}
+	}
+}
+
+// #329, the incident: a commit for a different ticket, which never names this
+// one, already fixed it on origin/main, so the own-key skip dispatched it anyway.
+// The session spotted the fix and stopped clean. That is a sanctioned outcome,
+// not a failed tdd run: the stage names the commit, keeps the claim for a human
+// to close the ticket, and returns the breaker-neutral ResolvedOnMain.
+func TestImplementationRecordsATicketTheSessionFoundResolvedOnMain(t *testing.T) {
+	h, repo := fresh(t, "PROJ-20")
+	repo.Merge("helper.go", "func helper() {}\n", "PROJ-99: add the helper")
+	fix := repo.Git(repo.Origin, "rev-parse", "main")
+	h.AgentFn = resolvedBy(t, fix[:9])
+
+	log := stageLog(t, "PROJ-20")
+	res := Implementation(h, stageCfg(), log, Args{Identifier: "PROJ-20"})
+
+	if res.Disposition != ResolvedOnMain || res.ResolvedBy != fix {
+		t.Fatalf("a clean stop over a fix on main is ResolvedOnMain by %s, got %+v", fix, res)
+	}
+	if res.OK || res.Retryable {
+		t.Errorf("nothing was handed off, so the stage is not OK and nothing is worth retrying, got %+v", res)
+	}
+	if !strings.Contains(res.ResolvedWhy, "PROJ-99 added the helper") {
+		t.Errorf("the session's reason must reach the tracker breadcrumb, got %q", res.ResolvedWhy)
+	}
+	got := narration(t, log)
+	if !strings.Contains(got, "tdd ≡ already resolved on main by "+fix[:12]) || strings.Contains(got, "tdd ✗") {
+		t.Errorf("run.jsonl must log the resolved disposition, not a tdd failure; got %s", got)
+	}
+	if len(h.Trk.Released) != 0 {
+		t.Errorf("released = %v, want the claim kept for the loop to hand to a human", h.Trk.Released)
+	}
+}
+
+// A marker naming a commit origin/main does not contain is the session's word
+// against the ground truth, and the ground truth wins: still a tdd failure.
+func TestImplementationFailsAResolvedMarkerNamingACommitNotOnMain(t *testing.T) {
+	for name, commit := range map[string]string{
+		"not on main": "",
+		"unknown":     "0123456789abcdef0123456789abcdef01234567",
+		"not a ref":   "--output=/tmp/x",
+	} {
+		t.Run(name, func(t *testing.T) {
+			h, repo := fresh(t, "PROJ-21")
+			if commit == "" {
+				unmerged := repo.Publish("feat/elsewhere")
+				repo.Git(repo.Dir, "fetch", "-q", "origin", "feat/elsewhere")
+				commit = unmerged
+			}
+			h.AgentFn = resolvedBy(t, commit)
+
+			log := stageLog(t, "PROJ-21")
+			res := Implementation(h, stageCfg(), log, Args{Identifier: "PROJ-21"})
+
+			if res.OK || res.Disposition != NoPR {
+				t.Fatalf("a marker naming %q is no proof the ticket is resolved, got %+v", commit, res)
+			}
+			got := narration(t, log)
+			if !strings.Contains(got, "tdd ✗") || !strings.Contains(got, "not on origin/main") {
+				t.Errorf("run.jsonl must fail the run and say the marker's commit is not on origin/main; got %s", got)
+			}
+		})
+	}
+}
+
+// No marker, no change: a clean stop with no handoff commit is the failure it
+// always was.
+func TestImplementationWithoutAResolvedMarkerStillFailsANoHandoffRun(t *testing.T) {
+	h, repo := fresh(t, "PROJ-22")
+	repo.Merge("helper.go", "func helper() {}\n", "PROJ-99: add the helper")
+	h.AgentFn = func(int, hostio.AgentRun) session.Outcome { return session.Outcome{} }
+
+	log := stageLog(t, "PROJ-22")
+	res := Implementation(h, stageCfg(), log, Args{Identifier: "PROJ-22"})
+
+	if res.OK || res.Disposition != NoPR {
+		t.Fatalf("no handoff and no marker is a failed run, got %+v", res)
+	}
+	if got := narration(t, log); !strings.Contains(got, "tdd ✗ no handoff commit") {
+		t.Errorf("run.jsonl = %s, want the unchanged no-handoff failure", got)
+	}
+}
+
+// The findings dir is keyed on the ticket, not the run, so a marker an earlier
+// run left must not resolve this one.
+func TestImplementationIgnoresAResolvedMarkerAnEarlierRunLeft(t *testing.T) {
+	h, repo := fresh(t, "PROJ-23")
+	repo.Merge("helper.go", "func helper() {}\n", "PROJ-99: add the helper")
+	fix := repo.Git(repo.Origin, "rev-parse", "main")
+	first := resolvedBy(t, fix)
+	h.AgentFn = first
+	log := stageLog(t, "PROJ-23")
+	if res := Implementation(h, stageCfg(), log, Args{Identifier: "PROJ-23"}); res.Disposition != ResolvedOnMain {
+		t.Fatalf("first run: got %+v", res)
+	}
+
+	h.AgentFn = func(int, hostio.AgentRun) session.Outcome { return session.Outcome{} }
+	if res := Implementation(h, stageCfg(), log, Args{Identifier: "PROJ-23"}); res.Disposition != NoPR {
+		t.Errorf("a stale marker resolved the second run: got %+v", res)
+	}
+}

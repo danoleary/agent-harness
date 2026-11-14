@@ -59,3 +59,4 @@ catches a duplicate there.
 - [ADR-0049](0049-a-pr-fix-may-skip-a-gate-its-diff-cannot-reach.md): A PR fix may skip a gate its diff cannot reach
 - [ADR-0050](0050-a-replays-resolution-reports-what-the-branch-duplicates-of-main.md): A replay's resolution reports what the branch duplicates of main
 - [ADR-0051](0051-a-gate-may-isolate-a-worktree-cache-from-the-sandbox.md): A gate may isolate a worktree cache from the sandbox
+- [ADR-0052](0052-a-sessions-already-resolved-on-main-stop-is-handed-to-a-human.md): A session's already-resolved-on-main stop is handed to a human, not failed

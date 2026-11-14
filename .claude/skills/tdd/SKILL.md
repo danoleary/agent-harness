@@ -12,7 +12,11 @@ prompt around this skill tells you the ticket, the worktree and the branch.
 
 1. Read the ticket. Restate, in two or three sentences, the behaviour that will
    be different when you are done. If the ticket names an issue that already
-   looks fixed on `main`, say so and stop: that is a legitimate outcome.
+   looks fixed on `main`, say so and stop: that is a legitimate outcome. Find
+   the `origin/main` commit that fixes it, commit nothing, and write
+   `/findings/resolved.json` as `{"commit": "<sha>", "reason": "<why>"}`. The
+   harness checks that commit is on `origin/main` and hands the ticket to a
+   human to close rather than failing the run (ADR-0052).
 2. Read `CONTEXT.md` and use its terms (Stage, Gate, Lease, Landing,
    Disposition, …) in names, comments and commit messages.
 3. Find the module that owns the behaviour and its `_test.go`. Follow the
