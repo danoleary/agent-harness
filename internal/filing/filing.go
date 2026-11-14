@@ -148,8 +148,8 @@ type Router struct {
 // issue (comment-and-bump) instead of filing a duplicate.
 //
 // File is the audience-blind primitive: it files everything to the tracker. The
-// implementation stage uses it because its dropbox protocol asks for harness
-// friction only and never classifies; [Router.Route] is the audience-aware form.
+// harness uses it for findings it writes itself, which are harness friction by
+// construction; [Router.Route] is the audience-aware form.
 func (r Router) File(findingsDir, teamID, relatedIdentifier string) {
 	parsed, ok := r.readDropbox(findingsDir)
 	if !ok {

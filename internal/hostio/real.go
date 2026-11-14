@@ -116,9 +116,10 @@ func (h *Real) AlreadyFiled(findingsDir, teamID string) []filing.PriorFinding {
 }
 
 // FileFindings files everything in the dropbox to the Consumer's tracker. This is
-// the plain, audience-blind sink the implementation stage uses: its dropbox
-// protocol asks for harness/environment friction only and is not taught to
-// classify, so it must not go through the audience router.
+// the plain, audience-blind sink for findings the harness writes itself (the
+// red-base finding, the PR loop's): they are harness friction by construction, so
+// they skip the audience router. An implementation session's dropbox is never
+// filed (#336).
 func (h *Real) FileFindings(findingsDir, teamID, key string) {
 	if r, ok := h.router(); ok {
 		r.File(findingsDir, teamID, key)
