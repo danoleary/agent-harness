@@ -54,7 +54,13 @@ and the PR is held, not blamed.**
 - **Trust the session's report that main is red.** The host never trusts a
   session's say-so for a push decision (ADR-0016). A structured "base does not
   build" report could still save the session, and the gate run, before the
-  host checks. It is left for later.
+  host checks. It is left for later. The prompt half exists now (#253): both
+  conflict-resolution prompts tell the session to check origin/main alone in
+  a scratch detached worktree when a build or test fails, to leave a red base
+  unfixed (never repaired through this PR, not even in a separate commit) and
+  to write `BASE RED` with the failing package or test in its final report.
+  The host still decides from its own re-gate; it does not read that report
+  yet.
 - **Gate the base before every conflict session.** That spends a gate run on
   every conflict. Checking only after a red re-gate costs nothing while main is
   green.
