@@ -31,7 +31,9 @@ command-valued key.**
 - The keys are `filter.<name>.{clean,smudge,process}`, `diff.external`,
   `diff.<name>.{command,textconv}`, `merge.<name>.driver`,
   `core.{sshCommand,pager,editor,askPass,gitProxy,alternateRefsCommand}`,
-  `pager.*`, `sequence.editor`, `credential[.<url>].helper`,
+  `pager.*` unless set to a boolean, `hook.<name>.command` (a hook set in
+  config, which `core.hooksPath` does not reach), `sequence.editor`,
+  `credential[.<url>].helper`,
   `remote.<name>.{uploadpack,receivepack}`, `gpg[.<format>].program` and
   `gpg.ssh.defaultKeyCommand`. An empty value names no command and is allowed:
   `credential.helper =` is how a config resets the helper list.

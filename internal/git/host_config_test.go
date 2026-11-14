@@ -109,7 +109,7 @@ func TestHostGitRefusesACommandValuedKeyInTheRepositoryConfig(t *testing.T) {
 		"diff.external", "diff.x.textconv", "diff.x.command",
 		"merge.x.driver",
 		"core.sshCommand", "core.pager", "core.editor", "core.askPass", "core.gitProxy", "core.alternateRefsCommand",
-		"pager.log", "sequence.editor",
+		"pager.log", "sequence.editor", "hook.x.command",
 		"credential.helper", "credential.https://example.com.helper",
 		"remote.origin.uploadpack", "remote.origin.receivepack",
 		"gpg.program", "gpg.ssh.program", "gpg.ssh.defaultKeyCommand",
@@ -144,6 +144,15 @@ func TestHostGitRefusesACommandSetInAnIncludedFile(t *testing.T) {
 func TestHostGitRunsWithAnEmptyCommandValuedKey(t *testing.T) {
 	repo := gittest.New(t)
 	repo.Git(repo.Dir, "config", "credential.helper", "")
+	if err := gitpkg.Open(repo.Dir, gittest.Prefix).WithoutRemoteRetry().FetchMain(); err != nil {
+		t.Fatalf("FetchMain = %v, want it to run", err)
+	}
+}
+
+// pager.<cmd> takes a boolean too, and `pager.branch = false` names no command.
+func TestHostGitRunsWithABooleanPager(t *testing.T) {
+	repo := gittest.New(t)
+	repo.Git(repo.Dir, "config", "pager.branch", "false")
 	if err := gitpkg.Open(repo.Dir, gittest.Prefix).WithoutRemoteRetry().FetchMain(); err != nil {
 		t.Fatalf("FetchMain = %v, want it to run", err)
 	}

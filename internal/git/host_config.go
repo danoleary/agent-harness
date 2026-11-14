@@ -27,7 +27,7 @@ func refuseRepoCommands(output outputRunner, args []string) error {
 		return nil
 	}
 	for _, e := range parseConfigList(out) {
-		if (e.scope == "local" || e.scope == "worktree") && e.value != "" && commandValued(e.key) {
+		if (e.scope == "local" || e.scope == "worktree") && e.value != "" && commandValued(e.key, e.value) {
 			return fmt.Errorf("host git refused: %s sets %s, a command a sandbox session can write and host git would run (ADR-0058); "+
 				"remove it from that file, or set it in your global git config", strings.TrimPrefix(e.origin, "file:"), e.key)
 		}
@@ -67,8 +67,9 @@ func parseConfigList(out []byte) []configEntry {
 // commandValued reports whether git runs key's value as a command in an operation
 // the host performs. git lists a key with its section and variable lowercased and
 // any subsection (a filter's, a driver's, a URL) as written. core.hooksPath and
-// core.fsmonitor are not here: [hostSafeConfig] overrides them.
-func commandValued(key string) bool {
+// core.fsmonitor are not here: [hostSafeConfig] overrides them. A hook set in
+// config, hook.<name>.command, is: core.hooksPath does not reach it.
+func commandValued(key, value string) bool {
 	section, rest, ok := strings.Cut(key, ".")
 	if !ok {
 		return false
@@ -91,7 +92,11 @@ func commandValued(key string) bool {
 			return sub == ""
 		}
 	case "pager":
-		return sub == ""
+		// pager.<cmd> also takes a boolean, `pager.branch = false` the common one,
+		// and a boolean names no command: true means core.pager, checked itself.
+		return sub == "" && !gitBool(value)
+	case "hook":
+		return sub != "" && variable == "command"
 	case "sequence":
 		return sub == "" && variable == "editor"
 	case "credential":
@@ -100,6 +105,15 @@ func commandValued(key string) bool {
 		return sub != "" && (variable == "uploadpack" || variable == "receivepack")
 	case "gpg":
 		return variable == "program" || (sub == "ssh" && variable == "defaultkeycommand")
+	}
+	return false
+}
+
+// gitBool reports whether git reads value as a boolean rather than a command.
+func gitBool(value string) bool {
+	switch strings.ToLower(value) {
+	case "true", "false", "yes", "no", "on", "off", "1", "0":
+		return true
 	}
 	return false
 }
