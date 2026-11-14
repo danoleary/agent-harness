@@ -178,15 +178,21 @@ func TestImplementationHandPassedPreflightFailureReleasesNothing(t *testing.T) {
 
 // BEH-528: a ticket whose work already merged on main is dropped before the image
 // build, the claim and the launch — and --force overrides it for the rare false
-// positive.
+// positive. The skip is its own Disposition, naming the merge commit, so the
+// pipeline ends the slice and the loop takes the ticket out of the queue rather
+// than releasing it to be selected again (#331).
 func TestImplementationSkipsWorkAlreadyMergedOnMain(t *testing.T) {
 	h, repo := fresh(t, "PROJ-4")
 	repo.Merge("fix.txt", "the fix\n", "PROJ-4: the fix")
+	merged := repo.OnOrigin("main")
 
 	res := Implementation(h, stageCfg(), stageLog(t, "PROJ-4"), Args{Identifier: "PROJ-4"})
 
-	if !res.OK {
-		t.Fatalf("a skip is a clean no-op, got %+v", res)
+	if !res.OK || res.Disposition != AlreadyOnMain {
+		t.Fatalf("a skip is a clean no-op with its own Disposition, got %+v", res)
+	}
+	if res.ResolvedBy != merged || !strings.Contains(res.ResolvedWhy, "PROJ-4: the fix") {
+		t.Errorf("ResolvedBy = %q, ResolvedWhy = %q; want the merge commit %s and its subject", res.ResolvedBy, res.ResolvedWhy, merged)
 	}
 	if len(h.Trk.Claimed) != 0 || len(h.Agents) != 0 {
 		t.Errorf("a skipped ticket must cost no claim and no session; claimed=%v agents=%v", h.Trk.Claimed, labels(h.Agents))

@@ -74,7 +74,11 @@ func Retrospective(h hostio.Host, cfg config.Config, log *runlog.Logger, args Ar
 	// The worktree tears down host-side; the real-path mount makes its .git pointer
 	// resolve from the main checkout.
 	// WorktreeReap checks the push first and returns, so an unpushed branch never
-	// spends the gh round-trip PRExists costs.
+	// spends the gh round-trip PRExists costs. A run that never made a worktree has
+	// none to reap, and asking git to remove one only logs a failed removal (#331).
+	if !wt.Exists() {
+		return Result{OK: true}
+	}
 	reap := verify.WorktreeReap(wt, h.PRExists)
 	if !reap.OK {
 		log.Event("worktree kept — " + reap.Reason)

@@ -2,7 +2,9 @@ package git
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -101,6 +103,16 @@ func commitAndPush(t *testing.T, dir, subject string) {
 	runGit(t, dir, "push", "-q", "origin", "main")
 }
 
+// headSHA is dir's HEAD commit.
+func headSHA(t *testing.T, dir string) string {
+	t.Helper()
+	out, err := exec.Command("git", "-C", dir, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatalf("rev-parse HEAD: %v", err)
+	}
+	return strings.TrimSpace(string(out))
+}
+
 // newSharedRemote returns (origin, host) where origin is a bare repo seeded with
 // one commit and host is a clone of it — the shape of the harness's primary
 // checkout against the team remote, with the host's origin/main intentionally
@@ -129,9 +141,16 @@ func TestTicketAlreadyOnMainFetchesThenFindsMergedTicket(t *testing.T) {
 	author, host := newSharedRemote(t)
 
 	commitAndPush(t, author, "docs(harness): isolation rules (BEH-521) (#542)")
+	merged := headSHA(t, author)
+	commitAndPush(t, author, "an unrelated later change (BEH-600)")
 
-	if !Open(host, testPrefix).TicketAlreadyOnMain("BEH-521") {
+	got, ok := Open(host, testPrefix).TicketAlreadyOnMain("BEH-521")
+	if !ok {
 		t.Fatalf("BEH-521 merged on the remote — the guard should fetch and find it")
+	}
+	// #331: the loop names the merge commit on the ticket it hands to a human.
+	if got.SHA != merged || got.Subject != "docs(harness): isolation rules (BEH-521) (#542)" {
+		t.Errorf("found %+v, want the commit naming BEH-521 (%s)", got, merged)
 	}
 }
 
@@ -142,7 +161,7 @@ func TestTicketAlreadyOnMainFalseWhenUnmerged(t *testing.T) {
 
 	commitAndPush(t, author, "docs(harness): isolation rules (BEH-521) (#542)")
 
-	if Open(host, testPrefix).TicketAlreadyOnMain("BEH-999") {
+	if _, ok := Open(host, testPrefix).TicketAlreadyOnMain("BEH-999"); ok {
 		t.Fatalf("BEH-999 never merged — dispatch must not be skipped")
 	}
 }
@@ -163,7 +182,7 @@ func TestTicketAlreadyOnMainFailsOpenWhenGitErrors(t *testing.T) {
 	runGit(t, repo, "commit", "-q", "-m", "init (BEH-521)")
 
 	// No origin remote and no origin/main ref — the log read fails.
-	if Open(repo, testPrefix).TicketAlreadyOnMain("BEH-521") {
+	if _, ok := Open(repo, testPrefix).TicketAlreadyOnMain("BEH-521"); ok {
 		t.Fatalf("a git failure must fail open (false), never block dispatch")
 	}
 }

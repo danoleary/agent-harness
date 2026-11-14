@@ -521,6 +521,27 @@ func TestRunEndsTheSliceAtARedBaseHold(t *testing.T) {
 	}
 }
 
+// #331: an implementation that skipped the ticket because a commit on main already
+// names it launched no session: review would fail over a worktree that was never
+// made and the retrospective would mine nothing, so the slice ends there. It exits
+// 0 and carries AlreadyOnMain and the commit to the loop.
+func TestRunEndsTheSliceAtATicketAlreadyMergedOnMain(t *testing.T) {
+	r := &recorder{}
+	out := Run(Deps{
+		FetchMain:      func() error { return nil },
+		Implementation: r.stage("impl", stages.Result{OK: true, Disposition: stages.AlreadyOnMain, ResolvedBy: "abc123", ResolvedWhy: "PROJ-4: the fix"}),
+		Review:         r.stage("review", stages.Result{OK: true}),
+		Retrospective:  r.stage("retro", stages.Result{OK: true}),
+		Log:            r,
+	})
+	if want := []string{"impl"}; !reflect.DeepEqual(r.order, want) {
+		t.Errorf("stage order = %v, want %v (no session ran: no review, no retrospective)", r.order, want)
+	}
+	if out.ExitCode() != 0 || out.Disposition != stages.AlreadyOnMain || out.ResolvedBy != "abc123" {
+		t.Errorf("out = %+v, want an exit-0 AlreadyOnMain carrying the commit", out)
+	}
+}
+
 // #329: an implementation that found the ticket already resolved on main handed
 // nothing off, so review is skipped, but the slice did its job: it exits 0 and
 // carries ResolvedOnMain, with the commit and reason, to the loop.

@@ -362,13 +362,18 @@ func Implementation(h hostio.Host, cfg config.Config, log *runlog.Logger, args A
 	// the image build, the claim, and the launch so none of those costs are paid.
 	// --force overrides for the rare false positive — a key that only coincidentally
 	// appears in an unrelated downstream commit. (Deliberately after the dry-run
-	// branch above: --dry-run stays a pure prompt/command inspector.)
-	if !args.Force && h.TicketAlreadyOnMain(args.Identifier) {
-		log.Event(fmt.Sprintf(
-			"skipped %s — already merged on main (a recent commit references it); re-run with --force to dispatch anyway",
-			args.Identifier,
-		))
-		return Result{OK: true}
+	// branch above: --dry-run stays a pure prompt/command inspector.) The skip is
+	// its own Disposition, not a bare OK: a bare OK ran review and retrospective
+	// over a worktree that was never made, and the loop released the ticket to be
+	// selected again until the breaker tripped (#331).
+	if !args.Force {
+		if merged, ok := h.TicketAlreadyOnMain(args.Identifier); ok {
+			log.Event(fmt.Sprintf(
+				"skipped %s — already merged on main (%s %q references it); re-run with --force to dispatch anyway",
+				args.Identifier, shortCommit(merged.SHA), merged.Subject,
+			))
+			return Result{OK: true, Disposition: AlreadyOnMain, ResolvedBy: merged.SHA, ResolvedWhy: merged.Subject}
+		}
 	}
 
 	// Advisory + prompt section (#335): a fix can land under another number without

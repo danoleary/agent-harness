@@ -1114,8 +1114,10 @@ func (c Checkout) MainSHA() (string, error) {
 // TicketAlreadyOnMain reports whether the ticket Key already appears in recent
 // origin/main history — i.e. its work merged, so dispatching a fresh tdd session
 // would burn a whole worktree + install only to discover an empty diff and raise
-// no PR (BEH-528). It first refreshes origin/main with a single best-effort fetch
-// (the host checkout's remote-tracking ref can lag a just-merged PR), then scans.
+// no PR (BEH-528) — and returns the newest commit that names it, which the loop
+// puts on the ticket it hands to a human (#331). It first refreshes origin/main
+// with a single best-effort fetch (the host checkout's remote-tracking ref can lag
+// a just-merged PR), then scans.
 //
 // The key is the tracker-agnostic Key (ADR-0010) the adapter produced — a Linear
 // `BEH-123` or a Jira `PROJ-123` all the same; the scan makes no `BEH-`
@@ -1125,15 +1127,21 @@ func (c Checkout) MainSHA() (string, error) {
 // blip) returns false so a flaky read never blocks a legitimate dispatch. The
 // asymmetry is deliberate — a false negative costs one session (the pre-guard
 // status quo), whereas a false positive would silently drop real work.
-func (c Checkout) TicketAlreadyOnMain(key string) bool {
+func (c Checkout) TicketAlreadyOnMain(key string) (Landed, bool) {
 	// Best-effort refresh; an offline/blipping remote just means we scan whatever
 	// origin/main we already have rather than block dispatch behind the network.
 	_ = c.run("git", "-C", c.path, "fetch", "-q", "origin", "main")
-	out, err := c.output("git", "-C", c.path, "log", "--oneline", "-"+strconv.Itoa(mainHistoryLookback), "origin/main")
+	out, err := c.output("git", "-C", c.path, "log", "--format=%H %s", "-"+strconv.Itoa(mainHistoryLookback), "origin/main")
 	if err != nil {
-		return false
+		return Landed{}, false
 	}
-	return mainHistoryReferences(string(out), key)
+	for _, line := range strings.Split(string(out), "\n") {
+		sha, subject, _ := strings.Cut(line, " ")
+		if mainHistoryReferences(subject, key) {
+			return Landed{SHA: sha, Subject: subject}, true
+		}
+	}
+	return Landed{}, false
 }
 
 // Landed is one commit that reached origin/main, and the files it changed.

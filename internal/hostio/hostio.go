@@ -170,7 +170,9 @@ type Planner interface {
 type Repo interface {
 	// Worktree is the ticket this Host is bound to, as git sees it.
 	Worktree() gitpkg.Worktree
-	TicketAlreadyOnMain(key string) bool
+	// TicketAlreadyOnMain finds the newest recent origin/main commit naming key
+	// (BEH-528, #331).
+	TicketAlreadyOnMain(key string) (gitpkg.Landed, bool)
 	// LandedSince lists the commits on origin/main that landed after since, with
 	// the files each changed (#335).
 	LandedSince(since time.Time) []gitpkg.Landed

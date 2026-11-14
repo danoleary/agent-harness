@@ -158,7 +158,7 @@ base, clean tree) the harness verifies independently of what the sandbox reporte
 **Disposition**:
 A run's one terminal verdict — **Shipped**, **RecommendClose**, **CapAborted**,
 **PreflightAborted**, **Interrupted**, **BaseRed**, **NeedsHuman**, **CheckoutBlocked**,
-**ResolvedOnMain** or **NoPR** (`stages.Disposition`). Exactly
+**ResolvedOnMain**, **AlreadyOnMain** or **NoPR** (`stages.Disposition`). Exactly
 one holds per stage and, folded across the three, per ticket; it is the only thing
 the loop branches on and the breaker counts. Distinct from a Stage's **OK**, which
 asks only "did this stage do its job?" — a Shipped run can be not-OK (CI red after
@@ -184,6 +184,10 @@ on origin/main and stopped without committing, naming the fixing commit in
 `/findings/resolved.json`, and git confirmed origin/main contains it. The loop
 labels the ticket blocked, comments the commit and the session's reason for a
 human to close it, and keeps the claim. The breaker stays blind (ADR-0052).
+**AlreadyOnMain** means the implementation stage found a recent origin/main commit
+naming the ticket and launched no session. Review and retrospective do not run; the
+loop labels the ticket blocked, comments the commit for a human to close it, and
+keeps the claim. The breaker stays blind (ADR-0056).
 _Avoid_: outcome, signal, status.
 
 **Landing**:
