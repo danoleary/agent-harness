@@ -27,7 +27,7 @@ concurrency:
 
 jobs:
   gates:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     name: Check, build
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -51,7 +51,7 @@ jobs:
         run: make build
 
   base-image:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     name: Base image builds
     # The base image is the harness<->sandbox contract every Consumer FROMs
     # (ADR-0008), so a Dockerfile.base that no longer builds must fail here, not
@@ -70,7 +70,7 @@ jobs:
           cache-to: type=gha,mode=max
 
   self-image:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     name: Self-hosting image runs the gate's toolchain
     # A Gate runs a non-login `bash -c` through the entrypoint (#38), so it sees
     # only the image's ENV PATH — a toolchain missing from it makes `make check`
