@@ -83,6 +83,11 @@ Disposition: clear — <reason>
 Write the labels (`Intent:`, `Findings:`, `Gate:`, `Disposition:`) as plain
 text, exactly as shown: no bold, italics, backticks or list markers around them.
 The harness parses the Disposition line to decide whether to push.
+Write the `Disposition:` label only on that one terminal line, the last line of
+the report. Anywhere else, including a finding about the verdict format, say "the
+disposition line" or "a blocked disposition" in prose instead. The harness reads
+the terminal line only, and a quoted label above it gets flagged as a
+contradiction.
 
 Use `Disposition: blocked — <reason>` only when a finding needs a human decision
 (an ambiguous spec, a trade-off an ADR does not settle). Never block on

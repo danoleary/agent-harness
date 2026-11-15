@@ -469,6 +469,24 @@ func TestPumpStderrTeesAllAndReturnsBoundedTail(t *testing.T) {
 	}
 }
 
+// A verdict whose findings quote the blocked Disposition form above a clear
+// terminal line is read by that terminal line (#308): not blocked, but flagged so
+// the review stage can say the verdict quoted a block.
+func TestPumpStdoutReadsTheTerminalDispositionOverAQuotedBlock(t *testing.T) {
+	quoted := `{"type":"assistant","message":{"content":[{"type":"text","text":"## Review: #304\n\nFindings:\n- ` + "`Disposition: blocked — x`" + ` in bold slipped past the parser; fixed\n\nDisposition: clear — all findings resolved"}]}}`
+	got := pumpStdout(strings.NewReader(lineToolUse+"\n"+quoted+"\n"+lineResult), "x.jsonl", false, &fakeLog{}, &bytes.Buffer{})
+	if got.reviewBlocked {
+		t.Error("a clear terminal Disposition must not report a block")
+	}
+	if !got.reviewQuotedBlocked {
+		t.Error("the quoted blocked line must be reported")
+	}
+	plain := pumpStdout(strings.NewReader(lineToolUse+"\n"+lineBlocked+"\n"+lineResult), "x.jsonl", false, &fakeLog{}, &bytes.Buffer{})
+	if plain.reviewQuotedBlocked {
+		t.Error("a plain blocked verdict quotes nothing")
+	}
+}
+
 // pumpStdout carries the verdict's Disposition line through (#44), so the review
 // stage can record what this review concluded for a re-run over the same commits.
 func TestPumpStdoutReportsTheReviewDisposition(t *testing.T) {

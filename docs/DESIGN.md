@@ -857,7 +857,11 @@ shared        : STOP (every loop), STOP-tickets (every instance), locks/claim.lo
   the worktree for a human decision rather than opening a PR on an unresolved finding.
   The Disposition line is read through list/quote markers and markdown emphasis, so a
   bold `**Disposition:** blocked` still blocks, and `IsReviewBlocked` and
-  `ReviewDisposition` share that one per-line parse (#304).
+  `ReviewDisposition` share that one per-line parse (#304). Only the verdict's
+  terminal Disposition line decides the block, so a finding that quotes
+  `Disposition: blocked` while it discusses the format can't hold back a clear verdict.
+  A blocked line above a clear terminal one is logged as a self-contradicting
+  verdict instead (#308).
 - **A usage-policy refusal is retryable, not fatal ([BEH-389](https://linear.app/beherd/issue/BEH-389)).**
   Claude Code's "unable to respond … violate our Usage Policy" refusal is a known
   intermittent false-positive on long agentic sessions; it returns a terminal
