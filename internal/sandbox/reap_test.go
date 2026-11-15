@@ -118,10 +118,10 @@ func TestTheReaperLeavesProcessesAloneForACommandThatRunsNoStory(t *testing.T) {
 	}
 }
 
-// Every sandboxed session carries the reaper as a PreToolUse hook on Bash, in
-// settings passed on the command line, so it reaches the session without a new
-// base image.
-func TestEverySessionCarriesTheReaperAsABashPreToolUseHook(t *testing.T) {
+// Every sandboxed session carries the reaper and the interactive-git guard as
+// PreToolUse hooks on Bash, in settings passed on the command line, so they reach
+// the session without a new base image.
+func TestEverySessionCarriesTheReaperAndTheGitGuardAsBashPreToolUseHooks(t *testing.T) {
 	raw := valuesForFlag(BuildDockerRunArgs(baseConfig()), "--settings")
 	if len(raw) != 1 {
 		t.Fatalf("want one --settings, got %v", raw)
@@ -139,11 +139,14 @@ func TestEverySessionCarriesTheReaperAsABashPreToolUseHook(t *testing.T) {
 		t.Fatalf("--settings is not JSON: %v", err)
 	}
 	pre := settings.Hooks["PreToolUse"]
-	if len(pre) != 1 || pre[0].Matcher != "Bash" || len(pre[0].Hooks) != 1 {
-		t.Fatalf("want one PreToolUse hook on Bash, got %+v", pre)
+	if len(pre) != 1 || pre[0].Matcher != "Bash" || len(pre[0].Hooks) != 2 {
+		t.Fatalf("want two PreToolUse hooks on Bash, got %+v", pre)
 	}
 	if h := pre[0].Hooks[0]; h.Type != "command" || h.Command != reapLeftoversCommand("/proc") {
-		t.Errorf("the hook must run the reaper over /proc, got %+v", h)
+		t.Errorf("the first hook must run the reaper over /proc, got %+v", h)
+	}
+	if h := pre[0].Hooks[1]; h.Type != "command" || h.Command != interactiveGitGuardCommand() {
+		t.Errorf("the second hook must run the interactive-git guard, got %+v", h)
 	}
 }
 
@@ -162,5 +165,106 @@ func TestASessionWithoutMCPPassesStrictMCPConfig(t *testing.T) {
 	}
 	if slices.Contains(args, "--mcp-config") {
 		t.Error("a NoMCP session must name no MCP config")
+	}
+}
+
+// runGuard runs the interactive-git guard as Claude Code runs a PreToolUse hook,
+// and returns its exit code and stderr. Exit 2 blocks the Bash call and hands
+// stderr to the session.
+func runGuard(t *testing.T, command string) (int, string) {
+	t.Helper()
+	event, _ := json.Marshal(map[string]any{
+		"hook_event_name": "PreToolUse",
+		"tool_name":       "Bash",
+		"tool_input":      map[string]any{"command": command},
+	})
+	c := exec.Command("sh", "-c", interactiveGitGuardCommand())
+	c.Stdin = strings.NewReader(string(event))
+	var stderr strings.Builder
+	c.Stderr = &stderr
+	err := c.Run()
+	if err == nil {
+		return 0, stderr.String()
+	}
+	if ee, ok := err.(*exec.ExitError); ok {
+		return ee.ExitCode(), stderr.String()
+	}
+	t.Fatalf("guard hook did not run: %v", err)
+	return 0, ""
+}
+
+// #353, replayed: a compound Bash command with `git checkout -p` in it, its
+// stderr on /dev/null, sat at the hunk prompt until the 10-minute Bash timeout.
+// The guard blocks it before it runs, and says what to run instead.
+func TestTheGuardBlocksTheCompoundCheckoutPatchThatHungTheSession(t *testing.T) {
+	code, stderr := runGuard(t, "git status --short && git checkout -p -- internal/sandbox/reap.go 2>/dev/null; git diff --stat")
+	if code != 2 {
+		t.Fatalf("want exit 2 (block), got %d; stderr %q", code, stderr)
+	}
+	for _, want := range []string{"git checkout -p", "interactive", "git checkout -- <path>", "git restore <path>"} {
+		if !strings.Contains(stderr, want) {
+			t.Errorf("the block message must name %q, got %q", want, stderr)
+		}
+	}
+}
+
+func TestTheGuardBlocksOnlyGitModesThatPrompt(t *testing.T) {
+	for _, tc := range []struct {
+		command string
+		block   bool
+	}{
+		{"git checkout -p --", true},
+		{"git add -p", true},
+		{"git add --patch internal/x.go", true},
+		{"git add -i", true},
+		{"git restore -p internal/x.go", true},
+		{"git reset --patch HEAD~1", true},
+		{"git stash -p", true},
+		{"git stash push --patch -m wip", true},
+		{"git commit -p -m wip", true},
+		{"git commit --interactive", true},
+		{"git clean -i", true},
+		{"git rebase -i origin/main", true},
+		{"git -C /work/repo add -p", true},
+		{"git -c core.pager=cat checkout --patch", true},
+		{"GIT_PAGER=cat git add -p", true},
+		{"timeout 60 git add -p", true},
+		{"echo $(git add -p)", true},
+		{"cd /work &&\n  git add -p", true},
+		{"git status | cat; git reset -p", true},
+		{"if git add -p; then :; fi", true},
+		{"while ! git rebase -i origin/main; do :; done", true},
+
+		{"git checkout -- file", false},
+		{"git checkout main -- -p", false},
+		{"git diff -p", false},
+		{"git log -p -3", false},
+		{"git show -p HEAD", false},
+		{"git stash show -p", false},
+		{"git stash list -p", false},
+		{"git commit -i -m wip internal/x.go", false},
+		{"git add internal/x.go && git commit -m 'stop git add -p hanging'", false},
+		{`git commit -m "reject -p and --interactive"`, false},
+		{"git commit -F - <<'EOF'\nReject interactive modes\n\ngit add -p\ngit checkout -p\nEOF\ngit log -1", false},
+		{"grep -rn 'git add -p' docs/", false},
+		{"echo git add -p", false},
+		{"go test ./... # not git add -p", false},
+		{"ls -p", false},
+		{"", false},
+	} {
+		code, stderr := runGuard(t, tc.command)
+		if tc.block && code != 2 {
+			t.Errorf("%q: want blocked (exit 2), got exit %d", tc.command, code)
+		}
+		if !tc.block && code != 0 {
+			t.Errorf("%q: want let through (exit 0), got exit %d; stderr %q", tc.command, code, stderr)
+		}
+	}
+}
+
+// A heredoc body that never ends must not leave the guard blocking or hanging.
+func TestTheGuardLetsThroughAnUnterminatedHeredoc(t *testing.T) {
+	if code, stderr := runGuard(t, "cat <<EOF\ngit add -p"); code != 0 {
+		t.Errorf("want exit 0, got %d; stderr %q", code, stderr)
 	}
 }
