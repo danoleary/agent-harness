@@ -699,16 +699,56 @@ func TestReviewVerdictWithADeferredGateReadsAsGreen(t *testing.T) {
 	}
 }
 
-// A blocked disposition anywhere in the verdict fails the push closed, even when a
-// later line reads clear: the two can only disagree by mistake, and the safe
-// reading of a contradictory report is to wait for a human.
-func TestIsReviewBlockedFailsClosedOnAnyBlockedLine(t *testing.T) {
-	line := mustJSON(t, map[string]any{
-		"type": "assistant",
-		"message": map[string]any{"content": []any{map[string]any{"type": "text",
-			"text": "## Review: #1\n\n**Disposition:** blocked — x\n\nDisposition: clear — y"}}},
-	})
-	if !IsReviewBlocked(line) {
-		t.Error("a verdict with any blocked Disposition line should be blocked")
+// Only the verdict's terminal Disposition line decides the block (#308). A
+// finding that quotes the blocked form — inline, or as the first token of a
+// findings bullet, which the per-line parse strips down to a real-looking line —
+// must not hold back a verdict whose terminal line reads clear (ReviewQuotesBlocked
+// flags the bullet; an inline quote is not a Disposition line at all), and a terminal
+// blocked line still blocks whatever the report quoted above it.
+func TestIsReviewBlockedReadsOnlyTheTerminalDisposition(t *testing.T) {
+	verdict := func(text string) string {
+		return mustJSON(t, map[string]any{
+			"type":    "assistant",
+			"message": map[string]any{"content": []any{map[string]any{"type": "text", "text": text}}},
+		})
+	}
+	for name, tc := range map[string]struct {
+		text            string
+		blocked, quoted bool
+	}{
+		"findings bullet quotes blocked": {"## Review: #304\n\nIntent: read the Disposition line through emphasis\n\nFindings:\n" +
+			"- `Disposition: blocked — x` written in bold used to slip past the parser; fixed\n\n" +
+			"Gate: make check green\n\nDisposition: clear — all findings resolved", false, true},
+		"inline quote of blocked": {"## Review: #304\n\nFindings:\n- [fixed] parser: a bold `**Disposition:** blocked` now blocks\n\n" +
+			"Disposition: clear — fixed", false, false},
+		"bold blocked then clear": {"## Review: #1\n\n**Disposition:** blocked — x\n\nDisposition: clear — y", false, true},
+		"clear quoted, terminal blocked": {"## Review: #1\n\nFindings:\n- `Disposition: clear` would be wrong here\n\n" +
+			"Disposition: blocked — needs a human call", true, false},
+	} {
+		line := verdict(tc.text)
+		if got := IsReviewBlocked(line); got != tc.blocked {
+			t.Errorf("%s: IsReviewBlocked = %v; want %v", name, got, tc.blocked)
+		}
+		if got := ReviewQuotesBlocked(line); got != tc.quoted {
+			t.Errorf("%s: ReviewQuotesBlocked = %v; want %v", name, got, tc.quoted)
+		}
+	}
+}
+
+// ReviewQuotesBlocked is false for a verdict that never wrote a blocked line
+// above its terminal one, and for anything that is not a verdict.
+func TestReviewQuotesBlockedOnlyForAnEarlierBlockedLine(t *testing.T) {
+	for name, text := range map[string]string{
+		"plain clear":            "## Review: #1\n\nDisposition: clear — no findings",
+		"plain blocked":          "## Review: #1\n\nDisposition: blocked — needs a human",
+		"blocked outside report": "Disposition: blocked — x\nDisposition: clear — y",
+	} {
+		line := mustJSON(t, map[string]any{
+			"type":    "assistant",
+			"message": map[string]any{"content": []any{map[string]any{"type": "text", "text": text}}},
+		})
+		if ReviewQuotesBlocked(line) {
+			t.Errorf("%s: ReviewQuotesBlocked = true; want false", name)
+		}
 	}
 }

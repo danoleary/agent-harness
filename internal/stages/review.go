@@ -310,6 +310,13 @@ func Review(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Res
 	if reviewOutcome.ReviewBlocked {
 		log.Event("review ⚠ verdict declared a blocked disposition — an unresolved blocker/important finding needs a human decision; will not push (BEH-580)")
 	}
+	// Only the verdict's terminal Disposition line decides the block (#308). A
+	// blocked line above a clear one — a finding quoting the format, or a report
+	// that contradicts itself — is narrated so an operator can tell why it was not
+	// taken, and check the transcript if the block was meant.
+	if reviewOutcome.ReviewQuotedBlocked && !reviewOutcome.ReviewBlocked {
+		log.Event("review ⚠ review verdict contradicts itself: terminal disposition is clear but a blocked line was found above it — reading the terminal line (#308)")
+	}
 
 	// comment posts a best-effort tracker breadcrumb so a gate-green, reviewed branch
 	// that can't ship autonomously surfaces on the ticket instead of sitting silent in

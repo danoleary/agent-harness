@@ -226,10 +226,26 @@ const reviewBlockedValue = "blocked"
 // The header is required so a "Disposition: blocked" mentioned outside a review
 // report can't trip it; a malformed line is never blocked. It reads the same
 // per-line parse ReviewDisposition does, so markdown emphasis can't hide a blocked
-// verdict from one parser and not the other (#304), and any blocked line in the
-// verdict counts: a report that contradicts itself waits for a human.
+// verdict from one parser and not the other (#304), and only the TERMINAL
+// Disposition line — the one ReviewDisposition returns — counts: a finding that
+// quotes the blocked form while describing the format can't hold back a clear
+// verdict (#308). ReviewQuotesBlocked reports that case so it can be logged.
 func IsReviewBlocked(line string) bool {
-	for _, d := range verdictDispositions(line) {
+	ds := verdictDispositions(line)
+	return len(ds) > 0 && ds[len(ds)-1].value == reviewBlockedValue
+}
+
+// ReviewQuotesBlocked reports whether a /review-worktree verdict carries a
+// blocked Disposition line above a terminal one that is not blocked — a report
+// whose findings quote the blocked form, or one that contradicts itself (#308).
+// IsReviewBlocked reads it by its terminal line; this lets the caller say so in
+// the run log, so an operator can tell a quoted block from a real one.
+func ReviewQuotesBlocked(line string) bool {
+	ds := verdictDispositions(line)
+	if len(ds) == 0 || ds[len(ds)-1].value == reviewBlockedValue {
+		return false
+	}
+	for _, d := range ds[:len(ds)-1] {
 		if d.value == reviewBlockedValue {
 			return true
 		}

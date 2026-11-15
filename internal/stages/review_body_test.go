@@ -204,6 +204,26 @@ func TestReviewBlockedVerdictFailsThePushClosed(t *testing.T) {
 	}
 }
 
+// #308: a verdict whose findings quote the blocked Disposition form above a clear
+// terminal line is clear, and the run log says it read the terminal line over the
+// quoted block, so an operator does not mistake it for a refused push or a
+// silent one.
+func TestReviewNarratesAVerdictThatQuotesABlock(t *testing.T) {
+	h, _ := handedOff(t, "PROJ-308")
+	h.AgentOutcome = session.Outcome{ReviewVerdictEmitted: true, ReviewQuotedBlocked: true, ReviewDisposition: "Disposition: clear — all findings resolved"}
+	log := stageLog(t, "PROJ-308")
+
+	res := Review(h, stageCfg(), log, Args{Identifier: "PROJ-308"})
+
+	got := narration(t, log)
+	if !res.OK || !strings.Contains(got, "review verdict contradicts itself") {
+		t.Errorf("a clear verdict that quotes a block ships and says so, got %+v; run.jsonl = %s", res, got)
+	}
+	if strings.Contains(got, "BEH-580") {
+		t.Errorf("a clear terminal Disposition must not be narrated as blocked; run.jsonl = %s", got)
+	}
+}
+
 // BEH-603: a clean branch whose committed tip makes zero net change against
 // origin/main — here because a sibling landed the same fix — is not a push and not
 // a retryable failure: it is the recommend-close disposition, and the worktree is
