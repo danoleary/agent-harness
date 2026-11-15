@@ -99,7 +99,7 @@ container. Omit the table if your toolchain has no useful cache.
 |---|---|---|---|
 | `volume` | Docker volume name | none | `PNPM_STORE_VOLUME` overrides it. |
 | `path` | absolute path in the container | — | Required when `volume` is set. |
-| `prune_command` | shell command | none | Runs **on the host** between tickets when free disk is still low after pruning merged worktrees, before a Docker prune. `pnpm store prune`, `go clean -modcache`, `dotnet nuget locals all --clear`. |
+| `prune_command` | shell command | none | Runs **on the host** between tickets when free disk is still low after pruning merged worktrees, before a Docker prune. A `git` it starts ignores the checkout's hooks and `core.fsmonitor` (ADR-0057). `pnpm store prune`, `go clean -modcache`, `dotnet nuget locals all --clear`. |
 
 ## `[sandbox]`
 

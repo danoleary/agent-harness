@@ -34,6 +34,11 @@ can write.**
   production runners, so a call site added later gets them. A host-side git call
   outside that package's `Checkout` builds its argv with `git.HostArgs`.
   `Checkout.WithRepoHooks` drops them, for gittest's fault injection only.
+  A Consumer command the host runs, `prune_command` or the prune script, starts
+  a `git` no `-c` reaches, so it runs with the same overrides as
+  `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n`/`GIT_CONFIG_VALUE_n` in its environment
+  (`git.HostEnv`), which git ranks with a command-line `-c` (#350). The `gh` it
+  starts inherits them.
 - **A run loads `config.toml` from origin/main**: `git show
   origin/main:.agent-harness/config.toml` (`config.WithCommittedProject`, which
   `stages.LoadConfig` passes). Every command the config declares, `prune_command`,
@@ -69,7 +74,7 @@ can write.**
   host push today.
 - Not closed here: git filters (`filter.<name>.smudge` with a `.gitattributes`
   entry) and other command-valued keys in `.git/config` still run on host
-  checkouts. The `git` that a host-run Consumer command starts —
-  `prune_command`, the prune script, or `gh` — reads the repository's config
-  without the overrides. The prompt bodies are read from the working tree; they reach the
-  session, not the host shell.
+  checkouts, the host's own git included. A host-run Consumer command can still
+  unset `GIT_CONFIG_COUNT` before it starts git, but that command comes from
+  origin/main, not the working tree. The prompt bodies are read from the working
+  tree; they reach the session, not the host shell.

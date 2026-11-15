@@ -488,6 +488,45 @@ func TestPruneMergedWorktreesRunsTheScriptOnOriginMain(t *testing.T) {
 	}
 }
 
+// origin/main's prune script is still run by a git that reads the checkout's
+// .git/config, which every sandbox can write. A core.hooksPath the session set
+// there would have the script's own `git checkout` run a hook on the host, next to
+// GH_TOKEN, so the script runs with the host-side overrides in its environment
+// (#350, ADR-0057).
+func TestPruneMergedWorktreesScriptGitRunsNoHookTheSandboxPlanted(t *testing.T) {
+	repo := gittest.New(t)
+	script := filepath.Join(repo.Dir, "scripts", "prune-merged-worktrees.sh")
+	if err := os.MkdirAll(filepath.Dir(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := "#!/bin/sh\nset -e\ngit checkout -q -b probe\necho 'Pruned 1 worktree(s).'\n"
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	repo.Git(repo.Dir, "add", "-A")
+	repo.Git(repo.Dir, "commit", "-q", "-m", "add the prune script")
+	repo.Git(repo.Dir, "push", "-q", "origin", "main")
+
+	ran := filepath.Join(t.TempDir(), "ran")
+	hooks := filepath.Join(t.TempDir(), "hooks")
+	if err := os.MkdirAll(hooks, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(hooks, "post-checkout"), []byte("#!/bin/sh\ntouch '"+ran+"'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	repo.Git(repo.Dir, "config", "core.hooksPath", hooks)
+
+	var cfg config.Config
+	cfg.ProjectPath = repo.Dir
+	if _, err := hostFor(t, cfg).PruneMergedWorktrees(); err != nil {
+		t.Fatalf("PruneMergedWorktrees: %v", err)
+	}
+	if _, err := os.Stat(ran); err == nil {
+		t.Error("the prune script's git ran a hook the sandbox planted, on the host")
+	}
+}
+
 // The PR loop keys its lease on the branch (ADR-0019), so it asks the ticket loop
 // which branches it holds: the slugged branch of every agent-claimed In Progress
 // ticket whose run is live, holding its run lock (#231). A ticket stays In
