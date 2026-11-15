@@ -2,6 +2,7 @@ package stages
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/danoleary/agent-harness/internal/basegate"
@@ -24,11 +25,13 @@ const baseGateStep = "basegate"
 const baseConfirmStep = "basegate-confirm"
 
 // baseCheck is what gating the untouched base decided. Held is the BaseRed
-// Result the stage ends on when Red; GreenAt is the base SHA a base-repair
-// ticket found already green (#278), empty otherwise.
+// Result the stage ends on when Red; Green is the base SHA when its verdict is
+// green, for the run's retrospective (#311), and GreenAt is that SHA only for a
+// base-repair ticket, whose envelope names it (#278). Both are empty otherwise.
 type baseCheck struct {
 	Held    Result
 	Red     bool
+	Green   string
 	GreenAt string
 }
 
@@ -59,7 +62,9 @@ type baseCheck struct {
 // a base look red.
 //
 // On the first red verdict for a base it files one finding, through findingsDir,
-// so a human learns main is red rather than finding an idle loop.
+// so a human learns main is red rather than finding an idle loop. On the first
+// green verdict for a base it tells any open base-gates-red finding so, once per
+// finding, for a human to close it (#311).
 //
 // A red base holds the ticket: Held names the base and when its verdict expires,
 // so the loop can idle on it (#190).
@@ -84,9 +89,9 @@ func checkBase(h hostio.Host, cfg config.Config, log *runlog.Logger, t ticket.Ti
 	green := func() baseCheck {
 		if repair {
 			log.Event("tdd · base " + short + " that " + t.Identifier + " repairs is already green — dispatching it with that in its envelope, so it only adds the regression test or hardening it asks for (#278)")
-			return baseCheck{GreenAt: sha}
+			return baseCheck{Green: sha, GreenAt: sha}
 		}
-		return baseCheck{}
+		return baseCheck{Green: sha}
 	}
 	red := func(v basegate.Verdict) baseCheck {
 		if repair {
@@ -131,6 +136,7 @@ func checkBase(h hostio.Host, cfg config.Config, log *runlog.Logger, t ticket.Ti
 	}
 	if verdict.Green() {
 		log.Event("tdd ✓ base " + short + " passes its gates")
+		tellBaseRedGreen(h, log, t, verdicts, sha)
 		return green()
 	}
 	if repair {
@@ -144,6 +150,38 @@ func checkBase(h hostio.Host, cfg config.Config, log *runlog.Logger, t ticket.Ti
 	}
 	fileBaseRed(h, log, t, sha, res, findingsDir)
 	return red(verdict)
+}
+
+// tellBaseRedGreen posts basegate.GreenComment on each open base-gates-red
+// finding not yet told, so a human knows it may be closed (#311). It runs once
+// per base SHA, when its green verdict is first recorded, and the mark it leaves
+// per finding keeps a later green base from saying it again. It never closes the
+// finding: that needs a human, even when it is the ticket being worked.
+// Best-effort (ADR-0001): a tracker failure is one warning line.
+func tellBaseRedGreen(h hostio.Host, log *runlog.Logger, t ticket.Ticket, verdicts basegate.Verdicts, sha string) {
+	trk, err := h.Tracker()
+	if err != nil {
+		log.Event("⚠ could not look for an open base-gates-red finding to say the base is green (" + err.Error() + ")")
+		return
+	}
+	open, err := trk.SearchFindings(t.TeamID)
+	if err != nil {
+		log.Event("⚠ could not look for an open base-gates-red finding to say the base is green (" + err.Error() + ")")
+		return
+	}
+	for _, f := range open {
+		if f.Closed || !strings.EqualFold(strings.TrimSpace(f.Key), basegate.FindingKey) || verdicts.ToldGreen(f.Identifier) {
+			continue
+		}
+		if err := trk.AddComment(f.Identifier, basegate.GreenComment(sha)); err != nil {
+			log.Event("⚠ could not tell the open base-gates-red finding " + f.Identifier + " the base is green (" + err.Error() + ")")
+			continue
+		}
+		log.Event("tdd · told the open base-gates-red finding " + f.Identifier + " the base gates are green, for a human to close it (#311)")
+		if err := verdicts.MarkToldGreen(f.Identifier, sha); err != nil {
+			log.Event("⚠ could not record that " + f.Identifier + " was told the base is green (" + err.Error() + ") — a later green base may tell it again")
+		}
+	}
 }
 
 // fileBaseRed files the finding a red base raises (basegate.Finding).

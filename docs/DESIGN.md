@@ -1126,6 +1126,11 @@ in this ticket's prior dropbox, read before it's cleared) and injects them into
 the retrospective prompt with an instruction to treat them as settled and look
 only for **new** friction. Best-effort: a Linear lookup failure degrades to the
 dropbox classes alone. A first run has nothing to inject and reads as before.
+A run whose implementation stage found its base green leaves the
+`base-gates-red` class out of that list and out of the filing dedup set, so a
+new red files fresh instead of recurring on a stale issue; the run that first
+records a base green posts `base gates green at <sha>` on that issue, once, for
+a human to close (#311, ADR-0060).
 
 **Global harness-finding keys (#65).** Harness findings don't go to the team's
 tracker, so the list above used to miss every harness class another ticket had

@@ -106,12 +106,14 @@ func (h *Real) router() (filing.Router, bool) {
 }
 
 // AlreadyFiled lists the finding classes a prior run already filed, so a re-run's
-// session treats them as settled instead of re-deriving them (BEH-539).
-func (h *Real) AlreadyFiled(findingsDir, teamID string) []filing.PriorFinding {
+// session treats them as settled instead of re-deriving them (BEH-539), less the
+// keys this run saw resolved (#311).
+func (h *Real) AlreadyFiled(findingsDir, teamID string, unsettled []string) []filing.PriorFinding {
 	r, ok := h.router()
 	if !ok {
 		return nil
 	}
+	r.Unsettled = unsettled
 	return r.AlreadyFiled(findingsDir, teamID)
 }
 
@@ -128,9 +130,11 @@ func (h *Real) FileFindings(findingsDir, teamID, key string) {
 
 // RouteFindings routes the dropbox by audience (ADR-0011): project findings to
 // the Consumer's tracker, harness findings to the local artifact dir or — when
-// the Consumer opted in — to the public harness repo.
-func (h *Real) RouteFindings(findingsDir, teamID, key string) {
+// the Consumer opted in — to the public harness repo. An open issue whose key is
+// in unsettled does not dedup a finding (#311).
+func (h *Real) RouteFindings(findingsDir, teamID, key string, unsettled []string) {
 	if r, ok := h.router(); ok {
+		r.Unsettled = unsettled
 		r.Route(findingsDir, teamID, key)
 	}
 }

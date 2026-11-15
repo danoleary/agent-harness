@@ -3,6 +3,7 @@ package stages
 import (
 	"fmt"
 
+	"github.com/danoleary/agent-harness/internal/basegate"
 	"github.com/danoleary/agent-harness/internal/config"
 	"github.com/danoleary/agent-harness/internal/filing"
 	"github.com/danoleary/agent-harness/internal/hostio"
@@ -64,7 +65,9 @@ func Retrospective(h hostio.Host, cfg config.Config, log *runlog.Logger, args Ar
 		return Result{Err: err}
 	}
 
-	res := RetrospectiveOver(h, cfg, log, NewSubject(h, args.Identifier, log.Dir, t), args.DryRun)
+	subject := NewSubject(h, args.Identifier, log.Dir, t)
+	subject.GreenBase = args.GreenBase
+	res := RetrospectiveOver(h, cfg, log, subject, args.DryRun)
 	if !res.OK || args.DryRun {
 		return res
 	}
@@ -126,7 +129,15 @@ func RetrospectiveOver(h hostio.Host, cfg config.Config, log *runlog.Logger, sub
 	// the session treats them as settled and reuses their keys instead of
 	// re-deriving them under new ones (BEH-539, #65). MUST run before the dropbox
 	// is readied, which wipes that prior dropbox.
-	prior := h.AlreadyFiled(findingsDir, t.TeamID)
+	//
+	// On a run whose base gated green, an open base-gates-red finding is stale:
+	// it is neither settled nor a dedup target, so a real red the session reports
+	// files fresh instead of recurring on it (#311). A human closes the stale one.
+	var unsettled []string
+	if subject.GreenBase != "" {
+		unsettled = []string{basegate.FindingKey}
+	}
+	prior := h.AlreadyFiled(findingsDir, t.TeamID, unsettled)
 	if len(prior) > 0 {
 		log.Event(fmt.Sprintf("retrospective: %d already-filed finding class(es) passed to the session as settled context", len(prior)))
 	}
@@ -194,7 +205,7 @@ func RetrospectiveOver(h hostio.Host, cfg config.Config, log *runlog.Logger, sub
 	// failure — an absent dropbox routes nothing. Tracker dedup runs exact-match first,
 	// then a best-effort semantic pass; a match is recorded as a recurrence on the
 	// existing issue instead of re-filed (BEH-573).
-	h.RouteFindings(findingsDir, t.TeamID, t.Identifier)
+	h.RouteFindings(findingsDir, t.TeamID, t.Identifier, unsettled)
 
 	if !result.OK {
 		// Keep the worktree as a recoverable breadcrumb (DESIGN.md failure matrix).

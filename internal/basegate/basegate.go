@@ -14,6 +14,7 @@ import (
 
 	"github.com/danoleary/agent-harness/internal/config"
 	"github.com/danoleary/agent-harness/internal/findings"
+	"github.com/danoleary/agent-harness/internal/ticket"
 )
 
 // FindingKey is the dedup key of the finding a red base files. One key for every
@@ -101,6 +102,38 @@ func (v Verdicts) Write(sha string, verdict Verdict) (Verdict, error) {
 		return verdict, err
 	}
 	return verdict, os.Rename(tmp.Name(), filepath.Join(v.dir, sha))
+}
+
+// toldGreenDir holds one mark per open base-gates-red finding a green base was
+// announced on, beside the per-SHA verdicts but under its own name, so a mark
+// never reads as a verdict.
+const toldGreenDir = "told-green"
+
+// ToldGreen reports whether the open base-gates-red finding identifier was
+// already told the base gates pass (#311), so a later green base does not tell
+// it again.
+func (v Verdicts) ToldGreen(identifier string) bool {
+	_, err := os.Stat(filepath.Join(v.dir, toldGreenDir, ticket.Slug(identifier)))
+	return err == nil
+}
+
+// MarkToldGreen records that identifier was told the base gates pass at sha.
+func (v Verdicts) MarkToldGreen(identifier, sha string) error {
+	dir := filepath.Join(v.dir, toldGreenDir)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, ticket.Slug(identifier)), []byte(sha+"\n"), 0o644)
+}
+
+// GreenComment is what a run that gated the base green at sha posts on an open
+// base-gates-red finding (#311). It says the finding may be stale and leaves the
+// closing to a human: the finding needs one, even when it is the ticket being
+// worked.
+func GreenComment(sha string) string {
+	return fmt.Sprintf("base gates green at `%s`\n\n"+
+		"The harness gated `main` at `%s` with no change applied, and every gate passed, so this finding may be stale. "+
+		"Close it once you have confirmed `main` is repaired: the harness does not close it, and does not post this again on this issue.", sha, sha)
 }
 
 // Finding is the finding a red base files: gate failed on main with nothing

@@ -564,3 +564,32 @@ func TestRunImplementationResolvedOnMainSkipsReviewAndIsNoFailure(t *testing.T) 
 		t.Errorf("events = %v, want the resolved stop narrated, not a failure", r.events)
 	}
 }
+
+// #311: the retrospective learns the base its run's implementation stage found
+// green, and a re-attempt's verdict replaces the first attempt's.
+func TestRetrospectiveGetsTheGreenBaseImplementationFound(t *testing.T) {
+	r := &recorder{}
+	var got []string
+	impl, retro := withGreenBase(
+		r.stageSeq("impl",
+			stages.Result{Retryable: true, GreenBase: "aaa"},
+			stages.Result{OK: true, GreenBase: "bbb"},
+		),
+		func(greenBase string) stages.Result {
+			got = append(got, greenBase)
+			return stages.Result{OK: true}
+		},
+	)
+
+	Run(Deps{
+		FetchMain:      func() error { return nil },
+		Implementation: impl,
+		Review:         r.stage("review", stages.Result{OK: true}),
+		Retrospective:  retro,
+		Log:            r,
+	})
+
+	if len(got) != 1 || got[0] != "bbb" {
+		t.Errorf("retrospective got green bases %v, want the re-attempt's [bbb]", got)
+	}
+}

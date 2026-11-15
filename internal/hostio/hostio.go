@@ -210,9 +210,11 @@ type Remote interface {
 // this one names a concrete tracker.
 type Findings interface {
 	Tracker() (tracker.Tracker, error)
-	AlreadyFiled(findingsDir, teamID string) []filing.PriorFinding
+	// AlreadyFiled and RouteFindings leave the finding keys in unsettled out of
+	// the settled classes and the dedup set (filing.Router.Unsettled, #311).
+	AlreadyFiled(findingsDir, teamID string, unsettled []string) []filing.PriorFinding
 	FileFindings(findingsDir, teamID, key string)
-	RouteFindings(findingsDir, teamID, key string)
+	RouteFindings(findingsDir, teamID, key string, unsettled []string)
 }
 
 // Host is the whole host-side surface one Stage needs. [Real] and [Fake]

@@ -49,13 +49,36 @@ type Deps struct {
 // the ticket loop share (#29); the pipeline decides ordering, the Stages do the work.
 func ForTicket(cfg config.Config, log *runlog.Logger, runID string, args stages.Args) Deps {
 	host := hostio.New(cfg, log, runID, args.Verbose, ticket.Slug(args.Identifier))
+	impl, retro := withGreenBase(
+		func() stages.Result { return stages.Implementation(host, cfg, log, args) },
+		func(greenBase string) stages.Result {
+			a := args
+			a.GreenBase = greenBase
+			return stages.Retrospective(host, cfg, log, a)
+		},
+	)
 	return Deps{
 		FetchMain:      host.FetchMain,
-		Implementation: func() stages.Result { return stages.Implementation(host, cfg, log, args) },
+		Implementation: impl,
 		Review:         func() stages.Result { return stages.Review(host, cfg, log, args) },
-		Retrospective:  func() stages.Result { return stages.Retrospective(host, cfg, log, args) },
+		Retrospective:  retro,
 		Log:            log,
 	}
+}
+
+// withGreenBase binds a slice's retrospective to the base its implementation
+// stage last found green (stages.Result.GreenBase), so the retrospective of a
+// run that saw the base gates pass unsettles the base-gates-red class (#311). A
+// re-attempted implementation replaces what the first attempt found.
+func withGreenBase(impl Stage, retro func(greenBase string) stages.Result) (Stage, Stage) {
+	var greenBase string
+	return func() stages.Result {
+			res := impl()
+			greenBase = res.GreenBase
+			return res
+		}, func() stages.Result {
+			return retro(greenBase)
+		}
 }
 
 // Run executes the pipeline. The order and skip rules (DESIGN.md):
