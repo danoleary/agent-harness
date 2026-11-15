@@ -199,6 +199,7 @@ How a review ends when it takes the branch to a PR (`ship.Land`).
 | `⚠ could not put the conflict resolution's overlap report on the PR` | — | the PR edit failed (a `gh` error, or a PR URL with no number), so the report is only in `run.jsonl`'s `⚑ … duplicates …` line; copy it onto the PR by hand (#344) |
 | `review ✗ push failed:` | PushFailed | usually the token: scope, SSO, or `workflow` for a workflow-file change |
 | `review ✗ gh pr create failed: … branch pushed, open the PR manually` | PRFailed | open the PR yourself |
+| `✓ CI green after re-running the failed checks (flake: …)` | Shipped | nothing blocks: the first CI poll was red, and one re-run of the named checks on the same commit went green, so no fix session ran. A merge-conflict outcome after that re-run names them too, as `(CI went green only after re-running the failed checks; flake: …)`. A check named here on run after run is a flaky test, not an infra blip; the retrospective files it (#357) |
 
 ## The loop
 
