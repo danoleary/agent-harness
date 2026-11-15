@@ -187,7 +187,16 @@ func WatchAndFix(d Driver, cfg Config, now func() time.Time) Outcome {
 		return handlePollErr(d, err, checks)
 	}
 	if v == Passed {
-		return greenOutcome(d, "CI green after re-running the failed checks (flake)")
+		// Name the checks the re-run washed out: every caller writes Reason to the
+		// run log, where the retrospective tells a one-off blip from a check that
+		// flakes on every PR (#357). A non-OK verdict from the mergeability gate
+		// replaces the green reason, so it carries the names too.
+		flake := "flake: " + checkNames(failed)
+		out := greenOutcome(d, "CI green after re-running the failed checks ("+flake+")")
+		if !out.OK {
+			out.Reason += " (CI went green only after re-running the failed checks; " + flake + ")"
+		}
+		return out
 	}
 	failed = FailedChecks(checks)
 

@@ -333,6 +333,43 @@ func TestWatchFlakeResolvedByRerun(t *testing.T) {
 	}
 }
 
+// #357: a flake the re-run washes out must still be named, or the retrospective
+// reading run.jsonl cannot tell a one-off infra blip from a check that flakes on
+// every PR. The first poll's failed checks land in the outcome's Reason, which
+// every caller writes to the run log; a passing check on that poll is not named.
+func TestWatchFlakeResolvedByRerunNamesTheFlakedChecks(t *testing.T) {
+	d := &fakeDriver{
+		polls: []pollResult{
+			{v: Failed, checks: []Check{
+				{Name: "lint", Bucket: BucketFail},
+				{Name: "build", Bucket: BucketPass},
+				{Name: "e2e (chromium)", Bucket: BucketFail},
+			}},
+			{v: Passed},
+		},
+		mergeState: MergeClean,
+	}
+	out := WatchAndFix(d, testWatchCfg(), newFakeClock().now)
+	want := "CI green after re-running the failed checks (flake: lint, e2e (chromium))"
+	if !out.OK || out.Reason != want {
+		t.Fatalf("outcome = %+v, want OK with reason %q", out, want)
+	}
+}
+
+// #357: the flake stays named when the green-after-re-run pass is then sunk by a
+// merge conflict with base, since that reason replaces the green one.
+func TestWatchFlakeThenMergeConflictStillNamesTheFlakedChecks(t *testing.T) {
+	d := &fakeDriver{
+		polls:         []pollResult{{v: Failed, checks: failChecks()}, {v: Passed}},
+		mergeState:    MergeConflicting,
+		rebaseVerdict: RebaseConflict,
+	}
+	out := WatchAndFix(d, testWatchCfg(), newFakeClock().now)
+	if out.OK || !strings.HasPrefix(out.Reason, mergeConflictReason) || !strings.Contains(out.Reason, "flake: lint") {
+		t.Fatalf("outcome = %+v, want the merge conflict with the flaked check named", out)
+	}
+}
+
 func TestWatchRealFailureFixedOnFirstAttempt(t *testing.T) {
 	// Fail, still fail after re-run (real), then green after one fix+push.
 	d := &fakeDriver{polls: []pollResult{

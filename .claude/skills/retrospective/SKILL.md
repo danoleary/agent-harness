@@ -27,6 +27,11 @@ judged the code.
   docs disagreeing with each other.
 - **Sandbox gaps** — a missing tool, permission, cache miss or memory limit.
 - **Gate problems** — slow, flaky, or reporting the wrong thing.
+- **CI flakes** — a `CI green after re-running the failed checks (flake: …)`
+  line in `run.jsonl` names the checks a re-run washed out. Each one cost the
+  PR a whole extra CI round. File a finding naming the check, keyed on it
+  (e.g. `ci-flaky-check-<name>`), so a check that flakes on every PR dedupes
+  into one ticket.
 
 Ignore one-off mistakes that a better instruction would not have prevented.
 

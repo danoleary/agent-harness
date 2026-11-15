@@ -29,3 +29,12 @@ func Summarize(failed []Check) string {
 	}
 	return b.String()
 }
+
+// checkNames joins the checks' names for a one-line run-log reason, in poll order.
+func checkNames(checks []Check) string {
+	names := make([]string, len(checks))
+	for i, c := range checks {
+		names[i] = c.Name
+	}
+	return strings.Join(names, ", ")
+}
