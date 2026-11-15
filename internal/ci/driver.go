@@ -285,7 +285,11 @@ func (d *GhDriver) AwaitHeadRun() error {
 // branchHead resolves the PR branch's local HEAD commit — the fix the sandbox just
 // committed and Push pushed — via `git rev-parse <branch>` against the main checkout.
 func (d *GhDriver) branchHead() (string, error) {
-	stdout, stderr, err := proc.OutputInDir(d.ghTimeout, d.herdPath, "git", git.HostArgs("rev-parse", d.branch)...)
+	argv, err := git.HostArgs("-C", d.herdPath, "rev-parse", d.branch)
+	if err != nil {
+		return "", err
+	}
+	stdout, stderr, err := proc.Output(d.ghTimeout, "git", argv...)
 	if err != nil {
 		if s := strings.TrimSpace(string(stderr)); s != "" {
 			return "", fmt.Errorf("git rev-parse %s: %w: %s", d.branch, err, s)

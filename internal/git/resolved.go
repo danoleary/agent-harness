@@ -454,7 +454,11 @@ func symbolPresentIn(srcRoot, symbol string) bool {
 // in a git repo, or any git error, also counts as history for the same reason.
 func neverInHistory(srcRoots []string, symbol string) bool {
 	for _, root := range srcRoots {
-		out, err := exec.Command("git", HostArgs("-C", root, "log", "-S"+symbol, "--oneline", "-1", "--", ".")...).Output()
+		argv, err := HostArgs("-C", root, "log", "-S"+symbol, "--oneline", "-1", "--", ".")
+		if err != nil {
+			return false
+		}
+		out, err := exec.Command("git", argv...).Output()
 		if err != nil || strings.TrimSpace(string(out)) != "" {
 			return false
 		}

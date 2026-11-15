@@ -66,15 +66,16 @@ type runners struct {
 }
 
 // execRunners is the production seam: the real git binary, the real clock. Every
-// `git` command it runs carries [HostArgs], so a call site added later cannot run
-// git on the host without them (#332).
+// `git` command it runs carries [hostSafeConfig] and is refused while the
+// repository's own config names a command ([refuseRepoCommands]), so a call site
+// added later cannot run git on the host without either (#332, #351).
 func execRunners() runners {
 	return repoConfigRunners().hostSafe()
 }
 
-// repoConfigRunners is execRunners without [HostArgs]: git as the repository's own
-// config has it, hooks and fsmonitor included. Only [Checkout.WithRepoHooks] uses
-// it, for a test that injects a fault through a hook.
+// repoConfigRunners is execRunners without the host-side overrides or the check:
+// git as the repository's own config has it, hooks and fsmonitor included. Only
+// [Checkout.WithRepoHooks] uses it, for a test that injects a fault through a hook.
 func repoConfigRunners() runners {
 	return runners{run: execRun, output: execOutput, combined: execCombined, pipe: execPipe, sleep: time.Sleep, now: time.Now}
 }
@@ -87,18 +88,35 @@ func repoConfigRunners() runners {
 // `status` would run it with GH_TOKEN and the tracker key in its environment.
 // `--no-verify` stops only pre-commit and commit-msg. A command-line -c beats every
 // config file, the repository's .git/config included (#332, ADR-0057).
-var hostSafeConfig = []string{"-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"}
+//
+// The rest close what a key of fixed name can (#351): an `ext::` remote URL runs
+// as a command once protocol.ext.allow lets it, and a submodule git recurses into
+// reads the submodule's own config, under .git/modules, which the check never
+// lists. A command-valued key of arbitrary name, a filter driver, is the check's.
+var hostSafeConfig = []string{
+	"-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-c", "protocol.ext.allow=never",
+	"-c", "submodule.recurse=false", "-c", "fetch.recurseSubmodules=false",
+}
 
 // HostArgs puts the host-side overrides ahead of args, a host-side `git` command's
-// arguments. The runners here add them themselves; a package that runs git on the
-// host without a [Checkout] — `exec.Command("git", git.HostArgs(...)...)`,
-// `proc.Output(t, "git", git.HostArgs(...)...)` — calls this.
-func HostArgs(args ...string) []string {
+// arguments, once [refuseRepoCommands] has found no command in the config of the
+// directory args name with -C (the working directory without one). The runners
+// here do both themselves; a package that runs git on the host without a
+// [Checkout] — `exec.Command("git", argv...)`, `proc.Output(t, "git", argv...)` —
+// builds argv with this, and names the directory with -C, not the command's dir.
+func HostArgs(args ...string) ([]string, error) {
+	if err := refuseRepoCommands(execOutput, args); err != nil {
+		return nil, err
+	}
+	return hostArgv(args), nil
+}
+
+func hostArgv(args []string) []string {
 	return append(append([]string(nil), hostSafeConfig...), args...)
 }
 
-// HostEnv is [HostArgs] as environment: GIT_CONFIG_COUNT/KEY_n/VALUE_n entries,
-// which git ranks with a command-line -c. A Consumer command the host runs — the
+// HostEnv is the overrides [HostArgs] adds, as environment:
+// GIT_CONFIG_COUNT/KEY_n/VALUE_n entries, which git ranks with a command-line -c. A Consumer command the host runs — the
 // prune script, [cache] prune_command — starts git calls of its own that HostArgs
 // cannot reach; in its environment, these reach them, and gh's too (#350).
 func HostEnv() []string {
@@ -111,23 +129,50 @@ func HostEnv() []string {
 	return env
 }
 
-// hostSafe wraps each command shape so that a `git` command gets [HostArgs].
+// hostSafe wraps each command shape so that a `git` command is checked against
+// the repository's config and gets the overrides. The check reads the config
+// through the unwrapped output runner.
 func (r runners) hostSafe() runners {
 	run, output, combined, pipe := r.run, r.output, r.combined, r.pipe
-	r.run = func(name string, args ...string) error { return run(name, hostArgs(name, args)...) }
-	r.output = func(name string, args ...string) ([]byte, error) { return output(name, hostArgs(name, args)...) }
-	r.combined = func(name string, args ...string) ([]byte, error) { return combined(name, hostArgs(name, args)...) }
+	r.run = func(name string, args ...string) error {
+		if err := checkHost(output, name, args); err != nil {
+			return err
+		}
+		return run(name, hostArgs(name, args)...)
+	}
+	r.output = func(name string, args ...string) ([]byte, error) {
+		if err := checkHost(output, name, args); err != nil {
+			return nil, err
+		}
+		return output(name, hostArgs(name, args)...)
+	}
+	r.combined = func(name string, args ...string) ([]byte, error) {
+		if err := checkHost(output, name, args); err != nil {
+			return nil, err
+		}
+		return combined(name, hostArgs(name, args)...)
+	}
 	r.pipe = func(stdin []byte, name string, args ...string) ([]byte, error) {
+		if err := checkHost(output, name, args); err != nil {
+			return nil, err
+		}
 		return pipe(stdin, name, hostArgs(name, args)...)
 	}
 	return r
+}
+
+func checkHost(output outputRunner, name string, args []string) error {
+	if name != "git" {
+		return nil
+	}
+	return refuseRepoCommands(output, args)
 }
 
 func hostArgs(name string, args []string) []string {
 	if name != "git" {
 		return args
 	}
-	return HostArgs(args...)
+	return hostArgv(args)
 }
 
 func execOutput(name string, args ...string) ([]byte, error) {

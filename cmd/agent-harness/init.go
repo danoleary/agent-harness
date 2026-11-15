@@ -66,8 +66,10 @@ func runInit(args []string, dir string, in io.Reader, out, errOut io.Writer) int
 // from a subdirectory still lands where the harness reads it; outside git it is
 // the working directory.
 func checkoutRoot() string {
-	if top, err := exec.Command("git", git.HostArgs("rev-parse", "--show-toplevel")...).Output(); err == nil {
-		return strings.TrimSpace(string(top))
+	if argv, err := git.HostArgs("rev-parse", "--show-toplevel"); err == nil {
+		if top, err := exec.Command("git", argv...).Output(); err == nil {
+			return strings.TrimSpace(string(top))
+		}
 	}
 	wd, err := os.Getwd()
 	if err != nil {
@@ -77,6 +79,10 @@ func checkoutRoot() string {
 }
 
 func originURL(dir string) (string, error) {
-	url, err := exec.Command("git", git.HostArgs("-C", dir, "remote", "get-url", "origin")...).Output()
+	argv, err := git.HostArgs("-C", dir, "remote", "get-url", "origin")
+	if err != nil {
+		return "", err
+	}
+	url, err := exec.Command("git", argv...).Output()
 	return strings.TrimSpace(string(url)), err
 }

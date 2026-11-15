@@ -30,7 +30,11 @@ const PreflightTimeout = 30 * time.Second
 // doctor runs its git probes through it too, so a git one carries [git.HostArgs].
 func ProbeRunner(name string, args ...string) ([]byte, error) {
 	if name == "git" {
-		args = git.HostArgs(args...)
+		argv, err := git.HostArgs(args...)
+		if err != nil {
+			return []byte(err.Error()), err
+		}
+		args = argv
 	}
 	return proc.CombinedOutput(PreflightTimeout, name, args...)
 }
@@ -573,12 +577,19 @@ const gitReadTimeout = 30 * time.Second
 // branch's own commits (or its uncommitted edits) changed it, rather than main
 // after the branch was cut.
 func branchChangedFile(worktreePath, rel string) (bool, error) {
-	out, _, err := proc.Output(gitReadTimeout, "git", git.HostArgs("-C", worktreePath, "merge-base", "HEAD", git.BaseRef)...)
+	argv, err := git.HostArgs("-C", worktreePath, "merge-base", "HEAD", git.BaseRef)
+	if err != nil {
+		return false, err
+	}
+	out, _, err := proc.Output(gitReadTimeout, "git", argv...)
 	if err != nil {
 		return false, err
 	}
 	base := strings.TrimSpace(string(out))
-	out, _, err = proc.Output(gitReadTimeout, "git", git.HostArgs("-C", worktreePath, "diff", "--name-only", base, "--", ":(literal)"+filepath.ToSlash(rel))...)
+	if argv, err = git.HostArgs("-C", worktreePath, "diff", "--name-only", base, "--", ":(literal)"+filepath.ToSlash(rel)); err != nil {
+		return false, err
+	}
+	out, _, err = proc.Output(gitReadTimeout, "git", argv...)
 	if err != nil {
 		return false, err
 	}

@@ -1227,7 +1227,11 @@ func (c Checkout) LandedSince(since time.Time) []Landed {
 // there a false positive drops work; here a false negative would reap live work, so
 // each fails in its own safe direction.
 func (c Checkout) TicketHasRemoteBranch(key string) bool {
-	out, _, err := proc.OutputInDir(remoteOpTimeout, c.path, "git", HostArgs("ls-remote", "--heads", "origin")...)
+	argv, err := HostArgs("-C", c.path, "ls-remote", "--heads", "origin")
+	if err != nil {
+		return true
+	}
+	out, _, err := proc.Output(remoteOpTimeout, "git", argv...)
 	if err != nil {
 		return true
 	}

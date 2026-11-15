@@ -102,8 +102,8 @@ func credentialFiles(projectPath string) []string {
 // tracked reports whether the git checkout holding path tracks it. Outside a
 // checkout, or on any git error, the file counts as untracked, so it is masked.
 func tracked(path string) bool {
-	return proc.Run(gitReadTimeout, "git", git.HostArgs("-C", filepath.Dir(path),
-		"ls-files", "--error-unmatch", "--", ":(literal)"+filepath.Base(path))...) == nil
+	argv, err := git.HostArgs("-C", filepath.Dir(path), "ls-files", "--error-unmatch", "--", ":(literal)"+filepath.Base(path))
+	return err == nil && proc.Run(gitReadTimeout, "git", argv...) == nil
 }
 
 // isCredentialFile is the mask's deny-list, `.env*` (`.env`, `.env.local`,
