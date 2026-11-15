@@ -232,6 +232,8 @@ func TestTheGuardBlocksOnlyGitModesThatPrompt(t *testing.T) {
 		{"echo $(git add -p)", true},
 		{"cd /work &&\n  git add -p", true},
 		{"git status | cat; git reset -p", true},
+		{"if git add -p; then :; fi", true},
+		{"while ! git rebase -i origin/main; do :; done", true},
 
 		{"git checkout -- file", false},
 		{"git checkout main -- -p", false},

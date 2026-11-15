@@ -43,7 +43,7 @@ function flush() { if (inw) words[++n] = w; w = ""; inw = 0 }
 function seg(   k, g, sc, j, f) {
   flush()
   k = 1
-  while (k <= n && (words[k] ~ /^[A-Za-z_][A-Za-z0-9_]*=/ || index(" env command exec nohup time sudo then do else ! { ", " " words[k] " "))) k++
+  while (k <= n && (words[k] ~ /^[A-Za-z_][A-Za-z0-9_]*=/ || index(" env command exec nohup time sudo if elif while until then do else ! { ", " " words[k] " "))) k++
   if (words[k] == "timeout") { k++; while (k <= n && words[k] !~ /^[0-9.]+[smhd]?$/) k++; k++ }
   g = words[k]; sub(/.*\//, "", g)
   if (g == "git" && hit == "") {
