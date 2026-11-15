@@ -4,6 +4,7 @@
 - Date: 2026-11-01
 - Amends: ADR-0030 (adds a Disposition, BaseRed)
 - Amended: 2026-11-14 (#278: a base-repair ticket is gated, not held)
+- Extended by: ADR-0060 (a green base unsettles the open finding and says so on it)
 
 ## Context
 
@@ -64,7 +65,9 @@ and a red base holds the ticket without launching one.**
 - **One finding.** The run that first records a red verdict files a
   `base-gates-red` finding with `needs_human` set. It names the SHA, the Gate and
   its stderr tail. Its key has no SHA in it, so a `main` that moves but stays red
-  records a recurrence on the open issue rather than filing another.
+  records a recurrence on the open issue rather than filing another. A run that
+  finds the base green tells that issue so, once, and its retrospective does
+  not dedup a new red into it (ADR-0060). A human closes it.
 
 ## Alternatives considered
 

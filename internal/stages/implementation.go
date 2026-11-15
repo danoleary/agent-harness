@@ -436,6 +436,7 @@ func Implementation(h hostio.Host, cfg config.Config, log *runlog.Logger, args A
 	// back. The loop backs off and re-polls (BaseRed is breaker-neutral). A tree
 	// whose post_create failed lacks its toolchain, so its Gates would judge the
 	// install, not the base: it dispatches unchecked, as before.
+	var greenBase string
 	if !provisioned {
 		log.Event("tdd · post_create did not succeed, so the base's gates would judge the install, not the base — not gating the base (#125)")
 	} else if base := checkBase(h, cfg, log, t, args.Force, findingsDir); base.Red {
@@ -444,11 +445,14 @@ func Implementation(h hostio.Host, cfg config.Config, log *runlog.Logger, args A
 		}
 		releaseClaim(claim, "the base fails its gates, so no session launched (#125)", log)
 		return base.Held
-	} else if base.GreenAt != "" {
-		// A base-repair ticket on a base already green: its envelope says so, so
-		// the session does not re-diagnose a red that is gone (#278).
-		subject.GreenBase = base.GreenAt
-		sessionRun = implementationRun(cfg, subject, resume)
+	} else {
+		greenBase = base.Green
+		if base.GreenAt != "" {
+			// A base-repair ticket on a base already green: its envelope says so, so
+			// the session does not re-diagnose a red that is gone (#278).
+			subject.GreenBase = base.GreenAt
+			sessionRun = implementationRun(cfg, subject, resume)
+		}
 	}
 
 	// The tdd session runs at most twice. A terminal usage-policy refusal is a
@@ -631,9 +635,10 @@ func Implementation(h hostio.Host, cfg config.Config, log *runlog.Logger, args A
 	// loop classifies a capped implementation as retry-after-reset (breaker-neutral)
 	// rather than a ship failure.
 	if resolved.Disposition == ResolvedOnMain {
+		resolved.GreenBase = greenBase
 		return resolved
 	}
-	res := Result{OK: result.OK, Retryable: !result.OK && retryableEnvCrash(outcome, capAborted)}
+	res := Result{OK: result.OK, Retryable: !result.OK && retryableEnvCrash(outcome, capAborted), GreenBase: greenBase}
 	if capAborted {
 		res.Disposition = CapAborted
 		res.CapResetAt = outcome.SpendingCapResetTime

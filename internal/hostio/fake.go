@@ -105,7 +105,10 @@ type Fake struct {
 	Routed  []string
 	// RoutedTeams are the team ids each RouteFindings filed project findings into.
 	RoutedTeams []string
-	Calls       []string
+	// Unsettled are the unsettled keys each AlreadyFiled and RouteFindings call
+	// was handed, in call order (#311).
+	Unsettled [][]string
+	Calls     []string
 	// PRBodies are the bodies of every `gh pr create`, in order.
 	PRBodies []string
 	// PRLabels are the labels LabelPR added, in order.
@@ -278,14 +281,18 @@ func (f *Fake) Tracker() (tracker.Tracker, error) {
 	return f.Trk, nil
 }
 
-func (f *Fake) AlreadyFiled(string, string) []filing.PriorFinding { return f.Prior }
+func (f *Fake) AlreadyFiled(_, _ string, unsettled []string) []filing.PriorFinding {
+	f.Unsettled = append(f.Unsettled, unsettled)
+	return f.Prior
+}
 
 func (f *Fake) FileFindings(findingsDir, teamID, key string) {
 	f.Filed = append(f.Filed, key)
 	f.record("file-findings %s", key)
 }
 
-func (f *Fake) RouteFindings(findingsDir, teamID, key string) {
+func (f *Fake) RouteFindings(findingsDir, teamID, key string, unsettled []string) {
+	f.Unsettled = append(f.Unsettled, unsettled)
 	f.Routed = append(f.Routed, key)
 	f.RoutedTeams = append(f.RoutedTeams, teamID)
 	f.record("route-findings %s", key)
@@ -313,6 +320,11 @@ type FakeTracker struct {
 	Canceled []string
 	Blocked  []string
 	Comments []string
+	// CommentedOn are the keys AddComment wrote Comments to, in the same order.
+	CommentedOn []string
+	// Findings are the filed findings SearchFindings lists (#311).
+	Findings  []tracker.ExistingFinding
+	SearchErr error
 }
 
 var _ tracker.Tracker = (*FakeTracker)(nil)
@@ -381,7 +393,9 @@ func (t *FakeTracker) FileFinding(findings.Finding, tracker.FileFindingOptions) 
 	return tracker.CreatedIssue{}, nil
 }
 
-func (t *FakeTracker) SearchFindings(string) ([]tracker.ExistingFinding, error) { return nil, nil }
+func (t *FakeTracker) SearchFindings(string) ([]tracker.ExistingFinding, error) {
+	return t.Findings, t.SearchErr
+}
 
 func (t *FakeTracker) FindingsTeam() (string, error) { return t.Team, t.TeamErr }
 
@@ -389,5 +403,6 @@ func (t *FakeTracker) RecordOccurrence(tracker.Key, tracker.Key) (int, error) { 
 
 func (t *FakeTracker) AddComment(key tracker.Key, body string) error {
 	t.Comments = append(t.Comments, body)
+	t.CommentedOn = append(t.CommentedOn, key)
 	return t.CommentEr
 }

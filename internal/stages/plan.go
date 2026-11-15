@@ -28,8 +28,10 @@ type Subject struct {
 	// Sentry is what the host fetched of the Sentry issues the ticket cites, for
 	// the implementation and review prompts (#211); nil when the feature is off.
 	Sentry *sentry.Snapshot
-	// GreenBase is the base SHA a base-repair ticket's implementation stage
-	// gated green before its session (#278); empty otherwise.
+	// GreenBase is the base SHA this run's implementation stage gated green.
+	// The implementation stage sets it only for a base-repair ticket, whose
+	// envelope names it (#278); the retrospective leaves the base-gates-red class
+	// unsettled on it (#311). Empty otherwise.
 	GreenBase string
 	// Landed is the commits that reached main after the ticket was filed and
 	// changed a file it names, for the implementation prompt (#335).

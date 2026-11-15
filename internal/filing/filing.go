@@ -131,6 +131,25 @@ type Router struct {
 	HarnessDir string
 	// Log receives the narration. Required: every failure degrades to a line here.
 	Log EventSink
+	// Unsettled are finding keys this run saw resolved, so an open issue carrying
+	// one is stale: it is left out of [Router.AlreadyFiled] and of the dedup set,
+	// and a finding with the key files fresh rather than recurring on it. The
+	// retrospective of a run that gated its base green unsettles base-gates-red
+	// (#311). The stale issue itself stays open for a human to close.
+	Unsettled []string
+}
+
+// unsettled reports whether key is one of r.Unsettled.
+func (r Router) unsettled(key string) bool {
+	if strings.TrimSpace(key) == "" {
+		return false
+	}
+	for _, u := range r.Unsettled {
+		if matchKey(u, "") == matchKey(key, "") {
+			return true
+		}
+	}
+	return false
 }
 
 // File reads the findings dropbox in findingsDir and files each finding to the
@@ -369,8 +388,9 @@ func probableDuplicateIssue(f findings.Finding, open []tracker.ExistingFinding) 
 // openTracked returns the already-filed harness findings both keyed by match key
 // (for the exact short-circuit) and as an ordered slice (the candidate set for
 // the semantic pass), limited to OPEN issues — a closed/canceled match must not
-// suppress a re-file. A search failure is narrated once and degrades to an empty
-// map and nil slice (file all, no semantic pass).
+// suppress a re-file — whose key this run has not unsettled (#311). A search
+// failure is narrated once and degrades to an empty map and nil slice (file all,
+// no semantic pass).
 func (r Router) openTracked(sink tracker.FindingsSink, teamID string) (map[string]tracker.ExistingFinding, []tracker.ExistingFinding) {
 	tracked := map[string]tracker.ExistingFinding{}
 	existing, err := sink.SearchFindings(teamID)
@@ -380,7 +400,7 @@ func (r Router) openTracked(sink tracker.FindingsSink, teamID string) (map[strin
 	}
 	open := make([]tracker.ExistingFinding, 0, len(existing))
 	for _, e := range existing {
-		if e.Closed {
+		if e.Closed || r.unsettled(e.Key) {
 			continue
 		}
 		tracked[matchKey(e.Key, e.Title)] = e
@@ -405,15 +425,16 @@ type PriorFinding struct {
 // this ticket's prior dropbox. The harness set is global because harness keys
 // drift: without it each ticket's session coins its own slug for a class another
 // ticket already filed, and key dedup never fires. It MUST be called before
-// ClearDropbox wipes that dropbox. Best-effort (ADR-0001): a tracker search
-// failure degrades to the dropbox classes alone and narrates, never crashes. The
-// result is sorted (key, then title) so the injected prompt is deterministic.
+// ClearDropbox wipes that dropbox. A key in r.Unsettled is left out of every
+// source (#311). Best-effort (ADR-0001): a tracker search failure degrades to
+// the dropbox classes alone and narrates, never crashes. The result is sorted
+// (key, then title) so the injected prompt is deterministic.
 func (r Router) AlreadyFiled(findingsDir, teamID string) []PriorFinding {
 	seen := map[string]bool{}
 	out := []PriorFinding{}
 	add := func(key, title string) {
 		k := matchKey(key, title)
-		if seen[k] {
+		if seen[k] || r.unsettled(key) {
 			return
 		}
 		seen[k] = true

@@ -119,7 +119,12 @@ exempt from the hold: its base is still gated, but a red one logs
 session. If the base is green by then, the run logs `base <sha> that <KEY>
 repairs is already green` and the session's envelope says so, so it adds only
 the regression test or hardening the issue asks for (#278). Close the issue
-once that lands. `--force` also skips the check. A red verdict is trusted
+once that lands. The first run that records a base green posts
+`base gates green at <sha>` on each open `base-gates-red` issue, once per issue,
+and logs `told the open base-gates-red finding <KEY> the base gates are green`;
+the harness never closes it. Until a human does, a retrospective on a green
+base files a new red-base finding fresh rather than as a recurrence on the
+stale one (ADR-0060). `--force` also skips the check. A red verdict is trusted
 for 30 minutes, so a gate that flaked on both runs is gated again after that. The verdicts live under
 `.agent-harness/locks/base-gates/`; delete one to re-gate its base now. A
 running loop keeps idling on the hold it recorded until the re-check time, so
@@ -135,6 +140,9 @@ what it found, it warns and dispatches rather than hold a ticket on a guess.
 | `⚠ base gate "…" failed environmentally on its re-run (exit N) — the red is unconfirmed` | the first run was red, and the confirming re-run was killed or never started | the same |
 | `⚠ could not record the base verdict (…)` | the verdict file under `.agent-harness/locks/base-gates/` could not be written | nothing urgent: the next ticket (or PR loop run) on this base gates it again. Check that directory is writable |
 | `⚠ could not write the red-base finding (…)` | the `base-gates-red` finding could not be written to the findings dropbox, so no issue is filed for the red base | the hold still applies; repair `main` yourself, and check the run's log dir is writable |
+| `⚠ could not look for an open base-gates-red finding to say the base is green (…)` | the base gated green, but the tracker could not be reached or its open findings listed, so no stale red-base issue was told | close the open `base-gates-red` issue yourself once `main` is green |
+| `⚠ could not tell the open base-gates-red finding <KEY> the base is green (…)` | the comment on that issue failed to post. It is not retried on a later green base | the same |
+| `⚠ could not record that <KEY> was told the base is green (…) — a later green base may tell it again` | the mark under `.agent-harness/locks/base-gates/told-green/` could not be written | nothing urgent: close the issue, or check that directory is writable |
 | `⚠ could not discard the untouched worktree on the red base (…)` | the held ticket's worktree or branch could not be removed | remove it with `git worktree remove` and `git branch -D`, or the next attempt reuses it at the old base |
 
 ## Worktree setup and gates

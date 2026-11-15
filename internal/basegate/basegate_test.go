@@ -28,3 +28,25 @@ func TestVerdictsExpireRedButNotGreen(t *testing.T) {
 		t.Errorf("Read(bbb) = %+v, %v; a green verdict does not expire", got, ok)
 	}
 }
+
+// An open base-gates-red finding is told the base is green once (#311): the mark
+// is per issue, and does not collide with a base SHA's verdict.
+func TestToldGreenIsRecordedPerFinding(t *testing.T) {
+	v := In(t.TempDir(), time.Now)
+
+	if v.ToldGreen("#280") {
+		t.Fatal("an issue never told is not told")
+	}
+	if err := v.MarkToldGreen("#280", "aaa"); err != nil {
+		t.Fatalf("MarkToldGreen: %v", err)
+	}
+	if !v.ToldGreen("#280") {
+		t.Error("ToldGreen(#280) = false after marking it")
+	}
+	if v.ToldGreen("#281") {
+		t.Error("marking #280 must not mark #281")
+	}
+	if _, ok := v.Read("aaa"); ok {
+		t.Error("the mark must not read as a verdict for the base it names")
+	}
+}

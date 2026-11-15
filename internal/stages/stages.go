@@ -124,6 +124,10 @@ type Args struct {
 	// off records it with the origin/main SHA it worked against, so selection
 	// passes over the ticket until main or the ticket moves (#330).
 	Selected nowork.Fingerprint
+	// GreenBase is the base SHA this run's implementation stage found green
+	// (Result.GreenBase), handed to its retrospective (#311); empty on the
+	// hand-passed path and whenever the base was red or not gated.
+	GreenBase string
 }
 
 // ParseArgs parses argv (excluding the program name) into Args. tool names the
@@ -368,6 +372,11 @@ type Result struct {
 	// (#331); empty otherwise.
 	ResolvedBy  string
 	ResolvedWhy string
+	// GreenBase is the base SHA the implementation stage found green, gated
+	// fresh or read from its recorded verdict, for the run's retrospective to
+	// unsettle the base-gates-red class on (#311). Empty when the base was red,
+	// not gated, or the Result is not the implementation stage's.
+	GreenBase string
 }
 
 // ExitCode is the process exit code this Result means: 0 iff the work it reports
