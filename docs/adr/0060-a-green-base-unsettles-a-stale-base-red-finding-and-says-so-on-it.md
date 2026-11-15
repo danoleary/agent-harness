@@ -37,7 +37,7 @@ says so on that finding, once.**
   each open `base-gates-red` one, so a human knows it may be closed. A mark per
   issue under `.agent-harness/locks/base-gates/told-green/` keeps a later green
   base from posting it again. A recorded green verdict read by a later ticket
-  posts nothing: the run that recorded it already did.
+  posts nothing: the implementation stage that recorded it already did.
 - **The harness never closes it.** The finding is NeedsHuman and a human closes
   it, including when it is the ticket being worked. `tracker.FindingsSink` and
   the adapters gain no close or resolve method; the comment goes through the
@@ -66,6 +66,10 @@ says so on that finding, once.**
 - A red base after a green one still records a recurrence on the open issue,
   since the hold's own filing does not unsettle it. That issue then carries a
   "base gates green" comment followed by a recurrence, which reads in order.
+- The PR loop also records base verdicts (#250) and posts no comment, so a base
+  it first records green is not announced; the comment waits for the next
+  `main` an implementation stage gates green. Main moves on every merge, so
+  that is one merge late, not never.
 - A comment that fails to post is not retried on a later green base: it was
   best-effort (ADR-0001). Deleting a mark under `told-green/` lets the next new
   green base post again.
