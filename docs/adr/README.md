@@ -66,3 +66,4 @@ catches a duplicate there.
 - [ADR-0056](0056-a-ticket-skipped-as-already-merged-on-main-leaves-the-queue.md): A ticket skipped as already merged on main leaves the queue
 - [ADR-0057](0057-the-host-runs-no-code-the-sandbox-can-write.md): The host runs no code the sandbox can write
 - [ADR-0058](0058-host-git-refuses-a-command-the-repository-config-names.md): Host git refuses a command the repository's config names
+- [ADR-0059](0059-a-sandboxed-session-refuses-an-interactive-git-mode.md): A sandboxed session refuses an interactive git mode
