@@ -40,6 +40,11 @@ implementation transcript. Write one line: what should now be true.
 5. **Design** — does it deepen a module or add a shallow pass-through? Does it
    use `CONTEXT.md` vocabulary? Is a changed decision recorded in an ADR?
 6. **Docs** — README, the page under `docs/` that covers the change (`docs/README.md` indexes them; `docs/reference/` for a key, variable, command or message), `docs/DESIGN.md`, the example config.
+   There is no release-notes file; do not create a CHANGELOG, and do not count
+   its absence as a gap. `.github/workflows/release.yml` builds the notes from
+   merged PRs (`gh release create --generate-notes`), so a ticket's "Release
+   notes:" item is met by a sentence in the commit body saying what changes for
+   the operator. If that sentence is missing, add it in your review commit's body.
 
 Do the reading before running any gate.
 

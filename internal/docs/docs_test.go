@@ -275,3 +275,22 @@ func TestTheRetrospectiveSkillKeepsFindingsDoableInTheSandbox(t *testing.T) {
 		}
 	}
 }
+
+// TestTheTDDAndReviewSkillsSayWhereAReleaseNoteGoes pins the rule that ends the
+// hunt for a release-notes file (#381): there is none, release.yml generates the
+// notes from merged PRs, and a ticket's Release notes item lives in the commit.
+// Both the implementing and the reviewing session read it, so both skills carry it.
+func TestTheTDDAndReviewSkillsSayWhereAReleaseNoteGoes(t *testing.T) {
+	root := repoRoot(t)
+	for _, c := range []struct{ skill, section string }{
+		{".claude/skills/tdd/SKILL.md", "Finish"},
+		{".claude/skills/review-worktree/SKILL.md", "2. Read the diff"},
+	} {
+		text := section(t, filepath.Join(root, c.skill), c.section)
+		for _, want := range []string{"no release-notes file", "`.github/workflows/release.yml`", "--generate-notes", "commit body", "CHANGELOG"} {
+			if !strings.Contains(text, want) {
+				t.Errorf("%s §%s does not mention %q; say where a ticket's release note goes", c.skill, c.section, want)
+			}
+		}
+	}
+}
