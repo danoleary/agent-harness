@@ -153,3 +153,86 @@ func TestFixSessionsStartInTheWorktree(t *testing.T) {
 		}
 	}
 }
+
+// gatedCIEnv is conflictEnv with one gate, so a gate run shows in the Host's calls.
+func gatedCIEnv(t *testing.T, session func(*gittest.Repo, *hostio.Fake)) (Env, *gittest.Repo) {
+	t.Helper()
+	e, repo := conflictEnv(t, session)
+	e.Cfg.Gates = []config.Gate{{Name: "check", Command: "make check"}}
+	return e, repo
+}
+
+// gateRuns is the labels of the gate runs the Host made.
+func gateRuns(h *hostio.Fake) []string {
+	var labels []string
+	for _, s := range h.Shells {
+		if strings.HasPrefix(s.Label, "gate") {
+			labels = append(labels, s.Label)
+		}
+	}
+	return labels
+}
+
+// #396: the CIFix session could not reproduce the red and committed nothing, and
+// the harness added its empty re-trigger commit. The tree is the one the gates
+// already passed before the push, and origin/main has not moved past the branch's
+// base, so there is nothing new to gate: the re-trigger is accepted with no gate.
+func TestACIFixThatCommittedNothingRunsNoGate(t *testing.T) {
+	e, _ := gatedCIEnv(t, func(*gittest.Repo, *hostio.Fake) {})
+	h := e.Host.(*hostio.Fake)
+	g := e.GatedCI(Target{Slug: "proj-1"})
+
+	if err := g.Fix(ci.FixInput{Logs: "FAIL TestFlaky", LogAvailable: true}); err != nil {
+		t.Fatalf("a re-trigger with no code change is accepted, got %v", err)
+	}
+	if runs := gateRuns(h); len(runs) != 0 {
+		t.Errorf("gate runs = %v, want none over a fix that changed nothing", runs)
+	}
+	if g.Accepted != 1 {
+		t.Errorf("Accepted = %d, want the re-trigger accepted for the push", g.Accepted)
+	}
+	if log := runLog(t, e); !strings.Contains(log, "no code change from auto-fix 1") {
+		t.Errorf("the run log does not say why the re-gate was skipped:\n%s", log)
+	}
+}
+
+// #396: origin/main moving past the branch's base is the one new input a fix that
+// changed nothing brings, since CI checks the merge with it: the merge gate runs,
+// the branch gate does not. A second such fix over the same origin/main has
+// nothing new at all, so it runs no gate.
+func TestACIFixThatCommittedNothingGatesOnlyTheMergeWithAMovedMain(t *testing.T) {
+	e, repo := gatedCIEnv(t, func(*gittest.Repo, *hostio.Fake) {})
+	h := e.Host.(*hostio.Fake)
+	repo.Merge("other.txt", "main moved\n", "a sibling lands on main")
+	g := e.GatedCI(Target{Slug: "proj-1"})
+
+	if err := g.Fix(ci.FixInput{Logs: "FAIL TestFlaky", LogAvailable: true}); err != nil {
+		t.Fatalf("a re-trigger green merged with main is accepted, got %v", err)
+	}
+	if runs := gateRuns(h); !reflect.DeepEqual(runs, []string{"gate-cifix1-merge-check"}) {
+		t.Errorf("gate runs = %v, want only the merge gate", runs)
+	}
+	if err := g.Fix(ci.FixInput{Logs: "FAIL TestFlaky", LogAvailable: true}); err != nil {
+		t.Fatalf("a second re-trigger is accepted, got %v", err)
+	}
+	if runs := gateRuns(h); len(runs) != 1 {
+		t.Errorf("gate runs = %v, want none for a second re-trigger over the same origin/main", runs)
+	}
+}
+
+// A CIFix session that commits a code change still has it gated, on the branch
+// and merged with a moved origin/main.
+func TestACIFixThatCommittedACodeChangeIsGated(t *testing.T) {
+	e, repo := gatedCIEnv(t, func(repo *gittest.Repo, h *hostio.Fake) {
+		repo.Commit(h.Worktree(), "fix.go", "package fix\n", "fix the flake")
+	})
+	h := e.Host.(*hostio.Fake)
+	repo.Merge("other.txt", "main moved\n", "a sibling lands on main")
+
+	if err := e.GatedCI(Target{Slug: "proj-1"}).Fix(ci.FixInput{Logs: "FAIL TestFlaky", LogAvailable: true}); err != nil {
+		t.Fatalf("a green fix is accepted, got %v", err)
+	}
+	if runs := gateRuns(h); !reflect.DeepEqual(runs, []string{"gate-cifix1-check", "gate-cifix1-merge-check"}) {
+		t.Errorf("gate runs = %v, want the branch gate then the merge gate", runs)
+	}
+}

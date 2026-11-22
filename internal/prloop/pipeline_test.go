@@ -202,6 +202,12 @@ func TestFixNarratesAPollFaultApartFromARedCI(t *testing.T) {
 // watch may push it.
 func TestFixRunsTheCIFixSessionAndGatesItsCommit(t *testing.T) {
 	h, it, repo := prHost(t, harnessItem(CIRed))
+	h.AgentFn = func(_ int, run hostio.AgentRun) session.Outcome {
+		if run.Label == "cifix-1" {
+			repo.Commit(h.Worktree(), "thing.go", "package thing\n", "Fix TestThing")
+		}
+		return session.Outcome{}
+	}
 	var fixErr error
 	h.CIFn = func(w hostio.CIWatch) ci.Outcome {
 		fixErr = w.Fix(ci.FixInput{Logs: "FAIL TestThing", LogAvailable: true})
@@ -225,8 +231,29 @@ func TestFixRunsTheCIFixSessionAndGatesItsCommit(t *testing.T) {
 	if !strings.Contains(calls(h), "agent cifix-1|shell gate-cifix1-check|") {
 		t.Errorf("the gates must run over the committed fix; calls = %v", h.Calls)
 	}
+}
+
+// #396: a CIFix session that committed nothing gets the re-trigger commit, and
+// its unchanged tree is not gated on the branch again. origin/main has moved past
+// the branch, so the merge CI checks is still gated.
+func TestFixReTriggersCIOverASessionThatCommittedNothingWithoutReGatingTheBranch(t *testing.T) {
+	h, it, repo := prHost(t, harnessItem(CIRed))
+	var fixErr error
+	h.CIFn = func(w hostio.CIWatch) ci.Outcome {
+		fixErr = w.Fix(ci.FixInput{Logs: "FAIL TestThing", LogAvailable: true})
+		return ci.Outcome{OK: true, Reason: "green after the re-trigger"}
+	}
+
+	Fix(h, pipelineCfg(), pipelineLog(t), it, prDoctor())
+
+	if fixErr != nil {
+		t.Fatalf("a re-trigger is accepted, got %v", fixErr)
+	}
 	if got := repo.Git(repo.Dir, "log", "-1", "--format=%s", "feat/gh-7"); got != strings.SplitN(gitpkg.CIRerunMessage(), "\n", 2)[0] {
 		t.Errorf("a session that committed nothing gets the re-trigger commit, got HEAD %q", got)
+	}
+	if got := calls(h); strings.Contains(got, "gate-cifix1-check") || !strings.Contains(got, "shell gate-cifix1-merge-check|") {
+		t.Errorf("only the merge gate runs over a fix that changed nothing; calls = %v", h.Calls)
 	}
 }
 
@@ -353,6 +380,12 @@ func TestFixRefusesACIFixWhoseMergeWithMainFailsTheGates(t *testing.T) {
 	h, it, repo := prHost(t, harnessItem(CIRed))
 	log := pipelineLog(t)
 	redOnceMerged(t, h, log, "FAIL other_test.go: TestOther: undefined: Widget\n")
+	h.AgentFn = func(_ int, run hostio.AgentRun) session.Outcome {
+		if strings.HasPrefix(run.Label, "cifix-") {
+			repo.Commit(h.Worktree(), "thing.go", "package thing // "+run.Label+"\n", "Fix TestThing")
+		}
+		return session.Outcome{}
+	}
 	var errs []error
 	h.CIFn = func(w hostio.CIWatch) ci.Outcome {
 		errs = append(errs, w.Fix(ci.FixInput{Logs: "FAIL TestThing", LogAvailable: true}), w.Fix(ci.FixInput{Logs: "FAIL TestThing", LogAvailable: true}))

@@ -494,3 +494,20 @@ signatures did not name, and each such red cost a fix attempt.
   re-run. An exit 137 the OOM-retry schedule spent is narrated by that schedule.
 - The re-run does not wait for sibling sandboxes to finish; it runs at once, in
   the gate slot the first run held.
+
+## Amendment, 2026-11-22: a CI fix that changed nothing is not gated again (#396)
+
+A CIFix session that could not reproduce the red committed nothing, and the
+harness added its empty re-trigger commit. The gates still ran over the branch,
+then again over the trial merge, about 2.5 minutes over a tree that had not
+changed since its push, before CI was re-triggered.
+
+- **A fix whose commits change no file is not gated on the branch.** Its tree is
+  the one the branch was pushed with. The run log says `no code change from
+  auto-fix N — skipping the host re-gate of the branch`. A fix whose change set
+  cannot be read is still gated in full.
+- **The merge gate runs only when there is something new to merge.** As before, a
+  branch that already holds origin/main is not merge-gated. A tree this CI watch
+  already gated green merged with the same origin/main commit is not gated again
+  either. A moved origin/main is the one new input a fix that changed nothing
+  brings, so the merge gate still runs then.

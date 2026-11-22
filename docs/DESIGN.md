@@ -697,10 +697,12 @@ pipeline (one PR, worktree .claude/worktrees/pr-<n> on the PR's head branch):
   both kinds: ci.WatchAndFix to a terminal verdict
     red check: flake re-run, then CIFix session over the failing logs
     -> committed fix -> all gates -> push (append-only)
+    no code change (only the empty re-trigger commit) -> no branch gate        // #396
     origin/main not in the branch: refetch it, then all gates again over a     // #259
       detached trial merge (.claude/worktrees/pr-<n>.merge, removed after)
       conflicts -> refuse;  red -> refuse without a push, and the next CIFix
       attempt gets that gate's output as its logs (ci.ErrFixRefused)
+      the same tree already gated green merged with the same origin/main -> skip  // #396
     a red gate with an infrastructure signature, or red only in files the fix
       did not touch, is re-run once before it refuses the fix (#167)
     a human branch is never reactively rebased (CIWatch.KeepHistory)
