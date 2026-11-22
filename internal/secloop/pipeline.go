@@ -17,6 +17,7 @@ import (
 	"github.com/danoleary/agent-harness/internal/loopstream"
 	"github.com/danoleary/agent-harness/internal/prompt"
 	"github.com/danoleary/agent-harness/internal/runlog"
+	"github.com/danoleary/agent-harness/internal/sandbox"
 	"github.com/danoleary/agent-harness/internal/ship"
 	"github.com/danoleary/agent-harness/internal/stages"
 	"github.com/danoleary/agent-harness/internal/ticket"
@@ -165,6 +166,7 @@ func (r *run) fixAlerts() *stages.Result {
 	}
 	res := r.h.Agent(hostio.AgentRun{
 		Label:    sessionLabel,
+		Role:     sandbox.RoleSecurityFix,
 		Model:    r.cfg.ReviewModel,
 		Prompt:   prompt.For(prompt.SecurityFix, pctx),
 		Warnings: prompt.BodyWarnings(pctx),

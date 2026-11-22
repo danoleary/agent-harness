@@ -238,6 +238,9 @@ type Config struct {
 	// ShmSize is the container's `--shm-size`, the Consumer's `[sandbox]
 	// shm_size`. Empty takes DefaultShmSize.
 	ShmSize string
+	// Role is the kind of session this is, exported as RoleEnv (and ReadOnlyEnv
+	// for a read-only role) so the Consumer's hooks can tell them apart (#391).
+	Role Role
 }
 
 // BuildDockerRunArgs builds the argv (everything after `docker`) to run one
@@ -285,6 +288,7 @@ func BuildDockerRunArgs(c Config) []string {
 	)
 
 	args = append(args, gitStatArgs()...)
+	args = append(args, roleArgs(c.Role)...)
 
 	args = append(args, "-v", c.ProjectPath+":"+c.ProjectPath)
 

@@ -34,6 +34,7 @@ import (
 	"github.com/danoleary/agent-harness/internal/ci"
 	"github.com/danoleary/agent-harness/internal/filing"
 	gitpkg "github.com/danoleary/agent-harness/internal/git"
+	"github.com/danoleary/agent-harness/internal/sandbox"
 	"github.com/danoleary/agent-harness/internal/sentry"
 	"github.com/danoleary/agent-harness/internal/session"
 	"github.com/danoleary/agent-harness/internal/ship"
@@ -49,7 +50,10 @@ import (
 // findings" steering honest. Model is the claude `--model`; the stage picks it,
 // so each stage can run on a different model.
 type AgentRun struct {
-	Label       string
+	Label string
+	// Role is the kind of session this is, which the container is told so the
+	// Consumer's hooks can stand down in a read-only one (#391).
+	Role        sandbox.Role
 	Model       string
 	Prompt      string
 	FindingsDir string

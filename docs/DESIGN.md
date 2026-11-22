@@ -1259,6 +1259,12 @@ full 10-minute Bash timeout. `diff`, `log` and `show -p` print and pass, and a
 commit message or grep pattern that names the command is not mistaken for it
 (ADR-0059, #353).
 
+The launcher also tells each session its role: `HARNESS_SESSION_ROLE`
+(`implementation`, `review`, `retrospective`, …), and `HARNESS_SESSION_READ_ONLY=1`
+for the retrospective and triage. The harness cannot remove the Consumer's own
+hooks from a session, so a Consumer's handoff Stop hooks read these and stand
+down in a session that must not write (ADR-0065, #391).
+
 ### Consumer image composition (build-or-pull)
 
 A Consumer declares its sandbox image in `.agent-harness/config.toml` one of two

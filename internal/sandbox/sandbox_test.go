@@ -1129,3 +1129,50 @@ func TestWorktreeImageBuildsForADockerfileTheBranchCommitted(t *testing.T) {
 		t.Errorf("WorktreeImage = %q, %v; want %q, true", got, branch, want)
 	}
 }
+
+// #391: the Consumer's Stop hooks that guard an implementation handoff (a format
+// check, an uncommitted-work warning) fired in the read-only retrospective too,
+// and told it to run the formatter and re-commit in a worktree it must not
+// touch. Every session is told its role, and a session that must not write is
+// told that as well, so a Consumer hook can tell the two apart.
+func TestTellsTheSessionItsRoleAndWhetherItMayWrite(t *testing.T) {
+	for _, tc := range []struct {
+		role     Role
+		readOnly bool
+	}{
+		{RoleImplementation, false},
+		{RoleReview, false},
+		{RoleCIFix, false},
+		{RoleRebaseFix, false},
+		{RoleSecurityFix, false},
+		{RoleRetrospective, true},
+		{RoleTriage, true},
+	} {
+		t.Run(string(tc.role), func(t *testing.T) {
+			c := baseConfig()
+			c.Role = tc.role
+			args := BuildDockerRunArgs(c)
+			if got := envValue(args, RoleEnv); got != string(tc.role) {
+				t.Errorf("%s = %q, want %q", RoleEnv, got, tc.role)
+			}
+			want := ""
+			if tc.readOnly {
+				want = "1"
+			}
+			if got := envValue(args, ReadOnlyEnv); got != want {
+				t.Errorf("%s = %q, want %q", ReadOnlyEnv, got, want)
+			}
+		})
+	}
+}
+
+// A session launched with no role claims none, rather than reading as a
+// handoff session a Consumer's hooks should guard.
+func TestOmitsTheRoleWhenNoneIsGiven(t *testing.T) {
+	envs := valuesForFlag(BuildDockerRunArgs(baseConfig()), "-e")
+	for _, e := range envs {
+		if strings.HasPrefix(e, RoleEnv+"=") || strings.HasPrefix(e, ReadOnlyEnv+"=") {
+			t.Errorf("a session with no role carries %s", e)
+		}
+	}
+}

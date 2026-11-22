@@ -8,6 +8,7 @@ import (
 	"github.com/danoleary/agent-harness/internal/config"
 	"github.com/danoleary/agent-harness/internal/hostio"
 	"github.com/danoleary/agent-harness/internal/runlog"
+	"github.com/danoleary/agent-harness/internal/sandbox"
 	"github.com/danoleary/agent-harness/internal/session"
 )
 
@@ -58,5 +59,45 @@ func TestEveryTicketSessionStartsInItsWorktree(t *testing.T) {
 	retro := h.Agents[2].Prompt
 	if !strings.Contains(retro, "`"+log.Dir+"/`") {
 		t.Errorf("retrospective prompt does not name the log dir by its absolute path %q:\n%s", log.Dir, retro)
+	}
+}
+
+// #391: the retrospective is told it is read-only, so the Consumer's handoff
+// hooks (a format check, an uncommitted-work warning) can stand down in it. The
+// sessions that hand off work are told their role and not that.
+func TestEveryTicketSessionIsToldItsRole(t *testing.T) {
+	h, repo := fresh(t, "PROJ-1")
+	h.AgentFn = func(call int, run hostio.AgentRun) session.Outcome {
+		if run.Label == implementationSession {
+			commitsHandoff(h, repo)(call, run)
+		}
+		if run.FindingsDir != "" {
+			writesDropbox("[]")(call, run)
+		}
+		return session.Outcome{ReviewVerdictEmitted: true}
+	}
+	cfg := stageCfg()
+	log := stageLog(t, "PROJ-1")
+	for _, stage := range []func(hostio.Host, config.Config, *runlog.Logger, Args) Result{Implementation, Review, Retrospective} {
+		if res := stage(h, cfg, log, Args{Identifier: "PROJ-1"}); !res.OK {
+			t.Fatalf("stage not OK on a healthy host: %+v\n%s", res, narration(t, log))
+		}
+	}
+
+	want := map[string]sandbox.Role{
+		implementationSession: sandbox.RoleImplementation,
+		reviewSession:         sandbox.RoleReview,
+		retrospectiveSession:  sandbox.RoleRetrospective,
+	}
+	if len(h.Agents) != len(want) {
+		t.Fatalf("launched %d sessions, want %d", len(h.Agents), len(want))
+	}
+	for _, run := range h.Agents {
+		if run.Role != want[run.Label] {
+			t.Errorf("%s session's role = %q, want %q", run.Label, run.Role, want[run.Label])
+		}
+		if run.Role.ReadOnly() != (run.Label == retrospectiveSession) {
+			t.Errorf("%s session read-only = %v", run.Label, run.Role.ReadOnly())
+		}
 	}
 }

@@ -104,6 +104,29 @@ A `[[loops]]` entry can override the first six for one loop.
 | `PR_LOOP_LABEL` | `agent-maintained` | The label that opts a human's PR in to a PR loop with `source.scope = "opted_in"` (`pr-doctor` works every PR by default). |
 | `PR_LOOP_MAX_ATTEMPTS` | `3` | Attempts per PR before `pr-doctor` labels it `blocked`. |
 
+## Inside a session
+
+The harness sets these in every agent session's container, for your own Claude
+Code hooks to read. You do not set them (ADR-0065).
+
+| Variable | Value | Meaning |
+|---|---|---|
+| `HARNESS_SESSION_ROLE` | `implementation`, `review`, `ci-fix`, `rebase-fix`, `security-fix`, `retrospective`, `triage` | The kind of session. |
+| `HARNESS_SESSION_READ_ONLY` | `1`, or unset | Set only in a session that must not edit or commit: the retrospective and triage. |
+
+The retrospective starts in the ticket's worktree and loads its
+`.claude/settings.json`, so a Stop hook written for the handoff (a format check,
+an uncommitted-work warning) fires there too, and tells a session that must not
+write to fix and re-commit (#391). Start such a hook with:
+
+```sh
+[ "${HARNESS_SESSION_READ_ONLY:-}" = 1 ] && exit 0
+[ -d "$CLAUDE_PROJECT_DIR" ] || { echo "worktree missing"; exit 0; }
+```
+
+The second line covers a worktree removed while the session ran: report it and
+let the session stop, rather than report a red check over empty output.
+
 ## `agent-harness start` and `watch`
 
 | Variable | Read by | Meaning |
