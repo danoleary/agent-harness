@@ -380,6 +380,29 @@ func TestFixNarratesAPollFaultApartFromARedCI(t *testing.T) {
 	}
 }
 
+// #421: CI still running when the poll budget ran out is unknown, not red, so
+// the run log says it is pending, on which check, and never "did not go green".
+func TestFixNarratesCIPendingPastThePollBudgetApartFromARedCI(t *testing.T) {
+	it := lodashItem()
+	h, _ := secHost(t, it)
+	h.CI = ci.Outcome{Pending: true, Reason: "CI never reached a terminal state (still pending past the poll budget)", Failing: []ci.Check{{Name: "linting_and_tests", Bucket: ci.BucketPending}}}
+	log := secLog(t)
+
+	Fix(h, securityCfg(t), log, it, watchingLoop())
+
+	b, err := os.ReadFile(filepath.Join(log.Dir, "run.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := string(b)
+	if !strings.Contains(events, "CI still pending past the poll budget (not a red CI) on linting_and_tests") {
+		t.Errorf("the run log must say CI is still pending; events:\n%s", events)
+	}
+	if strings.Contains(events, "did not go green") {
+		t.Errorf("CI still pending must not read as a red CI; events:\n%s", events)
+	}
+}
+
 // CI goes red once over the opened PR: the CIFix session commits a fix, the gates
 // run green over it, the watch pushes it, and CI then goes green. The fix is
 // pr-doctor's gated CI fix, and the watch may rebase the harness's own branch.

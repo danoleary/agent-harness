@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/danoleary/agent-harness/internal/basegate"
+	"github.com/danoleary/agent-harness/internal/ci"
 	"github.com/danoleary/agent-harness/internal/config"
 	"github.com/danoleary/agent-harness/internal/filing"
 	"github.com/danoleary/agent-harness/internal/findings"
@@ -41,8 +42,8 @@ func LogsRoot(cfg config.Config, l config.Loop) string {
 type Pipeline struct {
 	Loop config.Loop
 	// Source is the loop's Source, which takes back the attempt it recorded when
-	// git refuses the checkout on local state (#247) or the sandbox preflight
-	// refuses (#232), and hands the PR to a human when a run's leftover work could
+	// git refuses the checkout on local state (#247), the sandbox preflight
+	// refuses (#232) or CI is still pending past the poll budget (#421), and hands the PR to a human when a run's leftover work could
 	// not be saved (#246). Nil leaves the attempt spent and the PR unlabelled.
 	Source *Source
 	// RunLock is held for the whole fix, checkout to cleanup, the retrospective
@@ -86,6 +87,8 @@ func (p Pipeline) Run(item loop.WorkItem, claim *lease.Lease) stages.Result {
 			p.Source.TakeBack(it, out.Err)
 		case out.Disposition == stages.BaseRed:
 			p.Source.HoldOnBase(it, out.HeldBase, out.HeldGate)
+		case out.Disposition == stages.CIPending:
+			p.Source.AwaitCI(it)
 		case errors.As(out.Err, &unsaved):
 			p.Source.HandOver(it, unsaved)
 		}
@@ -431,6 +434,11 @@ func (r *run) watch() stages.Result {
 	case res.PollFault:
 		// The watch never read CI's verdict: a tooling fault, not a red CI (#383).
 		r.log.Event(who + " ✗ could not poll CI (not a red CI): " + res.Reason)
+	case res.Pending:
+		r.log.Event(who + " ⧗ " + ci.PendingNarration(res) + "; the next poll re-checks this commit's CI before it launches any fix session")
+		if !r.pushed {
+			return stages.Result{Disposition: stages.CIPending}
+		}
 	default:
 		r.log.Event(who + " ✗ CI did not go green: " + res.Reason)
 	}

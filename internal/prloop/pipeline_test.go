@@ -1361,3 +1361,73 @@ func TestFixLeavesAHumanBranchsGitHubOnlyConflictToTheMergeSession(t *testing.T)
 		t.Errorf("the session is told only GitHub reported the conflict; prompt:\n%s", p)
 	}
 }
+
+// pendingPastBudget is the watch's outcome in #421: CI on the pushed commit was
+// still running when the poll budget ran out, on queued self-hosted runners.
+func pendingPastBudget() ci.Outcome {
+	return ci.Outcome{
+		Pending: true,
+		Reason:  "CI never reached a terminal state (still pending past the poll budget)",
+		Failing: []ci.Check{{Name: "linting_and_tests", Bucket: ci.BucketPending}},
+	}
+}
+
+// #421, replaying the incident: the auto-fix passed every local gate on the
+// branch and the merge ref, was pushed, and CI was polled for 25 minutes without
+// settling. The verdict is unknown, not red: the run log says CI is still
+// pending, never "CI did not go green", and the pushed fix ships.
+func TestFixNarratesCIPendingPastThePollBudgetApartFromARedCI(t *testing.T) {
+	h, it, repo := prHost(t, harnessItem(CIRed))
+	h.AgentFn = func(_ int, run hostio.AgentRun) session.Outcome {
+		if run.Label == "cifix-1" {
+			repo.Commit(h.Worktree(), "thing.go", "package thing\n", "Fix TestThing")
+		}
+		return session.Outcome{}
+	}
+	var fixErr error
+	h.CIFn = func(w hostio.CIWatch) ci.Outcome {
+		fixErr = w.Fix(ci.FixInput{Logs: "FAIL TestThing", LogAvailable: true})
+		return pendingPastBudget()
+	}
+	log := pipelineLog(t)
+
+	res := Fix(h, pipelineCfg(), log, it, prDoctor())
+
+	if fixErr != nil {
+		t.Fatalf("the gate-green fix is accepted, got %v", fixErr)
+	}
+	if res.Disposition != stages.Shipped {
+		t.Fatalf("a pushed fix ships whatever CI has yet to say, got %+v", res)
+	}
+	events := readEvents(t, log)
+	if !strings.Contains(events, "CI still pending past the poll budget (not a red CI)") || !strings.Contains(events, "linting_and_tests") {
+		t.Errorf("the run log must say CI is still pending, and on which check; events:\n%s", events)
+	}
+	if strings.Contains(events, "did not go green") {
+		t.Errorf("CI still pending must not read as a red CI; events:\n%s", events)
+	}
+}
+
+// #421: a watch that ran out of poll budget before it pushed anything launched no
+// session and changed nothing on the branch. It is CIPending, not a failure to
+// ship, so the Source takes the attempt back and the next poll re-checks that
+// commit's CI before any fix session.
+func TestFixThatPushedNothingBeforeCIStillPendingIsCIPending(t *testing.T) {
+	h, it, repo := prHost(t, harnessItem(CIRed))
+	tip := it.PR.HeadSHA
+	h.CI = pendingPastBudget()
+	log := pipelineLog(t)
+
+	res := Fix(h, pipelineCfg(), log, it, prDoctor())
+
+	if res.Disposition != stages.CIPending || res.OK {
+		t.Fatalf("want CIPending, got %+v", res)
+	}
+	if len(h.Agents) != 0 {
+		t.Errorf("agents = %v, want none: the watch never reached a fix", agentLabels(h))
+	}
+	assertWatchPushedNothing(t, h, repo, it.PR.HeadBranch, tip)
+	if events := readEvents(t, log); strings.Contains(events, "did not go green") {
+		t.Errorf("CI still pending must not read as a red CI; events:\n%s", events)
+	}
+}

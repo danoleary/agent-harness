@@ -302,6 +302,15 @@ const (
 	// the claim to the live run, which settles it, moves on to the next ticket,
 	// and the breaker stays blind.
 	RunLive
+	// CIPending — the PR loop's CI watch ran out of its poll budget with CI still
+	// running, before it pushed anything (#421). Only the PR Pipeline produces it.
+	// No session ran and the branch is as the run found it, so nothing is known
+	// about the PR yet: the CI verdict is unknown, not red. The Source takes back
+	// the attempt, and the next poll re-checks that commit's CI before it works
+	// the PR again. The loop releases the claim and the breaker stays blind, so a
+	// slow or queued CI graph cannot trip it. A watch that pushed a fix first is
+	// Shipped, whatever its CI has yet to say.
+	CIPending
 )
 
 func (d Disposition) String() string {
@@ -328,6 +337,8 @@ func (d Disposition) String() string {
 		return "already-on-main"
 	case RunLive:
 		return "run-live"
+	case CIPending:
+		return "ci-pending"
 	default:
 		return "no-pr"
 	}

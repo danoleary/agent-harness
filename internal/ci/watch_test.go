@@ -1027,3 +1027,40 @@ func TestWatchReportsAPollFaultApartFromARedCI(t *testing.T) {
 		t.Fatalf("a red CI must be non-OK and not a poll fault, got %+v", out)
 	}
 }
+
+// #421: the auto-fix passed every local gate and was pushed, and its CI was still
+// running when the poll budget ran out. The verdict is unknown, not red, so the
+// outcome says so as its own class: Pending, apart from a red CI and a poll fault.
+func TestWatchReportsCIPendingPastThePollBudgetApartFromARedCI(t *testing.T) {
+	pending := []Check{{Name: "linting_and_tests", Bucket: BucketPending}, {Name: "build", Bucket: BucketPass}}
+	d := &fakeDriver{polls: []pollResult{
+		{v: Failed, checks: failChecks()},
+		{v: Failed, checks: failChecks()},
+		{v: Pending, checks: pending, err: ErrPollTimeout},
+	}}
+	out := WatchAndFix(d, testWatchCfg(), newFakeClock().now)
+	if out.OK || !out.Pending || out.PollFault {
+		t.Fatalf("want a non-OK Pending outcome, not a poll fault, got %+v", out)
+	}
+	if d.pushes != 1 || d.fixes != 1 {
+		t.Fatalf("pushes=%d fixes=%d, want the one pushed fix and no second session", d.pushes, d.fixes)
+	}
+	if len(out.Failing) != 1 || out.Failing[0].Name != "linting_and_tests" {
+		t.Fatalf("Failing = %+v, want the still-pending check", out.Failing)
+	}
+
+	// Nothing else is Pending: a red CI past the fix budget, a stalled poll and a
+	// poll fault each read a verdict, or failed to, in a way of their own.
+	others := map[string][]pollResult{
+		"red":        {{v: Failed, checks: failChecks()}},
+		"stalled":    {{v: Pending, checks: pending, err: ErrPollStalled}},
+		"poll fault": {{v: Pending, err: errors.New("gh pr checks failed: exit status 1: HTTP 500")}},
+	}
+	for name, polls := range others {
+		cfg := testWatchCfg()
+		cfg.MaxFixAttempts = 0
+		if out := WatchAndFix(&fakeDriver{polls: polls}, cfg, newFakeClock().now); out.Pending {
+			t.Errorf("%s: want not Pending, got %+v", name, out)
+		}
+	}
+}
