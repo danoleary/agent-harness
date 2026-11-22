@@ -38,7 +38,9 @@ judged the code.
   failure — a timeout, a dropped fetch, a race in one test — not a pasted
   log). A step-less name means no failing step was recorded — gh could not
   read that attempt, or the job died before any step failed; the file says
-  which, so say that instead.
+  which, so say that instead. The host appends the record's failing step and
+  log tail to a `ci-flaky-check-` finding's body when it files it (#378), so
+  keep the key on that prefix.
 
 Ignore one-off mistakes that a better instruction would not have prevented.
 

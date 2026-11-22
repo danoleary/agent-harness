@@ -102,6 +102,7 @@ func (h *Real) router() (filing.Router, bool) {
 		Matcher:    h.matcher(),
 		HarnessDir: filing.HarnessFindingsDir(h.cfg.ProjectPath),
 		Log:        h.log,
+		LogDir:     h.log.Dir,
 	}, true
 }
 

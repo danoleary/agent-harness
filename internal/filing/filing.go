@@ -137,6 +137,10 @@ type Router struct {
 	// retrospective of a run that gated its base green unsettles base-gates-red
 	// (#311). The stale issue itself stays open for a human to close.
 	Unsettled []string
+	// LogDir is the worked item's log dir, where the CI watch keeps
+	// ci-flake-*.log. A ci-flaky-check finding's body gains the failing step and
+	// log tail recorded there (#378). Empty reads no record.
+	LogDir string
 }
 
 // unsettled reports whether key is one of r.Unsettled.
@@ -248,6 +252,7 @@ func (r Router) readDropbox(findingsDir string) (findings.Parsed, bool) {
 		r.Log.Event("findings ✗ dropbox unreadable: " + parsed.Error)
 		return findings.Parsed{}, false
 	}
+	parsed.Findings = withCIFlakeEvidence(parsed.Findings, r.LogDir)
 	return parsed, true
 }
 
