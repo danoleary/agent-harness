@@ -115,10 +115,6 @@ type Args struct {
 	// lease (ADR-0003); nil on the hand-passed path, where the implementation stage
 	// claims after the Docker preflight (BEH-316).
 	Lease *lease.Lease
-	// LeaveCIToPRLoop ends the review stage once the PR is open, without watching
-	// its CI: a red check is left to a PR loop's CIRed candidate (#110). Set from a
-	// ticket loop that leaves out watch_ci (config.Loop.LeavesCIToPRLoop).
-	LeaveCIToPRLoop bool
 	// Selected is the ticket as the selection that dispatched this run read it
 	// (nowork.Of); empty on the hand-passed path. A run that finds nothing to hand
 	// off records it with the origin/main SHA it worked against, so selection
@@ -222,9 +218,11 @@ const (
 	// stage's own verdict carried by OK.
 	NoPR Disposition = iota
 	// Shipped — the review stage pushed the branch and opened a PR. It is the
-	// breaker's success signal and is deliberately decoupled from OK: a PR can exist
-	// on a not-OK review (CI red after the auto-fix budget), which the breaker must
-	// NOT count as a failure (DESIGN.md §Circuit breaker).
+	// breaker's success signal and is deliberately decoupled from OK: on the PR and
+	// security-alerts loops a PR can exist on a not-OK run (CI red after the auto-fix
+	// budget), which the breaker must NOT count as a failure (DESIGN.md §Circuit
+	// breaker). The ticket loop's review stage watches no CI (ADR-0063), so its
+	// Shipped run is always OK.
 	Shipped
 	// CapAborted — an external Anthropic spending cap killed the session before it
 	// could finish (BEH-494). A retry-after-reset control signal, not a ticket
@@ -241,7 +239,7 @@ const (
 	PreflightAborted
 	// RecommendClose — the branch makes zero net change against origin/main, so the
 	// review stage declined to open an empty-commit PR and recommends the ticket be
-	// closed as a duplicate/superseded (BEH-603/680/602). Only the review stage
+	// closed as a duplicate/superseded (BEH-603/680). Only the review stage
 	// produces it. A correct terminal no-op: the loop closes the ticket rather than
 	// releasing it (releasing would re-run it to the same conclusion forever) and
 	// the breaker treats it as neutral.
@@ -341,7 +339,7 @@ func (d Disposition) String() string {
 // from an opaque exit code. OK == true implies Err == nil.
 type Result struct {
 	// OK is the ground-truth verdict: did this stage do its job? Orthogonal to
-	// Disposition — a Shipped review can be not-OK (CI red after the auto-fix
+	// Disposition — a Shipped PR-loop run can be not-OK (CI red after the auto-fix
 	// budget) and an OK implementation is still NoPR (it never pushes).
 	OK bool
 	// Err is a hard setup/IO error (config load, tracker fetch, Docker preflight)

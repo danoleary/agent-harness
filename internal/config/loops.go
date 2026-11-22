@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 )
@@ -54,8 +55,9 @@ const (
 	// StepPushExisting pushes the fixed branch to its existing PR.
 	StepPushExisting = "push_existing"
 	// StepWatchCI watches CI to a verdict, running a CIFix session over red checks
-	// whose committed fix must pass every Gate before it is pushed. On a ticket
-	// loop the review stage runs it over the PR it just opened.
+	// whose committed fix must pass every Gate before it is pushed. A ticket loop
+	// does not run it: its review stage ends at the open PR and leaves CI to the PR
+	// loop (ADR-0063), so a ticket loop that lists it has it ignored (Loop.Ignored).
 	StepWatchCI = "watch_ci"
 	// StepNewBranch cuts a package's branch fresh from origin/main, resetting one a
 	// failed attempt left behind.
@@ -156,6 +158,11 @@ type Loop struct {
 	Source  LoopSource
 	Steps   []Step
 	Limits  LoopLimits
+	// Ignored is the steps the loop's [[loops]] entry lists that no longer do
+	// anything on its Source: watch_ci on a ticket loop, whose review stage watches
+	// no CI (ADR-0063). The loader drops them from Steps, so an older config still
+	// loads, and doctor warns on each.
+	Ignored []string
 }
 
 // LoopSource is a loop's Source kind and its parameters. A zero parameter means
@@ -227,14 +234,6 @@ func (l Loop) Has(use string) bool {
 		}
 	}
 	return false
-}
-
-// LeavesCIToPRLoop reports whether a ticket loop's review stage returns as soon
-// as the PR is open, leaving red CI to a PR loop (#110): it is a ticket loop that
-// leaves out watch_ci. The built-in ticket loop keeps it, so a Consumer that runs
-// no PR loop still has its red CI fixed.
-func (l Loop) LeavesCIToPRLoop() bool {
-	return l.Source.Kind == SourceTracker && !l.Has(StepWatchCI)
 }
 
 // Prompt is the body the loop supplies for a step, or "" for the default.
@@ -348,7 +347,7 @@ func BuiltInLoops() []Loop {
 		{
 			Name: DefaultLoopName, BuiltIn: true,
 			Source: LoopSource{Kind: SourceTracker},
-			Steps:  steps(StepImplement, StepReview, StepWatchCI, StepRetro),
+			Steps:  steps(StepImplement, StepReview, StepRetro),
 		},
 		{
 			Name: PRDoctorLoopName, BuiltIn: true,
@@ -466,10 +465,8 @@ var stepSpecs = map[string]stepSpec{
 	}},
 	StepPushExisting: {on: map[string]prereq{SourceGitHubPRs: {StepGates, "it pushes only a committed, gate-green tree"}}},
 	StepOpenPR:       {on: map[string]prereq{SourceGitHubSecurityAlerts: {StepGates, "it opens a PR only for a committed, gate-green tree"}}},
-	// On a ticket loop, watch_ci keeps the review stage on its PR's CI to a verdict;
-	// a ticket loop without it leaves red CI to a PR loop (#110).
+	// A ticket loop's watch_ci is not in here: it is ignored (ignoredSteps).
 	StepWatchCI: {on: map[string]prereq{
-		SourceTracker:              {StepReview, "it watches the CI of the PR review opens"},
 		SourceGitHubPRs:            {StepPushExisting, "it watches the CI of a pushed head"},
 		SourceGitHubSecurityAlerts: {StepOpenPR, "it watches the CI of the PR open_pr opens"},
 	}},
@@ -482,6 +479,13 @@ var stepSpecs = map[string]stepSpec{
 
 // stepOrder lists the steps in the order the loader names them in an error.
 var stepOrder = []string{StepImplement, StepReview, StepCheckoutPR, StepFix, StepNewBranch, StepFixAlerts, StepGates, StepPushExisting, StepOpenPR, StepWatchCI, StepAssess, StepApply, StepRetro}
+
+// ignoredSteps are the steps a Source's loop may still list but no longer runs:
+// the loader drops them, and doctor warns (Loop.Ignored). A ticket loop's review
+// stage watches no CI (ADR-0063).
+var ignoredSteps = map[string]map[string]bool{
+	SourceTracker: {StepWatchCI: true},
+}
 
 // requiredSteps are the steps without which a Source's loop would do nothing
 // worth a sandbox: a ticket loop that never lands, a PR loop that never pushes,
@@ -614,7 +618,7 @@ func resolveLoops(loops []LoopConfig, dir string, at positions) ([]Loop, []strin
 			add(src+".kind", "unknown source kind %q: use %s", lc.Source.Kind, sourceKinds)
 		}
 
-		l.Steps = resolveSteps(lc, l.Source, path, dir, add)
+		l.Steps, l.Ignored = resolveSteps(lc, l.Source, path, dir, add)
 		out = append(out, l)
 	}
 	return out, problems
@@ -651,15 +655,18 @@ func resolveLimits(lc LoopConfig, path string, add func(key, format string, a ..
 }
 
 // resolveSteps checks a loop's steps fit together and fit its Source, and reads
-// the prompt bodies they name.
-func resolveSteps(lc LoopConfig, src LoopSource, path, dir string, add func(key, format string, a ...any)) []Step {
+// the prompt bodies they name. It drops a step the Source ignores and returns it
+// in ignored.
+func resolveSteps(lc LoopConfig, src LoopSource, path, dir string, add func(key, format string, a ...any)) (steps []Step, ignored []string) {
 	if len(lc.Steps) == 0 {
 		add(path, "at least one step is required")
-		return nil
+		return nil, nil
 	}
 	_, known := requiredSteps[src.Kind]
-	var steps []Step
 	before := map[string]bool{}
+	// The index of each step the loop keeps, so the order checks below ignore a
+	// dropped one.
+	kept := 0
 	for j, sc := range lc.Steps {
 		key := fmt.Sprintf("%s.steps[%d]", path, j)
 		stepAdd := func(format string, a ...any) { add(key, format, a...) }
@@ -670,6 +677,11 @@ func resolveSteps(lc LoopConfig, src LoopSource, path, dir string, add func(key,
 			continue
 		case !ok:
 			stepAdd("unknown step %q: use one of %s", sc.Use, strings.Join(stepOrder, ", "))
+			continue
+		case ignoredSteps[src.Kind][sc.Use]:
+			if !slices.Contains(ignored, sc.Use) {
+				ignored = append(ignored, sc.Use)
+			}
 			continue
 		}
 		step := Step{Use: sc.Use, PromptPath: sc.Prompt}
@@ -691,17 +703,18 @@ func resolveSteps(lc LoopConfig, src LoopSource, path, dir string, add func(key,
 				stepAdd("%s appears twice", sc.Use)
 			case pre.needs != "" && !before[pre.needs]:
 				stepAdd("%s needs %s before it: %s", sc.Use, pre.needs, pre.why)
-			case spec.last && j != len(lc.Steps)-1:
+			case spec.last && j != len(lc.Steps)-1 && !ignoredAfter(lc.Steps[j+1:], src.Kind):
 				stepAdd("%s must be the last step: it mines the transcripts every step before it left", sc.Use)
-			case sc.Use == StepRetro && j == 0:
+			case sc.Use == StepRetro && kept == 0:
 				stepAdd("retro needs a step before it: it mines that step's transcripts")
 			}
 		}
 		before[sc.Use] = true
 		steps = append(steps, step)
+		kept++
 	}
 	if !known {
-		return steps
+		return steps, ignored
 	}
 	for _, req := range requiredSteps[src.Kind] {
 		if !before[req] {
@@ -711,7 +724,18 @@ func resolveSteps(lc LoopConfig, src LoopSource, path, dir string, add func(key,
 	if src.Kind == SourceGitHubPRs && src.Yields(WhenCIFailing) && !before[StepWatchCI] {
 		add(path+".source.when", "when = [%q] needs a watch_ci step: a red check is fixed inside the CI watch", WhenCIFailing)
 	}
-	return steps
+	return steps, ignored
+}
+
+// ignoredAfter reports whether every step in rest is one kind's loop ignores, so a
+// last step followed only by them is still last.
+func ignoredAfter(rest []StepConfig, kind string) bool {
+	for _, sc := range rest {
+		if !ignoredSteps[kind][sc.Use] {
+			return false
+		}
+	}
+	return true
 }
 
 // readStepPrompt reads a step's prompt body from dir, or says why it cannot.

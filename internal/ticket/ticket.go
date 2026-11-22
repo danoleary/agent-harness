@@ -29,8 +29,8 @@ type Ticket struct {
 	// Prerequisites are the still-open, unmerged pull requests the ticket's body
 	// names (#82). Selection holds such a ticket in the queue; when one is
 	// dispatched anyway, the envelope names each branch so the session reads the
-	// design from it instead of assuming the two PRs are disjoint, and the CI watch
-	// knows a later conflict with base may be that PR's merge.
+	// design from it instead of assuming the two PRs are disjoint. A later conflict
+	// with base, once that PR merges, is the PR loop's to fix (ADR-0063).
 	Prerequisites []Prerequisite
 	// Labels are the ticket's tracker labels, as selection read them. The overlap
 	// check reads its escape label here (#97).

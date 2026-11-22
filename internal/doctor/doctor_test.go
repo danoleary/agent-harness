@@ -800,3 +800,40 @@ func TestDependabotAlertsCheckedWhenTheSecurityLoopIsDeclared(t *testing.T) {
 		})
 	}
 }
+
+// A ticket loop watches no CI (ADR-0063), so a [[loops]] entry that still lists
+// watch_ci loads with the step ignored. doctor says so, and that red CI on the
+// ticket's PRs is fixed only by a running PR loop. The config itself still loads
+// clean, and a config without such an entry adds no line.
+func TestWarnsOnATicketLoopThatListsWatchCI(t *testing.T) {
+	const name = "ticket loop CI"
+	for _, r := range newWorld(t).run() {
+		if r.Name == name {
+			t.Errorf("a %s line without a ticket loop listing watch_ci: %+v", name, r)
+		}
+	}
+
+	w := newWorld(t)
+	writeProject(t, w.env["PROJECT_PATH"], githubConfig+`
+[[loops]]
+name = "tickets"
+source = { kind = "tracker" }
+steps = [{ use = "implement" }, { use = "review" }, { use = "watch_ci" }, { use = "retro" }]
+`)
+	results := w.run()
+	if cfg := find(t, results, "config.toml"); cfg.Status != OK {
+		t.Errorf("config.toml = %s %q, want the entry to load", cfg.Status, cfg.Detail)
+	}
+	r := find(t, results, name)
+	if r.Status != Warn {
+		t.Errorf("%s = %s, want %s", name, r.Status, Warn)
+	}
+	for _, want := range []string{`"tickets"`, "watch_ci", "no longer does anything", "PR loop"} {
+		if !strings.Contains(r.Detail, want) {
+			t.Errorf("detail %q does not say %q", r.Detail, want)
+		}
+	}
+	if !strings.Contains(r.Fix, "agent-harness loop pr-doctor") {
+		t.Errorf("fix %q does not say to run the PR loop beside it", r.Fix)
+	}
+}

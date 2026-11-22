@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/danoleary/agent-harness/internal/ci"
 	"github.com/danoleary/agent-harness/internal/config"
 	"github.com/danoleary/agent-harness/internal/fix"
 	gitpkg "github.com/danoleary/agent-harness/internal/git"
@@ -17,7 +16,6 @@ import (
 	"github.com/danoleary/agent-harness/internal/runlog"
 	"github.com/danoleary/agent-harness/internal/session"
 	"github.com/danoleary/agent-harness/internal/ship"
-	"github.com/danoleary/agent-harness/internal/ticket"
 	"github.com/danoleary/agent-harness/internal/verify"
 )
 
@@ -470,77 +468,13 @@ func Review(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Res
 	// SHAs: the verdict covers the landed tip, so re-record it there (#44).
 	rememberVerdict()
 
-	// The branch is pushed and the PR is open: from here on the ticket has "reached a
-	// pushed PR" regardless of how the CI watch turns out, so the loop's circuit
-	// breaker must treat it as a success (reset), never a ship failure (DESIGN.md
-	// §Circuit breaker). Carry the signal on every return below.
-
-	// A ticket loop without watch_ci leaves CI to the PR loop (#110): the stage's job
-	// ends at the open PR, so the retrospective, the worktree reap and the next ticket
-	// do not wait 10-15 min on a check run. The PR loop polls open PRs on
-	// branch_prefix and runs the same CIFix session over a red one, and its conflict
-	// fix rebases a PR a prerequisite's merge left conflicting (the case
-	// mergedPrerequisiteResolver covers in-stage).
-	if args.LeaveCIToPRLoop {
-		log.Event("review ✓ PR open; CI is left to the PR loop (no watch_ci step, #110)")
-		return Result{OK: true, Disposition: Shipped}
-	}
-
-	// --- post-PR: watch CI and auto-fix red checks (host-side, BEH-414) ---
-	// Local gates passing is not CI passing (env/toolchain/flake/lockfile skew).
-	// Poll the PR head's checks; on a real failure, run a sandboxed fix session
-	// over the same worktree, push the fix, and re-poll — bounded by attempts +
-	// wall-clock. The gh polling/log-fetch is host-side (ADR-0002); only the
-	// diagnose+fix happens in the sandbox, which is why Fix is the only thing the
-	// stage supplies.
-	log.Event("watching CI for " + wt.Branch() + " …")
-	opened := landing
-	ciResult := h.WatchCI(hostio.CIWatch{
-		Fix: fixes.CI(target),
-		Resolve: mergedPrerequisiteResolver(log, t,
-			func() (ticket.Ticket, error) { return client.FetchTicket(args.Identifier) },
-			func(trigger string) bool {
-				res := resolveRebaseConflict(fixes, target, comment, trigger, gateStep+"-cirebase")
-				if res.OK {
-					opened.Body = reportOverlapsOnPR(h, log, opened, res.Overlaps)
-				}
-				return res.OK
-			}),
-	})
-	// Zero-net-diff short-circuit (BEH-602): the branch became a no-op against the
-	// latest origin/main only AFTER the pre-push rebase (a sibling PR landed the same
-	// fix during the multi-minute gate, which the pre-rebase BEH-603 push-gate check
-	// couldn't see), so the PR is open but there is nothing for CI to validate. Honour
-	// the recommend-close disposition rather than burn the poll budget — keep the PR +
-	// worktree and let the loop flag the ticket for a human to close as superseded.
-	// Recommend-close outranks the open PR here: a no-op PR is not a ship, and the
-	// loop's close breadcrumb already covers the already-opened case.
-	if ciResult.RecommendClose {
-		log.Event("review ⊘ " + ciResult.Reason + " — keeping PR + worktree; recommending close (BEH-602)")
-		return Result{OK: false, Disposition: RecommendClose}
-	}
-	if ciResult.SpendingCapAbort {
-		// The auto-fix session hit an active spending cap — not a code defect or
-		// unfixable CI, just a billing window that resets. Name the retry-after-reset
-		// class (↻) so a re-dispatch after the cap resets lands the fix, instead of a
-		// spurious "CI did not go green" failure (BEH-571). PR + worktree are kept.
-		// The disposition is Shipped, not CapAborted: the branch is already pushed and
-		// the PR open, and a shipped PR outranks a cap abort for both the loop (which
-		// never releases a shipped ticket) and the breaker (which counts it a success).
-		log.Event("review ↻ CI auto-fix deferred — spending cap reached, retry after reset (BEH-494) — keeping PR + worktree")
-		return Result{OK: false, Disposition: Shipped}
-	}
-	if !ciResult.OK {
-		log.Event("review ✗ CI did not go green: " + ciResult.Reason + " — keeping PR + worktree")
-		if s := ci.Summarize(ciResult.Failing); s != "" {
-			fmt.Fprintf(os.Stderr, "\nFailing CI checks for %s:\n%s", wt.Branch(), s)
-		}
-		// CI red after the auto-fix budget still leaves a reviewable PR for a human to
-		// take over — NOT a ship failure, so the breaker must not count it.
-		return Result{OK: false, Disposition: Shipped}
-	}
-	log.Event("review ✓ " + ciResult.Reason)
-
+	// The branch is pushed and the PR is open, and that is the stage's job done
+	// (ADR-0063): the stage never watches CI, so the retrospective, the worktree reap
+	// and the next ticket do not wait 10-15 min on a check run. The PR loop polls open
+	// PRs on branch_prefix and runs a CIFix session over a red one, and its conflict
+	// fix rebases a PR a prerequisite's merge left conflicting. An open PR is a ship
+	// for the loop's circuit breaker (DESIGN.md §Circuit breaker).
+	log.Event("review ✓ PR open; CI is left to the PR loop (ADR-0063)")
 	return Result{OK: true, Disposition: Shipped}
 }
 
@@ -594,51 +528,9 @@ func stepLogTail(logDir, name string, n int) string {
 	return strings.Join(lines, "\n")
 }
 
-// mergedPrerequisiteResolver is the CI watch's Resolve (#82): when the reactive
-// rebase hits a content conflict, it runs the conflict-resolution session and the
-// host gate once — but only when the conflict is a prerequisite's merge. The
-// ticket was fetched while each of t.Prerequisites was still an open PR; if a
-// re-fetch no longer lists one, that PR merged into the base underneath this one
-// (the incident: a sibling editing the same paragraph of a shared design doc
-// merged ~15s after this PR opened). Any other conflict, or a second one, is left
-// for a human as before. Nil when the ticket named no open prerequisite, so the
-// watch behaves exactly as it always did.
-func mergedPrerequisiteResolver(
-	log *runlog.Logger, t ticket.Ticket,
-	refetch func() (ticket.Ticket, error), resolve func(trigger string) bool,
-) func() bool {
-	if len(t.Prerequisites) == 0 {
-		return nil
-	}
-	used := false
-	return func() bool {
-		if used {
-			return false
-		}
-		used = true
-		now, err := refetch()
-		if err != nil {
-			log.Event("review ⚠ PR conflicts with base; could not re-read the ticket's prerequisites (" + err.Error() + ") — leaving the conflict for a human")
-			return false
-		}
-		still := map[string]bool{}
-		for _, p := range now.Prerequisites {
-			still[p.Identifier] = true
-		}
-		for _, p := range t.Prerequisites {
-			if !still[p.Identifier] {
-				return resolve("post-PR rebase after prerequisite " + p.Identifier + " (`" + p.Branch + "`) merged")
-			}
-		}
-		log.Event("review · PR conflicts with base but every prerequisite is still open — not a prerequisite's merge; leaving the conflict for a human (#82)")
-		return false
-	}
-}
-
 // resolveRebaseConflict launches the bounded sandboxed conflict resolution
-// (internal/fix) when a rebase onto base hits a genuine content conflict: the
-// proactive pre-push rebase (BEH-581), or the CI watch's reactive one once a
-// prerequisite merged (#82) — the dead-end that previously stranded a
+// (internal/fix) when the proactive pre-push rebase onto base hits a genuine
+// content conflict (BEH-581) — the dead-end that previously stranded a
 // fully-reviewed, gate-green branch in a worktree with no autonomous recovery. The
 // branch is the harness's own, so it is replayed (fix.Rebase) and force-pushed. It
 // returns true only when the resolution is verified and the re-gate (gateLabel)
@@ -687,28 +579,6 @@ func resolveRebaseConflict(fixes fix.Env, target fix.Target, comment func(string
 // PR ships, and its reader decides.
 func overlapSection(overlaps []fix.Overlap) string {
 	return fix.OverlapSection("While this branch was in review, `main` gained code that the branch also implements in a mechanism of its own. The conflict-resolution session that rebased the branch reported these and left the branch's version in place. The review above judged the branch against the old base, so it did not see them, and nothing has re-reviewed them since:", overlaps)
-}
-
-// reportOverlapsOnPR puts what the CI watch's reactive replay reported the branch
-// duplicates of main on the PR the landing opened, as its description's
-// `## Overlap with main` section (#344): the review's own section went out with
-// the PR before this replay ran (ADR-0050). It returns the description as it now
-// stands. The report never holds the push, so a failed edit is only narrated.
-func reportOverlapsOnPR(h hostio.Host, log *runlog.Logger, opened ship.Landing, overlaps []fix.Overlap) string {
-	body := fix.UpsertOverlapSection(opened.Body, fix.OverlapSection(fix.OpenPROverlapIntro, overlaps))
-	if body == opened.Body {
-		return body
-	}
-	n, err := hostio.PRNumber(opened.URL)
-	if err == nil {
-		err = h.EditPR(n, opened.Title, body)
-	}
-	if err != nil {
-		log.Event("review ⚠ could not put the conflict resolution's overlap report on the PR: " + err.Error() + " — it is in run.jsonl only (#344)")
-		return opened.Body
-	}
-	log.Event("review ⚑ put the conflict resolution's overlap report on the PR description (#344)")
-	return body
 }
 
 // reviewResolution is the review of what a pre-push conflict resolution wrote after

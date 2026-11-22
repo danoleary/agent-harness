@@ -1,6 +1,6 @@
 # ADR-0023: A ticket waits on an open PR its body names
 
-- Status: Accepted
+- Status: Accepted — its CI watch resolution removed by [ADR-0063](0063-the-ticket-loop-leaves-ci-to-the-pr-loop.md): the ticket loop no longer watches CI, and the PR loop fixes the conflict
 - Date: 2026-10-25
 - Extends: ADR-0003, ADR-0010
 

@@ -411,17 +411,19 @@ loop:
                # incl. verdict-blocked (BEH-580): review ran + found an unresolved Blocker/Important
                #   finding it couldn't self-resolve → fail closed, keep worktree for a human decision
 
-  --- review CI watch + auto-fix (harness, host-side, BEH-414) ---
-  only on a ticket loop with the watch_ci step (the built-in default); without it the stage
-    returns Shipped here and leaves red CI to the PR loop (ADR-0031, #110)
+  the PR is open: the review stage returns Shipped (and OK) here, logging "review ✓ PR open; CI is
+    left to the PR loop". It never watches CI (ADR-0063): red CI and a later conflict with main on
+    this PR are the PR loop's CIRed / Conflict items once the run is over. A branch that becomes a
+    no-op only after the pre-push rebase ships as Shipped, its PR left open for a human to close.
+
+  --- CI watch + auto-fix (harness, host-side, BEH-414) ---
+  the PR loop's and the security-alerts loop's watch_ci step (`hostio.Host.WatchCI`), over the head
+    they pushed; the ticket loop runs none (ADR-0063)
   zero-net-diff short-circuit (BEH-602): BEFORE the first poll, if `git diff origin/main` for the
     pushed branch is EMPTY -> there is nothing for CI to validate that main hasn't already validated,
     so do NOT watch (a no-op PR can never meaningfully go green — the PR #642 ~20-min poll-budget
-    waste). Return the recommend-close disposition: keep the PR + worktree, flag the ticket for a human
-    to close as superseded. The review push-gate already recommend-closes a zero-diff branch BEFORE the
-    push (BEH-603), so this is the BACKSTOP for a branch that became a no-op only AFTER the pre-push
-    rebase (a sibling PR merged the same fix during the multi-minute gate), plus any standalone/resumed
-    review. Fail-safe: any git doubt reads NON-empty, so a flaky read falls through to the normal watch.
+    waste). Return at once, not green, naming the empty diff. Fail-safe: any git doubt reads
+    NON-empty, so a flaky read falls through to the normal watch.
   docs-only short-circuit (BEH-687): BEFORE the first poll, if the pushed branch's net diff against
     origin/main touches ONLY documentation/prose paths no gate or CI job reads (root markdown, `docs/**`;
     NOT a declared skill tree such as `.claude/`, whose SKILL.md files a gate or CI job may read;
@@ -476,10 +478,8 @@ loop:
   if green        -> confirm mergeability against base (gh pr view --json mergeable):
                        clean              -> done
                        stale-base conflict (main moved after the push) -> auto-rebase + force-with-lease
-                         re-push, await CI re-run, re-check (capped); only a genuine CONTENT conflict
-                         is left for a human (BEH-570) — unless it is a prerequisite PR's merge
-                         (the ticket named an open PR that has since merged): then one conflict-
-                         resolution session + host gate, re-push, re-check before parking (#82)
+                         re-push, await CI re-run, re-check (capped); a genuine CONTENT conflict
+                         is left for a human (BEH-570)
   else (red):
     one re-run of the failed checks first (flake wash); re-poll
     while still red AND attempts < N AND within wall-clock budget:
@@ -596,7 +596,7 @@ loop:
   // failure — left the ticket claimed In Progress with nothing to show. The dispatch
   // claimed it on select, so undo the claim or the board reads "in flight" forever and
   // the dispatch guard never re-grabs it. A shipped PR is the success signal and is
-  // never released, even on a non-zero exit (CI red after the auto-fix budget).
+  // never released, even on a non-zero exit (a PR loop's CI red after the auto-fix budget).
   // RECOMMEND-CLOSE (BEH-603) is the one no-PR mode that is NOT released to Todo: the branch
   // makes zero net change, so re-grabbing it would re-run the whole pipeline to the same
   // "nothing to ship" conclusion forever. CLOSE it — move it to Canceled (BEH-682) — so it
@@ -646,7 +646,7 @@ poll (Source github_prs, read-only judgement — also what --dry-run prints):
       skip unless head on <branch_prefix>/  OR  labelled source.label | PR_LOOP_LABEL
     skip if the ticket loop holds the branch (an In Progress ticket's slug  // lease keyed on the branch
       whose run is live, holding locks/runs/<slug>.lock: once the run
-      ends its later red CI is this loop's, #110, ADR-0043)
+      ends its red CI is this loop's: the ticket loop watches none, ADR-0043, ADR-0063)
     a worktree other than pr-<n>'s has the branch checked out:             // git refuses it, #192
       clean, and origin's head contains its HEAD -> remove it (Next, every poll; narrated)  // #231
       else skip with the reason, once per reason in the stream (item-skipped); no attempt spent
@@ -671,7 +671,7 @@ pipeline (one PR, worktree .claude/worktrees/pr-<n> on the PR's head branch):
     harness branch: replay onto origin/main;  human branch: merge origin/main in
     verify.RebaseResolution -> all gates -> push --force-with-lease | push
     pushed replay whose session reported overlaps with main -> upsert the PR      // #344, ADR-0050
-      description's `## Overlap with main` section (the CI watch's reactive rebase too)
+      description's `## Overlap with main` section
     a gate red over the resolution: is origin/main red on that gate by itself?  // #250, ADR-0048
       the base verdict record (shared with the ticket loop) answers, or gate origin/main
       alone in .claude/worktrees/pr-<n>.base (red confirmed by a re-run)
@@ -717,7 +717,7 @@ another:
 ```
 loop     = name + source{kind, params} + steps[] + limits
 source   : tracker | github_prs{label, when[conflicting, ci_failing], max_attempts}
-steps    : tracker    -> implement, review, [watch_ci], [retro]
+steps    : tracker    -> implement, review, [retro]   (a listed watch_ci is ignored, ADR-0063)
            github_prs -> checkout_pr, fix, gates, push_existing, [watch_ci], [retro]
 limits   : poll_interval cap_backoff claim_ttl max_runtime max_consecutive_failures max_items
            (each overrides its LOOP_* knob for this loop; unset keeps the knob)
@@ -730,15 +730,16 @@ agent. `config.LoadProject` validates the lot with every problem at once, each a
 its `config.toml:line:column` (`config/positions.go` re-walks the file with
 go-toml's own parser to place them): unknown source or step, a step on the wrong
 Source, a step before what it needs (`push_existing` after `gates`, `watch_ci`
-after `review` or `push_existing`, `retro` last), a missing required step, `ci_failing`
+after `push_existing` or `open_pr`, `retro` last), a missing required step, `ci_failing`
 without `watch_ci`, and an unreadable or blank prompt file.
 
-On a `tracker` loop `watch_ci` is the review stage's post-PR CI watch below. The
-built-in `tickets` loop keeps it, so a Consumer that runs no PR loop still gets its
-red CI auto-fixed. A Consumer that runs `pr-doctor` can leave it out: the review
-stage then returns **Shipped** as soon as the PR is open, the retrospective and the
-worktree reap run at once, and a check that goes red later is `pr-doctor`'s
-(ADR-0031, #110).
+A `tracker` loop watches no CI (ADR-0063, superseding ADR-0031's optional step):
+the review stage returns **Shipped** as soon as the PR is open, the retrospective
+and the worktree reap run at once, and a check that goes red later is
+`pr-doctor`'s, so a Consumer runs `pr-doctor` beside the ticket loop or leaves red
+CI to a human. A `[[loops]]` entry with a `tracker` Source that still lists
+`watch_ci` loads with the step dropped (`config.Loop.Ignored`); `loop --dry-run`
+prints it as ignored and `doctor` warns on it (`ticket loop CI`).
 
 Each loop has its own sentinel (`.agent-harness/STOP-<name>`; the plain `STOP`
 stops them all, and a starting loop clears both) and its own logs dir: `logs/`
@@ -1377,7 +1378,7 @@ own namespace with no edit to the workflow.
   low and it reaps a healthy session mid-build. The wall-clock hard cap is the
   backstop, so the heartbeat only needs to detect a dead stream sooner than the cap
   would. Set to 0 to disable.
-- **CI watch caps (BEH-414, all configurable):** poll interval 30 s, poll budget
+- **CI watch caps (BEH-414, all configurable; the PR and security-alerts loops' watch, ADR-0063):** poll interval 30 s, poll budget
   20 min (one wait for checks to go terminal), auto-fix budget 30 min + max 2 fix
   attempts (the flake re-run is separate and doesn't count). Each auto-fix session
   reuses the review wall-clock cap. On exhaustion the PR + worktree are kept and
@@ -1386,13 +1387,11 @@ own namespace with no edit to the workflow.
 
   | Outcome | implementation | review (+ harness gate/push/PR) | retrospective |
   |---|---|---|---|
-  | Clean success (ground-truth passes) | commit ahead → run review | gates green → push + PR → CI watch → CI green → run retrospective | `out.json` present → file findings → remove worktree, ticket done, next |
-  | **Ready for merge queue (BEH-614)** — CI watch finds all real gates green and the only pending check is a structurally-wedged required context (`state=EXPECTED`, merge-queue/main-only) | commit ahead → run review | gates green → push + PR → CI watch **short-circuits the moment the gates are green** (no stall-window/poll-budget waste) → PASS as ready-for-merge-queue (still mergeability-gated) → run retrospective; treated as clean success (breaker resets) | runs as usual |
+  | Clean success (ground-truth passes) | commit ahead → run review | gates green → push + PR → Shipped; CI left to the PR loop (ADR-0063) → run retrospective | `out.json` present → file findings → remove worktree, ticket done, next |
   | Crash / non-zero exit / timeout | log + breadcrumb, skip rest, next | log + breadcrumb, keep worktree (no push), next | log + breadcrumb, keep worktree, next |
-  | Ran but ground-truth fails | no commit → skip + breadcrumb | gates **red** (or dirty worktree, or **no verdict** — spending-cap/OOM, BEH-569, or verdict **blocked** on an unresolved finding, BEH-580) → no push, breadcrumb, keep worktree, next; OR PR open but **CI red after auto-fix budget** → keep PR + worktree, print failing checks | `out.json` absent → breadcrumb, keep worktree, next |
+  | Ran but ground-truth fails | no commit → skip + breadcrumb | gates **red** (or dirty worktree, or **no verdict** — spending-cap/OOM, BEH-569, or verdict **blocked** on an unresolved finding, BEH-580) → no push, breadcrumb, keep worktree, next | `out.json` absent → breadcrumb, keep worktree, next |
   | **Recommend-close (BEH-603)** — clean worktree, **empty** `git diff origin/main` | (n/a) | zero net change → **no push, no PR**; breadcrumb noting the ticket is closed as a duplicate/superseded; keep worktree for audit; **closed → Canceled** (BEH-682; NOT released to Todo, so it leaves the selection + reaper pools for good — falls back to kept In Progress if no closer is wired); breaker-neutral | runs as usual |
-  | **Recommend-close at the CI watch (BEH-602)** — branch became **empty** only AFTER the pre-push rebase (sibling merged the same fix during the gate), so the PR is already open | (n/a) | CI watch short-circuits BEFORE the first poll (no ~20-min poll-budget waste) → keep PR + worktree; same recommend-close breadcrumb + **closed → Canceled** (BEH-682; the no-op PR should be closed too); breaker-neutral | runs as usual |
-  | **Docs-only (BEH-687)** — net diff touches ONLY docs/prose paths no gate or CI job reads (root markdown, `docs/**`) | commit ahead → run review | host gate re-run **skipped** (nothing a prose edit could break) → push + PR → CI watch **short-circuits BEFORE the first poll** (no ~12-min poll-budget waste, the PR #743 death) → PASS as trivially-mergeable (still mergeability-gated) → run retrospective; treated as clean success (breaker resets) | runs as usual |
+  | **Docs-only (BEH-687)** — net diff touches ONLY docs/prose paths no gate or CI job reads (root markdown, `docs/**`) | commit ahead → run review | host gate re-run **skipped** (nothing a prose edit could break) → push + PR → Shipped → run retrospective; treated as clean success (breaker resets) | runs as usual |
 
 - **Circuit breaker:** 3 consecutive ticket failures → **exit and report
   loudly** (assume something environmental broke, e.g. expired auth or a broken
@@ -1673,8 +1672,9 @@ reader over a structured stream rather than a `--tui` flag on the daemon.
 - **A ticket waits on an open PR its body names**
   ([ADR-0023](https://github.com/danoleary/agent-harness/blob/main/docs/adr/0023-a-ticket-waits-on-an-open-pr-its-body-names.md)). GitHub
   selection skips it; a dispatched one carries `ticket.Prerequisites`, which the
-  implementation envelope names by branch; and the CI watch resolves a conflict
-  with base once when it is that prerequisite's merge.
+  implementation envelope names by branch. A conflict with base once that
+  prerequisite merges is the PR loop's `Conflict` item: the ticket loop watches no
+  CI ([ADR-0063](https://github.com/danoleary/agent-harness/blob/main/docs/adr/0063-the-ticket-loop-leaves-ci-to-the-pr-loop.md)).
 - Config: `agent-harness/.env` (`LINEAR_API_KEY`, `ANTHROPIC_API_KEY`,
   `GH_TOKEN`, `PROJECT_PATH`, bot identity, timeouts) + CLI flags (`--verbose`,
   `--once` for a single ticket then exit, label/timeout overrides).

@@ -5,7 +5,7 @@ runs over each **Work item** the Source yields (ADR-0019). Four loops are built 
 
 | Name | Source | Steps | Runs with |
 |---|---|---|---|
-| `tickets` | `tracker`: the ready queue | `implement`, `review`, `watch_ci`, `retro` | `agent-harness loop` (the default) |
+| `tickets` | `tracker`: the ready queue | `implement`, `review`, `retro` | `agent-harness loop` (the default) |
 | `pr-doctor` | `github_prs`: open PRs that conflict with `main` or have red CI | `checkout_pr`, `fix`, `gates`, `push_existing`, `watch_ci`, `retro` | `agent-harness loop pr-doctor` |
 | `triage` | `backlog`: tickets not yet labelled ready for an agent | `assess`, `apply` | `agent-harness loop triage` |
 | `security-alerts` | `github_security_alerts`: open Dependabot alerts, one item per package | `new_branch`, `fix_alerts`, `gates`, `open_pr`, `watch_ci`, `retro` | `agent-harness loop security-alerts` |
@@ -61,22 +61,23 @@ runs a shell command, or an agent with nothing checking what it did (ADR-0016).
 Every key, Source and Step, and the order Steps must come in, is listed under
 [`[[loops]]`](../reference/config.md#loops) in the config reference.
 
-## Stop the ticket loop waiting on CI
+## Run a PR loop beside the ticket loop
 
-The built-in `tickets` loop watches each PR's CI to a verdict before the
-retrospective runs and the next ticket starts, and fixes a red check itself. That
-watch is often most of the review stage. If you run `pr-doctor` beside it, leave
-`watch_ci` out of the ticket loop; the review stage then stops once the PR is
-open, and `pr-doctor` fixes a check that goes red later (ADR-0031):
+The ticket loop does not watch CI. Its review stage stops once the PR is open, so
+the retrospective and the next ticket start at once, and a check that goes red on
+that PR is the PR loop's to fix (ADR-0063). Run `pr-doctor` beside it:
 
-```toml
-[[loops]]
-name = "tickets"
-source = { kind = "tracker" }
-steps = [{ use = "implement" }, { use = "review" }, { use = "retro" }]
+```bash
+agent-harness loop             # the ticket loop
+agent-harness loop pr-doctor   # in a second terminal: fixes red CI and conflicts on the ticket loop's PRs
 ```
 
-Without a running PR loop, red CI on those PRs then waits for a human.
+Without a running PR loop, red CI on ticket PRs waits for a human. `doctor` cannot
+tell whether `pr-doctor` is running: a `[[loops]]` entry is not a running daemon.
+
+A `tickets` entry written before this change may still list `watch_ci`. It still
+loads, but the step does nothing: `loop --dry-run` prints it as ignored and
+`doctor` warns on it. Remove it from the steps.
 
 ## Triage the backlog into the ready queue
 

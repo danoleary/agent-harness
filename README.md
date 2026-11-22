@@ -92,7 +92,8 @@ touch .agent-harness/STOP-b         # stop instance b alone; plain STOP stops al
 ```
 
 A second loop, `pr-doctor`, fixes open PRs that went red on CI or conflict with
-`main` (set its `source.scope = "opted_in"` to limit it to harness PRs and PRs
+`main`. The ticket loop does not watch CI once its PR is open, so run `pr-doctor`
+beside it, or red CI on ticket PRs waits for a human (set its `source.scope = "opted_in"` to limit it to harness PRs and PRs
 you label `agent-maintained`). A third, `triage`, reads the tickets nobody has
 labelled ready yet, labels the ones an agent can start (on Linear, moving them
 from Backlog to Todo), and comments its questions on the rest. A fourth,

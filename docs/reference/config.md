@@ -208,7 +208,7 @@ Each step is `{ use = "<step>" }`, plus `prompt = "<path>"` (relative to
 | Step | Source | Must follow | `prompt` | Checks |
 |---|---|---|---|---|
 | `implement` | `tracker` | (first) | replaces `prompts/implement.md` | a committed handoff on the branch |
-| `review` | `tracker` | `implement` | replaces `prompts/review.md` | every Gate green before the Landing |
+| `review` | `tracker` | `implement` | replaces `prompts/review.md` | every Gate green before the Landing; stops once the PR is open and leaves its CI to a PR loop |
 | `checkout_pr` | `github_prs` | (first) | not accepted | the branch is at the polled head |
 | `fix` | `github_prs` | `checkout_pr` | leads the RebaseFix and CIFix prompts | a clean tree with `origin/main` in its history |
 | `new_branch` | `github_security_alerts` | (first) | not accepted | the package's branch is cut fresh from `origin/main` |
@@ -216,7 +216,7 @@ Each step is `{ use = "<step>" }`, plus `prompt = "<path>"` (relative to
 | `gates` | `github_prs`, `github_security_alerts` | `fix` on `github_prs`; `fix_alerts` on `github_security_alerts` | not accepted | every Gate green over the fixed tree |
 | `push_existing` | `github_prs` | `gates` | not accepted | pushes only a committed, gate-green tree; rewrites the PR's title and description when the resolution renumbered one of the branch's ADRs |
 | `open_pr` | `github_security_alerts` | `gates` | not accepted | opens a new PR only for a committed, gate-green tree |
-| `watch_ci` | `tracker`, `github_prs`, `github_security_alerts` | `review` on `tracker`; `push_existing` on `github_prs`; `open_pr` on `github_security_alerts` | not accepted | a CI fix must pass every Gate before it is pushed |
+| `watch_ci` | `github_prs`, `github_security_alerts` (ignored on `tracker`) | `push_existing` on `github_prs`; `open_pr` on `github_security_alerts` | not accepted | a CI fix must pass every Gate before it is pushed |
 | `assess` | `backlog` | (first) | leads the Triage prompt with the project's own bar for "ready" | a verdict file: ready, or not ready with questions for a human |
 | `apply` | `backlog` | `assess` | not accepted | a ready ticket gets `ready_label` (on Linear, Backlog → Todo too); one that is not gets a comment with the questions |
 | `retro` | `tracker`, `github_prs`, `github_security_alerts` | any step; must be last | replaces `prompts/retro.md` | files the run's Findings |
@@ -225,9 +225,12 @@ A `tracker` loop needs `implement` and `review`. A `github_prs` loop needs
 `checkout_pr`, `fix`, `gates` and `push_existing`; `when = ["ci_failing"]` also
 needs `watch_ci`, because a red check is fixed inside the CI watch. A
 `github_security_alerts` loop needs `new_branch`, `fix_alerts`, `gates` and
-`open_pr`. A `tracker` or `github_security_alerts`
-loop without `watch_ci` stops once the PR is open and leaves red CI to a PR loop
-(ADR-0031); the built-in `tickets` and `security-alerts` loops have it. Without
+`open_pr`. A `tracker` loop never watches CI: its `review` stops once the PR is
+open and leaves red CI to a PR loop, so run `pr-doctor` beside it (ADR-0063). A
+`watch_ci` listed on a `tracker` loop still loads but is ignored, and `doctor`
+warns on it. A `github_security_alerts` loop without `watch_ci` stops once the PR
+is open and leaves red CI to a PR loop (ADR-0040); the built-in `security-alerts`
+loop has it. Without
 `retro`, nothing files Findings. A `backlog` loop needs `assess`; without
 `apply` it records its verdicts and changes no ticket. Each Step may appear once.
 

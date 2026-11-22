@@ -123,16 +123,10 @@ type Result struct {
 // polling checks, re-running them, fetching failed logs, pushing, and the
 // reactive rebase — so a Stage supplies only Fix, the sandboxed diagnose-and-fix
 // session it wants run against a red check. That collapses ci.NewGhDriver's ten
-// positional parameters at the call site to one field.
-//
-// Resolve is optional: when the reactive rebase hits a content conflict, the host
-// calls it before parking the PR, and on true force-with-lease re-pushes the
-// branch it left resolved, committed and gate-green (#82). Nil, or false, parks
-// the PR for a human as before. The Stage owns when a resolution is worth a
-// session; the host owns the push.
+// positional parameters at the call site to one field. A content conflict the
+// reactive rebase hits parks the PR for a human.
 type CIWatch struct {
-	Fix     func(ciLogs string, logAvailable bool) error
-	Resolve func() bool
+	Fix func(ciLogs string, logAvailable bool) error
 	// KeepHistory forbids the watch's reactive rebase: a branch a human opted in to
 	// the PR loop must never be force-pushed (ADR-0019), so a green PR that
 	// conflicts with base is handed back as a conflict instead of replayed.

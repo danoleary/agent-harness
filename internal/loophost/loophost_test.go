@@ -720,20 +720,6 @@ func TestTicketDepsFollowTheLoopsSteps(t *testing.T) {
 	}
 }
 
-// #110: the stage args follow the loop's Steps. The built-in ticket loop watches
-// its PR's CI; one that leaves out watch_ci hands CI to the PR loop.
-func TestTicketArgsLeaveCIToThePRLoopWithoutWatchCI(t *testing.T) {
-	builtIn, _ := config.Project{}.LoopNamed("")
-	if a := ticketArgs(builtIn, loop.WorkItem{Key: "PROJ-1"}, nil); a.Identifier != "PROJ-1" || a.LeaveCIToPRLoop {
-		t.Errorf("the built-in ticket loop watches CI in its review stage, got %+v", a)
-	}
-	noWatch := builtIn
-	noWatch.Steps = []config.Step{{Use: config.StepImplement}, {Use: config.StepReview}, {Use: config.StepRetro}}
-	if a := ticketArgs(noWatch, loop.WorkItem{Key: "PROJ-1"}, nil); !a.LeaveCIToPRLoop {
-		t.Error("a ticket loop without watch_ci must leave CI to the PR loop")
-	}
-}
-
 // Instances of one loop (#89): STOP-<id> stops that instance alone, the loop's
 // STOP-<name> and the plain STOP stop every instance.
 func TestAnInstanceStopsOnItsOwnSentinelAndOnEveryShared(t *testing.T) {

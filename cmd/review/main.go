@@ -43,10 +43,6 @@ func main() {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		os.Exit(1)
 	}
-	// Leave CI to the PR loop exactly when the Consumer's ticket loop does (#110).
-	if tickets, ok := cfg.LoopNamed(""); ok {
-		args.LeaveCIToPRLoop = tickets.LeavesCIToPRLoop()
-	}
 	// A Stage run by hand holds the ticket's run lock as the pipeline does, so it
 	// never works a worktree a live run is working (#366). The deferred release
 	// keeps the lock file open until the process exits, which drops the lock.

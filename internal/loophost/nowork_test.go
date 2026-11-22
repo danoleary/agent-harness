@@ -69,11 +69,10 @@ func TestTheSelectedTicketReachesTheStageArgs(t *testing.T) {
 	if !ok {
 		t.Fatal("want #330 selected")
 	}
-	builtIn, _ := config.Project{}.LoopNamed("")
-	if a := ticketArgs(builtIn, item, claim); a.Selected != nowork.Of(issue330) {
+	if a := ticketArgs(item, claim); a.Selected != nowork.Of(issue330) {
 		t.Errorf("Selected = %q, want the fingerprint of the selected ticket", a.Selected)
 	}
-	if a := ticketArgs(builtIn, loop.WorkItem{Key: "#330"}, nil); a.Selected != "" {
+	if a := ticketArgs(loop.WorkItem{Key: "#330"}, nil); a.Selected != "" {
 		t.Errorf("an item with no selection context records nothing, got %q", a.Selected)
 	}
 }

@@ -136,7 +136,8 @@ The first run builds your sandbox image, which takes a few minutes. Then it:
 1. claims the issue (it gets the `in-progress` label);
 2. runs the **implementation** session, which commits on `feat/gh-<number>`;
 3. runs a **review** session that has never seen the implementation, re-runs
-   your gates on the host, pushes, opens the PR and watches CI;
+   your gates on the host, pushes and opens the PR (CI on it is left to
+   `agent-harness loop pr-doctor`, if you run it);
 4. runs a **retrospective** over both transcripts and files any Findings.
 
 In another terminal, `agent-harness watch` shows which Stage is running.

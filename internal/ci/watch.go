@@ -132,10 +132,9 @@ type Outcome struct {
 	SpendingCapAbort bool
 	// RecommendClose marks the zero-net-diff short-circuit (BEH-602): the pushed
 	// branch makes no change against origin/main, so there is nothing for CI to
-	// validate and the PR is a no-op. The caller surfaces this as the same
-	// recommend-close disposition the review push-gate uses (BEH-603) — keep the
-	// PR + worktree, flag the ticket for a human to close as superseded — rather
-	// than burning the poll budget on a PR that can never meaningfully go green.
+	// validate and the PR is a no-op. The watch returns at once rather than burning
+	// the poll budget on a PR that can never meaningfully go green; the PR and
+	// security-alerts loops report it as CI not green, with its Reason.
 	RecommendClose bool
 }
 

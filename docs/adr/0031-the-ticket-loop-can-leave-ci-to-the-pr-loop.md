@@ -1,6 +1,6 @@
 # ADR-0031: The ticket loop can leave CI to the PR loop
 
-- Status: Accepted
+- Status: Accepted — decisions 1 and 2 (`watch_ci` on a ticket loop) superseded by [ADR-0063](0063-the-ticket-loop-leaves-ci-to-the-pr-loop.md); decision 3 stands, as amended by ADR-0043
 - Date: 2026-10-25
 - Extends: ADR-0019
 
