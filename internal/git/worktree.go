@@ -385,6 +385,12 @@ func (w Worktree) BaseSHA() (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
+// MainSHA is the commit origin/main points at, as of the last fetch: the
+// worktree's view of [Checkout.MainSHA].
+func (w Worktree) MainSHA() (string, error) {
+	return Checkout{path: w.repo, runners: w.runners}.MainSHA()
+}
+
 // CommitSubjects returns the subject lines of the commits on the feature branch
 // ahead of origin/main, newest last — the raw material for the templated PR body.
 // Read from the main checkout (the shared `.git` holds the branch's objects); an

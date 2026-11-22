@@ -347,7 +347,14 @@ type GatedCI struct {
 	// gate's output, which the next attempt works from in place of the CI log the
 	// watch hands it. That log is the red the refused fix already answered.
 	refusal string
+	// merged is the branch tree and origin/main the last green merge gate passed
+	// together, so a fix that changed nothing over an unmoved origin/main is not
+	// gated merged again (#396).
+	merged mergedPair
 }
+
+// mergedPair is one tree gated merged with one origin/main commit.
+type mergedPair struct{ tree, main string }
 
 // GatedCI returns the gated CI fix over t, for one CI watch.
 func (e Env) GatedCI(t Target) *GatedCI { return &GatedCI{env: e, ciFix: e.CI(t)} }
@@ -358,6 +365,11 @@ func (e Env) GatedCI(t Target) *GatedCI { return &GatedCI{env: e, ciFix: e.CI(t)
 // pushes nothing. A fix green on the branch is then gated merged with origin/main
 // ([GatedCI.mergeGate]); a red there is refused with [ci.ErrFixRefused], and the
 // next attempt gets its output as its logs.
+//
+// A session that changed nothing — it committed nothing, so only the empty
+// re-trigger commit was added, or its commits cancel out — leaves the tree the
+// branch was pushed with, so the branch is not gated again (#396). Only the merge
+// gate can see something new, and only when origin/main has moved.
 func (g *GatedCI) Fix(in ci.FixInput) error {
 	g.Attempts++
 	if g.refusal != "" {
@@ -370,10 +382,14 @@ func (g *GatedCI) Fix(in ci.FixInput) error {
 	}
 	label := fmt.Sprintf("gate-cifix%d", g.Attempts)
 	var gate GateResult
-	if fixed, err := wt.ChangedSince(before); before != "" && err == nil {
-		gate = g.env.GatesOver(label, fixed)
-	} else {
+	fixed, err := wt.ChangedSince(before)
+	switch {
+	case before == "" || err != nil:
 		gate = g.env.Gates(label)
+	case len(fixed) == 0:
+		g.env.Log.Event(fmt.Sprintf("%s · no code change from auto-fix %d — skipping the host re-gate of the branch (#396)", g.env.Who, g.Attempts))
+	default:
+		gate = g.env.GatesOver(label, fixed)
 	}
 	if !gate.Green() {
 		return fmt.Errorf("gate %q is red over auto-fix %d (exit %d) — not pushing", gate.FailedGate, g.Attempts, gate.Outcome.ExitCode)
@@ -395,7 +411,8 @@ const mergeGateTailLines = 200
 // origin/main is fetched first, as CI's merge ref would be. A merge that
 // conflicts, or that git cannot make, refuses the fix outright; a red gate over
 // it refuses with [ci.ErrFixRefused] and keeps the gate's output for the next
-// attempt. A docs-only branch is not gated here, as on the branch.
+// attempt. A docs-only branch is not gated here, as on the branch, and nor is a
+// tree this watch already gated green merged with the same origin/main (#396).
 func (g *GatedCI) mergeGate(label string) error {
 	e := g.env
 	if err := e.Host.FetchMain(); err != nil {
@@ -403,6 +420,17 @@ func (g *GatedCI) mergeGate(label string) error {
 	}
 	wt := e.Host.Worktree()
 	if wt.IsRebasedOnto(gitpkg.BaseRef) || wt.DocsOnly(e.Cfg.DocsOnlyExcludedRoots) {
+		return nil
+	}
+	// A tree or origin/main that cannot be read records nothing, so never matches.
+	var pair mergedPair
+	tree, terr := wt.HeadTree()
+	base, berr := wt.MainSHA()
+	if terr == nil && berr == nil {
+		pair = mergedPair{tree, base}
+	}
+	if pair != (mergedPair{}) && pair == g.merged {
+		e.Log.Event(fmt.Sprintf("%s · auto-fix %d is the tree already gated green merged with %s %s — not gating it again (#396)", e.Who, g.Attempts, gitpkg.BaseRef, shortSHA(base)))
 		return nil
 	}
 	// The gates the branch skipped are skipped merged too, without saying so again.
@@ -428,6 +456,7 @@ func (g *GatedCI) mergeGate(label string) error {
 	}
 	gate := e.gatesIn(m.Path(), gates, label+"-merge", nil)
 	if gate.Green() {
+		g.merged = pair
 		return nil
 	}
 	e.Log.Event(fmt.Sprintf("%s ✗ gate %q is red over auto-fix %d merged with %s, though green on the branch alone — not pushing; the next attempt works from its output (#259)", e.Who, gate.FailedGate, g.Attempts, gitpkg.BaseRef))

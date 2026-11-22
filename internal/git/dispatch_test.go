@@ -205,7 +205,12 @@ func TestMainSHAFollowsTheLastFetch(t *testing.T) {
 	if err := c.FetchMain(); err != nil {
 		t.Fatalf("FetchMain: %v", err)
 	}
-	if got, _ := c.MainSHA(); got == before {
+	got, _ := c.MainSHA()
+	if got == before {
 		t.Errorf("MainSHA() = %q after fetching a merge, want it moved", got)
+	}
+	// A worktree reads the checkout's origin/main (#396).
+	if wt, _ := c.Worktree("x").MainSHA(); wt != got {
+		t.Errorf("Worktree.MainSHA() = %q, want the checkout's %q", wt, got)
 	}
 }

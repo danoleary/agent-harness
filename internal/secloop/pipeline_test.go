@@ -451,6 +451,13 @@ func TestFixRefusesACIFixWhoseGatesFail(t *testing.T) {
 		}
 		return session.Outcome{}
 	}
+	securityFix := h.AgentFn
+	h.AgentFn = func(n int, run hostio.AgentRun) session.Outcome {
+		if run.Label == "cifix-1" {
+			repo.Commit(h.Worktree(), "fix.js", "module.exports = {}\n", "Fix the red check")
+		}
+		return securityFix(n, run)
+	}
 	var fixErr error
 	h.CIFn = func(w hostio.CIWatch) ci.Outcome {
 		fixErr = w.Fix(ci.FixInput{Logs: "FAIL", LogAvailable: true})
