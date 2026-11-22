@@ -43,9 +43,11 @@ jobs:
         # exist, so an uncovered behavioral change otherwise sails through green.
         # Diff-based, so it is kept out of `make check` to keep that target
         # offline-runnable; the checkout is shallow with no origin/main ref, so
-        # fetch main's tip and compare against that.
+        # fetch main's tip and compare against that. The fetch is the job's one
+        # network call after setup, so it gets a bounded retry: a dropped fetch
+        # once redded this required gate on a commit whose gates passed (#372).
         run: |
-          git fetch --no-tags --depth=1 origin main
+          ./scripts/retry.sh 3 git fetch --no-tags --depth=1 origin main
           ./scripts/require-script-test-coverage.sh FETCH_HEAD
       - name: Build
         run: make build
