@@ -71,7 +71,9 @@ daemon branches only on the **Disposition** it returns.
 
 **Step**:
 One named unit of a loop's **Pipeline**, from a fixed set the harness implements
-in Go (`config.Step`): `implement`, `review`, `watch_ci`, `retro` for a tracker **Source**;
+in Go (`config.Step`): `implement`, `review`, `retro` for a tracker **Source**
+(its review ends at the open PR and leaves CI to the **PR loop**; a `watch_ci` listed
+there is ignored, ADR-0063);
 `checkout_pr`, `fix`, `gates`, `push_existing`, `watch_ci`, `retro` for open PRs;
 `new_branch`, `fix_alerts`, `gates`, `open_pr`, `watch_ci`, `retro` for open
 security alerts; `assess`, `apply` for the backlog. Every Step owns its **Ground truth** check. A Consumer's `[[loops]]` config
@@ -162,8 +164,10 @@ A run's one terminal verdict — **Shipped**, **RecommendClose**, **CapAborted**
 **ResolvedOnMain**, **AlreadyOnMain**, **RunLive** or **NoPR** (`stages.Disposition`). Exactly
 one holds per stage and, folded across the three, per ticket; it is the only thing
 the loop branches on and the breaker counts. Distinct from a Stage's **OK**, which
-asks only "did this stage do its job?" — a Shipped run can be not-OK (CI red after
-the auto-fix budget) and an OK implementation is still NoPR (it never pushes).
+asks only "did this stage do its job?" — on the **PR loop** and the
+**Security-alerts loop** a Shipped run can be not-OK (CI red after the auto-fix
+budget); the ticket loop watches no CI, so its Shipped run is OK (ADR-0063). An OK
+implementation is still NoPR (it never pushes).
 **Interrupted** means a stop signal killed a session from outside (exit 128+N): the
 run was cut short, not broken, so it is never called a failure (ADR-0030).
 **RunLive** means another live run already holds the ticket's run lock, so this

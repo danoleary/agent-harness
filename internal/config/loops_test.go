@@ -30,11 +30,8 @@ func TestNoLoopsDeclaredLeavesTheBuiltIns(t *testing.T) {
 	if !ok || tickets.Name != DefaultLoopName || tickets.Source.Kind != SourceTracker {
 		t.Errorf("the unnamed loop is the ticket loop, got %+v", tickets)
 	}
-	if steps := tickets.StepNames(); !reflect.DeepEqual(steps, []string{StepImplement, StepReview, StepWatchCI, StepRetro}) {
-		t.Errorf("ticket loop steps = %v", steps)
-	}
-	if tickets.LeavesCIToPRLoop() {
-		t.Error("the built-in ticket loop watches its own PR's CI, as it always has (#110)")
+	if steps := tickets.StepNames(); !reflect.DeepEqual(steps, []string{StepImplement, StepReview, StepRetro}) {
+		t.Errorf("ticket loop steps = %v, want no watch_ci: CI is left to the PR loop (ADR-0063)", steps)
 	}
 	pr, _ := p.LoopNamed(PRDoctorLoopName)
 	if pr.Source.Kind != SourceGitHubPRs || !reflect.DeepEqual(pr.StepNames(), []string{StepCheckoutPR, StepFix, StepGates, StepPushExisting, StepWatchCI, StepRetro}) {
@@ -55,27 +52,44 @@ func TestNoLoopsDeclaredLeavesTheBuiltIns(t *testing.T) {
 	}
 }
 
-// A ticket loop written without watch_ci leaves its PR's CI to a PR loop (#110):
-// it is a valid loop, and the review stage returns once the PR is open. A PR loop
-// never leaves CI to itself.
-func TestATicketLoopWithoutWatchCILeavesCIToThePRLoop(t *testing.T) {
-	pc, err := LoadProject(loopsCheckout(t, `
+// A ticket loop watches no CI (ADR-0063), but a [[loops]] entry written when it
+// could still lists watch_ci. The entry loads, the step is dropped from the loop
+// it resolves to, so it has no effect, and the loop names it as ignored for doctor
+// to warn on. Where it stands in the list does not matter: it runs nowhere.
+func TestATicketLoopThatListsWatchCILoadsWithTheStepIgnored(t *testing.T) {
+	for name, steps := range map[string]string{
+		"after review":  `[{ use = "implement" }, { use = "review" }, { use = "watch_ci" }, { use = "retro" }]`,
+		"before review": `[{ use = "implement" }, { use = "watch_ci" }, { use = "review" }, { use = "retro" }]`,
+	} {
+		pc, err := LoadProject(loopsCheckout(t, `
 [[loops]]
 name = "tickets"
 source = { kind = "tracker" }
-steps = [{ use = "implement" }, { use = "review" }, { use = "retro" }]
+steps = `+steps+`
 `))
+		if err != nil {
+			t.Fatalf("%s: a ticket loop that lists watch_ci still loads, got %v", name, err)
+		}
+		tickets, _ := Project{Loops: pc.ResolvedLoops}.LoopNamed("")
+		if got := tickets.StepNames(); !reflect.DeepEqual(got, []string{StepImplement, StepReview, StepRetro}) {
+			t.Errorf("%s: steps = %v, want watch_ci dropped", name, got)
+		}
+		if tickets.Has(StepWatchCI) {
+			t.Errorf("%s: watch_ci has no effect on a ticket loop", name)
+		}
+		if !reflect.DeepEqual(tickets.Ignored, []string{StepWatchCI}) {
+			t.Errorf("%s: Ignored = %v, want watch_ci named for doctor", name, tickets.Ignored)
+		}
+	}
+
+	pc, err := LoadProject(loopsCheckout(t, builtInLoopsTOML))
 	if err != nil {
-		t.Fatalf("LoadProject: %v", err)
+		t.Fatal(err)
 	}
-	p := Project{Loops: pc.ResolvedLoops}
-	tickets, _ := p.LoopNamed("")
-	if !tickets.LeavesCIToPRLoop() {
-		t.Error("a ticket loop without watch_ci leaves CI to the PR loop")
-	}
-	pr, _ := p.LoopNamed(PRDoctorLoopName)
-	if pr.LeavesCIToPRLoop() {
-		t.Error("only a ticket loop hands its CI on")
+	for _, l := range pc.ResolvedLoops {
+		if len(l.Ignored) != 0 {
+			t.Errorf("%s: Ignored = %v; watch_ci still runs on a PR or security-alerts loop", l.Name, l.Ignored)
+		}
 	}
 }
 
@@ -112,7 +126,7 @@ const builtInLoopsTOML = `
 [[loops]]
 name = "tickets"
 source = { kind = "tracker" }
-steps = [{ use = "implement" }, { use = "review" }, { use = "watch_ci" }, { use = "retro" }]
+steps = [{ use = "implement" }, { use = "review" }, { use = "retro" }]
 
 [[loops]]
 name = "pr-doctor"
@@ -309,9 +323,6 @@ steps = [{ use = "new_branch" }, { use = "fix_alerts" }, { use = "gates" }, { us
 	if got := l.StepNames(); !reflect.DeepEqual(got, []string{StepNewBranch, StepFixAlerts, StepGates, StepOpenPR, StepWatchCI, StepRetro}) {
 		t.Errorf("steps = %v", got)
 	}
-	if l.LeavesCIToPRLoop() {
-		t.Error("only a ticket loop hands its CI on")
-	}
 	var bodies PromptBodies
 	l.ApplyPrompts(&bodies)
 	if bodies.SecurityFix != "Prefer an override." || bodies.Fix != "" {
@@ -431,12 +442,6 @@ name = "a"
 source = { kind = "tracker" }
 steps = [{ use = "implement" }, { use = "review" }, { use = "gates" }]
 `, "gates does not run on a tracker source"},
-		{"watch_ci before review on a tracker", `
-[[loops]]
-name = "a"
-source = { kind = "tracker" }
-steps = [{ use = "implement" }, { use = "watch_ci" }, { use = "review" }]
-`, "watch_ci needs review before it"},
 		{"missing required step", `
 [[loops]]
 name = "a"

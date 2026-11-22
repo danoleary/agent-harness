@@ -1,8 +1,9 @@
 # Fix open PRs with `pr-doctor`
 
 A PR can go red on CI, or start conflicting with `main`, after its review stage
-has finished. The built-in `pr-doctor` loop is a second daemon that fixes those
-PRs. It runs beside the ticket loop (ADR-0019). It replaces the `loop --prs` flag
+has finished. The ticket loop does not watch CI: its review stage stops once the
+PR is open (ADR-0063). The built-in `pr-doctor` loop is a second daemon that fixes
+those PRs. It runs beside the ticket loop (ADR-0019). It replaces the `loop --prs` flag
 of earlier releases.
 
 ## Run it
@@ -19,8 +20,8 @@ host. Run one PR loop per checkout. It logs to
 `.agent-harness/logs/loops/pr-doctor/`, one dir per PR plus its own `loop.jsonl`;
 follow it with `agent-harness watch --loop pr-doctor`.
 
-With `pr-doctor` running, you can stop the ticket loop waiting on each PR's CI:
-leave `watch_ci` out of its steps ([declare a loop](declare-a-loop.md#stop-the-ticket-loop-waiting-on-ci)).
+Run it whenever the ticket loop runs. Without it, red CI on the ticket loop's PRs
+waits for a human ([declare a loop](declare-a-loop.md#run-a-pr-loop-beside-the-ticket-loop)).
 
 ## Choose which PRs it touches
 

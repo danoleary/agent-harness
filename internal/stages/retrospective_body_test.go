@@ -205,7 +205,7 @@ func TestRetrospectiveAfterCIIsLeftToThePRLoopNeedsNoCIResult(t *testing.T) {
 		return session.Outcome{ReviewVerdictEmitted: true}
 	}
 	log := stageLog(t, "PROJ-4")
-	args := Args{Identifier: "PROJ-4", LeaveCIToPRLoop: true}
+	args := Args{Identifier: "PROJ-4"}
 
 	if res := Review(h, stageCfg(), log, args); !res.OK || res.Disposition != Shipped {
 		t.Fatalf("review: %+v", res)

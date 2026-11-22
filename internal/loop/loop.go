@@ -591,7 +591,7 @@ func Run(d Deps) int {
 			// dispatch guard never re-grabs it. The cap-abort branch above already released
 			// (and continued), so this only fires for the non-cap no-PR case. A shipped PR
 			// (a Shipped disposition) is the success signal — never released, even on a non-zero
-			// exit (CI red after the auto-fix budget). Best-effort: a Linear hiccup here is
+			// exit (a PR loop's CI red after the auto-fix budget). Best-effort: a Linear hiccup here is
 			// warned, never fatal — the daemon must keep running.
 			d.Log.Structured(loopstream.Record{Kind: loopstream.KindTicketReleased, Ticket: key, Message: "loop — " + d.Source.Releasing(ReleaseNoPR, key)})
 			if err := claim.Release(); err != nil {

@@ -23,8 +23,7 @@ func OverlapSection(intro string, overlaps []Overlap) string {
 }
 
 // OpenPROverlapIntro introduces the section a replay of an already-open PR puts
-// in its description (#344): the PR loop's conflict fix, or the CI watch's
-// reactive rebase.
+// in its description (#344): the PR loop's conflict fix.
 const OpenPROverlapIntro = "While this PR was open, `main` gained code that the branch also implements in a mechanism of its own. The conflict-resolution session that brought the branch onto `main` reported these and left the branch's version in place. Nothing has reviewed them against the new base:"
 
 // UpsertOverlapSection puts section in body in place of the overlap section an

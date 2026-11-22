@@ -18,7 +18,7 @@ import (
 // checks before the next one runs.
 var stepChecks = map[string]string{
 	config.StepImplement:    "a /tdd session into a fresh worktree; checks a committed handoff on the branch",
-	config.StepReview:       "a cold review, then every gate host-side; lands the branch as a PR only when they are green",
+	config.StepReview:       "a cold review, then every gate host-side; lands the branch as a PR only when they are green, and leaves the PR's CI to the PR loop",
 	config.StepRetro:        "mines the run's transcripts and files its findings",
 	config.StepCheckoutPR:   "checks the PR's head branch out at the polled head and runs post_create",
 	config.StepFix:          "a RebaseFix session over a conflict; checks a clean tree with origin/main an ancestor of the tip",
@@ -27,7 +27,7 @@ var stepChecks = map[string]string{
 	config.StepNewBranch:    "cuts the package's branch fresh from origin/main, resetting one a failed attempt left",
 	config.StepFixAlerts:    "a SecurityFix session over the package's alerts; checks a diff touching only dependency files and a lockfile that resolves no vulnerable version",
 	config.StepOpenPR:       "opens a new PR for the gate-green branch, carrying the fingerprint marker and the held label",
-	config.StepWatchCI:      "watches CI to a verdict; a red check gets a CIFix session whose commit must pass every gate before it is pushed",
+	config.StepWatchCI:      "watches the pushed head's CI to a verdict; a red check gets a CIFix session whose commit must pass every gate before it is pushed",
 	config.StepAssess:       "a read-only Triage session over the ticket; checks it left a verdict, with questions for a human when not ready",
 	config.StepApply:        "labels a ready ticket ready (on Linear, Backlog → Todo too), or comments the open questions on one that is not",
 }
@@ -73,6 +73,9 @@ func describeLoop(cfg config.Config, l config.Loop, limits loop.Limits) string {
 			fmt.Fprintf(&b, " (Project body %s)", s.PromptPath)
 		}
 		b.WriteString("\n")
+	}
+	for _, s := range l.Ignored {
+		fmt.Fprintf(&b, "  ignored: %s does nothing on a %s loop; run a PR loop beside it to fix red CI (ADR-0063)\n", s, l.Source.Kind)
 	}
 	fmt.Fprintf(&b, "limits: poll every %s, cap backoff %s, breaker after %d consecutive failures, %s, %s, claim TTL %s\n",
 		limits.PollInterval, limits.CapBackoff, limits.MaxConsecutiveFailures,

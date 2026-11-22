@@ -250,13 +250,12 @@ func (s *TicketSource) Claims() ([]loop.StaleClaim, error) {
 // HeldBranches maps each branch the ticket loop holds right now — an agent-claimed
 // In Progress ticket's `<branch_prefix>/<slug>`, while a run working it is live —
 // to the ticket's Key. The PR loop skips those branches: the lease is keyed on the
-// branch, and a ticket mid-run owns its PR's branch (ADR-0019), including through
-// an in-stage CI watch. A shipped ticket stays In Progress until its PR merges, so
+// branch, and a ticket mid-run owns its PR's branch (ADR-0019). A shipped ticket stays In Progress until its PR merges, so
 // the claim alone does not say a run is live; its run lock does ([HoldRun]). A
 // worktree is no signal: an older binary, a restart mid-watch or a failed removal
 // leaves one behind with no run in it, and keying on it kept the PR loop off the
 // branch forever (#231). Once the run ends the branch is free, so the PR loop can
-// fix CI that goes red after the ticket loop moved on (#110). A run lock that
+// fix the ticket's red CI, which the ticket loop never watches (ADR-0063). A run lock that
 // cannot be read fails the read, as the claim list does.
 func (s *TicketSource) HeldBranches() (map[string]string, error) {
 	claims, err := s.client.ListInProgressClaims()
@@ -388,17 +387,16 @@ func (p *TicketPipeline) Run(item loop.WorkItem, claim *lease.Lease) stages.Resu
 		return stages.Result{}
 	}
 	return underRunLock(cfg, item.Key, runID, p.log, func() stages.Result {
-		return pipeline.Run(ticketDeps(p.loop, cfg, log, runID, ticketArgs(p.loop, item, claim)))
+		return pipeline.Run(ticketDeps(p.loop, cfg, log, runID, ticketArgs(item, claim)))
 	})
 }
 
-// ticketArgs are the stage args for one claimed ticket on loop l. A loop without
-// watch_ci leaves the PR's CI to the PR loop, so its review stage returns once the
-// PR is open (#110). The ticket as selection read it goes to the implementation
-// stage, which records it if the run finds nothing to hand off (#330).
-func ticketArgs(l config.Loop, item loop.WorkItem, claim *lease.Lease) stages.Args {
+// ticketArgs are the stage args for one claimed ticket. The ticket as
+// selection read it goes to the implementation stage, which records it if the run
+// finds nothing to hand off (#330).
+func ticketArgs(item loop.WorkItem, claim *lease.Lease) stages.Args {
 	selected, _ := item.Context.(nowork.Fingerprint)
-	return stages.Args{Identifier: item.Key, Lease: claim, LeaveCIToPRLoop: l.LeavesCIToPRLoop(), Selected: selected}
+	return stages.Args{Identifier: item.Key, Lease: claim, Selected: selected}
 }
 
 // ticketDeps binds the loop's Stages to one ticket through the composition root

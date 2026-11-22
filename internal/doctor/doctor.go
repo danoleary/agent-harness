@@ -144,6 +144,9 @@ func Run(p Probes) []Result {
 	if r, ok := checkSecurityAlerts(p, proj); ok {
 		results = append(results, r)
 	}
+	if r, ok := checkIgnoredSteps(proj); ok {
+		results = append(results, r)
+	}
 	return results
 }
 

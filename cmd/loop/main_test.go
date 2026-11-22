@@ -70,7 +70,7 @@ func TestLimitsFromPrefersTheLoopsOwnLimits(t *testing.T) {
 func TestRenderListNamesEveryLoop(t *testing.T) {
 	got := renderList(config.Project{}.AllLoops())
 	for _, want := range []string{
-		"tickets", "(default, built in)", "tracker", "implement → review → watch_ci → retro",
+		"tickets", "(default, built in)", "tracker", "implement → review → retro",
 		"pr-doctor", "github_prs", "checkout_pr → fix → gates → push_existing → watch_ci → retro",
 	} {
 		if !strings.Contains(got, want) {
@@ -117,6 +117,30 @@ func TestDescribeLoopPrintsTheResolvedSourceAndSteps(t *testing.T) {
 	l.Source.Scope = config.ScopeOptedIn
 	if got := describeLoop(cfg, l, limitsFrom(cfg, l)); !strings.Contains(got, `opt-in label "agent-maintained"`) {
 		t.Errorf("an opted_in loop names its label:\n%s", got)
+	}
+}
+
+// The built-in ticket loop's dry run is implement, review, retro: its review stage
+// leaves CI to the PR loop (ADR-0063). An entry that still lists watch_ci prints
+// the step as ignored, not as one the loop runs.
+func TestDescribeTheTicketLoopRunsNoCIWatch(t *testing.T) {
+	cfg := config.Config{Host: config.Host{ProjectPath: "/src/app", StopFile: ".agent-harness/STOP"}}
+	l, _ := config.Project{}.LoopNamed("")
+
+	got := describeLoop(cfg, l, limitsFrom(cfg, l))
+
+	for _, want := range []string{"1. implement", "2. review", "leaves the PR's CI to the PR loop", "3. retro"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("--dry-run missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "watch_ci") {
+		t.Errorf("the ticket loop runs no watch_ci:\n%s", got)
+	}
+
+	l.Ignored = []string{config.StepWatchCI}
+	if got := describeLoop(cfg, l, limitsFrom(cfg, l)); !strings.Contains(got, "ignored: watch_ci does nothing on a tracker loop") || strings.Contains(got, ". watch_ci") {
+		t.Errorf("an ignored watch_ci is named as ignored, not as a step:\n%s", got)
 	}
 }
 

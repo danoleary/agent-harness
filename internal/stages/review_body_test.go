@@ -69,7 +69,7 @@ func resolvesConflicts(h *hostio.Fake, repo *gittest.Repo) {
 }
 
 // The full green path: prep the worktree, run the cold review, re-run the gates
-// host-side, rebase, force-push, open the PR, watch CI.
+// host-side, rebase, force-push, open the PR.
 func TestReviewGreenPathPushesAndOpensThePR(t *testing.T) {
 	h, repo := handedOff(t, "PROJ-1")
 	repo.Merge("other.txt", "unrelated\n", "a sibling merged")
@@ -83,7 +83,7 @@ func TestReviewGreenPathPushesAndOpensThePR(t *testing.T) {
 	if got := shellLabels(h.Shells); len(got) != 2 || got[0] != prepStep || got[1] != gateStep+"-check" {
 		t.Errorf("shell runs = %v, want the prep container then one container per declared gate (BEH-634)", got)
 	}
-	for _, want := range []string{"push-force", "create-pr PROJ-1: a ticket", "watch-ci"} {
+	for _, want := range []string{"push-force", "create-pr PROJ-1: a ticket"} {
 		if !called(h, want) {
 			t.Errorf("calls = %v, want %q in the ship sequence", h.Calls, want)
 		}
@@ -522,35 +522,19 @@ func TestReviewDisjointHistoryIsNotAContentConflict(t *testing.T) {
 	}
 }
 
-// CI red after the auto-fix budget still leaves a reviewable PR for a human — NOT a
-// ship failure, so the disposition stays Shipped and the loop's breaker must not
-// count it (DESIGN.md §Circuit breaker).
-func TestReviewRedCIStillReportsShipped(t *testing.T) {
-	h, _ := handedOff(t, "PROJ-13")
-	h.CI = ci.Outcome{OK: false, Reason: "checks still red after 3 fix attempts"}
-
-	res := Review(h, stageCfg(), stageLog(t, "PROJ-13"), Args{Identifier: "PROJ-13"})
-
-	if res.OK {
-		t.Fatal("red CI is not a success")
-	}
-	if res.Disposition != Shipped {
-		t.Error("the PR exists, so the breaker must see a ship (DESIGN.md §Circuit breaker)")
-	}
-}
-
-// #110: a ticket loop that leaves CI to the PR loop does not wait on CI. The stage
-// ships the moment the PR is open and never watches, so the retrospective, the
-// worktree reap and the next ticket start at once; a check that goes red later is
-// the PR loop's CIRed candidate.
-func TestReviewLeavingCIToThePRLoopShipsOnceThePRIsOpen(t *testing.T) {
+// #365: the review stage's job ends at the open PR. It never watches CI, so the
+// retrospective, the worktree reap and the next ticket start at once; a check that
+// goes red later is the PR loop's CIRed candidate (ADR-0063). This holds for every
+// run of the stage, the daemon's and a hand-run pipeline's or review's alike.
+func TestReviewShipsOnceThePRIsOpenWithoutWatchingCI(t *testing.T) {
 	h, _ := handedOff(t, "PROJ-16")
 	h.CIFn = func(hostio.CIWatch) ci.Outcome {
-		t.Error("the review stage must not watch CI it leaves to the PR loop")
+		t.Error("the review stage must not watch CI: it is left to the PR loop")
 		return ci.Outcome{OK: false, Reason: "red"}
 	}
+	log := stageLog(t, "PROJ-16")
 
-	res := Review(h, stageCfg(), stageLog(t, "PROJ-16"), Args{Identifier: "PROJ-16", LeaveCIToPRLoop: true})
+	res := Review(h, stageCfg(), log, Args{Identifier: "PROJ-16"})
 
 	if !res.OK || res.Disposition != Shipped {
 		t.Fatalf("an open PR is the stage's job done, got %+v", res)
@@ -562,36 +546,8 @@ func TestReviewLeavingCIToThePRLoopShipsOnceThePRIsOpen(t *testing.T) {
 	if !opened || called(h, "watch-ci") {
 		t.Errorf("calls = %v, want the PR opened and no CI watch", h.Calls)
 	}
-}
-
-// BEH-602: the branch became a no-op against the latest origin/main only after the
-// pre-push rebase, so the PR is open with nothing for CI to validate. Honour the
-// recommend-close disposition rather than burn the poll budget — and report it as the
-// run's disposition even though a PR was opened, since that is what makes the loop
-// close the ticket (BEH-682) instead of reading a no-op PR as a clean ship.
-func TestReviewCIRecommendCloseKeepsThePRAndTheWorktree(t *testing.T) {
-	h, _ := handedOff(t, "PROJ-14")
-	h.CI = ci.Outcome{RecommendClose: true, Reason: "branch is a no-op against origin/main"}
-
-	res := Review(h, stageCfg(), stageLog(t, "PROJ-14"), Args{Identifier: "PROJ-14"})
-
-	if res.Disposition != RecommendClose || res.OK {
-		t.Fatalf("a post-PR no-op recommends close with the PR kept, got %+v", res)
-	}
-}
-
-// BEH-571: an auto-fix session that hit an active spending cap is a billing window
-// that resets, not an unfixable CI. The PR is already open, so the run's disposition
-// is the ship it is — a shipped PR outranks a cap abort for both the loop (which
-// never releases a shipped ticket) and the breaker (which counts it a success).
-func TestReviewCISpendingCapKeepsTheShippedPR(t *testing.T) {
-	h, _ := handedOff(t, "PROJ-15")
-	h.CI = ci.Outcome{SpendingCapAbort: true}
-
-	res := Review(h, stageCfg(), stageLog(t, "PROJ-15"), Args{Identifier: "PROJ-15"})
-
-	if res.Disposition != Shipped || res.OK {
-		t.Fatalf("a capped auto-fix keeps the shipped PR, got %+v", res)
+	if !strings.Contains(narration(t, log), "PR open; CI is left to the PR loop") {
+		t.Errorf("run.jsonl = %s, want the closing line to say CI is left to the PR loop", narration(t, log))
 	}
 }
 
@@ -670,85 +626,6 @@ func TestReviewRunsOneContainerPerDeclaredGateInOrder(t *testing.T) {
 	}
 	if h.Shells[1].Command != "golangci-lint run" || h.Shells[2].Command != "go test ./..." {
 		t.Errorf("each gate must run its declared command verbatim, got %q / %q", h.Shells[1].Command, h.Shells[2].Command)
-	}
-}
-
-// --- the CI auto-fix callback -----------------------------------------------
-// fix.Env.CI is what the review hands the CI watch: a sandboxed diagnose-and-fix
-// session, followed by ground-truth enforcement. The watch itself is host-side
-// (ADR-0002), so the Fake drives the callback the way the real GhDriver would.
-
-// The clean case: the fix session exits 0 over a clean worktree having found no
-// code defect, and the harness adds a re-trigger commit so CI re-runs against a
-// fresh HEAD (BEH-561).
-func TestReviewCIFixAcceptsACommittedFix(t *testing.T) {
-	h, repo := handedOff(t, "PROJ-20")
-	var fixErr error
-	h.CIFn = func(w hostio.CIWatch) ci.Outcome {
-		fixErr = w.Fix("FAIL TestThing", true)
-		return ci.Outcome{OK: true, Reason: "green after the fix"}
-	}
-
-	if res := Review(h, stageCfg(), stageLog(t, "PROJ-20"), Args{Identifier: "PROJ-20"}); !res.OK {
-		t.Fatalf("a fixed, green CI ships, got %+v", res)
-	}
-	if fixErr != nil {
-		t.Fatalf("a committed fix over a clean worktree is accepted, got %v", fixErr)
-	}
-	if got := labels(h.Agents); len(got) != 2 || got[1] != "cifix-1" {
-		t.Errorf("agent runs = %v, want one auto-fix session labelled per attempt", got)
-	}
-	if want := strings.SplitN(gitpkg.CIRerunMessage(), "\n", 2)[0]; repo.Subject(h.Worktree()) != want {
-		t.Errorf("HEAD is %q, want the re-trigger commit so CI re-runs against a fresh HEAD (BEH-561)", repo.Subject(h.Worktree()))
-	}
-}
-
-// Ground truth, never the agent's say-so: a fix session that left the worktree
-// dirty has nothing trustworthy to push.
-func TestReviewCIFixRejectsAnUncommittedFix(t *testing.T) {
-	h, repo := handedOff(t, "PROJ-21")
-	h.AgentFn = func(_ int, run hostio.AgentRun) session.Outcome {
-		if strings.HasPrefix(run.Label, "cifix") {
-			repo.Dirty(h.Worktree()) // the agent edited but never committed
-		}
-		return session.Outcome{ReviewVerdictEmitted: true}
-	}
-	var fixErr error
-	h.CIFn = func(w hostio.CIWatch) ci.Outcome {
-		fixErr = w.Fix("FAIL TestThing", true)
-		return ci.Outcome{OK: false, Reason: "still red"}
-	}
-
-	Review(h, stageCfg(), stageLog(t, "PROJ-21"), Args{Identifier: "PROJ-21"})
-
-	if fixErr == nil || !strings.Contains(fixErr.Error(), "left uncommitted changes") {
-		t.Fatalf("an uncommitted fix must be refused, got %v", fixErr)
-	}
-	if repo.Subject(h.Worktree()) != gittest.HandoffSubject {
-		t.Errorf("no re-trigger commit may follow a refused fix; HEAD is %q", repo.Subject(h.Worktree()))
-	}
-}
-
-// BEH-571: a fix session aborted by a spending cap is its own retry-after-reset
-// class, so the watch defers rather than counting a 1-second no-op as a failure.
-func TestReviewCIFixSurfacesASpendingCapAsItsOwnClass(t *testing.T) {
-	h, _ := handedOff(t, "PROJ-22")
-	h.AgentFn = func(_ int, run hostio.AgentRun) session.Outcome {
-		if strings.HasPrefix(run.Label, "cifix") {
-			return session.Outcome{ExitCode: 1, SpendingCapAbort: true}
-		}
-		return session.Outcome{ReviewVerdictEmitted: true}
-	}
-	var fixErr error
-	h.CIFn = func(w hostio.CIWatch) ci.Outcome {
-		fixErr = w.Fix("", false)
-		return ci.Outcome{SpendingCapAbort: true}
-	}
-
-	Review(h, stageCfg(), stageLog(t, "PROJ-22"), Args{Identifier: "PROJ-22"})
-
-	if !errors.Is(fixErr, ci.ErrSpendingCapActive) {
-		t.Fatalf("a capped fix session is the retry-after-reset class (BEH-571), got %v", fixErr)
 	}
 }
 
