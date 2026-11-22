@@ -275,6 +275,7 @@ loop:
   --- disk reclaim (host-side, between tickets, ADR-0027) ---
   if statfs(worktrees volume).free < DiskReclaimThreshold:   // cheap probe every iter; default ~8 GiB (> the 5 GiB sandbox floor)
     run: scripts/prune-merged-worktrees.sh --yes             // removes ONLY merged-PR + clean worktrees (gh-aware); never main/dirty/no-PR
+      with every worktree a live run is in (its locks/runs/<slug>.lock held) git-worktree-locked for the prune  // a retrospective runs after its PR merges, #404, ADR-0066
     if still < threshold -> run: pnpm store prune            // cheap, non-destructive, network-free follow-up
     if still < threshold -> run: docker builder/image prune  // tertiary: the harness's usual hog (build cache + unreferenced images), which the cheaper prunes can't reach; runs last (heaviest). Removed sandbox image self-heals via Preflight resolve-on-miss
     narrate "reclaimed …, freed X" only if it acted

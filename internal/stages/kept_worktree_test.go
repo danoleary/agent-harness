@@ -83,3 +83,39 @@ func TestReviewSaysNothingOfAKeptWorktreeStillOnDisk(t *testing.T) {
 		t.Errorf("run.jsonl = %s, want no warning over a worktree still on disk", got)
 	}
 }
+
+// #404: a minute into the retrospective session its worktree was removed, and the
+// run log said nothing, so the session could not tell a harness cleanup from a
+// sandbox fault. Replayed: the worktree goes while the session runs in it. The
+// stage names that in run.jsonl when the session ends, and the run still succeeds
+// on the dropbox the session wrote.
+func TestRetrospectiveNarratesAWorktreeRemovedDuringItsSession(t *testing.T) {
+	h := shipped(t, "PROJ-404")
+	h.AgentFn = func(i int, run hostio.AgentRun) session.Outcome {
+		_ = h.Worktree().Remove()
+		return writesDropbox("[]")(i, run)
+	}
+	log := stageLog(t, "PROJ-404")
+
+	if res := Retrospective(h, stageCfg(), log, Args{Identifier: "PROJ-404"}); !res.OK {
+		t.Fatalf("res = %+v", res)
+	}
+	if got := narration(t, log); !strings.Contains(got, "was removed while the retrospective session ran in it") {
+		t.Errorf("run.jsonl = %s, want the removal during the session named", got)
+	}
+}
+
+// A worktree still on disk when the session ends is reaped as before, with no
+// warning.
+func TestRetrospectiveSaysNothingOfAWorktreeStillOnDiskAfterItsSession(t *testing.T) {
+	h := shipped(t, "PROJ-406")
+	h.AgentFn = writesDropbox("[]")
+	log := stageLog(t, "PROJ-406")
+
+	if res := Retrospective(h, stageCfg(), log, Args{Identifier: "PROJ-406"}); !res.OK {
+		t.Fatalf("res = %+v", res)
+	}
+	if got := narration(t, log); strings.Contains(got, "was removed while") || !strings.Contains(got, "worktree removed") {
+		t.Errorf("run.jsonl = %s, want the plain reap and no warning", got)
+	}
+}

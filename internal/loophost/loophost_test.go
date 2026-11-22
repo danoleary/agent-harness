@@ -551,6 +551,104 @@ func TestPruneMergedWorktreesScriptGitRunsNoHookTheSandboxPlanted(t *testing.T) 
 	}
 }
 
+// #404: a ticket's retrospective runs after its PR is open, so once the PR merges
+// its worktree is merged and clean, the Consumer's prune script's whole test for
+// "dead". Another loop's disk reclaim ran that script a minute into the session
+// and removed the worktree from under it. Replayed: #404's run holds its run lock
+// while a prune that removes every merged, clean worktree under
+// .claude/worktrees runs (one that forces the removal, as a script may). The live
+// run's worktree stays, and is not left locked once the prune is done; a worktree
+// no run is in is reclaimed as before.
+func TestPruneMergedWorktreesLeavesAWorktreeALiveRunIsIn(t *testing.T) {
+	repo := gittest.New(t)
+	script := filepath.Join(repo.Dir, "scripts", "prune-merged-worktrees.sh")
+	if err := os.MkdirAll(filepath.Dir(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := "#!/bin/sh\nn=0\nfor wt in $(git worktree list --porcelain | sed -n 's|^worktree \\(.*/.claude/worktrees/.*\\)|\\1|p'); do\n" +
+		"  if git worktree remove --force \"$wt\" 2>/dev/null; then n=$((n+1)); fi\ndone\necho \"Pruned $n worktree(s).\"\n"
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	repo.Git(repo.Dir, "add", "-A")
+	repo.Git(repo.Dir, "commit", "-q", "-m", "add the prune script")
+	repo.Git(repo.Dir, "push", "-q", "origin", "main")
+	live, dead := repo.Worktree("gh-404"), repo.Worktree("gh-399")
+	for _, wt := range []gitpkg.Worktree{live, dead} {
+		if err := wt.Create(); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	cfg := config.Config{Project: config.Project{BranchPrefix: gittest.Prefix}}
+	cfg.ProjectPath = repo.Dir
+	release, err := HoldRun(cfg, "#404", "run-retro", &narrator{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	removed, err := hostFor(t, cfg).PruneMergedWorktrees()
+	if err != nil {
+		t.Fatalf("PruneMergedWorktrees: %v", err)
+	}
+	if !live.Exists() {
+		t.Fatal("the prune removed #404's worktree while its run, in its retrospective, held the run lock")
+	}
+	if dead.Exists() || removed != 1 {
+		t.Errorf("removed = %d, worktree no run is in still there: %v; want it reclaimed", removed, dead.Exists())
+	}
+	if out := repo.Git(repo.Dir, "worktree", "list", "--porcelain"); strings.Contains(out, "locked") {
+		t.Errorf("the prune left a worktree locked:\n%s", out)
+	}
+}
+
+// A daemon killed mid-prune leaves its shield's lock on a worktree. The next prune
+// lifts it once no run is in the worktree, so the worktree is reclaimed and the
+// ticket's own reap is not refused for ever; a lock someone else took stays.
+func TestPruneMergedWorktreesLiftsAKilledDaemonsShield(t *testing.T) {
+	repo := gittest.New(t)
+	script := filepath.Join(repo.Dir, "scripts", "prune-merged-worktrees.sh")
+	if err := os.MkdirAll(filepath.Dir(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(script, []byte("#!/bin/sh\necho 'Pruned 0 worktree(s).'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	repo.Git(repo.Dir, "add", "-A")
+	repo.Git(repo.Dir, "commit", "-q", "-m", "add the prune script")
+	repo.Git(repo.Dir, "push", "-q", "origin", "main")
+	stale, human := repo.Worktree("gh-404"), repo.Worktree("gh-405")
+	for _, wt := range []gitpkg.Worktree{stale, human} {
+		if err := wt.Create(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	repo.Git(repo.Dir, "worktree", "lock", "--reason", liveRunLockReason, stale.Path())
+	repo.Git(repo.Dir, "worktree", "lock", "--reason", "mine", human.Path())
+
+	var cfg config.Config
+	cfg.ProjectPath = repo.Dir
+	if _, err := hostFor(t, cfg).PruneMergedWorktrees(); err != nil {
+		t.Fatalf("PruneMergedWorktrees: %v", err)
+	}
+	list, err := repo.Checkout().ListWorktrees()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, w := range list {
+		switch filepath.Base(w.Path) {
+		case "gh-404":
+			if w.Locked {
+				t.Errorf("the killed daemon's shield on %s is still there", w.Path)
+			}
+		case "gh-405":
+			if !w.Locked || w.LockReason != "mine" {
+				t.Errorf("%s = %+v, want the lock someone else took left as it was", w.Path, w)
+			}
+		}
+	}
+}
+
 // The PR loop keys its lease on the branch (ADR-0019), so it asks the ticket loop
 // which branches it holds: the slugged branch of every agent-claimed In Progress
 // ticket whose run is live, holding its run lock (#231). A ticket stays In

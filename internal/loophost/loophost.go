@@ -28,6 +28,7 @@ import (
 	"github.com/danoleary/agent-harness/internal/config"
 	gitpkg "github.com/danoleary/agent-harness/internal/git"
 	"github.com/danoleary/agent-harness/internal/github"
+	"github.com/danoleary/agent-harness/internal/hostlock"
 	"github.com/danoleary/agent-harness/internal/loop"
 	"github.com/danoleary/agent-harness/internal/proc"
 	"github.com/danoleary/agent-harness/internal/sandbox"
@@ -258,11 +259,77 @@ func (h *Daemon) PruneMergedWorktrees() (int, error) {
 		return 0, err
 	}
 	defer func() { _ = os.Remove(script) }()
+	unshield, err := h.shieldLiveWorktrees()
+	if err != nil {
+		return 0, fmt.Errorf("could not tell which worktrees a live run is in, so none was pruned: %w", err)
+	}
+	defer unshield()
 	out, err := proc.CombinedOutputInDirWithEnv(pruneTimeout, h.cfg.ProjectPath, gitpkg.HostEnv(), script, "--yes")
 	if err != nil {
 		return 0, fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
 	}
 	return parsePrunedCount(string(out)), nil
+}
+
+// liveRunLockReason is the `git worktree lock` reason [Daemon.shieldLiveWorktrees]
+// gives, so a later pass can tell its own lock from anyone else's.
+const liveRunLockReason = "agent-harness: a live run is in it, so the merged-worktree prune leaves it (#404)"
+
+// shieldLiveWorktrees locks every worktree a live run is in, one whose run lock
+// is held ([Worktrees.RunLive]), against the prune script's `git worktree remove`
+// until the returned func lifts the locks. The script's test for dead is a merged
+// PR and a clean tree, and a ticket's retrospective runs after its PR is open: once
+// the PR merges, the worktree the session is reading passes it, and another loop's
+// reclaim removed it from under the session (#404, ADR-0066). The classification
+// stays the script's; the shield only takes the live runs out of its reach.
+//
+// Prunes are serialized on locks/prune.lock, so a lock with the shield's reason
+// found here is a killed daemon's: it is lifted if no run is in the worktree any
+// more, and otherwise kept for this prune and lifted after it. A run lock that
+// cannot be read fails the shield, and the caller prunes nothing: a failed read
+// must never remove a worktree from under a run.
+func (h *Daemon) shieldLiveWorktrees() (release func(), err error) {
+	unlock, err := hostlock.File(filepath.Join(config.LocksDir(h.cfg.ProjectPath), "prune.lock")).Lock()
+	if err != nil {
+		return nil, err
+	}
+	wts := NewWorktrees(h.cfg)
+	var locked []string
+	release = func() {
+		for _, path := range locked {
+			_ = wts.UnlockWorktree(path)
+		}
+		unlock()
+	}
+	list, err := wts.ListWorktrees()
+	if err != nil {
+		release()
+		return nil, err
+	}
+	for _, w := range list {
+		if w.Main {
+			continue
+		}
+		live, err := wts.RunLive(w.Path)
+		if err != nil {
+			release()
+			return nil, fmt.Errorf("read the run lock of %s: %w", w.Path, err)
+		}
+		ours := w.Locked && w.LockReason == liveRunLockReason
+		switch {
+		case live && ours:
+			locked = append(locked, w.Path)
+		case live && !w.Locked:
+			if err := wts.LockWorktree(w.Path, liveRunLockReason); err != nil {
+				release()
+				return nil, fmt.Errorf("lock %s: %w", w.Path, err)
+			}
+			locked = append(locked, w.Path)
+		case !live && ours:
+			_ = wts.UnlockWorktree(w.Path)
+		}
+	}
+	return release, nil
 }
 
 // committedScript writes body, a script read from origin/main, to an executable

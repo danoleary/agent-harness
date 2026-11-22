@@ -78,6 +78,9 @@ poison ticket that keeps hitting a full-disk preflight.
   folded into the breaker and before the next ticket is selected/launched, when no
   sandbox is active. The in-progress ticket's worktree can't match "merged" anyway,
   so there is no path to clobbering live work.
+  *(Amended by ADR-0066: with several loops on one checkout and a retrospective
+  that runs after its PR merges, a live run's worktree can match "merged", so the
+  prune now runs with every live run's worktree locked.)*
 - **Reclaim is not a ticket outcome.** A failed prune (gh unreachable, `ENOSPC`
   mid-prune) is logged/narrated and the loop continues; it never touches the circuit
   breaker (which keys only on "did the ticket reach a pushed PR?", ADR-0004). This

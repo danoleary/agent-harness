@@ -856,6 +856,49 @@ func (c Checkout) CheckedOutBranches() (map[string]string, error) {
 	return branches, nil
 }
 
+// Listed is one worktree of the checkout as `git worktree list --porcelain`
+// reports it.
+type Listed struct {
+	// Path is the worktree's path, as git spells it.
+	Path string
+	// Main says it is the main checkout, the list's first entry.
+	Main bool
+	// Locked says `git worktree lock` holds it, and LockReason is the reason given,
+	// or "".
+	Locked     bool
+	LockReason string
+}
+
+// ListWorktrees is every worktree of the checkout, the main checkout first.
+func (c Checkout) ListWorktrees() ([]Listed, error) {
+	out, err := c.output("git", "-C", c.path, "worktree", "list", "--porcelain")
+	if err != nil {
+		return nil, err
+	}
+	var list []Listed
+	for _, line := range strings.Split(string(out), "\n") {
+		switch {
+		case strings.HasPrefix(line, "worktree "):
+			list = append(list, Listed{Path: strings.TrimPrefix(line, "worktree "), Main: len(list) == 0})
+		case len(list) > 0 && (line == "locked" || strings.HasPrefix(line, "locked ")):
+			list[len(list)-1].Locked = true
+			list[len(list)-1].LockReason = strings.TrimPrefix(strings.TrimPrefix(line, "locked"), " ")
+		}
+	}
+	return list, nil
+}
+
+// LockWorktree locks the worktree at path with reason, so a `git worktree remove`
+// refuses it unless forced twice (#404).
+func (c Checkout) LockWorktree(path, reason string) error {
+	return c.run("git", "-C", c.path, "worktree", "lock", "--reason", reason, path)
+}
+
+// UnlockWorktree lifts [Checkout.LockWorktree]'s lock.
+func (c Checkout) UnlockWorktree(path string) error {
+	return c.run("git", "-C", c.path, "worktree", "unlock", path)
+}
+
 // WorktreeSafeToRemove reports why removing the worktree at path would lose work,
 // or nil when it would not: its tree is clean (the readiness sentinel aside) and
 // origin's tip for its branch, tip, already contains its HEAD. A worktree left
