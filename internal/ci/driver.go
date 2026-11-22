@@ -132,6 +132,18 @@ const (
 	TruncationWord       = "truncated"
 )
 
+// FixInput is what the watch hands a fix session about the red it answers.
+type FixInput struct {
+	// Logs is the failing jobs' log, truncated to its tail.
+	Logs string
+	// LogAvailable says whether Logs holds a usable log or only an error marker.
+	// An unfetchable log is the strongest flake signal (BEH-558).
+	LogAvailable bool
+	// RedOnRerun says the checks already failed on a CI re-run of the same
+	// commit, so a pass in the sandbox does not make the red a one-off (#397).
+	RedOnRerun bool
+}
+
 // GhDriver is the production Driver. Host-side `gh` (through internal/proc, per
 // ADR-0002) does the poll / re-run / log-fetch; the sandbox fix and the git push
 // are injected as callbacks so this package needn't import internal/session or
@@ -145,11 +157,9 @@ type GhDriver struct {
 	logTailBytes int
 
 	// runFix launches the sandboxed Claude session over the worktree to diagnose
-	// + fix + commit, given the failing CI logs and whether those logs were actually
-	// fetchable. An unfetchable log is the strongest flake signal (BEH-558), so the
-	// prompt steers differently when logAvailable is false. Returns non-nil on
-	// session failure.
-	runFix func(ciLogs string, logAvailable bool) error
+	// + fix + commit, given what the watch knows of the red (FixInput). Returns
+	// non-nil on session failure.
+	runFix func(FixInput) error
 	// push pushes the new fix commit to the PR branch (gitpkg.Push).
 	push func() error
 	// rebase rebases the branch onto the latest origin/main and, if clean, re-pushes
@@ -183,6 +193,8 @@ type GhDriver struct {
 	// keepFlakeLog appends a flake record to the ticket's log dir, where the
 	// retrospective reads it (#371). Nil keeps nothing.
 	keepFlakeLog func(content string)
+	// narrate writes a line to the run log (#397). Nil writes nothing.
+	narrate func(line string)
 
 	sleep func(time.Duration)
 	now   func() time.Time
@@ -191,8 +203,8 @@ type GhDriver struct {
 // NewGhDriver builds the production Driver. ghTimeout bounds each individual gh
 // call; cfg supplies the poll cadence/budget; runFix and push are the sandbox +
 // remote effects the cmd provides; keepFlakeLog writes a washed-out flake's
-// record to the ticket's log dir.
-func NewGhDriver(herdPath, branch string, cfg Config, ghTimeout time.Duration, runFix func(ciLogs string, logAvailable bool) error, push func() error, rebase func() (RebaseVerdict, error), diffEmpty func() bool, docsOnly func() bool, keepFlakeLog func(content string)) *GhDriver {
+// record to the ticket's log dir; narrate writes a line to the run log.
+func NewGhDriver(herdPath, branch string, cfg Config, ghTimeout time.Duration, runFix func(FixInput) error, push func() error, rebase func() (RebaseVerdict, error), diffEmpty func() bool, docsOnly func() bool, keepFlakeLog func(content string), narrate func(line string)) *GhDriver {
 	d := &GhDriver{
 		herdPath:     herdPath,
 		branch:       branch,
@@ -205,6 +217,7 @@ func NewGhDriver(herdPath, branch string, cfg Config, ghTimeout time.Duration, r
 		diffEmpty:    diffEmpty,
 		docsOnly:     docsOnly,
 		keepFlakeLog: keepFlakeLog,
+		narrate:      narrate,
 		sleep:        time.Sleep,
 		now:          time.Now,
 	}
@@ -263,10 +276,18 @@ func (d *GhDriver) Rerun(failed []Check) error {
 }
 
 // Fix fetches the failed-job logs host-side and hands them — plus whether they
-// were actually fetchable — to the sandbox session.
-func (d *GhDriver) Fix(failed []Check) error {
+// were actually fetchable, and whether the checks were already red on a re-run —
+// to the sandbox session.
+func (d *GhDriver) Fix(failed []Check, redOnRerun bool) error {
 	logs, available := d.fetchFailedLogs(RunIDs(failed))
-	return d.runFix(logs, available)
+	return d.runFix(FixInput{Logs: logs, LogAvailable: available, RedOnRerun: redOnRerun})
+}
+
+// Narrate writes line to the run log through the injected callback (#397).
+func (d *GhDriver) Narrate(line string) {
+	if d.narrate != nil {
+		d.narrate(line)
+	}
 }
 
 // Push pushes the fix commit (delegated to the injected gitpkg.Push).

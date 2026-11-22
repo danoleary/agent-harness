@@ -23,7 +23,7 @@ func TestACIFixOverACleanWorktreeAddsTheReTriggerCommit(t *testing.T) {
 	e, repo := conflictEnv(t, func(*gittest.Repo, *hostio.Fake) {})
 	h := e.Host.(*hostio.Fake)
 
-	if err := e.CI(Target{Slug: "proj-1"})("FAIL TestThing", true); err != nil {
+	if err := e.CI(Target{Slug: "proj-1"})(ci.FixInput{Logs: "FAIL TestThing", LogAvailable: true}); err != nil {
 		t.Fatalf("a fix session over a clean worktree is accepted, got %v", err)
 	}
 	if len(h.Agents) != 1 || h.Agents[0].Label != "cifix-1" {
@@ -40,7 +40,7 @@ func TestACIFixThatLeftTheWorktreeDirtyIsRefused(t *testing.T) {
 	e, repo := conflictEnv(t, func(repo *gittest.Repo, h *hostio.Fake) { repo.Dirty(h.Worktree()) })
 	h := e.Host.(*hostio.Fake)
 
-	err := e.CI(Target{Slug: "proj-1"})("FAIL TestThing", true)
+	err := e.CI(Target{Slug: "proj-1"})(ci.FixInput{Logs: "FAIL TestThing", LogAvailable: true})
 
 	if err == nil || !strings.Contains(err.Error(), "left uncommitted changes") {
 		t.Fatalf("an uncommitted fix must be refused, got %v", err)
@@ -58,7 +58,23 @@ func TestACIFixCutShortByTheSpendingCapIsItsOwnClass(t *testing.T) {
 		return session.Outcome{ExitCode: 1, SpendingCapAbort: true}
 	}
 
-	if err := e.CI(Target{Slug: "proj-1"})("", false); !errors.Is(err, ci.ErrSpendingCapActive) {
+	if err := e.CI(Target{Slug: "proj-1"})(ci.FixInput{Logs: "", LogAvailable: false}); !errors.Is(err, ci.ErrSpendingCapActive) {
 		t.Fatalf("a capped fix session is the retry-after-reset class (BEH-571), got %v", err)
+	}
+}
+
+// #397: the watch's red-on-rerun flag reaches the CIFix session's prompt, so a
+// check that failed on two CI attempts of one commit is not read as a one-off.
+func TestACIFixOverARedRerunTellsTheSessionTheCheckFailedTwice(t *testing.T) {
+	for _, redOnRerun := range []bool{true, false} {
+		e, _ := conflictEnv(t, func(*gittest.Repo, *hostio.Fake) {})
+		h := e.Host.(*hostio.Fake)
+
+		if err := e.CI(Target{Slug: "proj-1"})(ci.FixInput{Logs: "FAIL TestRace", LogAvailable: true, RedOnRerun: redOnRerun}); err != nil {
+			t.Fatalf("redOnRerun=%v: %v", redOnRerun, err)
+		}
+		if got := strings.Contains(h.Agents[0].Prompt, "already failed on a CI re-run of the same commit"); got != redOnRerun {
+			t.Errorf("redOnRerun=%v: prompt names the red re-run = %v", redOnRerun, got)
+		}
 	}
 }

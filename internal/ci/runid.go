@@ -28,3 +28,15 @@ func RunIDs(checks []Check) []string {
 	}
 	return ids
 }
+
+// rerunnable is the checks Rerun can re-trigger: those with an Actions run behind
+// them, in poll order. Any other check is left as it was.
+func rerunnable(checks []Check) []Check {
+	var out []Check
+	for _, c := range checks {
+		if runIDRE.MatchString(c.Link) {
+			out = append(out, c)
+		}
+	}
+	return out
+}

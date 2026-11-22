@@ -22,9 +22,13 @@ type Driver interface {
 	// each check's failing step by check name. It is best-effort: what it could not
 	// fetch is missing from the map, and it never fails the watch.
 	RecordFlake(failed []Check) map[string]string
+	// Narrate writes one line to the run log, for what the watch did that no
+	// Outcome carries: a red the flake re-run did not wash out (#397).
+	Narrate(line string)
 	// Fix fetches the failed logs and runs a sandboxed Claude session over the
-	// worktree to diagnose + fix + commit locally.
-	Fix(failed []Check) error
+	// worktree to diagnose + fix + commit locally. redOnRerun says the checks
+	// already failed on a CI re-run of the commit the session answers (#397).
+	Fix(failed []Check, redOnRerun bool) error
 	// Push pushes the new fix commit to the PR branch (no force, append-only).
 	Push() error
 	// AwaitHeadRun blocks until CI has registered a run whose head commit matches the
@@ -185,6 +189,7 @@ func WatchAndFix(d Driver, cfg Config, now func() time.Time) Outcome {
 		return greenOutcome(d, "CI is green")
 	}
 	failed := FailedChecks(checks)
+	rerun := rerunnable(failed)
 
 	// One flake re-run before treating the failure as real — re-running the same
 	// commit's failed checks washes out infra/flake reds without thrashing on a
@@ -211,6 +216,15 @@ func WatchAndFix(d Driver, cfg Config, now func() time.Time) Outcome {
 	}
 	failed = FailedChecks(checks)
 
+	// The re-run checks failed twice on the same commit. Without this line the run
+	// log went from "watching CI" to the first fix session, and nothing showed a
+	// re-run happened (#397). A check with no Actions run behind it was not re-run,
+	// so the second red says nothing about it.
+	redOnRerun := len(rerun) > 0
+	if redOnRerun {
+		d.Narrate("CI still red after re-running the failed checks (" + flakeNames(rerun, nil) + ") — treating as real")
+	}
+
 	// Real failure: bounded diagnose + fix + push + re-poll.
 	var refused error
 	for attempt := 1; attempt <= cfg.MaxFixAttempts; attempt++ {
@@ -222,7 +236,7 @@ func WatchAndFix(d Driver, cfg Config, now func() time.Time) Outcome {
 			}
 		}
 		refused = nil
-		if err := d.Fix(failed); err != nil {
+		if err := d.Fix(failed, redOnRerun); err != nil {
 			// A fix the harness's own gate already showed is still red is not
 			// pushed: CI would only say so again, a whole CI round later (#259).
 			if errors.Is(err, ErrFixRefused) {
@@ -246,6 +260,8 @@ func WatchAndFix(d Driver, cfg Config, now func() time.Time) Outcome {
 		if err := d.Push(); err != nil {
 			return Outcome{OK: false, Reason: "pushing the fix failed: " + err.Error(), Failing: failed}
 		}
+		// The next red is CI on the pushed fix, a commit no re-run touched.
+		redOnRerun = false
 		// Don't re-poll until CI has actually started a run for the commit we just
 		// pushed. A fast fix routinely lands before CI re-evaluates; the prior run's
 		// red is still showing, and an immediate re-poll would re-act on that stale

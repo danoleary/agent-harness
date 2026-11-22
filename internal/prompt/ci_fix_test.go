@@ -307,3 +307,27 @@ func TestCIFixChecksOriginMainBeforeFixingABaseLevelBreak(t *testing.T) {
 		}
 	}
 }
+
+// #397: a check that failed on two CI attempts of the same commit but passes in the
+// sandbox is an environment-sensitive race, not a cancelled run. Told so, the session
+// looks for the race in the failing step instead of committing nothing and leaving a
+// check that fails repeatedly for the next PR. Without the flag the prompt says
+// nothing of a re-run.
+func TestCIFixSaysTheCheckAlreadyFailedOnACIRerun(t *testing.T) {
+	steer := regexp.MustCompile(`(?i)already failed on a CI re-run of the same commit`)
+	for _, available := range []bool{true, false} {
+		p := For(CIFix, Context{Ticket: sample, Slug: "beh-362", BranchPrefix: "feat", WorktreePath: sampleWorktree, CILogs: sampleCILogs, CILogAvailable: available, CIRedOnRerun: true})
+		for _, want := range []*regexp.Regexp{
+			steer,
+			regexp.MustCompile(`(?i)a pass in the sandbox does not make it a cancelled run`),
+			regexp.MustCompile(`(?i)timing or environment race in the failing step`),
+		} {
+			if !want.MatchString(p) {
+				t.Errorf("log available=%v: ci-fix prompt missing the red-on-rerun steer %q", available, want)
+			}
+		}
+		if p := For(CIFix, Context{Ticket: sample, Slug: "beh-362", BranchPrefix: "feat", WorktreePath: sampleWorktree, CILogs: sampleCILogs, CILogAvailable: available}); steer.MatchString(p) {
+			t.Errorf("log available=%v: ci-fix prompt claims a red re-run without the flag", available)
+		}
+	}
+}

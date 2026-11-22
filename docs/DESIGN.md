@@ -491,6 +491,9 @@ loop:
                          is left for a human (BEH-570)
   else (red):
     one re-run of the failed checks first (flake wash); re-poll
+    still red after it -> narrate "CI still red after re-running the failed checks (…)" and tell
+      each fix session over that commit the check already failed twice on CI, so a sandbox
+      pass is a race to fix, not a cancelled run (#397)
     while still red AND attempts < N AND within wall-clock budget:
       fetch failed-job logs (`gh run view <id> --log-failed`, host-side)
       run sandboxed fix session over the worktree (diagnose + fix + LOCAL commit)

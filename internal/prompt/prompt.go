@@ -148,6 +148,10 @@ type Context struct {
 	// says whether it is a usable log or only an error marker (BEH-558).
 	CILogs         string
 	CILogAvailable bool
+	// CIRedOnRerun says the failing checks were red again after the CI watch
+	// re-ran them on the same commit, so CIFix does not read a sandbox pass as a
+	// one-off (#397).
+	CIRedOnRerun bool
 
 	// Branch, when set, names the branch the session works on in place of
 	// `<BranchPrefix>/<Slug>`: the PR loop fixes a branch it did not name (ADR-0019).
@@ -983,6 +987,13 @@ const browserTestSteer = "If the failing gate is a browser-backed test (a Storyb
 // duplicate until a second session merged origin/main anyway.
 const mergeRefSteer = "Before you diagnose, check origin/main. CI on a pull request tests the PR's merge ref — the branch merged into the current origin/main — not the branch alone, so a branch that is green locally can be red on CI because of what landed on origin/main since it was cut. The harness already fetched origin/main into this worktree before the session started; use that ref and do not try to fetch it again. If the failure does not reproduce on the branch alone, or the failing symbol or file was touched on origin/main since the merge-base (`git log HEAD..origin/main -- <path>`), reproduce it on a scratch merge: `git merge --no-commit --no-ff origin/main`, run the failing gate, then `git merge --abort` to return to the branch. When origin/main already fixes the failure, or conflicts with it (both sides now declare the same thing), resolve it by merging origin/main as a real commit (`git merge --no-ff origin/main`, resolving any conflict in favour of origin/main's version of the base fix), not with a parallel fix on the branch that duplicates what origin/main already did. Re-run the failing gate on that merge commit before you stop."
 
+// redOnRerunSteer tells a CI-fix session its check failed on two CI attempts of
+// the same commit (#397). A session that cannot reproduce such a failure locally
+// leaned toward no commit and a re-trigger, which leaves a check that fails
+// repeatedly in place for the next PR: two reds on one commit point to a race
+// CI's runner exposes and the sandbox does not.
+const redOnRerunSteer = "This check already failed on a CI re-run of the same commit: the harness re-ran the failed checks once before this session, and they were red again. A pass in the sandbox does not make it a cancelled run, and neither does a missing log — look for a timing or environment race in the failing step (an unawaited goroutine or process, a fixed sleep or short timeout, ordering a slower or more loaded runner breaks, an env var, path or tool the sandbox has and CI lacks) and fix it in the code. Make no commit only if you can name why CI failed twice and why that is not the code's to fix."
+
 func ciFix(c Context) string {
 	t, branch, worktreePath := c.Ticket, c.branch(), c.WorktreePath
 	logFraming, job := ciFixLogSteer(branch, defang(c.CILogs), c.CILogAvailable)
@@ -997,6 +1008,9 @@ func ciFix(c Context) string {
 	lines = append(lines, logFraming...)
 	lines = append(lines, "")
 	lines = append(lines, job...)
+	if c.CIRedOnRerun {
+		lines = append(lines, "", redOnRerunSteer)
+	}
 	lines = append(lines,
 		"",
 		"This sandbox has NO network and NO `gh` — the harness already fetched (or failed to fetch) those logs for you host-side. The logs above are all you get; do NOT try to run `gh`, `git fetch`, or any network command to fetch the CI logs, the run, or anything else yourself — it will only fail with `command not found` / no route to host and burn a turn. Work from the logs above plus local reproduction.",

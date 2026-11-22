@@ -121,7 +121,7 @@ func TestRunGatesReportsLaterFailingGateByName(t *testing.T) {
 func TestTheCIFixSessionStartsWithoutMCPServers(t *testing.T) {
 	e, _ := conflictEnv(t, func(*gittest.Repo, *hostio.Fake) {})
 
-	_ = e.CI(Target{})("FAIL src/Swatch.stories.tsx", true)
+	_ = e.CI(Target{})(ci.FixInput{Logs: "FAIL src/Swatch.stories.tsx", LogAvailable: true})
 
 	h := e.Host.(*hostio.Fake)
 	if len(h.Agents) != 1 {
@@ -136,7 +136,7 @@ func TestTheCIFixSessionStartsWithoutMCPServers(t *testing.T) {
 // it loads are the branch's, not whatever the host checkout has checked out.
 func TestFixSessionsStartInTheWorktree(t *testing.T) {
 	e, _ := conflictEnv(t, func(*gittest.Repo, *hostio.Fake) {})
-	_ = e.CI(Target{})("FAIL src/Swatch.stories.tsx", true)
+	_ = e.CI(Target{})(ci.FixInput{Logs: "FAIL src/Swatch.stories.tsx", LogAvailable: true})
 	_ = e.ResolveConflict(Conflict{Regate: func() GateResult { return GateResult{} }})
 
 	h := e.Host.(*hostio.Fake)

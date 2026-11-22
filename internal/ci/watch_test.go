@@ -56,6 +56,11 @@ type fakeDriver struct {
 	flakeSteps    map[string]string
 	flakeRecords  int
 	flakeRecorded []Check
+
+	// narrated is every run-log line the watch wrote through Narrate (#397), and
+	// fixRedOnRerun is the redOnRerun flag each Fix call got.
+	narrated      []string
+	fixRedOnRerun []bool
 }
 
 func (d *fakeDriver) Poll() (Verdict, []Check, error) {
@@ -69,8 +74,9 @@ func (d *fakeDriver) Poll() (Verdict, []Check, error) {
 func (d *fakeDriver) DiffEmpty() bool     { return d.diffEmpty }
 func (d *fakeDriver) DocsOnly() bool      { return d.docsOnly }
 func (d *fakeDriver) Rerun([]Check) error { d.reruns++; return d.rerunErr }
-func (d *fakeDriver) Fix([]Check) error {
+func (d *fakeDriver) Fix(_ []Check, redOnRerun bool) error {
 	d.fixes++
+	d.fixRedOnRerun = append(d.fixRedOnRerun, redOnRerun)
 	if d.clock != nil {
 		d.clock.sleep(d.fixCost)
 	}
@@ -84,6 +90,7 @@ func (d *fakeDriver) RecordFlake(failed []Check) map[string]string {
 	d.flakeRecorded = failed
 	return d.flakeSteps
 }
+func (d *fakeDriver) Narrate(line string) { d.narrated = append(d.narrated, line) }
 func (d *fakeDriver) Push() error         { d.pushes++; return nil }
 func (d *fakeDriver) AwaitHeadRun() error { d.awaits++; return d.awaitErr }
 func (d *fakeDriver) MergeState() (MergeVerdict, error) {
@@ -421,6 +428,62 @@ func TestWatchRecordsNoFlakeWhenNothingWashedOut(t *testing.T) {
 		if d.flakeRecords != 0 {
 			t.Errorf("%s: RecordFlake calls = %d, want 0", name, d.flakeRecords)
 		}
+	}
+}
+
+// #397: a red the flake re-run did not wash out went from "watching CI" straight to
+// "launching auto-fix session 1" in the run log, and the fix session never learned
+// the check had failed twice on the same commit. The watch narrates the re-run checks
+// and tells each fix over that commit so; a fix after a pushed one answers CI on a
+// new commit, which no re-run touched. A refused fix pushes nothing, so the next
+// attempt still answers the re-run commit.
+func TestWatchNarratesARedRerunAndTellsTheFixItFailedTwice(t *testing.T) {
+	lint := Check{Name: "lint", Bucket: BucketFail, Link: "https://github.com/o/r/actions/runs/100/job/2"}
+	e2e := Check{Name: "e2e (chromium)", Bucket: BucketFail, Link: "https://github.com/o/r/actions/runs/101/job/7"}
+	build := Check{Name: "build", Bucket: BucketPass, Link: "https://github.com/o/r/actions/runs/100/job/3"}
+	refused := fmt.Errorf("%w: merge gate red", ErrFixRefused)
+	for name, tc := range map[string]struct {
+		fixErrs []error
+		want    []bool
+	}{
+		"pushed fix":  {fixErrs: []error{nil}, want: []bool{true, false}},
+		"refused fix": {fixErrs: []error{refused, nil}, want: []bool{true, true, false}},
+	} {
+		d := &fakeDriver{
+			polls: []pollResult{
+				{v: Failed, checks: []Check{lint, build, e2e}},
+				{v: Failed, checks: []Check{lint, build, e2e}},
+				{v: Failed, checks: []Check{lint, build}},
+				{v: Passed},
+			},
+			fixErrs:    tc.fixErrs,
+			mergeState: MergeClean,
+		}
+		WatchAndFix(d, Config{MaxFixAttempts: 3, Budget: time.Hour}, newFakeClock().now)
+		want := "CI still red after re-running the failed checks (lint, e2e (chromium)) — treating as real"
+		if len(d.narrated) != 1 || d.narrated[0] != want {
+			t.Errorf("%s: narrated %q, want just %q", name, d.narrated, want)
+		}
+		if fmt.Sprint(d.fixRedOnRerun) != fmt.Sprint(tc.want) {
+			t.Errorf("%s: Fix redOnRerun = %v, want %v", name, d.fixRedOnRerun, tc.want)
+		}
+	}
+}
+
+// #397: a failed check with no Actions run behind it cannot be re-run, so a red
+// second poll says nothing about a re-run: nothing is narrated and the fix is not
+// told the check failed twice.
+func TestWatchClaimsNoRedRerunWhenNothingCouldBeRerun(t *testing.T) {
+	d := &fakeDriver{
+		polls:      []pollResult{{v: Failed, checks: failChecks()}, {v: Failed, checks: failChecks()}, {v: Passed}},
+		mergeState: MergeClean,
+	}
+	WatchAndFix(d, testWatchCfg(), newFakeClock().now)
+	if len(d.narrated) != 0 {
+		t.Errorf("narrated %q for checks with no Actions run, want nothing", d.narrated)
+	}
+	if fmt.Sprint(d.fixRedOnRerun) != "[false]" {
+		t.Errorf("Fix redOnRerun = %v, want [false]", d.fixRedOnRerun)
 	}
 }
 

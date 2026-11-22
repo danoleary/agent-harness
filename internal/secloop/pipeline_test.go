@@ -398,7 +398,7 @@ func TestFixGatesAndPushesACIFixThenWatchesCIGoGreen(t *testing.T) {
 	var fixErr error
 	h.CIFn = func(w hostio.CIWatch) ci.Outcome {
 		// Red once: the watch hands the failing logs to Fix, and pushes what it accepts.
-		if fixErr = w.Fix("FAIL src/compat.test.js", true); fixErr != nil {
+		if fixErr = w.Fix(ci.FixInput{Logs: "FAIL src/compat.test.js", LogAvailable: true}); fixErr != nil {
 			return ci.Outcome{Reason: "auto-fix refused"}
 		}
 		if err := h.Push(); err != nil {
@@ -453,7 +453,7 @@ func TestFixRefusesACIFixWhoseGatesFail(t *testing.T) {
 	}
 	var fixErr error
 	h.CIFn = func(w hostio.CIWatch) ci.Outcome {
-		fixErr = w.Fix("FAIL", true)
+		fixErr = w.Fix(ci.FixInput{Logs: "FAIL", LogAvailable: true})
 		return ci.Outcome{Reason: "auto-fix refused"}
 	}
 

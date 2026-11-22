@@ -362,6 +362,7 @@ func (h *Real) WatchCI(w CIWatch) ci.Outcome {
 		wt.DiffEmpty,
 		func() bool { return wt.DocsOnly(h.cfg.DocsOnlyExcludedRoots) },
 		func(record string) { h.log.Keep(runlog.StepLogName("ci-flake", h.RunID()), record) },
+		h.log.Event,
 	)
 	return ci.WatchAndFix(driver, cfg, time.Now)
 }
