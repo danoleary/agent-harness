@@ -582,6 +582,9 @@ func Implementation(h hostio.Host, cfg config.Config, log *runlog.Logger, args A
 	// half, in the same file (#368, ADR-0070). The follow-ups are filed whatever the
 	// verdict. A reason blocks the run whatever the branch holds: the session's old
 	// way to record a block was an empty handoff commit, which review would ship.
+	// A block is no no-work verdict: a human removing the blocked label is what
+	// lets the ticket be worked again, and it restores the labels the record's
+	// fingerprint was read with, so a kept record would still pass the ticket over.
 	var blocked Result
 	if rep, ok, mErr := readBlocked(findingsDir); mErr != nil {
 		log.Event("⚠ the session's " + BlockedMarker + " does not hold: " + mErr.Error() + " — reading the run as if it wrote none")
@@ -589,6 +592,7 @@ func Implementation(h hostio.Host, cfg config.Config, log *runlog.Logger, args A
 		fileFollowUps(h, log, t, findingsDir, rep)
 		if r, isBlocked := rep.blockedResult(); isBlocked && resolved.Disposition != ResolvedOnMain {
 			blocked = r
+			nowork.For(cfg).Clear(args.Identifier)
 		}
 	}
 

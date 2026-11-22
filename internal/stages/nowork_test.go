@@ -75,6 +75,28 @@ func TestImplementationRecordsOnlyASessionThatFoundNothing(t *testing.T) {
 	}
 }
 
+// #368: a session that stopped blocked on a human, cleanly, is no record that
+// there is no work. The loop labels the ticket blocked, and a human removing the
+// label restores the labels selection read it with: a record kept would pass the
+// ticket over until main moved, though the label's removal is the signal to work
+// it again.
+func TestImplementationDoesNotRecordASessionBlockedOnAHumanAsNoWork(t *testing.T) {
+	h, _ := fresh(t, "#368")
+	cfg := sharedCfg(t)
+	records := nowork.For(cfg)
+	var dir string
+	h.AgentFn = writesBlocked(t, blockedMarker, &dir, nil)
+
+	res := Implementation(h, cfg, stageLog(t, "#368"), Args{Identifier: "#368", Selected: selectedAs})
+
+	if res.Disposition != SessionBlocked {
+		t.Fatalf("got %+v, want SessionBlocked", res)
+	}
+	if rec, ok := records.Read("#368"); ok {
+		t.Errorf("record = %+v, want none: removing the blocked label must let the ticket be selected again", rec)
+	}
+}
+
 func exits(o session.Outcome) func(*hostio.Fake, *gittest.Repo) func(int, hostio.AgentRun) session.Outcome {
 	return func(*hostio.Fake, *gittest.Repo) func(int, hostio.AgentRun) session.Outcome {
 		return func(int, hostio.AgentRun) session.Outcome { return o }
