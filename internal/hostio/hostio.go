@@ -122,9 +122,9 @@ type Result struct {
 // CIWatch parameterises the post-PR CI watch. The host owns the whole gh side —
 // polling checks, re-running them, fetching failed logs, pushing, and the
 // reactive rebase — so a Stage supplies only Fix, the sandboxed diagnose-and-fix
-// session it wants run against a red check. That collapses ci.NewGhDriver's ten
-// positional parameters at the call site to one field. A content conflict the
-// reactive rebase hits parks the PR for a human.
+// session it wants run against a red check. That collapses ci.NewGhDriver's long
+// positional parameter list at the call site to one field. A content conflict
+// the reactive rebase hits parks the PR for a human.
 type CIWatch struct {
 	Fix func(ciLogs string, logAvailable bool) error
 	// KeepHistory forbids the watch's reactive rebase: a branch a human opted in to
