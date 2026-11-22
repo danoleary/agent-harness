@@ -130,7 +130,7 @@ type Result struct {
 // positional parameter list at the call site to one field. A content conflict
 // the reactive rebase hits parks the PR for a human.
 type CIWatch struct {
-	Fix func(ciLogs string, logAvailable bool) error
+	Fix func(ci.FixInput) error
 	// KeepHistory forbids the watch's reactive rebase: a branch a human opted in to
 	// the PR loop must never be force-pushed (ADR-0019), so a green PR that
 	// conflicts with base is handed back as a conflict instead of replayed.

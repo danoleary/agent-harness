@@ -28,3 +28,31 @@ func RunIDs(checks []Check) []string {
 	}
 	return ids
 }
+
+// rerunnable is the checks Rerun can re-trigger: those with an Actions run behind
+// them, in poll order. Any other check is left as it was.
+func rerunnable(checks []Check) []Check {
+	var out []Check
+	for _, c := range checks {
+		if runIDRE.MatchString(c.Link) {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// stillFailing is the checks in rerun that are failing again in failed, by name,
+// in rerun's order.
+func stillFailing(rerun, failed []Check) []Check {
+	red := make(map[string]bool, len(failed))
+	for _, c := range failed {
+		red[c.Name] = true
+	}
+	var out []Check
+	for _, c := range rerun {
+		if red[c.Name] {
+			out = append(out, c)
+		}
+	}
+	return out
+}

@@ -286,9 +286,9 @@ func (e Env) gatesIn(worktreePath string, gates []config.Gate, labelPrefix strin
 // dirty (the agent didn't commit) is a failure, so the harness never pushes an
 // unverified or self-reported-only fix. Each attempt gets a unique label, from
 // which the Runner mints the container name and transcript.
-func (e Env) CI(t Target) func(ciLogs string, logAvailable bool) error {
+func (e Env) CI(t Target) func(ci.FixInput) error {
 	attempt := 0
-	return func(ciLogs string, logAvailable bool) error {
+	return func(in ci.FixInput) error {
 		attempt++
 		// Capture the tip before the session so we can tell afterwards whether the
 		// agent actually committed a fix or correctly concluded there was nothing to
@@ -298,7 +298,7 @@ func (e Env) CI(t Target) func(ciLogs string, logAvailable bool) error {
 		headBefore, _ := wt.HeadSHA()
 		e.Log.Event(fmt.Sprintf("CI red — launching auto-fix session %d (cap %d min active)", attempt, int(e.Cfg.ReviewTimeout.Minutes())))
 		pctx := e.promptContext(t)
-		pctx.CILogs, pctx.CILogAvailable = ciLogs, logAvailable
+		pctx.CILogs, pctx.CILogAvailable, pctx.CIRedOnRerun = in.Logs, in.LogAvailable, in.RedOnRerun
 		res := e.Host.Agent(hostio.AgentRun{
 			Label:    fmt.Sprintf("cifix-%d", attempt),
 			Role:     sandbox.RoleCIFix,
@@ -338,7 +338,7 @@ func (e Env) CI(t Target) func(ciLogs string, logAvailable bool) error {
 // neither.
 type GatedCI struct {
 	env   Env
-	ciFix func(ciLogs string, logAvailable bool) error
+	ciFix func(ci.FixInput) error
 	// Attempts is how many CIFix sessions the watch launched.
 	Attempts int
 	// Accepted is how many fixes passed the gates; the watch pushes each one.
@@ -358,14 +358,14 @@ func (e Env) GatedCI(t Target) *GatedCI { return &GatedCI{env: e, ciFix: e.CI(t)
 // pushes nothing. A fix green on the branch is then gated merged with origin/main
 // ([GatedCI.mergeGate]); a red there is refused with [ci.ErrFixRefused], and the
 // next attempt gets its output as its logs.
-func (g *GatedCI) Fix(ciLogs string, logAvailable bool) error {
+func (g *GatedCI) Fix(in ci.FixInput) error {
 	g.Attempts++
 	if g.refusal != "" {
-		ciLogs, logAvailable, g.refusal = g.refusal, true, ""
+		in.Logs, in.LogAvailable, g.refusal = g.refusal, true, ""
 	}
 	wt := g.env.Host.Worktree()
 	before, _ := wt.HeadSHA()
-	if err := g.ciFix(ciLogs, logAvailable); err != nil {
+	if err := g.ciFix(in); err != nil {
 		return err
 	}
 	label := fmt.Sprintf("gate-cifix%d", g.Attempts)

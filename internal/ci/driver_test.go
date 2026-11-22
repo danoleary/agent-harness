@@ -97,14 +97,14 @@ func TestFixForwardsLogAvailabilityToRunFix(t *testing.T) {
 	d := &GhDriver{
 		logTailBytes: defaultLogTailBytes,
 		fetchRunLog:  func(id string) ([]byte, error) { return nil, errors.New("log not found: " + id) },
-		runFix: func(ciLogs string, logAvailable bool) error {
+		runFix: func(in FixInput) error {
 			called = true
-			gotAvailable = logAvailable
+			gotAvailable = in.LogAvailable
 			return nil
 		},
 	}
 	failed := []Check{{Name: "build", Bucket: BucketFail, Link: "https://github.com/o/r/actions/runs/83755977095/job/1"}}
-	if err := d.Fix(failed); err != nil {
+	if err := d.Fix(failed, false); err != nil {
 		t.Fatalf("Fix: %v", err)
 	}
 	if !called {
@@ -112,6 +112,26 @@ func TestFixForwardsLogAvailabilityToRunFix(t *testing.T) {
 	}
 	if gotAvailable {
 		t.Error("Fix told runFix the log was available when gh could not fetch it")
+	}
+}
+
+// #397: Fix hands runFix the watch's red-on-rerun flag, which the CIFix prompt
+// turns into "this check already failed twice on CI".
+func TestFixForwardsRedOnRerunToRunFix(t *testing.T) {
+	for _, want := range []bool{true, false} {
+		var got FixInput
+		d := &GhDriver{
+			logTailBytes: defaultLogTailBytes,
+			fetchRunLog:  func(string) ([]byte, error) { return []byte("FAIL TestRace"), nil },
+			runFix:       func(in FixInput) error { got = in; return nil },
+		}
+		failed := []Check{{Name: "test", Bucket: BucketFail, Link: "https://github.com/o/r/actions/runs/100/job/1"}}
+		if err := d.Fix(failed, want); err != nil {
+			t.Fatalf("Fix: %v", err)
+		}
+		if got.RedOnRerun != want || !got.LogAvailable {
+			t.Errorf("redOnRerun=%v: runFix got %+v", want, got)
+		}
 	}
 }
 

@@ -204,7 +204,7 @@ func TestFixRunsTheCIFixSessionAndGatesItsCommit(t *testing.T) {
 	h, it, repo := prHost(t, harnessItem(CIRed))
 	var fixErr error
 	h.CIFn = func(w hostio.CIWatch) ci.Outcome {
-		fixErr = w.Fix("FAIL TestThing", true)
+		fixErr = w.Fix(ci.FixInput{Logs: "FAIL TestThing", LogAvailable: true})
 		return ci.Outcome{OK: true, Reason: "green after the fix"}
 	}
 
@@ -236,7 +236,7 @@ func TestFixRunsTheCIFixSessionAndGatesItsCommit(t *testing.T) {
 func TestFixSessionsNameThePRsHeadBranchNotOneBuiltFromTheSlug(t *testing.T) {
 	h, it, _ := prHost(t, harnessItem(CIRed))
 	h.CIFn = func(w hostio.CIWatch) ci.Outcome {
-		_ = w.Fix("FAIL TestThing", true)
+		_ = w.Fix(ci.FixInput{Logs: "FAIL TestThing", LogAvailable: true})
 		return ci.Outcome{OK: true}
 	}
 	cfg := pipelineCfg()
@@ -311,7 +311,7 @@ func TestFixRefusesACIFixWhoseGatesFail(t *testing.T) {
 	}
 	var fixErr error
 	h.CIFn = func(w hostio.CIWatch) ci.Outcome {
-		fixErr = w.Fix("FAIL", true)
+		fixErr = w.Fix(ci.FixInput{Logs: "FAIL", LogAvailable: true})
 		return ci.Outcome{OK: false, Reason: "auto-fix session failed"}
 	}
 
@@ -355,7 +355,7 @@ func TestFixRefusesACIFixWhoseMergeWithMainFailsTheGates(t *testing.T) {
 	redOnceMerged(t, h, log, "FAIL other_test.go: TestOther: undefined: Widget\n")
 	var errs []error
 	h.CIFn = func(w hostio.CIWatch) ci.Outcome {
-		errs = append(errs, w.Fix("FAIL TestThing", true), w.Fix("FAIL TestThing", true))
+		errs = append(errs, w.Fix(ci.FixInput{Logs: "FAIL TestThing", LogAvailable: true}), w.Fix(ci.FixInput{Logs: "FAIL TestThing", LogAvailable: true}))
 		return ci.Outcome{OK: false, Reason: "CI still red"}
 	}
 
@@ -401,7 +401,7 @@ func TestFixRefusesACIFixThatConflictsWithMain(t *testing.T) {
 	repo.Merge("feat-gh-7.txt", "main's own version\n", "main edits the PR's file")
 	var fixErr error
 	h.CIFn = func(w hostio.CIWatch) ci.Outcome {
-		fixErr = w.Fix("FAIL TestThing", true)
+		fixErr = w.Fix(ci.FixInput{Logs: "FAIL TestThing", LogAvailable: true})
 		return ci.Outcome{OK: false, Reason: "auto-fix session failed"}
 	}
 
@@ -428,7 +428,7 @@ func TestFixGatesABranchOnMainOnlyOnce(t *testing.T) {
 	}
 	var fixErr error
 	h.CIFn = func(w hostio.CIWatch) ci.Outcome {
-		fixErr = w.Fix("FAIL TestThing", true)
+		fixErr = w.Fix(ci.FixInput{Logs: "FAIL TestThing", LogAvailable: true})
 		return ci.Outcome{OK: true}
 	}
 
@@ -488,7 +488,7 @@ Caused by: Error: [birpc] rpc is closed, cannot call "createTesters"
 			}
 			var fixErr error
 			h.CIFn = func(w hostio.CIWatch) ci.Outcome {
-				fixErr = w.Fix("RolldownError: Build failed", true)
+				fixErr = w.Fix(ci.FixInput{Logs: "RolldownError: Build failed", LogAvailable: true})
 				return ci.Outcome{OK: fixErr == nil, Reason: "the fix's CI"}
 			}
 
@@ -747,7 +747,7 @@ func capKilledCIFix(h *hostio.Fake, repo *gittest.Repo) {
 		return session.Outcome{ExitCode: 137, CapKilled: true}
 	}
 	h.CIFn = func(w hostio.CIWatch) ci.Outcome {
-		err := w.Fix("FAIL web/src/routes/call/-components/more-tray.stories.tsx > MoreTray", true)
+		err := w.Fix(ci.FixInput{Logs: "FAIL web/src/routes/call/-components/more-tray.stories.tsx > MoreTray", LogAvailable: true})
 		return ci.Outcome{OK: false, Reason: fmt.Sprintf("auto-fix session failed: %v", err)}
 	}
 }
@@ -794,7 +794,7 @@ func TestFixSavesACapKilledSessionsDiffAndTheRetryResumesFromIt(t *testing.T) {
 		return session.Outcome{}
 	}
 	retry.CIFn = func(w hostio.CIWatch) ci.Outcome {
-		_ = w.Fix("FAIL web/src/routes/call/-components/more-tray.stories.tsx > MoreTray", true)
+		_ = w.Fix(ci.FixInput{Logs: "FAIL web/src/routes/call/-components/more-tray.stories.tsx > MoreTray", LogAvailable: true})
 		return ci.Outcome{OK: true}
 	}
 
