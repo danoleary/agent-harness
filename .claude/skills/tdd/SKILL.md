@@ -157,10 +157,23 @@ harness has to spend a whole extra cycle recovering the diff (#224).
    backstop. `origin/main` is read-only: do not rebase or merge it into
    the branch, even if main has moved. The harness rebases it before push and
    resolves conflicts in its own session.
-2. Run `go test` and `go vet` on the packages the diff touches, then
+2. Check that each new call site's wiring has a test. A session that tests a
+   new helper on its own and wires it in afterwards never sees a red test for
+   the wiring, and the wiring is usually the change that closes the ticket.
+   For each place the diff wires new code into an existing path (a call
+   wrapped, a value passed through, a condition added), revert just that line,
+   for example with a `sed -i` on the call site, and run the owning package's
+   tests. At least one must fail. Then restore the line and check
+   `git diff` shows it back. If none failed, write a test through that path's
+   public interface, one that runs the wiring itself and not the helper, and
+   see it go red with the line reverted. Review found this gap after the fact
+   three times, each costing a second commit: the retry conditions in
+   `verify.ReviewGateRetry` (#111), the hand-off of `cfg.ShmSize` to the argv
+   builders (#313) and the Pipelines' `Run` wrapping Fix in the run lock (#416).
+3. Run `go test` and `go vet` on the packages the diff touches, then
    `gofmt -l .`, each as its own Bash call with nothing appended. All must be
    clean.
-3. Make ONE commit on the branch the prompt names. Subject: an imperative
+4. Make ONE commit on the branch the prompt names. Subject: an imperative
    sentence describing the behaviour, ending with the ticket reference, e.g.
    `Give the ticket claim one owner: a per-run lease (#25)`. The body says why.
    There is no release-notes file; do not create a CHANGELOG.
@@ -170,9 +183,9 @@ harness has to spend a whole extra cycle recovering the diff (#224).
    commit subjects); the PR is squash-merged, which carries your commit body
    onto `main`. So a ticket's "Release notes:" item is met by a sentence in
    the commit body saying what changes for the operator.
-4. Run `make check` as its own Bash call with nothing appended. Fold any fix it
+5. Run `make check` as its own Bash call with nothing appended. Fold any fix it
    needs into that commit with `git commit --amend`, never a second commit.
-5. If `make check` fails only in a package the diff didn't touch, re-run that
+6. If `make check` fails only in a package the diff didn't touch, re-run that
    package alone: `go test -count=1 ./internal/<pkg>/`. If it passes, note it
    in your summary as a suspected load flake and stop: do not re-run the full
    `make check`. It can take as long as the first run, and the harness re-gates
