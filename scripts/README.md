@@ -591,3 +591,27 @@ Because the prerequisite list is read from the Makefile, a sub-target added to
 ```bash
 ./scripts/test-check-ci-runs-check.sh
 ```
+
+## retry.sh
+
+Run a command up to a bounded number of tries, pausing longer after each failed
+try (#372). CI's "Check, build" job runs its `git fetch` of `origin/main`, the
+job's one network call after setup, through it, so a dropped fetch does not red
+the required gate on a commit whose gates pass.
+
+The pause after try n is n × `RETRY_DELAY` seconds (default 5), with no pause
+after the last try. Each failed try is reported on stderr. When every try fails
+it exits with the last try's own exit code; a missing or non-numeric bound, or
+no command, exits 64 without running anything. It is bash-3.2-safe.
+
+### Usage
+
+```bash
+./scripts/retry.sh 3 git fetch --no-tags --depth=1 origin main
+```
+
+### Testing
+
+```bash
+./scripts/test-retry.sh
+```
