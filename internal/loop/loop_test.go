@@ -2616,3 +2616,31 @@ func TestARecoverySkippedForALiveRunLeavesItsClaim(t *testing.T) {
 		t.Errorf("want the skip narrated and the breaker untouched; events = %v", r.events)
 	}
 }
+
+// A Pipeline runs its work under its RunLock, which sees the item's key and the
+// run's id, and runs it bare when it has none (#416).
+func TestRunLockUnderRunsTheWorkInsideTheLock(t *testing.T) {
+	var held []string
+	lock := RunLock(func(key, runID string, run func() stages.Result) stages.Result {
+		held = append(held, key+" "+runID)
+		res := run()
+		held = append(held, "released")
+		return res
+	})
+	ran := false
+	got := lock.Under("PR-416", "run-a", func() stages.Result {
+		ran = true
+		if len(held) != 1 {
+			t.Errorf("the work ran outside the lock: %v", held)
+		}
+		return stages.Result{OK: true, Disposition: stages.Shipped}
+	})
+	if !ran || got.Disposition != stages.Shipped || !reflect.DeepEqual(held, []string{"PR-416 run-a", "released"}) {
+		t.Errorf("ran %v, got %+v, held %v; want the work run once inside PR-416's lock and its Result returned", ran, got, held)
+	}
+
+	var none RunLock
+	if got := none.Under("PR-416", "run-b", func() stages.Result { return stages.Result{OK: true} }); !got.OK {
+		t.Errorf("a nil RunLock = %+v, want the work run bare", got)
+	}
+}

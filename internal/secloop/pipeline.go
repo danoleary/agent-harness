@@ -35,6 +35,10 @@ const sessionLabel = "securityfix"
 // id.
 type Pipeline struct {
 	Loop config.Loop
+	// RunLock is held for the whole fix, branch cut to cleanup, the retrospective
+	// included, so another loop's merged-worktree prune leaves the worktree while
+	// the run is in it (#416). Nil holds none.
+	RunLock loop.RunLock
 }
 
 var _ loop.Pipeline = Pipeline{}
@@ -59,8 +63,9 @@ func (p Pipeline) Run(item loop.WorkItem, claim *lease.Lease) stages.Result {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		return stages.Result{}
 	}
-	h := hostio.New(cfg, log, runlog.MakeRunID(time.Now()), false, ticket.Slug(item.Key))
-	return Fix(h, cfg, log, it, p.Loop)
+	runID := runlog.MakeRunID(time.Now())
+	h := hostio.New(cfg, log, runID, false, ticket.Slug(item.Key))
+	return p.RunLock.Under(item.Key, runID, func() stages.Result { return Fix(h, cfg, log, it, p.Loop) })
 }
 
 // Recover finds nothing to recover: every attempt cuts its branch fresh, so a

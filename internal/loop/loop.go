@@ -177,6 +177,22 @@ type Pipeline interface {
 	Recover(item WorkItem) (outcome stages.Result, attempted bool)
 }
 
+// RunLock runs run while the run runID holds key's run lock, the sign another
+// loop reads to tell a live run's worktree from a leftover (#231, ADR-0064,
+// ADR-0066). A run another live run holds comes back RunLive and run never
+// starts. A Pipeline that works a worktree of its own runs under one from
+// checkout to cleanup, its retrospective included (#416).
+type RunLock func(key, runID string, run func() stages.Result) stages.Result
+
+// Under runs run under l, or bare when l is nil: a Pipeline a test builds holds
+// no lock.
+func (l RunLock) Under(key, runID string, run func() stages.Result) stages.Result {
+	if l == nil {
+		return run()
+	}
+	return l(key, runID, run)
+}
+
 // Host is the daemon's own chores, the ones no [Source] or [Pipeline] owns: the
 // stop-signal filesystem, the startup credential check, keeping main fresh, and the
 // host disk it reclaims between items. It is the loop's half of the port ADR-0013

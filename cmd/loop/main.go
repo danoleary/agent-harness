@@ -299,7 +299,7 @@ func runPRLoop(cfg config.Config, l config.Loop, dryRun bool) int {
 	installSignalHandler(host, log)
 	return loop.Run(loop.Deps{
 		Source:   source,
-		Pipeline: prloop.Pipeline{Loop: l, Source: source},
+		Pipeline: prloop.Pipeline{Loop: l, Source: source, RunLock: loophost.RunLock(cfg, log)},
 		Host:     host,
 		Limits:   limitsFrom(cfg, l),
 		Clock:    loop.SystemClock{},
@@ -372,7 +372,7 @@ func runSecurityLoop(cfg config.Config, l config.Loop, dryRun bool) int {
 	installSignalHandler(host, log)
 	return loop.Run(loop.Deps{
 		Source:   source,
-		Pipeline: secloop.Pipeline{Loop: l},
+		Pipeline: secloop.Pipeline{Loop: l, RunLock: loophost.RunLock(cfg, log)},
 		Host:     host,
 		Limits:   limitsFrom(cfg, l),
 		Clock:    loop.SystemClock{},

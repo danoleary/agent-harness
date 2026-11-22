@@ -806,7 +806,10 @@ shared        : STOP (every loop), STOP-tickets (every instance), locks/claim.lo
   why, its Disposition is **RunLive**, and the loop leaves the claim to the live
   run, counts no attempt and no failure, and moves on. Selection passes over a
   ready ticket whose run lock is held, and a Stage's recovery checkpoint does not
-  commit a worktree whose run lock another run holds (ADR-0061).
+  commit a worktree whose run lock another run holds (ADR-0061). A PR-loop or
+  security-alerts run holds the run lock for its item's key the same way, from
+  checkout to cleanup with its retrospective included, so the merged-worktree
+  prune leaves its worktree once the PR it pushed merges (#416, ADR-0068).
 - **The viewer.** `watch --instance <id>` follows one instance (its stream,
   pidfile and sentinel); `watch --all` follows every instance in the plain view,
   each line labeled `[<id>]`.
