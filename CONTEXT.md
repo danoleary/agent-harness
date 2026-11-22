@@ -159,13 +159,15 @@ base, clean tree) the harness verifies independently of what the sandbox reporte
 **Disposition**:
 A run's one terminal verdict — **Shipped**, **RecommendClose**, **CapAborted**,
 **PreflightAborted**, **Interrupted**, **BaseRed**, **NeedsHuman**, **CheckoutBlocked**,
-**ResolvedOnMain**, **AlreadyOnMain** or **NoPR** (`stages.Disposition`). Exactly
+**ResolvedOnMain**, **AlreadyOnMain**, **RunLive** or **NoPR** (`stages.Disposition`). Exactly
 one holds per stage and, folded across the three, per ticket; it is the only thing
 the loop branches on and the breaker counts. Distinct from a Stage's **OK**, which
 asks only "did this stage do its job?" — a Shipped run can be not-OK (CI red after
 the auto-fix budget) and an OK implementation is still NoPR (it never pushes).
 **Interrupted** means a stop signal killed a session from outside (exit 128+N): the
 run was cut short, not broken, so it is never called a failure (ADR-0030).
+**RunLive** means another live run already holds the ticket's run lock, so this
+run took no Stage and leaves the claim to that run (ADR-0061).
 **BaseRed** means the base the worktree was cut from already fails a **Gate**, so no
 session launched and the ticket is held until main moves (ADR-0036). The loop then
 selects nothing while origin/main stays on that base and its red verdict is fresh

@@ -542,7 +542,11 @@ func TestHeldBranchesMapsEachLiveClaimToItsBranch(t *testing.T) {
 		}
 	}
 	for _, key := range []string{"#7", "PROJ-2"} {
-		defer HoldRun(h.cfg, key, &narrator{})()
+		release, err := HoldRun(h.cfg, key, "run-"+key, &narrator{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer release()
 	}
 
 	got, err := h.HeldBranches()
@@ -570,7 +574,10 @@ func TestARunThatEndedNoLongerHoldsItsBranch(t *testing.T) {
 	trk.claims = []tracker.InProgressClaim{{Identifier: "BEH-1301", HasLinkedPR: true}}
 	src := sourceFor(t, config.Config{Project: config.Project{BranchPrefix: gittest.Prefix}, Host: config.Host{ProjectPath: repo.Dir}}, trk)
 
-	release := HoldRun(src.cfg, "BEH-1301", &narrator{})
+	release, err := HoldRun(src.cfg, "BEH-1301", "run-a", &narrator{})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if held, _ := src.HeldBranches(); held["feat/beh-1301"] != "BEH-1301" {
 		t.Fatalf("held = %v, want feat/beh-1301 held by BEH-1301 while its run is live", held)
 	}
@@ -596,7 +603,10 @@ func TestHoldRunWaitsOutALivenessProbe(t *testing.T) {
 	}
 	go func() { time.Sleep(20 * time.Millisecond); probe() }()
 	log := &narrator{}
-	release := HoldRun(cfg, "BEH-2", log)
+	release, err := HoldRun(cfg, "BEH-2", "run-a", log)
+	if err != nil {
+		t.Fatalf("HoldRun() error = %v, want the lock taken once the probe let go", err)
+	}
 	defer release()
 	if len(log.events) != 0 {
 		t.Errorf("events = %v, want the run lock taken once the probe let go", log.events)
@@ -606,19 +616,74 @@ func TestHoldRunWaitsOutALivenessProbe(t *testing.T) {
 	}
 }
 
-// A second run of a ticket whose run lock is taken still runs: the lock is a
-// liveness signal for other loops, not a gate on this one, and the live holder
-// keeps the branch held.
-func TestHoldRunNarratesAndRunsWhenTheLockIsTaken(t *testing.T) {
+// #366: a second run of a ticket whose run lock another live run holds launches
+// no session — no Stage runs at all. It says why, comes back RunLive for the loop
+// to leave the claim to the live run, and leaves that run's lock held.
+func TestASecondRunOfATicketWhoseRunIsLiveRunsNothing(t *testing.T) {
 	cfg := withProject(t, config.Config{})
-	defer HoldRun(cfg, "BEH-1", &narrator{})()
-	log := &narrator{}
-	HoldRun(cfg, "BEH-1", log)()
-	if len(log.events) != 1 || !strings.Contains(log.events[0], "BEH-1") {
-		t.Errorf("events = %v, want one warning naming BEH-1", log.events)
+	first, err := HoldRun(cfg, "BEH-1470", "run-a", &narrator{})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if held, _ := hostlock.File(config.RunLockFile(cfg.ProjectPath, "beh-1")).Held(); !held {
-		t.Error("the first run's lock must survive the second run letting go of nothing")
+	defer first()
+
+	log := &narrator{}
+	ran := false
+	got := underRunLock(cfg, "BEH-1470", "run-b", log, func() stages.Result { ran = true; return stages.Result{OK: true} })
+	if ran {
+		t.Fatal("the second run launched its Stages alongside the live one")
+	}
+	if got.Disposition != stages.RunLive {
+		t.Errorf("Disposition = %v, want %v", got.Disposition, stages.RunLive)
+	}
+	if len(log.events) != 1 || !strings.Contains(log.events[0], "another live run holds BEH-1470's run lock") {
+		t.Errorf("events = %v, want one line naming BEH-1470 and why", log.events)
+	}
+	if owner, held, _ := hostlock.File(config.RunLockFile(cfg.ProjectPath, "beh-1470")).Holder(); !held || owner != "run-a" {
+		t.Errorf("run lock holder = %q (held %v), want run-a's lock untouched", owner, held)
+	}
+	if _, err := HoldRun(cfg, "BEH-1470", "run-c", &narrator{}); !errors.Is(err, ErrRunLive) {
+		t.Errorf("HoldRun() error = %v, want ErrRunLive", err)
+	}
+}
+
+// A run whose lock is free runs under it, and lets it go when it ends.
+func TestARunHoldsItsRunLockWhileItRuns(t *testing.T) {
+	cfg := withProject(t, config.Config{})
+	lock := hostlock.File(config.RunLockFile(cfg.ProjectPath, "gh-366"))
+	got := underRunLock(cfg, "#366", "run-a", &narrator{}, func() stages.Result {
+		if owner, held, _ := lock.Holder(); !held || owner != "run-a" {
+			t.Errorf("while the run runs, holder = %q (held %v), want run-a", owner, held)
+		}
+		return stages.Result{OK: true, Disposition: stages.Shipped}
+	})
+	if got.Disposition != stages.Shipped {
+		t.Errorf("Disposition = %v, want the run's own", got.Disposition)
+	}
+	if held, _ := lock.Held(); held {
+		t.Error("the run lock is still held after the run ended")
+	}
+}
+
+// #366: the reaper reads a claim's age by the wall clock, which a host sleep
+// advances under a live run. The Source says which claims a live run holds, so
+// the reaper leaves those.
+func TestClaimsSayWhichRunsAreLive(t *testing.T) {
+	trk := newQueueTracker()
+	trk.claims = []tracker.InProgressClaim{{Identifier: "BEH-1470"}, {Identifier: "BEH-1483"}}
+	src := sourceFor(t, config.Config{}, trk)
+	release, err := HoldRun(src.cfg, "BEH-1470", "run-a", &narrator{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+
+	claims, err := src.Claims()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(claims) != 2 || !claims[0].Live || claims[1].Live {
+		t.Errorf("claims = %+v, want BEH-1470 live and BEH-1483 not", claims)
 	}
 }
 

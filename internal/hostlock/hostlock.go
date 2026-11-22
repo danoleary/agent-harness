@@ -95,6 +95,46 @@ func (f File) TryLock() (unlock func(), ok bool, err error) {
 	return func() { release(file) }, true, nil
 }
 
+// TryLockAs is TryLock that also records owner in the lock file once it holds
+// it, so [File.Holder] can name the holder (#366). A lock another holder has is
+// left as it is, name and all.
+func (f File) TryLockAs(owner string) (unlock func(), ok bool, err error) {
+	file, err := open(string(f))
+	if err != nil {
+		return nil, false, err
+	}
+	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		file.Close()
+		if err == syscall.EWOULDBLOCK {
+			return nil, false, nil
+		}
+		return nil, false, fmt.Errorf("lock %s: %w", f, err)
+	}
+	if err := file.Truncate(0); err == nil {
+		_, err = file.WriteAt([]byte(owner), 0)
+	}
+	if err != nil {
+		release(file)
+		return nil, false, fmt.Errorf("record the holder of %s: %w", f, err)
+	}
+	return func() { release(file) }, true, nil
+}
+
+// Holder is [File.Held] that also names the holder, as [File.TryLockAs]
+// recorded it: "" when the holder took the lock without a name. A lock no one
+// holds has no holder, whatever name an earlier holder left in the file.
+func (f File) Holder() (owner string, held bool, err error) {
+	held, err = f.Held()
+	if err != nil || !held {
+		return "", false, err
+	}
+	name, err := os.ReadFile(string(f))
+	if err != nil {
+		return "", true, err
+	}
+	return string(name), true, nil
+}
+
 // Held reports whether someone holds the lock right now, without taking it for
 // longer than the probe. A missing file is a lock no one has ever taken. Because
 // the kernel drops a dead holder's lock, held means a live holder: another loop

@@ -16,6 +16,7 @@ import (
 	"os"
 
 	"github.com/danoleary/agent-harness/internal/hostio"
+	"github.com/danoleary/agent-harness/internal/loophost"
 	"github.com/danoleary/agent-harness/internal/stages"
 	"github.com/danoleary/agent-harness/internal/ticket"
 	"github.com/danoleary/agent-harness/internal/version"
@@ -46,6 +47,14 @@ func main() {
 	if tickets, ok := cfg.LoopNamed(""); ok {
 		args.LeaveCIToPRLoop = tickets.LeavesCIToPRLoop()
 	}
+	// A Stage run by hand holds the ticket's run lock as the pipeline does, so it
+	// never works a worktree a live run is working (#366). The deferred release
+	// keeps the lock file open until the process exits, which drops the lock.
+	release, err := loophost.HoldRun(cfg, args.Identifier, runID, log)
+	if err != nil {
+		os.Exit(1)
+	}
+	defer release()
 	res := stages.Review(hostio.New(cfg, log, runID, args.Verbose, ticket.Slug(args.Identifier)), cfg, log, args)
 	if res.Err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", res.Err)

@@ -112,8 +112,19 @@ func main() {
 	// One Host for the whole slice, bound to all three stages by the composition
 	// root the ticket loop shares (pipeline.ForTicket).
 	// The run lock says this run is live, so the PR loop stays off the ticket's
-	// branch while it runs and no longer (#231).
-	release := loophost.HoldRun(cfg, args.Identifier, log)
+	// branch while it runs and no longer (#231), and no second run starts on the
+	// ticket's worktree alongside it (#366). A run that cannot take it runs nothing.
+	// A --next claim is given back unless a live run holds the lock: that claim is
+	// the live run's, as in the loop.
+	release, err := loophost.HoldRun(cfg, args.Identifier, runID, log)
+	if err != nil {
+		if args.Lease != nil && !errors.Is(err, loophost.ErrRunLive) {
+			if rErr := args.Lease.Release(); rErr != nil {
+				fmt.Fprintf(os.Stderr, "could not release %s: %v\n", args.Identifier, rErr)
+			}
+		}
+		os.Exit(1)
+	}
 	outcome := pipeline.Run(pipeline.ForTicket(cfg, log, runID, args))
 	release()
 	os.Exit(outcome.ExitCode())

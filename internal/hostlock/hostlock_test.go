@@ -147,3 +147,30 @@ func TestFileHeldReportsALiveHolder(t *testing.T) {
 		t.Errorf("Held() after the run let go = %v, %v; want false", held, err)
 	}
 }
+
+// A run records who it is in the run lock it takes, so a host-side step can tell
+// the lock its own run holds from one another live run holds (#366). Once the
+// holder lets go, the name left in the file names no holder.
+func TestFileHolderNamesTheLiveHolder(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "runs", "gh-366.lock")
+	if owner, held, err := File(path).Holder(); err != nil || held || owner != "" {
+		t.Fatalf("Holder() before any run = %q, %v, %v; want no holder", owner, held, err)
+	}
+	unlock, ok, err := File(path).TryLockAs("run-b")
+	if err != nil || !ok {
+		t.Fatalf("TryLockAs() = ok %v err %v, want the free lock taken", ok, err)
+	}
+	if owner, held, err := File(path).Holder(); err != nil || !held || owner != "run-b" {
+		t.Errorf("Holder() while run-b holds it = %q, %v, %v; want run-b", owner, held, err)
+	}
+	if _, ok, _ := File(path).TryLockAs("run-c"); ok {
+		t.Error("TryLockAs() took a lock another run holds")
+	}
+	if owner, _, _ := File(path).Holder(); owner != "run-b" {
+		t.Errorf("a refused TryLockAs overwrote the holder's name: %q", owner)
+	}
+	unlock()
+	if owner, held, err := File(path).Holder(); err != nil || held || owner != "" {
+		t.Errorf("Holder() after the run let go = %q, %v, %v; want no holder", owner, held, err)
+	}
+}

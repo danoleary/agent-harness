@@ -1,6 +1,7 @@
 package loophost
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -123,12 +124,14 @@ func (s *TicketSource) Next() (loop.WorkItem, *lease.Lease, bool, error) {
 }
 
 // Resolver is the tracker selection Next claims through: screened against the
-// record of runs that found nothing to hand off (#330), and against the work in
-// flight when the overlap check is on. `pipeline --next` selects through it too,
-// so a single-shot run passes over and defers what the loop would.
+// runs that are live (#366), against the record of runs that found nothing to
+// hand off (#330), and against the work in flight when the overlap check is on.
+// `pipeline --next` selects through it too, so a single-shot run passes over and
+// defers what the loop would.
 func (s *TicketSource) Resolver() pipeline.NextResolver {
 	if s.screen == nil {
-		s.screen = pipeline.SkipNoWork(s.client, nowork.For(s.cfg), s.freshMain, s.log)
+		s.screen = pipeline.SkipLive(s.client, s.runLive, s.log)
+		s.screen = pipeline.SkipNoWork(s.screen, nowork.For(s.cfg), s.freshMain, s.log)
 		if s.prs != nil {
 			policy := overlap.Policy{Threshold: s.cfg.OverlapThreshold, EscapeLabel: s.cfg.OverlapEscapeLabel}
 			branch := func(key string) string { return s.checkout().Worktree(ticket.Slug(key)).Branch() }
@@ -136,6 +139,12 @@ func (s *TicketSource) Resolver() pipeline.NextResolver {
 		}
 	}
 	return s.screen
+}
+
+// runLive reads whether a run working key is live: it holds the ticket's run
+// lock ([HoldRun]).
+func (s *TicketSource) runLive(key string) (bool, error) {
+	return hostlock.File(config.RunLockFile(s.cfg.ProjectPath, ticket.Slug(key))).Held()
 }
 
 // Held says why the last Next found nothing to claim over a queue that was not
@@ -217,6 +226,9 @@ func (s *TicketSource) Releasing(why loop.ReleaseReason, key string) string {
 
 // Claims projects the tracker's agent-claimed In Progress set onto the loop's
 // StaleClaim shape (BEH-677), so the daemon stays decoupled from the Tracker port.
+// A claim whose run lock is held is Live, and the reaper leaves it however old it
+// reads (#366); a run lock that cannot be read counts as live, so a failed read
+// never reaps a live run's claim.
 func (s *TicketSource) Claims() ([]loop.StaleClaim, error) {
 	claims, err := s.client.ListInProgressClaims()
 	if err != nil {
@@ -224,10 +236,12 @@ func (s *TicketSource) Claims() ([]loop.StaleClaim, error) {
 	}
 	out := make([]loop.StaleClaim, 0, len(claims))
 	for _, c := range claims {
+		live, err := s.runLive(c.Identifier)
 		out = append(out, loop.StaleClaim{
 			Key:         c.Identifier,
 			StartedAt:   c.StartedAt,
 			HasLinkedPR: c.HasLinkedPR,
+			Live:        live || err != nil,
 		})
 	}
 	return out, nil
@@ -252,7 +266,7 @@ func (s *TicketSource) HeldBranches() (map[string]string, error) {
 	held := make(map[string]string, len(claims))
 	for _, c := range claims {
 		slug := ticket.Slug(c.Identifier)
-		live, err := hostlock.File(config.RunLockFile(s.cfg.ProjectPath, slug)).Held()
+		live, err := s.runLive(c.Identifier)
 		if err != nil {
 			return nil, fmt.Errorf("read whether %s's run is live: %w", c.Identifier, err)
 		}
@@ -263,30 +277,54 @@ func (s *TicketSource) HeldBranches() (map[string]string, error) {
 	return held, nil
 }
 
-// HoldRun takes the run lock on key for the run about to work it, and returns
-// the func that lets it go when the run ends. Every run of a ticket holds it — the
-// loop's Pipeline and its committed-fix recovery, and a single-shot `pipeline` —
-// so another loop can tell a live run from a worktree a dead one left (#231). The
-// lock is a signal, never a gate: if another run holds it already, or it cannot be
-// taken, the run is narrated and goes ahead without it. A taken lock is retried
-// for a moment first: the PR loop's [hostlock.File.Held] probe takes it for an
-// instant, and losing that race must not leave the whole run unheld.
-func HoldRun(cfg config.Config, key string, log loop.Narrator) (release func()) {
+// ErrRunLive is [HoldRun]'s refusal: another live run already holds the
+// ticket's run lock.
+var ErrRunLive = errors.New("another live run holds the ticket's run lock")
+
+// HoldRun takes the run lock on key for the run runID about to work it, and
+// returns the func that lets it go when the run ends. Every run of a ticket holds
+// it — the loop's Pipeline and its committed-fix recovery, a single-shot
+// `pipeline` and each standalone Stage — so another loop can tell a live run from
+// a worktree a dead one left (#231). It is a gate as well as a signal: a run that
+// cannot take it does not run (#366). Another live run holding it is
+// [ErrRunLive], and two runs on one worktree would each see the other's edits,
+// checkpoint them as their own and push a tree their gates never saw. A lock that
+// cannot be taken at all is that error. Either way the run is narrated and
+// launches nothing. A taken lock is retried for a moment first: the liveness
+// probe ([hostlock.File.Held]) takes it for an instant, and losing that race must
+// not cost the run. The lock file names runID, so a Stage's recovery checkpoint
+// can tell its own run's lock from another's.
+func HoldRun(cfg config.Config, key, runID string, log loop.Narrator) (release func(), err error) {
 	lock := hostlock.File(config.RunLockFile(cfg.ProjectPath, ticket.Slug(key)))
-	unlock, ok, err := lock.TryLock()
+	unlock, ok, err := lock.TryLockAs(runID)
 	for try := 1; err == nil && !ok && try < runLockTries; try++ {
 		time.Sleep(runLockRetry)
-		unlock, ok, err = lock.TryLock()
+		unlock, ok, err = lock.TryLockAs(runID)
 	}
 	switch {
 	case err != nil:
-		log.Event("loop … warning: could not take " + key + "'s run lock (#231): " + err.Error())
-		return func() {}
+		log.Event("✗ could not take " + key + "'s run lock (" + err.Error() + ") — not running " + key + " without it (#366)")
+		return nil, fmt.Errorf("take %s's run lock: %w", key, err)
 	case !ok:
-		log.Event("loop … warning: another live run holds " + key + "'s run lock; running without it (#231)")
-		return func() {}
+		log.Event("⏸ another live run holds " + key + "'s run lock — not starting a second run on its worktree (#366)")
+		return nil, ErrRunLive
 	}
-	return unlock
+	return unlock, nil
+}
+
+// underRunLock runs run while it holds key's run lock ([HoldRun]). A run another
+// live run holds comes back RunLive, and one whose lock could not be taken the
+// plain no-PR failure; run never starts in either case.
+func underRunLock(cfg config.Config, key, runID string, log loop.Narrator, run func() stages.Result) stages.Result {
+	release, err := HoldRun(cfg, key, runID, log)
+	switch {
+	case errors.Is(err, ErrRunLive):
+		return stages.Result{Disposition: stages.RunLive}
+	case err != nil:
+		return stages.Result{Err: err}
+	}
+	defer release()
+	return run()
 }
 
 // runLockTries and runLockRetry bound how long HoldRun waits out a held run lock:
@@ -349,8 +387,9 @@ func (p *TicketPipeline) Run(item loop.WorkItem, claim *lease.Lease) stages.Resu
 		// breaker counts it like any other failure to ship.
 		return stages.Result{}
 	}
-	defer HoldRun(cfg, item.Key, p.log)()
-	return pipeline.Run(ticketDeps(p.loop, cfg, log, runID, ticketArgs(p.loop, item, claim)))
+	return underRunLock(cfg, item.Key, runID, p.log, func() stages.Result {
+		return pipeline.Run(ticketDeps(p.loop, cfg, log, runID, ticketArgs(p.loop, item, claim)))
+	})
 }
 
 // ticketArgs are the stage args for one claimed ticket on loop l. A loop without
@@ -378,16 +417,22 @@ func ticketDeps(l config.Loop, cfg config.Config, log *runlog.Logger, runID stri
 // branch" the review stage ends on — run over a Host bound to this ticket, with the
 // push gate the review stage last recorded in the ticket's log dir. A tip the review
 // refused comes back NeedsHuman with the reason (#230). A setup failure means there
-// is nothing to recover: fall through to the normal release.
+// is nothing to recover: fall through to the normal release. So is a run lock
+// that cannot be taken; one another live run holds comes back RunLive, for the
+// loop to leave the claim to that run (#366).
 func (p *TicketPipeline) Recover(item loop.WorkItem) (stages.Result, bool) {
 	cfg, log, runID, err := p.setup(item.Key)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		return stages.Result{}, false
 	}
-	defer HoldRun(cfg, item.Key, p.log)()
-	rec := ship.Recover(hostio.New(cfg, log, runID, false, ticket.Slug(item.Key)), p.log, item.Key, stages.LastPushGate(log.Dir))
-	return recovered(rec), rec.Attempted
+	attempted := false
+	res := underRunLock(cfg, item.Key, runID, p.log, func() stages.Result {
+		rec := ship.Recover(hostio.New(cfg, log, runID, false, ticket.Slug(item.Key)), p.log, item.Key, stages.LastPushGate(log.Dir))
+		attempted = rec.Attempted
+		return recovered(rec)
+	})
+	return res, attempted || res.Disposition == stages.RunLive
 }
 
 // recovered maps a committed-fix recovery onto the Result the loop branches on.

@@ -546,6 +546,13 @@ loop:
   // INTERRUPTED (ADR-0030): a stop signal killed a session from outside (exit 128+N) — the
   // run was cut short, not broken. The pipeline already skipped verification and the
   // retrospective; the loop leaves the ticket exactly where it stopped.
+  // RUN-LIVE (ADR-0061): another live run holds the ticket's run lock, so this run took no
+  // Stage. The claim is the live run's; selection already passes over the ticket.
+  if Disposition == RunLive:
+    do NOT release, comment, recover or count it as an attempt
+    do NOT touch the breaker counter
+    continue                                         // no backoff: the next poll selects past it
+
   if Disposition == Interrupted:
     do NOT release, comment, or complete host-side   // the claim + worktree are the next run's;
                                                      // the stale-claim reaper returns an unresumed claim
@@ -765,8 +772,14 @@ shared        : STOP (every loop), STOP-tickets (every instance), locks/claim.lo
   only when no other daemon's pidfile names a live process: a running instance
   may not have reached the checkpoint where it sees a STOP meant for it.
 - **The reaper is safe across instances.** It reaps only a claim past the TTL with
-  no pushed branch and no linked PR, and a working instance's claim has one or the
-  other once it is that old.
+  no pushed branch, no linked PR and no live run: a working instance holds the
+  ticket's run lock for as long as it runs, however long the host sleeps (#366).
+- **One run per ticket.** Every run of a ticket takes its run lock first
+  (`loophost.HoldRun`), and one that cannot take it runs nothing: it narrates
+  why, its Disposition is **RunLive**, and the loop leaves the claim to the live
+  run, counts no attempt and no failure, and moves on. Selection passes over a
+  ready ticket whose run lock is held, and a Stage's recovery checkpoint does not
+  commit a worktree whose run lock another run holds (ADR-0061).
 - **The viewer.** `watch --instance <id>` follows one instance (its stream,
   pidfile and sentinel); `watch --all` follows every instance in the plain view,
   each line labeled `[<id>]`.
@@ -1449,7 +1462,10 @@ own namespace with no edit to the workflow.
   it (BEH-677). Between tickets, before selecting, the loop lists the agent-claimed
   In Progress set (unassigned + `ready-for-agent` + `started`, so a human's In
   Progress work is never a candidate) and **releases a claim back to Todo** — with a
-  breadcrumb comment — when **all three** hold: (1) it is older than
+  breadcrumb comment — when **all four** hold: (0) no live run holds its run lock
+  (`locks/runs/<slug>.lock`, ADR-0061) — the age is wall-clock time, so a host
+  that slept for hours under a live run ages the claim past the TTL while nothing
+  died, and reaping it started a second run on the same worktree (#366); (1) it is older than
   `LOOP_CLAIM_TTL_MS` (default 30 min), (2) it has no linked PR (a Linear `.../pull/`
   attachment; on GitHub, an unmerged PR's `cross-referenced` event dated no earlier
   than the latest `in-progress` label — an older or merged PR that merely mentioned

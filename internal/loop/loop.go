@@ -32,10 +32,16 @@ import (
 // released back to its Source so it stops occupying the lane. The grace TTL is what
 // keeps a healthy agent mid-work (which looks identical — no branch/PR yet) from
 // being reaped.
+//
+// Live says a run working the item is live right now — for a ticket, its run
+// lock is held — and such a claim is never reaped, however old it reads (#366).
+// The age is wall-clock time, so a host that slept for hours under a live run
+// ages the claim past the TTL while nothing died.
 type StaleClaim struct {
 	Key         string
 	StartedAt   time.Time
 	HasLinkedPR bool
+	Live        bool
 }
 
 // Narrator is the one-line console + run.jsonl narration sink (satisfied by
@@ -397,6 +403,17 @@ func Run(d Deps) int {
 		// toward the MaxTickets ceiling like any other.
 		key := item.Key
 		outcome := d.Pipeline.Run(item, claim)
+
+		// Another live run already holds the item's run lock, so this run launched
+		// nothing (#366): two runs on one worktree each see the other's edits, and
+		// one can checkpoint or push the other's half-finished work. The claim is the
+		// live run's to settle, so it is not released, and the skip is no attempt and
+		// no failure. Selection already passes over a live item, so the next poll
+		// selects past it without a backoff.
+		if outcome.Disposition == stages.RunLive {
+			d.leaveToLiveRun(key)
+			continue
+		}
 		attempted++
 		if outcome.Disposition != stages.PreflightAborted {
 			preflightAborts = 0
@@ -520,9 +537,10 @@ func Run(d Deps) int {
 						Message: "loop — " + key + " had a committed, gate-green fix that was never pushed; completed it (pushed + opened PR) instead of releasing (BEH-713)",
 					})
 					outcome.Disposition = stages.Shipped
-				case stages.NeedsHuman:
+				case stages.NeedsHuman, stages.RunLive:
 					// The review refused this very tip (#230): hand it over below, never
-					// back to Todo.
+					// back to Todo. Or another live run holds the item now (#366): its
+					// claim is that run's.
 					outcome = completed
 				default:
 					d.Log.Event("loop … " + key + " committed-fix recovery did not reach a PR; falling through to the no-PR release")
@@ -562,6 +580,8 @@ func Run(d Deps) int {
 			d.handResolvedToHuman(key, outcome.ResolvedBy, outcome.ResolvedWhy)
 		case stages.AlreadyOnMain:
 			d.handMergedToHuman(key, outcome.ResolvedBy, outcome.ResolvedWhy)
+		case stages.RunLive:
+			d.leaveToLiveRun(key)
 		case stages.NoPR:
 			// Release-on-no-PR (BEH-590): a run that finished WITHOUT opening a pushed PR —
 			// any non-cap failure mode: OOM, sandbox crash, a review stage that died before
@@ -809,12 +829,18 @@ func (d Deps) reclaimDisk() {
 	}
 }
 
+// leaveToLiveRun narrates a run of key that stopped because another live run
+// holds it (#366), leaving the claim to that run.
+func (d Deps) leaveToLiveRun(key string) {
+	d.Log.Structured(loopstream.Record{Kind: loopstream.KindItemSkipped, Ticket: key, Message: "loop ⏸ " + key + " skipped — another live run holds its run lock; leaving its claim to that run — breaker-neutral (#366)"})
+}
+
 // reapStaleClaims releases claims stranded by a dead agent back to their Source
 // (BEH-677). The harness claims an item on selection (for a ticket, by moving it to
 // In Progress), but an agent that dies (sandbox OOM/timeout/crash) before pushing
 // leaves the item occupying the lane forever, never re-grabbed. Each pass lists the
-// Source's claims and releases a claim when ALL hold: it is older than ClaimTTL, has no linked PR,
-// and has no remote branch.
+// Source's claims and releases a claim when ALL hold: it is older than ClaimTTL, its
+// run is not live, it has no linked PR, and it has no remote branch.
 //
 // The grace TTL is load-bearing: a healthy agent between claim and first push looks
 // IDENTICAL to a dead one (no branch/PR yet), so reaping on the no-branch signal
@@ -837,6 +863,9 @@ func (d Deps) reapStaleClaims() {
 	for _, c := range claims {
 		if now.Sub(c.StartedAt) < d.Limits.ClaimTTL {
 			continue // inside the grace window — a healthy agent may still be mid-work
+		}
+		if c.Live {
+			continue // a run is working it right now, however long the host slept (#366)
 		}
 		if c.HasLinkedPR {
 			continue // shipped or mid-review — there is work to show for the claim

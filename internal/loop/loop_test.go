@@ -2521,3 +2521,98 @@ func TestAlreadyOnMainSettlesTheTicketInOnePass(t *testing.T) {
 		t.Errorf("events = %v, want the skip narrated and the breaker untouched", r.events)
 	}
 }
+
+// #366: a second run of a ticket whose run lock another live run holds launched
+// no session. The loop leaves the claim to the live run — releasing it would put
+// a ticket a run is still working back in Todo — tries no recovery, counts no
+// attempt and no failure, and moves on to the next ticket without backing off.
+func TestARunSkippedForALiveRunLeavesItsClaimAndMovesOn(t *testing.T) {
+	r := &recorder{}
+	queue := []string{"#366", "#367"}
+	var ran, released, recovered []string
+	slept := time.Duration(0)
+	code := Run(Deps{
+		Host: &fakeHost{
+			clearStop:     func() error { return nil },
+			stopRequested: func() bool { return len(queue) == 0 },
+		},
+		Source: &fakeSource{
+			next: func() (string, bool) {
+				key := queue[0]
+				queue = queue[1:]
+				return key, true
+			},
+			release: func(key string) error { released = append(released, key); return nil },
+		},
+		Pipeline: &fakePipeline{
+			run: func(key string) stages.Result {
+				ran = append(ran, key)
+				if key == "#366" {
+					return stages.Result{Disposition: stages.RunLive}
+				}
+				return stages.Result{OK: true, Disposition: stages.Shipped}
+			},
+			recover: func(key string) (stages.Result, bool) {
+				recovered = append(recovered, key)
+				return stages.Result{}, false
+			},
+		},
+		Limits: Limits{
+			PollInterval:           time.Minute,
+			TickInterval:           2 * time.Second,
+			MaxConsecutiveFailures: 1,
+			MaxTickets:             1,
+		},
+		Clock: testClock{sleep: func(d time.Duration) { slept += d }},
+		Log:   r,
+	})
+	if code != 0 || len(ran) != 2 || ran[1] != "#367" {
+		t.Fatalf("code = %d, ran = %v; want #366 skipped and #367 run — the skip is no attempt toward MaxTickets", code, ran)
+	}
+	if len(released) != 0 || len(recovered) != 0 {
+		t.Errorf("released = %v, recovered = %v; the live run owns #366's claim and its worktree", released, recovered)
+	}
+	if slept != 0 {
+		t.Errorf("slept %s; a skip moves straight on to the next ticket", slept)
+	}
+	if r.saw("circuit breaker") {
+		t.Errorf("a skip must not trip the breaker; events = %v", r.events)
+	}
+	if k, ok := r.kindFor("#366 skipped — another live run holds its run lock"); !ok || k != loopstream.KindItemSkipped {
+		t.Errorf("record kind = %q (found=%v), want %q; events = %v", k, ok, loopstream.KindItemSkipped, r.events)
+	}
+}
+
+// #366: the committed-fix recovery takes the run lock too. One that finds another
+// run live on the ticket leaves the claim to it, rather than falling through to
+// the no-PR release.
+func TestARecoverySkippedForALiveRunLeavesItsClaim(t *testing.T) {
+	r := &recorder{}
+	var released []string
+	ran := 0
+	Run(Deps{
+		Host: &fakeHost{
+			clearStop:     func() error { return nil },
+			stopRequested: func() bool { return ran >= 1 },
+		},
+		Source: &fakeSource{
+			next:    func() (string, bool) { return "#366", true },
+			release: func(key string) error { released = append(released, key); return nil },
+		},
+		Pipeline: &fakePipeline{
+			run: func(string) stages.Result { ran++; return stages.Result{} },
+			recover: func(string) (stages.Result, bool) {
+				return stages.Result{Disposition: stages.RunLive}, true
+			},
+		},
+		Limits: Limits{PollInterval: time.Minute, TickInterval: 2 * time.Second, MaxConsecutiveFailures: 1},
+		Clock:  testClock{sleep: func(time.Duration) {}},
+		Log:    r,
+	})
+	if len(released) != 0 {
+		t.Errorf("released = %v; another live run holds #366", released)
+	}
+	if r.saw("circuit breaker") || !r.saw("#366 skipped — another live run holds its run lock") {
+		t.Errorf("want the skip narrated and the breaker untouched; events = %v", r.events)
+	}
+}

@@ -39,6 +39,7 @@ leftover worktree in the stream.**
    run dies, so there is no stale lock to reap (as with the claim lock,
    ADR-0024). The lock is only a signal: if another run already holds it, or it
    cannot be taken, the run says so and goes ahead.
+   *(Amended by ADR-0061: a run that cannot take the lock runs nothing.)*
 2. **The hold** (`TicketSource.HeldBranches`) is an agent-claimed In Progress
    ticket whose run lock is held. A worktree no longer counts. A run lock that
    cannot be read fails the poll, as the claim list does.

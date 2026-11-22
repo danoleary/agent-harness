@@ -296,6 +296,14 @@ const (
 	// seconds; it keeps the claim, labels the ticket blocked and comments the
 	// commit for a human to close, as for ResolvedOnMain. The breaker stays blind.
 	AlreadyOnMain
+	// RunLive — another live run already holds the ticket's run lock, so this run
+	// launched no session and ran no Stage (#366). Two runs on one worktree each
+	// see the other's edits, and a checkpoint or push of one can carry the other's
+	// half-finished work. The run lock's holders produce it (loophost.HoldRun).
+	// Not the ticket's fault and not this run's claim to settle: the loop leaves
+	// the claim to the live run, which settles it, moves on to the next ticket,
+	// and the breaker stays blind.
+	RunLive
 )
 
 func (d Disposition) String() string {
@@ -320,6 +328,8 @@ func (d Disposition) String() string {
 		return "resolved-on-main"
 	case AlreadyOnMain:
 		return "already-on-main"
+	case RunLive:
+		return "run-live"
 	default:
 		return "no-pr"
 	}
