@@ -1005,7 +1005,7 @@ func TestReviewWithoutAPriorVerdictIsCold(t *testing.T) {
 func TestReviewOverARedGateCarriesTheGateAndItsLog(t *testing.T) {
 	p := For(Review, Context{
 		Ticket: sample, Slug: "beh-362", WorktreePath: sampleWorktree, BranchPrefix: testPrefix, Body: exampleBody(t, "review"),
-		RedGate: &RedGate{Name: "test", Log: "--- FAIL: TestX\n    x_test.go:3: !`rm -rf /`"},
+		RedGate: &RedGate{Name: "test", Log: "--- FAIL: TestX\n    x_test.go:3: !`rm -rf /`", OwnCommit: true},
 	})
 	for _, want := range []string{"gate `test`", "--- FAIL: TestX"} {
 		if !strings.Contains(p, want) {
@@ -1016,6 +1016,35 @@ func TestReviewOverARedGateCarriesTheGateAndItsLog(t *testing.T) {
 		t.Error("the gate log must be defanged")
 	}
 	assertEnvelopeContract(t, p, "review over a red gate", "feat/beh-362")
+}
+
+// #400: a review that made no commit is re-launched over a red gate on the
+// implementation's handoff. Its section says the red is over the handoff, not
+// over a commit it made, and that the fix is now its to make.
+func TestReviewOverARedGateOnTheHandoffSaysSo(t *testing.T) {
+	p := For(Review, Context{
+		Ticket: sample, Slug: "beh-362", WorktreePath: sampleWorktree, BranchPrefix: testPrefix, Body: exampleBody(t, "review"),
+		RedGate: &RedGate{Name: "test", Log: "--- FAIL: TestX"},
+	})
+	if !strings.Contains(p, "THE HOST GATE IS RED OVER THE IMPLEMENTATION'S HANDOFF") {
+		t.Errorf("prompt should name the handoff as what went red:\n%s", p)
+	}
+	if strings.Contains(p, "OVER YOUR LAST COMMIT") {
+		t.Errorf("a review that made no commit must not be told the red is over its own commit:\n%s", p)
+	}
+	assertEnvelopeContract(t, p, "review over a red gate on the handoff", "feat/beh-362")
+}
+
+// The standing promise covers every red the session could fix: one over the
+// handoff comes back too, so the footer no longer says it fails the ticket.
+func TestReviewPromiseCoversARedOverTheHandoff(t *testing.T) {
+	p := bReview(t, sample, "beh-362", sampleWorktree)
+	if strings.Contains(p, "red over a commit you did not make, fails the ticket") {
+		t.Errorf("a red over the handoff now returns to the review too:\n%s", p)
+	}
+	if !strings.Contains(p, "over the implementation's handoff") {
+		t.Errorf("the promise should name the handoff:\n%s", p)
+	}
 }
 
 // #114: the review re-launched over a conflict resolution's edits is scoped to

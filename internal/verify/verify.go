@@ -385,20 +385,21 @@ func reviewVerdictRetry(out session.Outcome, clean, gatesGreen bool) bool {
 // gate failed the ticket outright, so Consumer prompts had the session run the
 // heavy suites itself first — on the same commit the host gate then re-ran.
 //
-// The bar is a red gate over a commit the session itself made (committed): that
-// commit is the session's to repair. Every other red routes to fail-closed as
+// The bar is a red gate over a clean tree, whoever made the commit it is over:
+// the review session's own fix, or the implementation's handoff the review found
+// nothing to fix in (#400). Neither session runs the `:changed` suites, so a red
+// that first shows on the host is an expected outcome, and the re-launched review
+// can repair it as well as its own. Every other red routes to fail-closed as
 // before:
 //
-//   - A gate over a commit the review did not make (the implementation handoff)
-//     is not the review's regression to fix.
 //   - A dirty worktree means the gate validated a different tree than would ship.
 //   - A blocked verdict will not push however the gate turns out.
 //   - An OOM, a watchdog cap-kill or a spending-cap abort — of the session or the
 //     gate — is the environment, not the diff: a re-launch would hit it again.
 //   - A gate the shell could not run (exit 127/126, or make reporting it) is a
 //     toolchain missing in the gate container, which no session can install (#46).
-func ReviewGateRetry(gate session.Outcome, out session.Outcome, committed, clean bool) bool {
-	if gate.ExitCode == 0 || !committed || !clean || out.ReviewBlocked {
+func ReviewGateRetry(gate session.Outcome, out session.Outcome, clean bool) bool {
+	if gate.ExitCode == 0 || !clean || out.ReviewBlocked {
 		return false
 	}
 	if out.ExitCode == oomExitCode || out.CapKilled || out.SpendingCapAbort {

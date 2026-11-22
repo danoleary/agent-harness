@@ -191,7 +191,7 @@ func prepRun(cfg config.Config, worktreePath string) hostio.ShellRun {
 
 // reviewRun is the cold /review-worktree session. Review emits no findings
 // (retrospective owns them), so it mounts no dropbox. A non-nil redGate is the
-// re-launch over a host gate that went red on the session's own commit (#111).
+// re-launch over a host gate that went red after the session (#111, #400).
 func reviewRun(cfg config.Config, s Subject, prior *prompt.PriorReview, redGate *prompt.RedGate) hostio.AgentRun {
 	pctx := prompt.Context{
 		Ticket: s.Ticket, Slug: s.Slug, BranchPrefix: cfg.BranchPrefix, Branch: s.Branch, Tracker: cfg.Tracker.Kind, WorktreePath: s.WorktreePath, Body: cfg.Prompts.Review,

@@ -137,7 +137,7 @@ about, and a body cannot promise one.
 
 The re-launch is bounded to one attempt. A gate still red after it fails the
 ticket as before. A red over the handoff the review did not change also fails as
-before, and so do a dirty tree, a blocked verdict, an OOM, a cap-kill or
+before (until the 2026-11-22 amendment below), and so do a dirty tree, a blocked verdict, an OOM, a cap-kill or
 spending-cap abort, and a gate the shell could not run. None of those is a defect
 the session can fix in its own commit. Skipping the host gate when the session
 reports the same gates green at the same HEAD was rejected, because it trusts a
@@ -215,3 +215,24 @@ The session still mounts `/findings` for `/findings/resolved.json` (ADR-0052), a
 the red-base finding the harness writes itself before any session still files
 (ADR-0036). Friction the session hits reaches the retrospective through its
 transcript, which the retrospective reads.
+
+## Amendment, 2026-11-22: a red host gate over the handoff returns to the review too
+
+The #111 amendment re-launched the review only when the gate went red over a
+commit the review session made. A red over the implementation's handoff, which
+the review found nothing to fix in, still failed the ticket. Neither session runs
+the `:changed` suites, and the host gate is the only push authority, so a red
+that first shows on the host is an expected outcome. Failing over it threw away
+a complete implementation and a complete review, though one short session could
+clear the one gate the log tail named.
+
+**A host gate red over a clean tree re-launches the review once, whichever
+session made the commit it is red over** (#400). The re-launch's envelope says
+which it is: over the review's own fix, or over the implementation's handoff,
+which is now the review's to fix. The envelope's standing promise now covers
+both, and the run log names which commit the red is over. Everything else in the
+#111 amendment holds: one attempt, the gates re-run after it, and a dirty tree, a
+blocked verdict, an OOM, a cap and an unrunnable gate still fail closed. A
+separate CIFix-style session was rejected: the review session already knows the
+diff and the re-launch path exists, and a second session kind would need its own
+verdict and push rules.
