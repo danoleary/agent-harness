@@ -229,3 +229,14 @@ func TestBreakerNeutralOnCheckoutBlocked(t *testing.T) {
 		t.Error("the real failures around the neutral refusals make 3 — must trip")
 	}
 }
+
+// #421: a PR run whose CI was still pending past the poll budget, with nothing
+// pushed, read no verdict on the PR. A slow CI graph must not trip the breaker.
+func TestBreakerNeutralOnCIPending(t *testing.T) {
+	b := newBreaker(1)
+	b.record("PR-1384", stages.Result{Disposition: stages.CIPending})
+	b.record("PR-1384", stages.Result{Disposition: stages.CIPending})
+	if b.tripped() {
+		t.Fatalf("CI still pending must not advance the streak; tripped with %v", b.streak)
+	}
+}

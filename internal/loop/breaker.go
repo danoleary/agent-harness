@@ -37,13 +37,15 @@ func newBreaker(threshold int) *breaker { return &breaker{threshold: threshold} 
 // on main is the sanctioned stop the tdd skill asks for (#329), as is one the
 // implementation stage skipped because main already carries a commit naming it
 // (#331); and a run that stopped because another live run holds the item launched
-// nothing and is no verdict on it (#366).
+// nothing and is no verdict on it (#366); and a PR run whose CI was still pending
+// past the poll budget, with nothing pushed, read no verdict on the PR (#421).
 func (b *breaker) record(key string, o stages.Result) {
 	switch o.Disposition {
 	case stages.Shipped:
 		b.streak = nil
 	case stages.CapAborted, stages.PreflightAborted, stages.RecommendClose, stages.Interrupted, stages.BaseRed,
-		stages.CheckoutBlocked, stages.ResolvedOnMain, stages.AlreadyOnMain, stages.RunLive:
+		stages.CheckoutBlocked, stages.ResolvedOnMain, stages.AlreadyOnMain, stages.RunLive,
+		stages.CIPending:
 		// neutral — blind by design
 	default:
 		b.streak = append(b.streak, key)

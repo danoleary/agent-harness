@@ -2644,3 +2644,46 @@ func TestRunLockUnderRunsTheWorkInsideTheLock(t *testing.T) {
 		t.Errorf("a nil RunLock = %+v, want the work run bare", got)
 	}
 }
+
+// #421: three PR runs in a row whose CI was still pending past the poll budget,
+// with nothing pushed, leave the breaker untouched even at threshold 1. Each
+// releases its claim without the no-PR breadcrumb, and the stream says CI is
+// pending, not that the run failed to ship.
+func TestCIPendingThreeTimesInARowDoesNotTripTheBreaker(t *testing.T) {
+	r := &recorder{}
+	ran := 0
+	var released []string
+	code := Run(Deps{
+		Host: &fakeHost{
+			clearStop:     func() error { return nil },
+			fetchMain:     func() error { return nil },
+			stopRequested: func() bool { return ran >= 3 },
+		},
+		Source: &fakeSource{
+			next:    func() (string, bool) { return "PR-1384", true },
+			release: func(id string) error { released = append(released, id); return nil },
+		},
+		Pipeline: &fakePipeline{
+			run: func(string) stages.Result { ran++; return stages.Result{Disposition: stages.CIPending} },
+		},
+		Limits: Limits{
+			PollInterval:           10 * time.Second,
+			TickInterval:           2 * time.Second,
+			MaxConsecutiveFailures: 1,
+		},
+		Clock: testClock{sleep: func(time.Duration) {}},
+		Log:   r,
+	})
+	if code != 0 || ran != 3 {
+		t.Errorf("code = %d, ran = %d; want three runs and a clean stop", code, ran)
+	}
+	if r.saw("circuit breaker") || r.saw("pushed nothing") {
+		t.Errorf("CI still pending is neither a breaker strike nor a no-PR release; events = %v", r.events)
+	}
+	if want := []string{"PR-1384", "PR-1384", "PR-1384"}; !reflect.DeepEqual(released, want) {
+		t.Errorf("released = %v, want %v", released, want)
+	}
+	if k, ok := r.kindFor("PR-1384 CI still pending past the poll budget"); !ok || k != loopstream.KindTicketReleased {
+		t.Errorf("record kind = %q (found=%v), want %q; events = %v", k, ok, loopstream.KindTicketReleased, r.events)
+	}
+}

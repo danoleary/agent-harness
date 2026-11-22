@@ -145,6 +145,25 @@ type Outcome struct {
 	// degrade past. It is a tooling fault, not a red CI, and the callers narrate it
 	// as "could not poll CI" rather than "CI did not go green" (#383).
 	PollFault bool
+	// Pending marks the non-OK outcome where CI was still running when the poll
+	// budget ran out (ErrPollTimeout): the verdict is unknown, not red. Failing
+	// carries the checks still pending. A slow or queued CI graph lands here after
+	// a good fix, so the callers narrate it apart from "CI did not go green", and
+	// the PR loop re-checks that commit's CI on its next poll before it launches
+	// any fix session (#421).
+	Pending bool
+}
+
+// PendingNarration is the run-log line the PR and security-alerts loops write for
+// a Pending outcome (#421): CI is still running, not red, on the checks it names.
+// It names the knobs a Consumer whose CI graph outlasts the poll raises in its
+// .agent-harness/.env.
+func PendingNarration(o Outcome) string {
+	line := "CI still pending past the poll budget (not a red CI)"
+	if len(o.Failing) > 0 {
+		line += " on " + flakeNames(o.Failing, nil)
+	}
+	return line + " — for a CI graph that takes longer, raise CI_POLL_BUDGET_MS and CI_POLL_MAX_BUDGET_MS"
 }
 
 // WatchAndFix polls CI for the just-pushed PR and, on failure, drives a bounded
@@ -443,9 +462,10 @@ const ghMissingReason = "CI watch could not run: the gh CLI is not on the harnes
 // leave it for a human rather than abort or auto-fix. A bad-credentials error and
 // a run of network errors (errPollTransient, #194) degrade the same way: the harness
 // could not read CI, and no check was seen to fail. A timeout means CI never
-// settled (report the still-non-green checks). A missing gh (#383) and any other
-// error are a poll fault: the watch never read a verdict, so the outcome says so
-// instead of passing for a red CI.
+// settled: a Pending outcome, unknown rather than red, reporting the still-non-green
+// checks (#421). A missing gh (#383) and any other error are a poll fault: the
+// watch never read a verdict, so the outcome says so instead of passing for a red
+// CI.
 func pollErrOutcome(err error, checks []Check) Outcome {
 	if errors.Is(err, errChecksUnobservable) {
 		return Outcome{OK: true, Reason: unobservableReason}
@@ -466,6 +486,7 @@ func pollErrOutcome(err error, checks []Check) Outcome {
 	if errors.Is(err, ErrPollTimeout) {
 		return Outcome{
 			OK:      false,
+			Pending: true,
 			Reason:  "CI never reached a terminal state (still pending past the poll budget)",
 			Failing: notGreen(checks),
 		}

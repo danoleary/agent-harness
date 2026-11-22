@@ -486,7 +486,11 @@ loop:
     "CI watch could not run: the gh CLI is not on the harness PATH …". Any other gh failure the watch
     does not degrade past ("polling CI failed: …") is a poll fault too. The PR and security-alerts loops
     narrate a poll fault as "✗ could not poll CI (not a red CI): …", never "CI did not go green": the
-    watch read no verdict. The loop daemon also refuses to start without gh on PATH (CheckAccess),
+    watch read no verdict.
+  poll timeout (#421, ADR-0069): CI still running when the poll budget (and its adaptive extension) runs
+    out is ErrPollTimeout, and the watch ends NOT OK with Pending set: the verdict is unknown, not red. The
+    PR and security-alerts loops narrate "⧗ CI still pending past the poll budget (not a red CI) on <checks>",
+    naming CI_POLL_BUDGET_MS and CI_POLL_MAX_BUDGET_MS for a Consumer whose CI graph takes longer. The loop daemon also refuses to start without gh on PATH (CheckAccess),
     since it opens, reads and watches every PR through it.
   if green        -> confirm mergeability against base (gh pr view --json mergeable):
                        clean              -> done
@@ -712,6 +716,11 @@ pipeline (one PR, worktree .claude/worktrees/pr-<n> on the PR's head branch):
     a red gate with an infrastructure signature, or red only in files the fix
       did not touch, is re-run once before it refuses the fix (#167)
     a human branch is never reactively rebased (CIWatch.KeepHistory)
+    CI still pending past the poll budget -> ci.Outcome.Pending, unknown not red:  // #421, ADR-0069
+      narrate "⧗ CI still pending past the poll budget (not a red CI) on <checks>"
+      a fix was pushed -> Shipped;  nothing pushed -> CIPending: void marker takes the
+      attempt back, breaker-neutral, and the next poll re-checks that commit's CI
+      (pending or green -> skip; red -> work it) before it launches a session
   retrospective over the run's transcripts (if a session ran) -> route findings
   uncommitted work left in the worktree -> local recovery checkpoint commit, not pushed  // #246
     the commit fails -> label blocked + comment naming the worktree, this run
@@ -723,7 +732,8 @@ It writes its own stream (`logs/loops/pr-doctor/loop.jsonl`, per-PR logs under
 `logs/loops/pr-doctor/pr-<n>/`) and has its own sentinel (`STOP-pr-doctor`), so it
 runs beside the ticket loop. A push is **Shipped** for the breaker, as a ticket's PR
 is; nothing pushed is **NoPR**, except a checkout git refused on local state, which
-is **CheckoutBlocked** and breaker-neutral. The reaper releases an `in-progress` label older
+is **CheckoutBlocked**, and CI still pending past the poll budget, which is
+**CIPending** (ADR-0069); both are breaker-neutral. The reaper releases an `in-progress` label older
 than the claim TTL (timed by its attempt marker): the reaper runs only between
 this daemon's own items, so one PR loop per checkout. A held PR with no attempt
 marker is not its claim (a human's label, or another loop's hold), so the reaper

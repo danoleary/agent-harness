@@ -525,6 +525,20 @@ func Run(d Deps) int {
 			continue
 		}
 
+		// A PR run whose CI was still pending past the poll budget, with nothing
+		// pushed, is not a verdict on the PR either (#421): no session ran, and CI may
+		// yet go green. The Source has already taken the attempt back, so the next poll
+		// re-checks that commit's CI before it works the PR again. Give the claim back
+		// without the no-PR breadcrumb; breaker-neutral, so a slow or queued CI graph
+		// cannot stop the loop.
+		if outcome.Disposition == stages.CIPending {
+			d.Log.Structured(loopstream.Record{Kind: loopstream.KindTicketReleased, Ticket: key, Message: "loop ⧗ " + key + " CI still pending past the poll budget — nothing pushed; not an attempt; breaker-neutral; the next poll re-checks its CI (#421)"})
+			if err := claim.Release(); err != nil {
+				d.Log.Event("loop … warning: could not release " + key + " after CI stayed pending: " + err.Error())
+			}
+			continue
+		}
+
 		// Fetch main again — "pull main after every session" keeps the next ticket's
 		// merge-base honest across the loop's long run.
 		if err := d.Host.FetchMain(); err != nil {

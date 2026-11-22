@@ -1210,3 +1210,46 @@ func TestARedBaseHoldSpendsNoAttempt(t *testing.T) {
 		t.Errorf("the PR must say which base and gate held it:\n%s", posted)
 	}
 }
+
+// #421: the PR was selected red while the rest of its CI graph still ran, and
+// the watch ran out of poll budget before it pushed anything. Waiting spends no
+// attempt: the next poll re-checks that commit's CI first, and skips it while CI
+// is pending or once it is green. Only a red verdict works it, as attempt 1.
+func TestCIPendingSpendsNoAttemptAndTheNextPollReChecksTheCommit(t *testing.T) {
+	gh := newFakeGitHub(harnessPR(1384, "4e1f0c9"))
+	gh.checks["4e1f0c9"] = github.ChecksRed
+	log := &quietLog{}
+	s := NewSource(gh, testOptions, nil, log)
+	s.now = func() time.Time { return testNow }
+
+	item, claim, ok, err := s.Next()
+	if !ok || err != nil {
+		t.Fatalf("Next = ok %v err %v", ok, err)
+	}
+	s.AwaitCI(item.Context.(Item))
+	if err := claim.Release(); err != nil {
+		t.Fatal(err)
+	}
+
+	posted := gh.posted[1384]
+	if last := posted[len(posted)-1]; !strings.Contains(last, "does not count as an attempt") || !strings.Contains(last, "poll budget") {
+		t.Errorf("the PR must say CI was still pending and no attempt was spent; posted %q", last)
+	}
+	for _, v := range []github.ChecksVerdict{github.ChecksPending, github.ChecksGreen} {
+		gh.checks["4e1f0c9"] = v
+		if _, _, ok, _ := s.Next(); ok {
+			t.Errorf("checks %s: the next poll must not work the commit", v)
+		}
+	}
+	gh.checks["4e1f0c9"] = github.ChecksRed
+	plan, _ := s.Plan()
+	if len(plan) != 1 || plan[0].Attempts != 0 || plan[0].Unpushed {
+		t.Fatalf("plan = %+v, want the full budget and no unpushed retry", plan)
+	}
+	if _, _, ok, _ := s.Next(); !ok {
+		t.Fatal("a commit whose CI went red is worked")
+	}
+	if last := gh.posted[1384][len(gh.posted[1384])-1]; !strings.Contains(last, "attempt 1 of 3") {
+		t.Errorf("waiting on CI must not have spent an attempt; posted %q", last)
+	}
+}

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/danoleary/agent-harness/internal/ci"
 	"github.com/danoleary/agent-harness/internal/config"
 	"github.com/danoleary/agent-harness/internal/depcheck"
 	"github.com/danoleary/agent-harness/internal/fix"
@@ -265,6 +266,11 @@ func (r *run) watch() {
 	if res.PollFault {
 		// The watch never read CI's verdict: a tooling fault, not a red CI (#383).
 		r.log.Event(who + " ✗ could not poll CI (not a red CI): " + res.Reason)
+		return
+	}
+	if res.Pending {
+		// CI was still running when the poll budget ran out: unknown, not red (#421).
+		r.log.Event(who + " ⧗ " + ci.PendingNarration(res))
 		return
 	}
 	r.log.Event(who + " ✗ CI did not go green: " + res.Reason)
