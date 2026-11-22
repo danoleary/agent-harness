@@ -305,3 +305,27 @@ func TestRebaseFixFoldsAnADRRenumberIntoTheCommitThatAddedIt(t *testing.T) {
 		t.Error("the merge variant must not tell a human's branch to amend (ADR-0019)")
 	}
 }
+
+// #403: the envelope says what triggered the session. A replay git left paths
+// unmerged in is a genuine content conflict, and the session is told the paths. A
+// PR only GitHub reads as conflicting is not told its changes overlap: the
+// session's premise would be wrong.
+func TestRebaseFixSaysWhatTriggeredIt(t *testing.T) {
+	for _, merge := range []bool{false, true} {
+		conflicted := For(RebaseFix, Context{Ticket: sample, Slug: "pr-12", Branch: "feat/gh-7", WorktreePath: sampleWorktree, Merge: merge, Conflicted: []string{"internal/a.go", "docs/b.md"}})
+		for _, want := range []string{"genuine content conflict", "`internal/a.go`, `docs/b.md`"} {
+			if !strings.Contains(conflicted, want) {
+				t.Errorf("merge=%v: a replay git left paths unmerged in must say %q", merge, want)
+			}
+		}
+		github := For(RebaseFix, Context{Ticket: sample, Slug: "pr-12", Branch: "feat/gh-7", WorktreePath: sampleWorktree, Merge: merge})
+		if !strings.Contains(github, "GitHub reports") {
+			t.Errorf("merge=%v: a conflict with no unmerged paths must say GitHub reported it", merge)
+		}
+		for _, wrong := range []string{"genuine content conflict", "the changes overlap"} {
+			if strings.Contains(github, wrong) {
+				t.Errorf("merge=%v: a conflict with no unmerged paths must not claim %q", merge, wrong)
+			}
+		}
+	}
+}

@@ -98,7 +98,10 @@ func (Pipeline) Recover(loop.WorkItem) (stages.Result, bool) { return stages.Res
 //  1. checkout_pr: check the PR's head branch out at the polled head, or at the
 //     recovery checkpoint an earlier attempt left on it (#246), and run
 //     post_create;
-//  2. fix, gates, push_existing: a conflict runs the RebaseFix session (rebase on a
+//  2. fix, gates, push_existing: a conflict on a harness branch is first replayed
+//     onto origin/main host-side; one git stops on nothing, a conflict GitHub alone
+//     reports, has a clashing ADR renumbered and is gated and pushed with no session
+//     (#403). Otherwise a conflict runs the RebaseFix session (rebase on a
 //     harness branch, merge on a human's), checked by verify.RebaseResolution and
 //     then every gate, and pushes to the existing branch — force-with-lease after a
 //     rebase, plain after a merge. A resolution the gates hold back is saved, and
@@ -257,9 +260,12 @@ func (r *run) repair() stages.Result {
 // clear to push; when it is not, out is the run's result. A resolution an earlier
 // run at this head committed, whose push its red re-gate held back, is re-gated
 // and pushed as it stands, with no session, while origin/main is still its base
-// (#252). Otherwise a RebaseFix session resolves the conflict, and a resolution
-// the ground truth accepts but the gates hold back is saved for the next run: the
-// worktree is removed and the next checkout resets the branch to origin's tip.
+// (#252). Otherwise the host replays a rebase onto origin/main itself, renumbers a
+// clashing ADR and re-gates, with no session, when git stops on nothing (#403).
+// Failing that a RebaseFix session resolves the conflict, told the paths git left
+// unmerged. A resolution the ground truth accepts but the gates hold back is
+// saved for the next run: the worktree is removed and the next checkout resets
+// the branch to origin's tip.
 func (r *run) resolve() (out stages.Result, ok bool) {
 	wt := r.h.Worktree()
 	head := r.it.PR.HeadSHA
@@ -276,12 +282,24 @@ func (r *run) resolve() (out stages.Result, ok bool) {
 		r.log.Event(who + " ✓ gate re-run over the saved resolution is green — clear to push")
 		return stages.Result{}, true
 	}
-	r.sessions = true
-	res := r.fixes.ResolveConflict(fix.Conflict{
+	conflict := fix.Conflict{
 		Target:   r.target,
 		Strategy: r.it.Strategy(),
 		Regate:   func() fix.GateResult { return r.fixes.Gates("gate") },
-	})
+	}
+	// GitHub's mergeability is what selected the PR, and it ignores merge=union, so
+	// a branch whose only clash with main is an ADR number reads as conflicting.
+	// A recovery checkpoint is the session's to replay: the host's would reset it.
+	var replay fix.HostReplay
+	if r.target.Checkpoint == nil {
+		replay = r.fixes.ReplayOnBase(conflict)
+		conflict.Conflicted = replay.Conflicted
+	}
+	res := replay.Result
+	if !replay.Replayed {
+		r.sessions = true
+		res = r.fixes.ResolveConflict(conflict)
+	}
 	switch {
 	case res.OK:
 		r.overlaps = res.Overlaps
