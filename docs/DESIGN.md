@@ -648,7 +648,8 @@ poll (Source github_prs, read-only judgement — also what --dry-run prints):
       whose run is live, holding locks/runs/<slug>.lock: once the run
       ends its red CI is this loop's: the ticket loop watches none, ADR-0043, ADR-0063)
     a worktree other than pr-<n>'s has the branch checked out:             // git refuses it, #192
-      clean, and origin's head contains its HEAD -> remove it (Next, every poll; narrated)  // #231
+      no live run in it (its own locks/runs/<slug>.lock free, #384), clean, and origin's
+        head contains its HEAD -> remove it (Next, every poll; narrated)  // #231
       else skip with the reason, once per reason in the stream (item-skipped); no attempt spent
     kind = conflict if mergeable=CONFLICTING/DIRTY, else ci if a check is red, else skip
     skip if source.when leaves the kind out

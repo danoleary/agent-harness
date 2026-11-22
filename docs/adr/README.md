@@ -71,3 +71,4 @@ catches a duplicate there.
 - [ADR-0061](0061-a-run-that-cannot-take-its-run-lock-runs-nothing.md): A run that cannot take its run lock runs nothing
 - [ADR-0062](0062-a-re-run-on-a-branch-that-stands-on-its-verified-handoff-starts-at-review.md): A re-run on a branch that stands on its verified handoff starts at review
 - [ADR-0063](0063-the-ticket-loop-leaves-ci-to-the-pr-loop.md): The ticket loop leaves CI to the PR loop
+- [ADR-0064](0064-a-worktree-a-live-run-is-in-is-never-reclaimed.md): A worktree a live run is in is never reclaimed

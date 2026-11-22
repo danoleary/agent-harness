@@ -43,6 +43,8 @@ leftover worktree in the stream.**
 2. **The hold** (`TicketSource.HeldBranches`) is an agent-claimed In Progress
    ticket whose run lock is held. A worktree no longer counts. A run lock that
    cannot be read fails the poll, as the claim list does.
+   *(Amended by ADR-0064: the PR loop also reads a foreign worktree's own run
+   lock, so a live run the claim list misses keeps its worktree.)*
 3. **A leftover worktree is removed when nothing would be lost.** Once a PR has
    passed every other check, the Source asks about any worktree that has its
    head branch checked out and is not the loop's own `pr-<n>`. The worktree is

@@ -194,6 +194,9 @@ type Worktrees interface {
 	WorktreeSafeToRemove(path, tip string) error
 	// RemoveWorktree removes the worktree at path.
 	RemoveWorktree(path string) error
+	// RunLive says whether a live run is in the worktree at path: it holds the run
+	// lock of the ticket the worktree is for (#384).
+	RunLive(path string) (bool, error)
 }
 
 // Source is the `github_prs` [loop.Source].
@@ -260,6 +263,20 @@ func (s *Source) holds() (holds, error) {
 		}
 	}
 	return h, nil
+}
+
+// runIn says why the worktree at path may have a live run in it, or "" when its
+// run lock says none is (#384). A lock that cannot be read counts as live: a
+// failed read must never remove a worktree from under a run.
+func (s *Source) runIn(path string) string {
+	live, err := s.worktrees.RunLive(path)
+	switch {
+	case err != nil:
+		return fmt.Sprintf("may have a live run in it: its run lock could not be read: %v", err)
+	case live:
+		return "a live run is in"
+	}
+	return ""
 }
 
 // foreignWorktree is the worktree, other than the loop's own for pr, that has pr's
@@ -336,7 +353,12 @@ func (s *Source) judge(pr github.PullRequest, held holds) Candidate {
 		// No live run holds the branch, so the worktree is a leftover, not a hold
 		// (#231). One that cannot go without losing work is a skip, not an attempt:
 		// the checkout cannot succeed, so the budget is not spent on it, and the PR is
-		// judged afresh once the worktree is gone (#192).
+		// judged afresh once the worktree is gone (#192). A worktree whose own run
+		// lock is held is a live run's, whatever the holds say: they key on the
+		// tracker's claim list, which can miss a live run's ticket (#384).
+		if why := s.runIn(worktree); why != "" {
+			return skip("branch checked out in worktree %s, which %s", worktree, why)
+		}
 		if err := s.worktrees.WorktreeSafeToRemove(worktree, pr.HeadSHA); err != nil {
 			return skip("branch checked out in worktree %s, which cannot be removed safely: %v", worktree, err)
 		}
@@ -410,6 +432,10 @@ func (s *Source) Next() (loop.WorkItem, *lease.Lease, bool, error) {
 		}
 		if by := live[c.PR.HeadBranch]; by != "" {
 			cands[i].Skip = fmt.Sprintf("branch held by %s in the ticket loop", by)
+			continue
+		}
+		if why := s.runIn(c.Worktree); why != "" {
+			cands[i].Skip = fmt.Sprintf("branch checked out in worktree %s, which %s", c.Worktree, why)
 			continue
 		}
 		if err := s.worktrees.RemoveWorktree(c.Worktree); err != nil {
