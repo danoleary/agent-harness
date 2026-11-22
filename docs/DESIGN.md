@@ -159,7 +159,8 @@ pipeline BEH-NNN:
   run the review stage (cold /review-worktree, host-side gate + push + PR)
   if not OK -> record failure
 
-  --- retrospective (ALWAYS, even if a prior stage failed) ---
+  --- retrospective (ALWAYS, even if a prior stage failed — unless implementation
+      was interrupted, held on a red base, already on main, or cap-aborted) ---
   run the retrospective stage (/retrospective over logs/BEH-NNN/, file findings)
   # its value is highest on a failed slice — that's the run worth mining for findings
 
@@ -189,7 +190,9 @@ Design decisions, and why:
   signal killed (exit 128+N for SIGHUP/INT/QUIT/TERM — chiefly 130 and 143) ends
   the slice there, with no handoff verification and no retrospective, because
   the slice was cut short rather than broken and the process is likely going down
-  with it (ADR-0030).
+  with it (ADR-0030). A **cap-aborted** implementation ends the slice too: the cap
+  is still in force seconds later, so a retrospective launched into it would die the
+  same way and mine nothing (ADR-0067).
 - **`--verbose`** forwards to all stages. **`--dry-run`** is pipeline-level: it
   prints the *plan* (ordered stages + each stage's resolved prompt/docker command
   as best it can be computed — the Stages' own run specs, previewed through the
@@ -857,7 +860,10 @@ shared        : STOP (every loop), STOP-tickets (every instance), locks/claim.lo
   ran. Trusting it would mask the abort into a false "ran, found nothing" success and
   skip the retry-after-reset. The harness defends in depth, keying off both signals
   (the `is_error` cap result **and** the `model:"<synthetic>"` turn, not the exit
-  code alone): the retrospective stage drops the empty default dropbox at the source
+  code alone), and ahead of either wording the stream's structured signals — a
+  `rate_limit_event` with status `rejected`, or a synthetic turn with error
+  `rate_limit` — so a new CLI wording ("You've hit your session limit") still reads
+  as the cap (#407, ADR-0067): the retrospective stage drops the empty default dropbox at the source
   so the *absent* = never-ran contract holds, and `verify.Retrospective` gives the
   cap-abort signal precedence over a *present* `out.json` so the abort wins even if
   that on-disk clear didn't. Either way the run routes to ↻ retry-after-reset; any
@@ -1478,9 +1484,11 @@ own namespace with no edit to the workflow.
   progress to protect), leaves a **breadcrumb comment** on the ticket noting the
   cap-abort + auto-resume (BEH-590), leaves the breaker counter untouched, and enters
   an **interruptible backoff** before re-polling, auto-resuming once the cap window
-  resets. The backoff duration is derived from the **exact reset time the abort message
-  names** ("Spending cap reached resets 8:40am", BEH-708): `stream.SpendingCapResetTime`
-  parses that HH:MM(am|pm), resolves it to the next occurrence, and the loop waits until
+  resets. The backoff duration is derived from the **exact reset time the abort
+  names**: a rejected `rate_limit_event`'s `resetsAt` epoch when the stream carries one
+  (#407, ADR-0067), else the time the message text names ("Spending cap reached resets
+  8:40am", BEH-708), which `stream.SpendingCapResetTime` parses as HH:MM(am|pm) and
+  resolves to the next occurrence. The loop waits until
   reset + a small margin — resuming right when the cap clears instead of a fixed guess.
   A sanity ceiling (`maxCapResetBackoff`, 6h) distrusts an implausibly far-off resolution
   (timezone skew / tomorrow-wrap) and falls back to the fixed `CapBackoff` (default

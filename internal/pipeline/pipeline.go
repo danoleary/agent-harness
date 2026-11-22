@@ -95,7 +95,9 @@ func withGreenBase(impl Stage, retro func(greenBase string) stages.Result) (Stag
 //   - and except when implementation held the ticket on a red base: no session
 //     ran, so the slice ends there too (#125);
 //   - or skipped it because a commit on main already names it: no session ran
-//     there either (#331).
+//     there either (#331);
+//   - or hit the spending cap: a retrospective launched into the same cap dies
+//     the same way (#407, ADR-0067).
 //
 // It returns the slice's folded [stages.Result] (not a bare exit code) so the
 // autonomous loop can read the run's Disposition — did the ticket ship, was it
@@ -126,6 +128,14 @@ func Run(d Deps) stages.Result {
 	// retrospective would mine nothing and file findings again on every pass.
 	if impl.Disposition == stages.AlreadyOnMain {
 		d.Log.Event("pipeline — implementation skipped the ticket as already merged on main in " + impl.ResolvedBy + "; no session ran, so skipping the rest of the slice, retrospective included (#331)")
+		return impl
+	}
+	// A spending cap that aborted implementation is still in force seconds later: a
+	// retrospective launched into it dies the same way and mines nothing (#407,
+	// ADR-0067). The loop backs off until the reset, and the capped transcript stays
+	// under the ticket's logs for the next run's retrospective.
+	if impl.Disposition == stages.CapAborted {
+		d.Log.Event("pipeline ↻ implementation hit the spending cap — skipping the rest of the slice, retrospective included (#407)")
 		return impl
 	}
 

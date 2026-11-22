@@ -236,7 +236,8 @@ How a review ends when it takes the branch to a PR (`ship.Land`).
 
 | Message | Meaning |
 |---|---|
-| `spending cap reached, retry after reset` | **CapAborted**: the ticket goes back to Todo and the loop backs off until the cap resets. Nothing to do. |
+| `spending cap reached, retry after reset` | **CapAborted**: the ticket goes back to Todo and the loop backs off until the cap resets: the exact `resetsAt` of the stream's rejected `rate_limit_event`, else the time the message names. The CLI's "Spending cap reached" and "You've hit your session limit" are both this (#407). Nothing to do. |
+| `pipeline ↻ implementation hit the spending cap — skipping the rest of the slice, retrospective included` | **CapAborted** in implementation: the cap is still in force, so no retrospective is launched into it (ADR-0067). The capped transcript stays in the ticket's log dir for the next run's retrospective. Nothing to do |
 | `circuit breaker tripped: … failed N× — start here` | the same ticket failed every time; start with it |
 | `circuit breaker tripped: N consecutive tickets failed to reach a pushed PR` | something environmental is failing every run; fix it and relaunch |
 | `loop already running (pid …)` | a second `start` of a running instance; STOP it, or use `--instance` |

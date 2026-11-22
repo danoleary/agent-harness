@@ -98,6 +98,28 @@ func TestPumpStdoutCapturesSpendingCapResetTime(t *testing.T) {
 	}
 }
 
+// #407: the CLI's five-hour usage window rejected the session at launch, and the
+// stream said so in structured form before any prose: a rejected rate_limit_event,
+// a synthetic assistant turn with error "rate_limit", then an is_error result that
+// billed $0. The pump reports a spending-cap abort with the event's exact epoch as
+// the reset. The $0 result still reads as no real turns; the stages check the cap
+// first, so it is not BEH-691's "needs a human".
+func TestPumpStdoutReadsTheSessionLimitAbortAsACapAbort(t *testing.T) {
+	stream := strings.Join([]string{
+		`{"type":"system","subtype":"init","session_id":"a1b2","model":"claude-opus-5-5"}`,
+		`{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":1795755600,"rateLimitType":"five_hour","overageStatus":"rejected","isUsingOverage":false},"uuid":"7c1d","session_id":"a1b2"}`,
+		`{"type":"assistant","message":{"id":"msg_1","model":"<synthetic>","role":"assistant","content":[{"type":"text","text":"You've hit your session limit · resets 3am (UTC)"}]},"error":"rate_limit","session_id":"a1b2"}`,
+		`{"type":"result","subtype":"success","is_error":true,"duration_ms":412,"num_turns":1,"result":"You've hit your session limit · resets 3am (UTC)","total_cost_usd":0,"session_id":"a1b2"}`,
+	}, "\n") + "\n"
+	flags := pumpStdout(strings.NewReader(stream), "x.jsonl", false, &fakeLog{}, &bytes.Buffer{})
+	if !flags.spendingCapAbort {
+		t.Fatal("the session-limit abort must be reported as a spending-cap abort")
+	}
+	if want := time.Unix(1795755600, 0); !flags.spendingCapResetTime.Equal(want) {
+		t.Errorf("reset time = %s, want the event's epoch %s", flags.spendingCapResetTime, want)
+	}
+}
+
 // pumpStdout reports whether the review session emitted its seven-lens verdict
 // (the "## Review:" report header — BEH-525), so Run can tell a completed review
 // from one cut short before the report (e.g. an OOM mid-gate). A stream that never

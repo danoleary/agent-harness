@@ -368,6 +368,28 @@ func TestImplementationDoesNotRetryAZeroWorkCrash(t *testing.T) {
 	}
 }
 
+// #407: a session the usage window rejected at launch ends on a $0 result, so it
+// carries both the cap abort and no real turns. It is the cap: retry after the
+// reset the stream named, not BEH-691's "needs a human" for a prompt bug that
+// isn't there.
+func TestImplementationClassifiesACapAbortAtLaunchBeforeZeroRealTurns(t *testing.T) {
+	h, _ := fresh(t, "PROJ-8")
+	reset := time.Unix(1795755600, 0)
+	h.AgentFn = func(int, hostio.AgentRun) session.Outcome {
+		return session.Outcome{ExitCode: 1, SpendingCapAbort: true, SpendingCapResetTime: reset, NoRealTurns: true}
+	}
+
+	log := stageLog(t, "PROJ-8")
+	res := Implementation(h, stageCfg(), log, Args{Identifier: "PROJ-8"})
+
+	if res.Disposition != CapAborted || !res.CapResetAt.Equal(reset) {
+		t.Errorf("res = %+v, want CapAborted resetting at %s", res, reset)
+	}
+	if got := narration(t, log); strings.Contains(got, "zero real turns") || !strings.Contains(got, "spending cap reached") {
+		t.Errorf("run.jsonl = %s, want the cap abort named and no zero-real-turns diagnosis", got)
+	}
+}
+
 // BEH-479/BEH-389: a failed verdict over a DIRTY worktree gets a recovery
 // checkpoint commit, so the session's uncommitted diff is a `git log` away instead
 // of a bare worktree needing manual rescue. It never flips the verdict.

@@ -26,7 +26,20 @@ type event struct {
 	// (nil) is distinguishable from an explicit 0 — only the latter is the
 	// no-real-turns signal (BEH-691).
 	TotalCostUSD *float64 `json:"total_cost_usd"`
-	Message      struct {
+	// Error is the top-level error class the CLI stamps on a synthetic assistant
+	// turn it injected in place of a model response ("rate_limit" for a usage-window
+	// abort, #407).
+	Error string `json:"error"`
+	// RateLimitInfo is a rate_limit_event's payload: Status is "allowed",
+	// "allowed_warning" or "rejected", and ResetsAt the Unix epoch the window clears.
+	// IsUsingOverage is the CLI's "rejected, but overage is allowed" — the window is
+	// spent and the session carries on billing overage.
+	RateLimitInfo struct {
+		Status         string `json:"status"`
+		ResetsAt       int64  `json:"resetsAt"`
+		IsUsingOverage bool   `json:"isUsingOverage"`
+	} `json:"rate_limit_info"`
+	Message struct {
 		// Model is the model that produced the turn. A spending-cap abort ships a
 		// "<synthetic>" turn the API injects rather than a real model response.
 		Model   string `json:"model"`
@@ -59,53 +72,100 @@ func IsUsagePolicyRefusal(line string) bool {
 	return e.Type == "result" && e.IsError && strings.Contains(e.Result, usagePolicyRefusalMarker)
 }
 
-// spendingCapAbortMarker is the stable core of the billing/usage spending-cap
-// abort result ("Spending cap reached resets 8:20am"). Matched as a substring so
-// the trailing reset time (which varies) doesn't have to be exact.
-const spendingCapAbortMarker = "Spending cap reached"
+// spendingCapAbortMarkers are the stable cores of the CLI's usage-cap abort
+// wording, older and newer: "Spending cap reached resets 8:20am" and "You've hit
+// your session limit · resets 3am (UTC)" (#407). Matched as substrings so the
+// trailing reset time (which varies) doesn't have to be exact. They are the
+// fallback: the stream's structured rate-limit signals are matched first, so a
+// third wording still reads as a cap abort.
+var spendingCapAbortMarkers = []string{"Spending cap reached", "hit your session limit"}
 
 // syntheticModel is the model id the API stamps on a turn it injected itself
-// rather than a real model response. A spending-cap abort ships its
-// "Spending cap reached" notice as a `model:"<synthetic>"` assistant turn.
+// rather than a real model response. A spending-cap abort ships its notice as a
+// `model:"<synthetic>"` assistant turn.
 const syntheticModel = "<synthetic>"
 
-// IsSpendingCapAbort reports whether a stream-json line is a terminal
-// spending-cap abort (BEH-494) — either the `is_error` result whose `result`
-// text is the billing/usage-cap message, OR the `model:"<synthetic>"` assistant
-// turn carrying that message (BEH-568). The cap can strike at session start and
-// ship only the synthetic turn, before any terminal result event, so keying off
-// the result alone risks mislabelling it "never ran"; recognising both shapes
-// makes the retry-after-reset classification robust. The session is killed before
-// doing any real work, so — like a usage-policy refusal — the harness treats it as
-// a distinct, retry-after-reset class. The synthetic gate keeps a real assistant
-// turn that merely quotes the cap text from counting; a malformed line is never a
-// cap abort (it just returns false).
+// rateLimitError is the top-level error a synthetic assistant turn carries when the
+// account's usage window rejected the request (#407).
+const rateLimitError = "rate_limit"
+
+// rateLimitRejected is the rate_limit_event status of a request the usage window
+// refused. "allowed_warning" is not it: a healthy session near its limit carries
+// that one. Nor is a rejected event with isUsingOverage set: the CLI stamps that on
+// a session that carries on under overage.
+const rateLimitRejected = "rejected"
+
+// IsSpendingCapAbort reports whether a stream-json line is a spending-cap abort
+// (BEH-494): a `rate_limit_event` whose status is rejected (and not running on
+// overage), a `model:"<synthetic>"`
+// assistant turn with error "rate_limit" (#407), or — by the message wording — the
+// `is_error` result or synthetic turn carrying the cap text (BEH-568). The
+// structured signals come first because the prose changes with the CLI's version:
+// a wording the markers miss turned the retry-after-reset class into BEH-691's
+// zero-real-turns "needs a human" (#407). The cap can strike at session start and
+// ship no terminal result event, so keying off the result alone risks mislabelling
+// it "never ran". The session is killed before doing any real work, so — like a
+// usage-policy refusal — the harness treats it as a distinct, retry-after-reset
+// class. The synthetic gate keeps a real assistant turn that merely quotes the cap
+// text from counting; a malformed line is never a cap abort (it just returns false).
 func IsSpendingCapAbort(line string) bool {
-	_, ok := capAbortText(line)
+	_, ok := capAbort(line)
 	return ok
 }
 
-// capAbortText returns the spending-cap abort message text carried by a stream-json
-// line — from the terminal `is_error` result OR the `model:"<synthetic>"` assistant
-// turn (the two shapes IsSpendingCapAbort recognises) — and ok=false when the line is
-// not a cap abort. It is the single source of truth for "is this a cap abort, and what
-// did it say", so IsSpendingCapAbort and SpendingCapResetTime can't drift apart.
-func capAbortText(line string) (string, bool) {
+// capSignal is what a cap-abort line says: its message text (empty for a
+// rate_limit_event) and the epoch the window resets at (0 when the line names none).
+type capSignal struct {
+	text     string
+	resetsAt int64
+}
+
+// capAbort reads a stream-json line as a spending-cap abort — the shapes
+// IsSpendingCapAbort recognises — and ok=false when it is not one. It is the single
+// source of truth for "is this a cap abort, and what did it say", so
+// IsSpendingCapAbort and SpendingCapResetTime can't drift apart.
+func capAbort(line string) (capSignal, bool) {
 	var e event
 	if err := json.Unmarshal([]byte(line), &e); err != nil {
-		return "", false
+		return capSignal{}, false
 	}
-	if e.Type == "result" && e.IsError && strings.Contains(e.Result, spendingCapAbortMarker) {
-		return e.Result, true
-	}
-	if e.Type == "assistant" && e.Message.Model == syntheticModel {
+	switch e.Type {
+	case "rate_limit_event":
+		if e.RateLimitInfo.Status == rateLimitRejected && !e.RateLimitInfo.IsUsingOverage {
+			return capSignal{resetsAt: e.RateLimitInfo.ResetsAt}, true
+		}
+	case "result":
+		if e.IsError && hasCapMarker(e.Result) {
+			return capSignal{text: e.Result}, true
+		}
+	case "assistant":
+		if e.Message.Model != syntheticModel {
+			break
+		}
+		var text string
 		for _, block := range e.Message.Content {
-			if block.Type == "text" && strings.Contains(block.Text, spendingCapAbortMarker) {
-				return block.Text, true
+			if block.Type == "text" {
+				text = block.Text
+				if hasCapMarker(text) {
+					return capSignal{text: text}, true
+				}
 			}
 		}
+		if e.Error == rateLimitError {
+			return capSignal{text: text}, true
+		}
 	}
-	return "", false
+	return capSignal{}, false
+}
+
+// hasCapMarker reports whether text carries one of the cap-abort wordings.
+func hasCapMarker(text string) bool {
+	for _, m := range spendingCapAbortMarkers {
+		if strings.Contains(text, m) {
+			return true
+		}
+	}
+	return false
 }
 
 // capResetRe matches the reset clock-time the cap message carries ("resets 8:40am",
@@ -113,22 +173,27 @@ func capAbortText(line string) (string, bool) {
 // the meridiem is required (an unqualified hour is too ambiguous to trust).
 var capResetRe = regexp.MustCompile(`(?i)resets\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)`)
 
-// SpendingCapResetTime extracts the reset clock-time from a spending-cap abort line and
-// resolves it to the next occurrence of that wall-clock time strictly after now, in
-// now's location (BEH-708). The abort message names the exact reset ("Spending cap
+// SpendingCapResetTime extracts the reset time from a spending-cap abort line. A
+// rejected rate_limit_event names it exactly, as a Unix epoch, and that wins (#407),
+// returned in now's location. Otherwise it parses the clock-time the message text
+// names and resolves it to the next occurrence of that wall-clock time strictly
+// after now, in now's location (BEH-708). The abort message names the exact reset ("Spending cap
 // reached resets 8:40am"), which the harness historically discarded — parsing it lets
 // the cap backoff wait until the cap actually clears instead of a fixed guess. ok=false
-// when the line is not a cap abort or carries no parseable reset time, in which case the
-// caller keeps its fixed fallback backoff. The timezone is assumed to be now's location
+// when the line is not a cap abort or carries no reset time, in which case the
+// caller keeps its fixed fallback backoff. For the text, the timezone is assumed to be now's location
 // (the message carries none); the caller applies a margin and a sanity ceiling so a
 // timezone-skewed or wrapped-to-tomorrow resolution degrades to the fixed backoff rather
 // than an absurd wait.
 func SpendingCapResetTime(line string, now time.Time) (time.Time, bool) {
-	text, ok := capAbortText(line)
+	sig, ok := capAbort(line)
 	if !ok {
 		return time.Time{}, false
 	}
-	m := capResetRe.FindStringSubmatch(text)
+	if sig.resetsAt > 0 {
+		return time.Unix(sig.resetsAt, 0).In(now.Location()), true
+	}
+	m := capResetRe.FindStringSubmatch(sig.text)
 	if m == nil {
 		return time.Time{}, false
 	}
