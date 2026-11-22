@@ -413,7 +413,7 @@ func Implementation(h hostio.Host, cfg config.Config, log *runlog.Logger, args A
 
 	// A resumed branch that still stands on the verified handoff the last session
 	// left holds finished work: start the run at review instead of spending a whole
-	// session re-running the gates over it (#367, ADR-0061). Review re-provisions
+	// session re-running the gates over it (#367, ADR-0062). Review re-provisions
 	// the worktree itself, so neither post_create nor the base gate runs here.
 	if head, ok := standingHandoff(wt, log.Dir); ok {
 		log.Event(fmt.Sprintf(

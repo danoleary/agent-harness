@@ -69,4 +69,4 @@ catches a duplicate there.
 - [ADR-0059](0059-a-sandboxed-session-refuses-an-interactive-git-mode.md): A sandboxed session refuses an interactive git mode
 - [ADR-0060](0060-a-green-base-unsettles-a-stale-base-red-finding-and-says-so-on-it.md): A green base unsettles a stale base-red finding and says so on it
 - [ADR-0061](0061-a-run-that-cannot-take-its-run-lock-runs-nothing.md): A run that cannot take its run lock runs nothing
-- [ADR-0061](0061-a-re-run-on-a-branch-that-stands-on-its-verified-handoff-starts-at-review.md): A re-run on a branch that stands on its verified handoff starts at review
+- [ADR-0062](0062-a-re-run-on-a-branch-that-stands-on-its-verified-handoff-starts-at-review.md): A re-run on a branch that stands on its verified handoff starts at review

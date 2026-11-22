@@ -1,4 +1,4 @@
-# ADR-0061: A re-run on a branch that stands on its verified handoff starts at review
+# ADR-0062: A re-run on a branch that stands on its verified handoff starts at review
 
 - Status: Accepted
 - Date: 2026-11-22

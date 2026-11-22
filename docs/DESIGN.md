@@ -97,7 +97,7 @@ runnable by hand against a ticket id before the next is added:
    A resumed branch that still stands on the handoff the *last* session left and
    the host verified (no commit since but harness checkpoints) skips the session
    outright and starts the run at review (#367,
-   [ADR-0061](https://github.com/danoleary/agent-harness/blob/main/docs/adr/0061-a-re-run-on-a-branch-that-stands-on-its-verified-handoff-starts-at-review.md)).
+   [ADR-0062](https://github.com/danoleary/agent-harness/blob/main/docs/adr/0062-a-re-run-on-a-branch-that-stands-on-its-verified-handoff-starts-at-review.md)).
    A fourth advisory (`Ticket.OpenQuestions`, #90,
    [ADR-0028](https://github.com/danoleary/agent-harness/blob/main/docs/adr/0028-a-ready-ticket-with-open-questions-is-dispatched-with-a-warning.md)) fires when the
    ready-labelled ticket's body still has a section of questions for a human — a

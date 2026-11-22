@@ -11,7 +11,7 @@ import (
 
 // handoffFile is the per-ticket record of the last implementation session's
 // verified handoff: the HEAD it left, kept in the ticket's log dir so it outlives
-// the run (#367, ADR-0061). A session that exited 0 over a handoff verify.Tdd
+// the run (#367, ADR-0062). A session that exited 0 over a handoff verify.Tdd
 // passed writes it; every launch of a session clears it first, so it only ever
 // describes the latest session.
 const handoffFile = "handoff.json"
