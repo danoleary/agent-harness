@@ -179,6 +179,24 @@ func TestFixShipsAPushedConflictResolutionWhoseCIWatchFails(t *testing.T) {
 	}
 }
 
+// #383: a watch that could not run gh never read CI, so the run log says the
+// harness could not poll CI, not that CI went red.
+func TestFixNarratesAPollFaultApartFromARedCI(t *testing.T) {
+	h, it, _ := prHost(t, harnessItem(Conflict))
+	h.CI = ci.Outcome{PollFault: true, Reason: "CI watch could not run: the gh CLI is not on the harness PATH"}
+	log := pipelineLog(t)
+
+	Fix(h, pipelineCfg(), log, it, prDoctor())
+
+	events := readEvents(t, log)
+	if !strings.Contains(events, "could not poll CI (not a red CI): CI watch could not run") {
+		t.Errorf("the run log must name the poll fault; events:\n%s", events)
+	}
+	if strings.Contains(events, "did not go green") {
+		t.Errorf("a poll fault must not read as a red CI; events:\n%s", events)
+	}
+}
+
 // Red CI: the watch re-runs the failed checks, then hands the failing logs to a
 // CIFix session; the harness re-runs the gates over the committed fix before the
 // watch may push it.

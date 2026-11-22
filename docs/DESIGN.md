@@ -475,6 +475,14 @@ loop:
     resets the count. Only 5 in a row, or a budget spent while GitHub is unreachable, ends the poll, and
     that fails SOFT like the 401 class: pass with "CI watch unavailable: network errors reaching GitHub,
     check CI manually — PR was pushed OK; last error: …", not "CI did not go green".
+  poll fault (#383): a `gh pr checks` call exec could not start at all (gh is not on the harness PATH,
+    `exec: "gh": executable file not found in $PATH`) -> errGhMissing. A missing binary is permanent, so
+    the poll stops at the first call with no retry, and the watch ends NOT OK with PollFault set and
+    "CI watch could not run: the gh CLI is not on the harness PATH …". Any other gh failure the watch
+    does not degrade past ("polling CI failed: …") is a poll fault too. The PR and security-alerts loops
+    narrate a poll fault as "✗ could not poll CI (not a red CI): …", never "CI did not go green": the
+    watch read no verdict. The loop daemon also refuses to start without gh on PATH (CheckAccess),
+    since it opens, reads and watches every PR through it.
   if green        -> confirm mergeability against base (gh pr view --json mergeable):
                        clean              -> done
                        stale-base conflict (main moved after the push) -> auto-rebase + force-with-lease

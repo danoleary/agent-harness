@@ -3,6 +3,7 @@ package ci
 import (
 	"errors"
 	"fmt"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -300,5 +301,49 @@ func TestInterpretChecksOutputKeepsRealFailuresNonTransient(t *testing.T) {
 		if err == nil || errors.Is(err, errPollTransient) {
 			t.Fatalf("stderr %q: err = %v, want a non-transient gh failure", stderr, err)
 		}
+	}
+}
+
+// #383, replayed: the host had no gh on its PATH, so the checks poll failed with
+// exec's own lookup error and no stderr. A missing binary is a permanent
+// configuration fault: the poll must stop at the first call, without a sleep or a
+// retry, and say gh is missing rather than read as a red CI or a network blip.
+func TestPollStopsAtOnceWhenGhIsNotOnPath(t *testing.T) {
+	// The incident's own error: `exec: "gh": executable file not found in $PATH`.
+	missing := &exec.Error{Name: "gh", Err: exec.ErrNotFound}
+	clock := newFakeClock()
+	calls, slept := 0, 0
+	d := &GhDriver{
+		pollCfg: pollConfig{interval: 30 * time.Second, budget: 16 * time.Minute, noChecksGrace: 2 * time.Minute},
+		sleep:   func(time.Duration) { slept++ },
+		now:     clock.now,
+		runChecks: func() ([]byte, []byte, error) {
+			calls++
+			return nil, nil, missing
+		},
+	}
+
+	_, _, err := d.Poll()
+
+	if !errors.Is(err, errGhMissing) {
+		t.Fatalf("err = %v, want errGhMissing", err)
+	}
+	if errors.Is(err, errPollTransient) {
+		t.Fatalf("err = %v: a missing gh must not be retried as a network error", err)
+	}
+	if calls != 1 || slept != 0 {
+		t.Fatalf("polled %d times and slept %d, want one call and no sleep", calls, slept)
+	}
+	if !strings.Contains(err.Error(), missing.Error()) {
+		t.Fatalf("err %q should carry exec's lookup error for the operator", err.Error())
+	}
+}
+
+// The same lookup failure through proc, the way the production runChecks meets
+// it: a binary that is not on PATH is classified as a missing gh, not a gh failure.
+func TestInterpretChecksOutputFlagsAMissingBinaryThroughProc(t *testing.T) {
+	stdout, stderr, runErr := proc.OutputInDir(time.Second, "", "agent-harness-no-such-gh-383", "pr", "checks")
+	if _, err := interpretChecksOutput(stdout, stderr, runErr); !errors.Is(err, errGhMissing) {
+		t.Fatalf("err = %v, want errGhMissing", err)
 	}
 }

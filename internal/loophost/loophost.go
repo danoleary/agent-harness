@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -53,6 +54,9 @@ const (
 // Source. Nothing here knows about tickets.
 type Daemon struct {
 	cfg config.Config
+	// lookPath resolves a binary on PATH (exec.LookPath). A field so a test can
+	// stand in for the host's PATH.
+	lookPath func(file string) (string, error)
 	// checkToken proves GH_TOKEN is accepted. A field so a test can stand in for
 	// the network; NewDaemon wires the real GitHub probe.
 	checkToken func() error
@@ -94,6 +98,7 @@ func NewDaemon(cfg config.Config, l config.Loop, checkSource func() error) *Daem
 	}
 	d := &Daemon{
 		cfg:          cfg,
+		lookPath:     exec.LookPath,
 		checkToken:   func() error { return github.CheckToken(github.NewTransport(cfg.GitHubToken)) },
 		checkSource:  checkSource,
 		stopFile:     resolve(cfg.StopFile),
@@ -203,10 +208,17 @@ func (h *Daemon) FetchMain() error { return h.checkout().FetchMain() }
 
 func (h *Daemon) MainSHA() (string, error) { return h.checkout().MainSHA() }
 
-// CheckAccess proves both host credentials work before the daemon polls: GH_TOKEN
+// CheckAccess proves the gh CLI is on PATH, then that both host credentials work
+// before the daemon polls: GH_TOKEN
 // (every Consumer pushes and opens PRs with it, whatever its Source) and the
 // Source's own, via the probe the composition root handed [NewDaemon].
 func (h *Daemon) CheckAccess() error {
+	// The daemon opens, reads and watches every PR through gh, so a host without
+	// it would lose each ticket's CI verdict to the missing binary minutes into the
+	// run rather than at startup (#383).
+	if _, err := h.lookPath("gh"); err != nil {
+		return fmt.Errorf("the gh CLI is not on PATH (%w); the harness opens, reads and watches pull requests with it — install it from https://cli.github.com, or put it on the PATH the harness runs with", err)
+	}
 	if err := h.checkToken(); err != nil {
 		return err
 	}
