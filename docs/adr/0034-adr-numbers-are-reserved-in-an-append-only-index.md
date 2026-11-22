@@ -40,6 +40,11 @@ same conflict. A resolver that keeps both lines still fails `check-adr` on the
 duplicate number, so the collision has to be fixed by renumbering on that
 branch, not on main.
 
+Landing fixes that collision itself, after the replay and before the push
+(#374, amended below): an ADR the replayed branch adds under a number main now
+holds moves to the next free one, so the PR is opened green on `check-adr`
+rather than left for CI to fail.
+
 ## Consequences
 
 - The collision moves from main to the second branch. Main's `make check` no
@@ -132,3 +137,35 @@ line to bring back.
 - **The merge variant is unchanged.** A human's branch (ADR-0019) is merged,
   not replayed, and its history may not be amended. A merge applies the two
   tips once, so an earlier number in its history cannot come back.
+
+## Amendment, 2026-11-22: Landing renumbers a colliding ADR before the push (#374)
+
+The union in #235 let a same-number collision through Landing's replay, and the
+host's Gate re-run happens before that replay. Nothing checked the replayed
+tree, so the harness pushed two ADRs with one number and opened the PR. CI went
+red on `check-adr`, and a CI-fix session spent a run on a mechanical renumber.
+The session that took the number cannot prevent it: the sibling merged after it
+ended.
+
+`ship.LandAs` now runs `git.Worktree.RenumberCollidingADRs` after the replay
+(clean or resolved) and the collapse check, before the push. Every ADR the
+branch adds whose number is one main holds, or below main's highest, moves to
+the next free number above main's, keeping its slug; a later branch ADR that
+would then sit out of order moves with it. The PR's title and body get the new
+number through the same one-pass rewrite the PR loop uses (`git.RenumberRefs`,
+#267).
+
+- **The renumber goes into the commits that added the ADR** (#347). Every
+  commit on the branch is rebuilt over origin/main with the file renamed and
+  `ADR-<old>` and `<old>-<slug>.md` rewritten on each line main's copy of that
+  file does not have, which covers the ADR's title, its index line and the
+  references the branch added, and in its commit messages. A later replay has
+  no old index line to bring back. A line main already had keeps its
+  reference, so a branch that cites main's decision still does.
+- **It is mechanical, with no Gate re-run.** Only ADR numbers move. A branch
+  with a merge in its history is not flattened: the renumber is refused, the
+  branch is put back on its tip, the refusal is narrated, and it is pushed as
+  replayed with `check-adr` in CI as the backstop. A renumber that would also
+  need a new slug is out of scope, as in #267.
+- **Only Landing does this.** The PR loop's and the CI watch's replays of an
+  open PR still go through a resolution session, as before.

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"time"
 
@@ -316,7 +315,7 @@ func (r *run) renumberDescription() {
 	if len(moved) == 0 {
 		return
 	}
-	title, body := renumberADRs(r.it.PR.Title, moved), renumberADRs(r.it.PR.Body, moved)
+	title, body := git.RenumberRefs(r.it.PR.Title, moved), git.RenumberRefs(r.it.PR.Body, moved)
 	if title == r.it.PR.Title && body == r.it.PR.Body {
 		return
 	}
@@ -349,28 +348,6 @@ func (r *run) reportOverlaps() {
 	}
 	r.it.PR.Body = body
 	r.log.Event(fmt.Sprintf("%s ⚑ put the conflict resolution's overlap report on the PR description (#344)", who))
-}
-
-// adrRef is an `ADR-NNNN` reference.
-var adrRef = regexp.MustCompile(`\bADR-([0-9][0-9][0-9][0-9])\b`)
-
-// renumberADRs rewrites text's references to each renumbered ADR, `ADR-<old>`
-// and its file name, to the new number, all at once, so a chain of renumbers
-// (0040 → 0041 while 0041 → 0042) moves each reference once.
-func renumberADRs(text string, moved []git.Renumber) string {
-	to := map[string]string{}
-	var files []string
-	for _, m := range moved {
-		to[m.From] = m.To
-		files = append(files, m.FromFile, m.ToFile)
-	}
-	text = strings.NewReplacer(files...).Replace(text)
-	return adrRef.ReplaceAllStringFunc(text, func(ref string) string {
-		if n, ok := to[adrRef.FindStringSubmatch(ref)[1]]; ok {
-			return "ADR-" + n
-		}
-		return ref
-	})
 }
 
 // holdOnBase ends a run whose resolution was red only because origin/main is

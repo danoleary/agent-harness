@@ -2,6 +2,9 @@ package ship_test
 
 import (
 	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -597,5 +600,126 @@ func TestRecoverShipsThroughAFailedFetch(t *testing.T) {
 	}
 	if !log.saw("could not fetch origin/main") {
 		t.Errorf("events = %v, want the fetch failure warned", log.events)
+	}
+}
+
+// --- ADR renumbering (#374) -------------------------------------------------
+
+// adrScene is the #374 incident's git state: main indexes its ADRs up to 0063 in
+// an index the repo marks merge=union (#235), and PROJ-1's branch adds ADR 0064
+// with its index line, its title and references in code and docs. Nothing else
+// is on origin yet: the test lands main's sibling ADR 0064 itself, after the gate.
+func adrScene(t *testing.T) scene {
+	t.Helper()
+	repo := gittest.New(t)
+	repo.Merge(".gitattributes", "docs/adr/README.md merge=union\n", "union the ADR index")
+	repo.Merge("docs/adr/0063-the-ticket-loop-leaves-ci-to-the-pr-loop.md", "# ADR-0063: The ticket loop leaves CI to the PR loop\n", "ADR-0063")
+	repo.Merge("docs/adr/README.md", "# ADRs\n\n- [ADR-0063](0063-the-ticket-loop-leaves-ci-to-the-pr-loop.md) — The ticket loop leaves CI to the PR loop\n", "index ADR-0063")
+	repo.Git(repo.Dir, "fetch", "-q", "origin")
+	wt := repo.Worktree("proj-1")
+	if err := wt.Create(); err != nil {
+		t.Fatalf("create worktree: %v", err)
+	}
+	write(t, wt.Path(), "docs/adr/0064-landing-renumbers-a-colliding-adr.md",
+		"# ADR-0064: Landing renumbers a colliding ADR\n\nIt extends ADR-0063.\n")
+	write(t, wt.Path(), "docs/adr/README.md", "# ADRs\n\n- [ADR-0063](0063-the-ticket-loop-leaves-ci-to-the-pr-loop.md) — The ticket loop leaves CI to the PR loop\n"+
+		"- [ADR-0064](0064-landing-renumbers-a-colliding-adr.md) — Landing renumbers a colliding ADR\n")
+	write(t, wt.Path(), "land.go", "package land\n\n// Land renumbers first (ADR-"+"0064).\nfunc Land() {}\n") // split: check-adr reads this line as a comment
+	repo.Git(wt.Path(), "add", "-A")
+	repo.Git(wt.Path(), "commit", "-q", "-m", "Renumber at Landing (ADR-0064)", "-m", "ADR-0064 shipped as docs/adr/0064-landing-renumbers-a-colliding-adr.md.")
+	repo.Commit(wt, "notes.md", "Landing follows ADR-0064 and ADR-0063.\n", "Note the decision")
+	return scene{h: hostio.NewFake(repo.Checkout(), "proj-1"), repo: repo, wt: wt}
+}
+
+func write(t *testing.T, dir, file, body string) {
+	t.Helper()
+	path := filepath.Join(dir, file)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// checkADR runs the repo's own check-adr guard over dir and fails the test with
+// what it said when the tree breaks it.
+func checkADR(t *testing.T, dir string) {
+	t.Helper()
+	out, err := exec.Command("bash", "../../scripts/check-adr-numbers.sh", dir).CombinedOutput()
+	if err != nil {
+		t.Errorf("check-adr fails on the pushed tree: %v\n%s", err, out)
+	}
+}
+
+// #374, replayed: while the branch was in review a sibling merged its own
+// ADR 0064. The replay goes through clean, because the index unions, and used to
+// be pushed with two ADR 0064s for CI's check-adr to fail on. Landing now moves
+// the branch's ADR to the next free number before the push, inside the commits
+// that added it, and opens the PR citing the number that shipped.
+func TestLandRenumbersABranchADRWhoseNumberMainTookAfterTheGate(t *testing.T) {
+	s, log := adrScene(t), &sink{}
+	s.repo.Merge("docs/adr/0064-a-sibling-decided-first.md", "# ADR-0064: A sibling decided first\n", "a sibling's ADR-0064")
+	s.repo.Merge("docs/adr/README.md", "# ADRs\n\n- [ADR-0063](0063-the-ticket-loop-leaves-ci-to-the-pr-loop.md) — The ticket loop leaves CI to the PR loop\n"+
+		"- [ADR-0064](0064-a-sibling-decided-first.md) — A sibling decided first\n", "index the sibling's ADR-0064")
+
+	got := ship.Land(s.h, log, ticket.Ticket{Identifier: "PROJ-1", Title: "Record ADR-0064", Description: "Add ADR-0064."}, nil)
+
+	if got.Verdict != ship.Landed {
+		t.Fatalf("Verdict = %v, want Landed (%+v)", got.Verdict, got)
+	}
+	tip, _ := s.wt.HeadSHA()
+	if s.repo.OnOrigin("feat/proj-1") != tip {
+		t.Fatal("the renumbered tip must be what reached origin")
+	}
+	checkADR(t, s.wt.Path())
+	if b, _ := os.ReadFile(filepath.Join(s.wt.Path(), "docs/adr/0065-landing-renumbers-a-colliding-adr.md")); !strings.HasPrefix(string(b), "# ADR-0065: Landing renumbers") || !strings.Contains(string(b), "ADR-0063") {
+		t.Errorf("the branch's ADR = %q, want it retitled ADR-0065 and still citing main's ADR-0063", b)
+	}
+	if b, _ := os.ReadFile(filepath.Join(s.wt.Path(), "land.go")); !strings.Contains(string(b), "(ADR-0065)") {
+		t.Errorf("land.go = %q, want its reference moved to ADR-0065", b)
+	}
+	if b, _ := os.ReadFile(filepath.Join(s.wt.Path(), "notes.md")); string(b) != "Landing follows ADR-0065 and ADR-0063.\n" {
+		t.Errorf("notes.md = %q, want only the branch's own ADR moved", b)
+	}
+	// No commit on the branch adds the old number: a later replay has no stale
+	// index line to bring back (#347).
+	if added := s.repo.Git(s.wt.Path(), "log", "--format=", "--name-only", "--diff-filter=A", "origin/main..HEAD"); strings.Contains(added, "0064-landing") {
+		t.Errorf("the branch's history still adds the old file:\n%s", added)
+	}
+	if msg := s.repo.Git(s.wt.Path(), "log", "--format=%B", "origin/main..HEAD"); strings.Contains(msg, "ADR-0064") || strings.Contains(msg, "0064-landing") {
+		t.Errorf("commit messages still cite the old number:\n%s", msg)
+	}
+	if c := calls(s.h); !strings.HasSuffix(c, "create-pr PROJ-1: Record ADR-0065") {
+		t.Errorf("calls = %q, want the PR titled with the number that shipped", c)
+	}
+	if len(s.h.PRBodies) != 1 || strings.Contains(s.h.PRBodies[0], "ADR-0064") {
+		t.Errorf("PR bodies = %q, want no reference left to the old number", s.h.PRBodies)
+	}
+	if !log.saw("renumbered ADR-0064 → ADR-0065") {
+		t.Errorf("events = %v, want the renumber narrated", log.events)
+	}
+}
+
+// A main that moved on without taking the branch's number leaves the branch's
+// ADR, and the replayed commits, as they are.
+func TestLandLeavesABranchADRWhoseNumberIsStillFree(t *testing.T) {
+	s, log := adrScene(t), &sink{}
+	s.repo.Merge("other.txt", "unrelated\n", "a sibling merged")
+
+	got := ship.Land(s.h, log, ticket.Ticket{Identifier: "PROJ-1", Title: "Record ADR-0064"}, nil)
+
+	if got.Verdict != ship.Landed {
+		t.Fatalf("Verdict = %v, want Landed", got.Verdict)
+	}
+	checkADR(t, s.wt.Path())
+	if _, err := os.Stat(filepath.Join(s.wt.Path(), "docs/adr/0064-landing-renumbers-a-colliding-adr.md")); err != nil {
+		t.Errorf("the branch's ADR-0064 must keep its number: %v", err)
+	}
+	if c := calls(s.h); !strings.HasSuffix(c, "create-pr PROJ-1: Record ADR-0064") {
+		t.Errorf("calls = %q, want the title unchanged", c)
+	}
+	if log.saw("renumbered") {
+		t.Errorf("events = %v, want no renumber", log.events)
 	}
 }

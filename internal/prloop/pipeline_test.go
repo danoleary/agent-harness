@@ -1075,19 +1075,6 @@ func TestFixShipsWhenThePRDescriptionCannotBeEdited(t *testing.T) {
 	}
 }
 
-// Two renumbers that chain, 0040 → 0041 while 0041 → 0042, move each reference
-// once rather than carrying ADR-0040 on to 0042.
-func TestRenumberADRsMovesEachReferenceOnce(t *testing.T) {
-	moved := []gitpkg.Renumber{
-		{From: "0040", To: "0041", FromFile: "0040-a.md", ToFile: "0041-a.md"},
-		{From: "0041", To: "0042", FromFile: "0041-b.md", ToFile: "0042-b.md"},
-	}
-	got := renumberADRs("ADR-0040 (0040-a.md) and ADR-0041 (0041-b.md), not ADR-00401 or ADR-0012", moved)
-	if want := "ADR-0041 (0041-a.md) and ADR-0042 (0042-b.md), not ADR-00401 or ADR-0012"; got != want {
-		t.Errorf("renumberADRs = %q, want %q", got, want)
-	}
-}
-
 // PR-217 (#221): a conflict whose resolved diff against origin/main is one
 // workflow file. The PR loop skips the gate whose skip_when_only covers it, runs
 // the one that has no list, and pushes; CI checks the rest before merge.

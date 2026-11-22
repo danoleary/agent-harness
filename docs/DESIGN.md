@@ -1603,8 +1603,8 @@ reader over a structured stream rather than a `--tui` flag on the daemon.
   a fixed set of Steps written in Go, each with its own ground-truth check.
 - **ship lands the branch** ([ADR-0017](https://github.com/danoleary/agent-harness/blob/main/docs/adr/0017-ship-lands-the-branch.md)). The review stage, the daemon's committed-fix
   recovery and the CI watch's reactive rebase share one `internal/ship` sequence —
-  refetch, replay, disjoint guard, conflict hook, collapse check, push
-  force-with-lease, templated `gh pr create` — and each maps its one verdict
+  refetch, replay, disjoint guard, conflict hook, collapse check, ADR renumber
+  (#374, ADR-0034), push force-with-lease, templated `gh pr create` — and each maps its one verdict
   (Landed / Collapsed / Conflict / Disjoint / RebaseFailed / PushFailed / PRFailed) onto its own
   disposition. Only the review supplies a conflict hook (its BEH-581
   resolve-and-regate session, followed by a scoped review of whatever the
