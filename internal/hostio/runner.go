@@ -245,6 +245,7 @@ func (r *Runner) agentArgs(name string, a AgentRun) []string {
 		ContainerName:  name,
 		NoMCP:          a.NoMCP,
 		ShmSize:        r.cfg.ShmSize,
+		Role:           a.Role,
 	})
 }
 

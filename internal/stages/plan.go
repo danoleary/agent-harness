@@ -9,6 +9,7 @@ import (
 	"github.com/danoleary/agent-harness/internal/hostio"
 	"github.com/danoleary/agent-harness/internal/prompt"
 	"github.com/danoleary/agent-harness/internal/runlog"
+	"github.com/danoleary/agent-harness/internal/sandbox"
 	"github.com/danoleary/agent-harness/internal/sentry"
 	"github.com/danoleary/agent-harness/internal/ticket"
 )
@@ -173,6 +174,7 @@ func implementationRun(cfg config.Config, s Subject, resume prompt.Resume) hosti
 	pctx := prompt.Context{Ticket: s.Ticket, Slug: s.Slug, BranchPrefix: cfg.BranchPrefix, Tracker: cfg.Tracker.Kind, WorktreePath: s.WorktreePath, Body: cfg.Prompts.Implement, Resume: resume, Sentry: s.Sentry, GreenBase: s.GreenBase, Landed: s.Landed}
 	return hostio.AgentRun{
 		Label:       implementationSession,
+		Role:        sandbox.RoleImplementation,
 		Model:       cfg.ImplementationModel,
 		Prompt:      prompt.For(prompt.Implement, pctx),
 		Warnings:    prompt.BodyWarnings(pctx),
@@ -197,6 +199,7 @@ func reviewRun(cfg config.Config, s Subject, prior *prompt.PriorReview, redGate 
 	}
 	return hostio.AgentRun{
 		Label:    reviewSession,
+		Role:     sandbox.RoleReview,
 		Model:    cfg.ReviewModel,
 		Prompt:   prompt.For(prompt.Review, pctx),
 		Warnings: prompt.BodyWarnings(pctx),
@@ -237,6 +240,7 @@ func retrospectiveRun(cfg config.Config, s Subject, filed []prompt.FiledFinding)
 	}
 	return hostio.AgentRun{
 		Label:       retrospectiveSession,
+		Role:        sandbox.RoleRetrospective,
 		Model:       cfg.RetrospectiveModel,
 		Prompt:      prompt.For(prompt.Retrospective, pctx),
 		Warnings:    warnings,

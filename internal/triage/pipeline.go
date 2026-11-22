@@ -13,6 +13,7 @@ import (
 	"github.com/danoleary/agent-harness/internal/loopstream"
 	"github.com/danoleary/agent-harness/internal/prompt"
 	"github.com/danoleary/agent-harness/internal/runlog"
+	"github.com/danoleary/agent-harness/internal/sandbox"
 	"github.com/danoleary/agent-harness/internal/stages"
 )
 
@@ -114,6 +115,7 @@ func (p Pipeline) assess(sb Sandbox, log *runlog.Logger, it Item) (Verdict, stag
 	pctx := prompt.Context{Ticket: it.Ticket, Tracker: cfg.Tracker.Kind, Body: cfg.Prompts.Triage}
 	out := sb.Agent(hostio.AgentRun{
 		Label:       who,
+		Role:        sandbox.RoleTriage,
 		Model:       cfg.ReviewModel,
 		Prompt:      prompt.For(prompt.Triage, pctx),
 		Warnings:    prompt.BodyWarnings(pctx),

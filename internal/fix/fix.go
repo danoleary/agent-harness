@@ -29,6 +29,7 @@ import (
 	"github.com/danoleary/agent-harness/internal/hostlock"
 	"github.com/danoleary/agent-harness/internal/prompt"
 	"github.com/danoleary/agent-harness/internal/runlog"
+	"github.com/danoleary/agent-harness/internal/sandbox"
 	"github.com/danoleary/agent-harness/internal/session"
 	"github.com/danoleary/agent-harness/internal/ticket"
 	"github.com/danoleary/agent-harness/internal/verify"
@@ -300,6 +301,7 @@ func (e Env) CI(t Target) func(ciLogs string, logAvailable bool) error {
 		pctx.CILogs, pctx.CILogAvailable = ciLogs, logAvailable
 		res := e.Host.Agent(hostio.AgentRun{
 			Label:    fmt.Sprintf("cifix-%d", attempt),
+			Role:     sandbox.RoleCIFix,
 			Model:    e.Cfg.ReviewModel,
 			Prompt:   prompt.For(prompt.CIFix, pctx),
 			Warnings: prompt.BodyWarnings(pctx),
@@ -651,6 +653,7 @@ func (e Env) ResolveConflict(c Conflict) ConflictResult {
 	dropbox := e.overlapDropbox(c.Strategy)
 	res := e.Host.Agent(hostio.AgentRun{
 		Label:       "rebasefix",
+		Role:        sandbox.RoleRebaseFix,
 		Model:       e.Cfg.ReviewModel,
 		Prompt:      prompt.For(prompt.RebaseFix, pctx),
 		Warnings:    prompt.BodyWarnings(pctx),

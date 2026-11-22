@@ -61,6 +61,17 @@ func flagValue(args []string, flag string) string {
 	return ""
 }
 
+// flagValues is the value after every occurrence of flag (docker's `-e NAME`).
+func flagValues(args []string, flag string) []string {
+	var out []string
+	for i, a := range args {
+		if a == flag && i+1 < len(args) {
+			out = append(out, args[i+1])
+		}
+	}
+	return out
+}
+
 // THE invariant this package exists to make unbreakable: Options.ContainerName
 // must equal the `--name` in the argv, or the watchdog's timeout `docker kill`
 // misses its target and the session runs unbounded. It used to be a comment
@@ -627,6 +638,24 @@ func TestAgentRetryKeepsItsOwnPrompt(t *testing.T) {
 		raw, err := os.ReadFile(filepath.Join(r.log.Dir, name))
 		if err != nil || string(raw) != "do it\n" {
 			t.Errorf("%s = %q, %v; want the launch prompt", name, raw, err)
+		}
+	}
+}
+
+// #391: the retrospective's launched argv tells the Consumer's hooks it is a
+// read-only session, as the dry-run preview of it does.
+func TestAgentTellsTheContainerItsRole(t *testing.T) {
+	r, seen := testRunner(t)
+	run := AgentRun{Label: "retrospective", Role: sandbox.RoleRetrospective, WorkDir: t.TempDir()}
+
+	r.Agent(run)
+
+	for _, args := range [][]string{(*seen)[0].args, r.AgentPreview(run)} {
+		envs := flagValues(args, "-e")
+		for _, want := range []string{sandbox.RoleEnv + "=retrospective", sandbox.ReadOnlyEnv + "=1"} {
+			if !slices.Contains(envs, want) {
+				t.Errorf("argv does not carry -e %s: %v", want, envs)
+			}
 		}
 	}
 }

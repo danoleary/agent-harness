@@ -40,6 +40,14 @@ remote (ADR-0002).
 - What each token needs: [token scopes](reference/tokens.md).
 - API key or subscription: [choose a Claude credential](how-to/claude-credential.md).
 
+## Your Claude Code hooks
+
+Each session starts in the ticket's worktree and loads your
+`.claude/settings.json`, hooks and all. That includes the read-only
+retrospective and triage sessions, so a Stop hook that guards a handoff should
+stand down when `HARNESS_SESSION_READ_ONLY` is `1`. The
+[environment variables](reference/env.md) reference has the guard.
+
 ## Choosing a tracker
 
 The tickets come from one of three trackers (ADR-0010):

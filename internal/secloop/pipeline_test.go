@@ -14,6 +14,7 @@ import (
 	"github.com/danoleary/agent-harness/internal/gittest"
 	"github.com/danoleary/agent-harness/internal/hostio"
 	"github.com/danoleary/agent-harness/internal/runlog"
+	"github.com/danoleary/agent-harness/internal/sandbox"
 	"github.com/danoleary/agent-harness/internal/session"
 	"github.com/danoleary/agent-harness/internal/stages"
 	"github.com/danoleary/agent-harness/internal/ticket"
@@ -136,6 +137,10 @@ func TestFixLandsACheckedGateGreenFixAsANewPR(t *testing.T) {
 	// #245: the session starts in the package's worktree, not the host checkout.
 	if want := h.Worktree().Path(); h.Agents[0].WorkDir != want {
 		t.Errorf("the SecurityFix session starts in %q, want the worktree %q", h.Agents[0].WorkDir, want)
+	}
+	// #391: the container is told the session's role.
+	if got := h.Agents[0].Role; got != sandbox.RoleSecurityFix {
+		t.Errorf("the SecurityFix session's role = %q, want %q", got, sandbox.RoleSecurityFix)
 	}
 }
 

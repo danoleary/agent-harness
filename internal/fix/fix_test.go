@@ -10,6 +10,7 @@ import (
 	"github.com/danoleary/agent-harness/internal/config"
 	"github.com/danoleary/agent-harness/internal/gittest"
 	"github.com/danoleary/agent-harness/internal/hostio"
+	"github.com/danoleary/agent-harness/internal/sandbox"
 	"github.com/danoleary/agent-harness/internal/session"
 )
 
@@ -141,6 +142,10 @@ func TestFixSessionsStartInTheWorktree(t *testing.T) {
 	h := e.Host.(*hostio.Fake)
 	if len(h.Agents) != 2 {
 		t.Fatalf("want a CI-fix and a conflict-resolution session, got %d", len(h.Agents))
+	}
+	// #391: both hand off a commit, so neither is told it is read-only.
+	if got := []sandbox.Role{h.Agents[0].Role, h.Agents[1].Role}; got[0] != sandbox.RoleCIFix || got[1] != sandbox.RoleRebaseFix {
+		t.Errorf("session roles = %v, want [%s %s]", got, sandbox.RoleCIFix, sandbox.RoleRebaseFix)
 	}
 	for _, run := range h.Agents {
 		if want := h.Worktree().Path(); run.WorkDir != want {

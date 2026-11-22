@@ -11,6 +11,7 @@ import (
 	"github.com/danoleary/agent-harness/internal/hostio"
 	"github.com/danoleary/agent-harness/internal/loop"
 	"github.com/danoleary/agent-harness/internal/runlog"
+	"github.com/danoleary/agent-harness/internal/sandbox"
 	"github.com/danoleary/agent-harness/internal/session"
 	"github.com/danoleary/agent-harness/internal/stages"
 	"github.com/danoleary/agent-harness/internal/ticket"
@@ -112,6 +113,10 @@ func TestAReadyVerdictMarksTheTicketReady(t *testing.T) {
 	}
 	if !strings.Contains(sb.runs[0].Prompt, "The --dry-run flag is ignored") {
 		t.Error("the session prompt must carry the ticket")
+	}
+	// #391: triage only reads, and the container is told so.
+	if r := sb.runs[0].Role; r != sandbox.RoleTriage || !r.ReadOnly() {
+		t.Errorf("the triage session's role = %q, want the read-only %q", r, sandbox.RoleTriage)
 	}
 	if _, _, ok, _ := NewSource(b, p.Store).Next(); ok {
 		t.Error("a judged ticket must not be yielded again")
