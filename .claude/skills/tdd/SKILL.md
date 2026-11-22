@@ -159,9 +159,9 @@ harness has to spend a whole extra cycle recovering the diff (#224).
    `.github/workflows/release.yml` publishes each release with
    `gh release create --generate-notes`, which lists the merged PRs by title,
    and the harness opens the PR (title from the ticket, body listing your
-   commit subjects) and squash-merges your commit body onto `main`. So a
-   ticket's "Release notes:" item is met by a sentence in the commit body
-   saying what changes for the operator.
+   commit subjects); the PR is squash-merged, which carries your commit body
+   onto `main`. So a ticket's "Release notes:" item is met by a sentence in
+   the commit body saying what changes for the operator.
 4. Run `make check` as its own Bash call with nothing appended. Fold any fix it
    needs into that commit with `git commit --amend`, never a second commit.
 5. If `make check` fails only in a package the diff didn't touch, re-run that
