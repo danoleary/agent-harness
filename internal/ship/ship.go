@@ -213,8 +213,8 @@ func Land(h Port, log EventSink, t ticket.Ticket, resolve Resolve) Landing {
 // LandAs takes a clean, committed branch to an open pull request on the latest
 // base: refetch origin/main, replay onto it, stop on a disjoint history or a replay
 // git could not run, hand a content conflict to resolve (nil means abort), stop if
-// the replay collapsed the branch to nothing, then push and open the PR as opening
-// describes it.
+// the replay collapsed the branch to nothing, renumber an ADR whose number main
+// took meanwhile, then push and open the PR as opening describes it.
 //
 // The refetch is deliberate even when the caller fetched moments ago: a sibling PR
 // can merge during a multi-minute gate, and replaying onto the pre-gate ref would
@@ -248,7 +248,36 @@ func LandAs(h Port, log EventSink, opening Opening, resolve Resolve) Landing {
 	if verify.PostRebasePush(h.Worktree()).RecommendClose {
 		return Landing{Verdict: Collapsed}
 	}
-	return finish(h, log, opening, note)
+	return finish(h, log, renumber(h, log, opening), note)
+}
+
+// renumber moves an ADR the branch adds to the next free number when origin/main
+// took its number after the gate (#374), and gives opening the new number too.
+// The replay goes through such a collision clean, because the index unions
+// (#235), so this is the last host-side step that can keep CI's check-adr from
+// failing on two ADRs with one number. A failure is a warning: the branch goes
+// out as replayed and check-adr in CI is the backstop.
+func renumber(h Port, log EventSink, opening Opening) Opening {
+	moved, err := h.Worktree().RenumberCollidingADRs()
+	if err != nil {
+		log.Event("ship ⚠ could not renumber the branch's ADRs against origin/main (" + err.Error() + ") — pushing it as replayed; check-adr may fail in CI on a duplicate number (#374)")
+		return opening
+	}
+	if len(moved) == 0 {
+		return opening
+	}
+	var names []string
+	for _, m := range moved {
+		names = append(names, "ADR-"+m.From+" → ADR-"+m.To)
+	}
+	log.Event("ship ✓ renumbered " + strings.Join(names, ", ") + ": origin/main took the number while the branch was in flight (#374)")
+	body := opening.Body
+	return Opening{
+		Title: gitpkg.RenumberRefs(opening.Title, moved),
+		Body: func(subjects []string, note string) string {
+			return gitpkg.RenumberRefs(body(subjects, note), moved)
+		},
+	}
 }
 
 // finish pushes the branch and opens its PR from opening, over the branch's commit
