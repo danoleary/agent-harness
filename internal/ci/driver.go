@@ -169,14 +169,23 @@ type GhDriver struct {
 	// Injected so the log-availability logic is unit-testable without shelling out.
 	fetchRunLog func(id string) ([]byte, error)
 
+	// viewRun runs `gh run view <args>`, returning its stdout. RecordFlake reads a
+	// washed-out flake's failed attempt through it; injected so the record is
+	// unit-testable against scripted gh output (#371).
+	viewRun func(args ...string) ([]byte, error)
+	// keepFlakeLog appends a flake record to the ticket's log dir, where the
+	// retrospective reads it (#371). Nil keeps nothing.
+	keepFlakeLog func(content string)
+
 	sleep func(time.Duration)
 	now   func() time.Time
 }
 
 // NewGhDriver builds the production Driver. ghTimeout bounds each individual gh
 // call; cfg supplies the poll cadence/budget; runFix and push are the sandbox +
-// remote effects the cmd provides.
-func NewGhDriver(herdPath, branch string, cfg Config, ghTimeout time.Duration, runFix func(ciLogs string, logAvailable bool) error, push func() error, rebase func() (RebaseVerdict, error), diffEmpty func() bool, docsOnly func() bool) *GhDriver {
+// remote effects the cmd provides; keepFlakeLog writes a washed-out flake's
+// record to the ticket's log dir.
+func NewGhDriver(herdPath, branch string, cfg Config, ghTimeout time.Duration, runFix func(ciLogs string, logAvailable bool) error, push func() error, rebase func() (RebaseVerdict, error), diffEmpty func() bool, docsOnly func() bool, keepFlakeLog func(content string)) *GhDriver {
 	d := &GhDriver{
 		herdPath:     herdPath,
 		branch:       branch,
@@ -188,6 +197,7 @@ func NewGhDriver(herdPath, branch string, cfg Config, ghTimeout time.Duration, r
 		rebase:       rebase,
 		diffEmpty:    diffEmpty,
 		docsOnly:     docsOnly,
+		keepFlakeLog: keepFlakeLog,
 		sleep:        time.Sleep,
 		now:          time.Now,
 	}
@@ -196,6 +206,10 @@ func NewGhDriver(herdPath, branch string, cfg Config, ghTimeout time.Duration, r
 	}
 	d.fetchRunLog = func(id string) ([]byte, error) {
 		stdout, _, err := proc.OutputInDir(d.ghTimeout, d.herdPath, "gh", "run", "view", id, "--log-failed")
+		return stdout, err
+	}
+	d.viewRun = func(args ...string) ([]byte, error) {
+		stdout, _, err := proc.OutputInDir(d.ghTimeout, d.herdPath, "gh", append([]string{"run", "view"}, args...)...)
 		return stdout, err
 	}
 	return d
