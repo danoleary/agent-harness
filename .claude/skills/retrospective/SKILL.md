@@ -31,7 +31,13 @@ judged the code.
   line in `run.jsonl` names the checks a re-run washed out. Each one cost the
   PR a whole extra CI round. File a finding naming the check, keyed on it
   (e.g. `ci-flaky-check-<name>`), so a check that flakes on every PR dedupes
-  into one ticket.
+  into one ticket. The line names each check as `<check> / <step>` where gh
+  reported one, and the flake washer records the failed attempt's steps and
+  the tail of each failed log in `ci-flake-*.log` in the log dir: read it, and
+  name the failing step and the key failure line in the body (the class of
+  failure — a timeout, a dropped fetch, a race in one test — not a pasted
+  log). A step-less name means gh could not read that attempt; the file says
+  why, so say that instead.
 
 Ignore one-off mistakes that a better instruction would not have prevented.
 
@@ -49,6 +55,13 @@ so that it could be picked up as a ticket on its own:
 - **needs_human** — `true` only when an agent cannot do the fix alone: it needs
   a person to choose between designs, a credential, or a dashboard step. Leave
   it `false` otherwise; the harness files those ready for an agent.
+
+The body is the next ticket's whole context, and the session that picks it up
+runs in the sandbox: no `gh`, no network, no git remote. So a suggested fix
+must be doable there, and never open with a step it cannot take. Evidence only
+the host can reach — a CI log, a PR's checks, a tracker field — goes in the
+body itself, as what you read in the log dir, not as an instruction to fetch
+it.
 
 When the fix is a new ADR, name it by slug, never by number: other ADRs land
 while the ticket waits, and the session that writes it takes the next free

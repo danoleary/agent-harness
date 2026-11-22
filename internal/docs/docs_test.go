@@ -232,3 +232,46 @@ func TestTheTDDSkillListsEveryGuard(t *testing.T) {
 		}
 	}
 }
+
+// section returns a page's "## <prefix>…" section, up to the next "## " heading,
+// with its runs of whitespace folded to one space so a phrase can wrap.
+func section(t *testing.T, path, prefix string) string {
+	t.Helper()
+	var out []string
+	in := false
+	for _, l := range prose(t, path) {
+		if strings.HasPrefix(l, "## ") {
+			in = strings.HasPrefix(l, "## "+prefix)
+		}
+		if in {
+			out = append(out, l)
+		}
+	}
+	if len(out) == 0 {
+		t.Fatalf("%s has no %q section", path, "## "+prefix)
+	}
+	return strings.Join(strings.Fields(strings.Join(out, "\n")), " ")
+}
+
+// TestTheRetrospectiveSkillKeepsFindingsDoableInTheSandbox pins the two rules a
+// finding's body leans on, because that body is the next ticket's whole context
+// (#379): a CI-flake finding names the failing step the flake washer recorded in
+// ci-flake-<run-id>.log (#371), and no suggested fix sends the next session to a
+// gh, network or remote step the sandbox cannot take.
+func TestTheRetrospectiveSkillKeepsFindingsDoableInTheSandbox(t *testing.T) {
+	skill := filepath.Join(repoRoot(t), ".claude/skills/retrospective/SKILL.md")
+
+	friction := section(t, skill, "2. Look for friction")
+	for _, want := range []string{"`ci-flake-*.log`", "failing step", "failure line"} {
+		if !strings.Contains(friction, want) {
+			t.Errorf("the CI flakes bullet does not mention %s; a flake finding must carry the recorded step", want)
+		}
+	}
+
+	write := section(t, skill, "3. Write findings")
+	for _, want := range []string{"sandbox", "`gh`", "network", "remote", "in the body"} {
+		if !strings.Contains(write, want) {
+			t.Errorf("Write findings does not mention %q; a suggested fix must be doable inside the sandbox", want)
+		}
+	}
+}
