@@ -71,7 +71,15 @@ func Retrospective(h hostio.Host, cfg config.Config, log *runlog.Logger, args Ar
 	}
 	subject := NewSubject(h, args.Identifier, log.Dir, t)
 	subject.GreenBase = args.GreenBase
+	inWorktree := !args.DryRun && wt.Exists()
 	res := RetrospectiveOver(h, cfg, log, subject, args.DryRun)
+	// The session reads the branch's change in the worktree, and nothing in the run
+	// removes it before the reap below. One gone when the session ends was removed
+	// from under it by something outside the run, which the session met only as an
+	// opaque deleted cwd; it is named here, in the run's own log (#404).
+	if inWorktree && !wt.Exists() {
+		log.Event(fmt.Sprintf("retrospective ⚠ the worktree %s was removed while the retrospective session ran in it — something outside the run removed it; %s still has the change (#404)", wt.Path(), wt.Branch()))
+	}
 	if !res.OK || args.DryRun {
 		return res
 	}
