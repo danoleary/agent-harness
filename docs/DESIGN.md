@@ -1174,6 +1174,16 @@ filing it: a local artifact gets `probable_duplicate_of: <slug>`, a tracker issu
 note naming the open issue, and both narrate. It flags, never skips — token
 overlap is a heuristic, and a dropped finding costs more than a duplicate.
 
+**Producing build (#395).** Every finding the host files ends in a footer naming
+the harness build that observed it: `Observed by agent-harness <version>
+(<commit>)`, the string `--version` prints and the commit the binary was built
+from (`internal/version.Commit`, stamped by the Makefile and the release build). A
+local artifact records the same line as `observed_by`. A finding filed from a
+Consumer run may describe behaviour a later commit already changed, so the session
+that picks it up checks `git log <commit>..origin/main` on the relevant files
+instead of re-deriving whether the premise still holds. The footer is harness
+metadata, so the sanitize rule is unaffected.
+
 **Filing dedup (BEH-573).** Before filing each finding, the harness dedups it
 against the team's open harness findings in two passes: first an exact `key`/
 title match (the fast `matchKey` short-circuit), then — for anything that misses

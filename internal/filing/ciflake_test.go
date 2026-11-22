@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/danoleary/agent-harness/internal/tracker"
+	"github.com/danoleary/agent-harness/internal/version"
 )
 
 // flakeRecord renders a ci-flake-<run-id>.log as the CI watch's flake washer
@@ -92,6 +93,12 @@ func TestRouteSaysTheFailingStepIsUnknownWithoutAFlakeRecord(t *testing.T) {
 	}
 }
 
+// stamped is a body as the session wrote it, plus only the observing-build
+// footer every filing carries (#395).
+func stamped(body string) string {
+	return body + "\n\n_" + version.ObservedBy() + "._"
+}
+
 // Only a ci-flaky-check finding gets the record: any other finding files as the
 // session wrote it.
 func TestRouteLeavesOtherFindingsBodiesAlone(t *testing.T) {
@@ -103,7 +110,7 @@ func TestRouteLeavesOtherFindingsBodiesAlone(t *testing.T) {
 
 	Router{Project: sink(filer, noExisting(), nil), LogDir: logDir, Log: &recorder{}}.Route(dir, "team", "PR-9")
 
-	if len(filer.calls) != 1 || filer.calls[0].Body != "libnss3" {
+	if len(filer.calls) != 1 || filer.calls[0].Body != stamped("libnss3") {
 		t.Errorf("filed %+v, want the body untouched", filer.calls)
 	}
 }
@@ -120,7 +127,7 @@ func TestRouteKeepsTheFlakeLogOffAnUpstreamHarnessFinding(t *testing.T) {
 
 	Router{Project: sink(&fakeFiler{}, noExisting(), nil), Upstream: up, LogDir: logDir, Log: &recorder{}}.Route(dir, "team", "PR-9")
 
-	if len(upstreamFiler.calls) != 1 || upstreamFiler.calls[0].Body != "test flaked." {
+	if len(upstreamFiler.calls) != 1 || upstreamFiler.calls[0].Body != stamped("test flaked.") {
 		t.Errorf("filed upstream %+v, want the body untouched", upstreamFiler.calls)
 	}
 }

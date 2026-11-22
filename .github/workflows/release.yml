@@ -66,6 +66,9 @@ jobs:
         run: |
           set -euo pipefail
           version="${{ github.event.inputs.tag || github.ref_name }}"
+          # The checked-out tag's commit, not GITHUB_SHA: a dispatched run checks
+          # out the input tag while GITHUB_SHA stays the dispatching ref's.
+          commit="$(git rev-parse HEAD)"
           mkdir -p dist
           for platform in darwin/amd64 darwin/arm64 linux/amd64 linux/arm64; do
             goos="${platform%/*}"
@@ -82,10 +85,11 @@ jobs:
               # -X stamps the release tag into internal/version, which `--version`
               # prints and a Consumer's `min_harness_version` pin is checked
               # against. Without it every release reports "dev" and the pin check
-              # silently degrades to a skip.
+              # silently degrades to a skip. The commit goes in beside it: every
+              # filed finding names the build that observed it (#395).
               CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
                 go build -buildvcs=false -trimpath \
-                -ldflags "-s -w -X github.com/danoleary/agent-harness/internal/version.Version=${version}" \
+                -ldflags "-s -w -X github.com/danoleary/agent-harness/internal/version.Version=${version} -X github.com/danoleary/agent-harness/internal/version.Commit=${commit}" \
                 -o "$out" "./cmd/$tool"
             done
             # Ship the Consumer-facing docs beside the binaries so an operator who
