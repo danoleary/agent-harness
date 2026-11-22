@@ -314,3 +314,18 @@ func TestTheTDDAndReviewSkillsCheckAStreamJSONFieldAgainstTheBundledCLI(t *testi
 		}
 	}
 }
+
+// TestTheTDDSkillChecksEachNewCallSiteTurnsATestRed pins the wiring check in
+// /tdd's Finish (#419): a session that tests a new helper on its own and wires it
+// in afterwards never sees a red test for the wiring, so before the commit it
+// reverts each new call site, runs the owning package's tests, and writes a test
+// through the path's public interface if none fails. Review found the gap after
+// the fact in #111, #313 and #416.
+func TestTheTDDSkillChecksEachNewCallSiteTurnsATestRed(t *testing.T) {
+	text := section(t, filepath.Join(repoRoot(t), ".claude/skills/tdd/SKILL.md"), "Finish")
+	for _, want := range []string{"call site", "revert just that line", "`sed -i`", "owning package", "At least one must fail", "restore the line", "public interface", "#111", "#313", "#416"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("/tdd §Finish does not mention %q; say to check that reverting each new call site's wiring turns a test red", want)
+		}
+	}
+}
