@@ -1137,7 +1137,11 @@ project-tagged occurrence comment on the existing issue, never a duplicate. The
 envelope's **non-overridable sanitize rule** (a harness finding states only the
 failure class + harness-side detail, never Consumer source/transcripts/secrets) is
 the backstop that keeps the public sink safe regardless of classification; only
-`harness`-audience findings ever reach it. Default stays `off` — herd flips to
+`harness`-audience findings ever reach it. The rule binds the host too (#389):
+host code adds no Consumer-derived content (logs, paths, ticket text) to an
+Upstream-bound finding. Any body enrichment, such as the recorded CI flake log,
+runs after `Route`'s audience split and applies only to project findings and to
+harness findings kept locally. Default stays `off` — herd flips to
 `github` only once the public repo exists.
 
 **Findings are filed agent-ready (ADR-0033).** A finding also carries

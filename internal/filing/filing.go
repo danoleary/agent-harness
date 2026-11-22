@@ -211,6 +211,14 @@ type Upstream struct {
 // stages call; File remains the plain file-everything-to-the-tracker primitive.
 // Best-effort throughout (ADR-0001): every failure degrades to narration, never a
 // crash.
+//
+// The sanitize rule binds host code here too (ADR-0011, #389). A harness finding
+// bound for the public Upstream repo files as the session wrote it, plus only
+// harness metadata (the observing-build footer, a probable-duplicate note). Never
+// add Consumer-derived content (logs, paths, ticket text) to it. Any body
+// enrichment goes after partitionByAudience below and applies only to project
+// findings and to harness findings kept locally (Upstream nil), as the CI flake
+// log does.
 func (r Router) Route(findingsDir, teamID, relatedIdentifier string) {
 	parsed, ok := r.readDropbox(findingsDir)
 	if !ok {
