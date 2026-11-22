@@ -42,16 +42,15 @@ func TestRouteCopiesTheRecordedFlakeLogIntoACIFlakyCheckFinding(t *testing.T) {
 	logDir := t.TempDir()
 	dir := filepath.Join(logDir, "findings", "retrospective")
 	writeFlakeRecord(t, logDir, "20261122-054000-abcd", flakeRecord("Check, build", "Fetch origin/main", 150))
-	writeDropbox(t, dir, `[{"title":"Fix the flaky Check, build CI check","body":"Check, build went green only on a re-run.","key":"ci-flaky-check-check-build","audience":"harness"}]`)
-	upstreamFiler := &fakeFiler{results: []fakeResult{{issue: tracker.CreatedIssue{Identifier: "#378"}}}}
-	up := &Upstream{Sink: sink(upstreamFiler, noExisting(), nil), Container: "o/agent-harness", Project: "agent-harness"}
+	writeDropbox(t, dir, `[{"title":"Fix the flaky Check, build CI check","body":"Check, build went green only on a re-run.","key":"ci-flaky-check-check-build","audience":"project"}]`)
+	filer := &fakeFiler{results: []fakeResult{{issue: tracker.CreatedIssue{Identifier: "#378"}}}}
 
-	Router{Project: sink(&fakeFiler{}, noExisting(), nil), Upstream: up, LogDir: logDir, Log: &recorder{}}.Route(dir, "team", "PR-371")
+	Router{Project: sink(filer, noExisting(), nil), LogDir: logDir, Log: &recorder{}}.Route(dir, "team", "PR-371")
 
-	if len(upstreamFiler.calls) != 1 {
-		t.Fatalf("filed %d findings, want 1", len(upstreamFiler.calls))
+	if len(filer.calls) != 1 {
+		t.Fatalf("filed %d findings, want 1", len(filer.calls))
 	}
-	body := upstreamFiler.calls[0].Body
+	body := filer.calls[0].Body
 	for _, want := range []string{
 		"Check, build went green only on a re-run.",
 		"Fetch origin/main",
@@ -106,5 +105,22 @@ func TestRouteLeavesOtherFindingsBodiesAlone(t *testing.T) {
 
 	if len(filer.calls) != 1 || filer.calls[0].Body != "libnss3" {
 		t.Errorf("filed %+v, want the body untouched", filer.calls)
+	}
+}
+
+// The record is the Consumer's raw CI output, so a harness finding bound for the
+// public Upstream repo files as the session wrote it (ADR-0011's sanitize rule).
+func TestRouteKeepsTheFlakeLogOffAnUpstreamHarnessFinding(t *testing.T) {
+	logDir := t.TempDir()
+	dir := filepath.Join(logDir, "findings", "retrospective")
+	writeFlakeRecord(t, logDir, "r1", flakeRecord("test", "Run go test", 3))
+	writeDropbox(t, dir, `[{"title":"Fix the flaky test check","body":"test flaked.","key":"ci-flaky-check-test","audience":"harness"}]`)
+	upstreamFiler := &fakeFiler{}
+	up := &Upstream{Sink: sink(upstreamFiler, noExisting(), nil), Container: "o/agent-harness", Project: "p"}
+
+	Router{Project: sink(&fakeFiler{}, noExisting(), nil), Upstream: up, LogDir: logDir, Log: &recorder{}}.Route(dir, "team", "PR-9")
+
+	if len(upstreamFiler.calls) != 1 || upstreamFiler.calls[0].Body != "test flaked." {
+		t.Errorf("filed upstream %+v, want the body untouched", upstreamFiler.calls)
 	}
 }

@@ -139,7 +139,8 @@ type Router struct {
 	Unsettled []string
 	// LogDir is the worked item's log dir, where the CI watch keeps
 	// ci-flake-*.log. A ci-flaky-check finding's body gains the failing step and
-	// log tail recorded there (#378). Empty reads no record.
+	// log tail recorded there (#378), unless it files to the public Upstream repo.
+	// Empty reads no record.
 	LogDir string
 }
 
@@ -178,7 +179,7 @@ func (r Router) File(findingsDir, teamID, relatedIdentifier string) {
 	if !ok {
 		return
 	}
-	r.fileTo(r.Project, parsed.Findings, teamID, relatedIdentifier, r.Matcher)
+	r.fileTo(r.Project, withCIFlakeEvidence(parsed.Findings, r.LogDir), teamID, relatedIdentifier, r.Matcher)
 }
 
 // Upstream is the opt-in public-harness-repo sink for harness-audience findings
@@ -215,8 +216,14 @@ func (r Router) Route(findingsDir, teamID, relatedIdentifier string) {
 		return
 	}
 	project, harness := partitionByAudience(parsed.Findings)
+	// The recorded flake log is the Consumer's raw CI output, so it never rides a
+	// harness finding to the public Upstream repo (ADR-0011's sanitize rule); a
+	// local harness finding and a project finding stay in the Consumer's hands.
+	if r.Upstream == nil {
+		harness = withCIFlakeEvidence(harness, r.LogDir)
+	}
 	r.routeHarness(harness, relatedIdentifier)
-	r.fileTo(r.Project, project, teamID, relatedIdentifier, r.Matcher)
+	r.fileTo(r.Project, withCIFlakeEvidence(project, r.LogDir), teamID, relatedIdentifier, r.Matcher)
 }
 
 // routeHarness sends the harness-audience findings to their configured sink: the
@@ -252,7 +259,6 @@ func (r Router) readDropbox(findingsDir string) (findings.Parsed, bool) {
 		r.Log.Event("findings ✗ dropbox unreadable: " + parsed.Error)
 		return findings.Parsed{}, false
 	}
-	parsed.Findings = withCIFlakeEvidence(parsed.Findings, r.LogDir)
 	return parsed, true
 }
 

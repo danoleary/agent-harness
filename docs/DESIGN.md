@@ -1527,7 +1527,8 @@ own namespace with no edit to the workflow.
     the host copies that check's failing step and the last 40 lines of its
     failed log from the newest record into the ticket body, or says the step
     is unknown when there is none, since the sandbox that works the ticket
-    cannot fetch the log (#378).
+    cannot fetch the log (#378). A harness finding bound for the public
+    Upstream repo files without it: the log is the Consumer's (ADR-0011).
   - `.agent-harness/logs/BEH-NNN/findings/retrospective/out.json` — the dropbox.
   - `.agent-harness/logs/BEH-NNN/run.jsonl` — the per-ticket structured event
     stream (machine-readable mirror of the console, scoped to one ticket's arc).
