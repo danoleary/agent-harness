@@ -608,6 +608,13 @@ type fakeWorktrees struct {
 	// tips is origin's tip each safety check was asked about, by path.
 	tips    map[string]string
 	removed []string
+	// live are the worktrees a live run is in, by path; liveErr fails that read.
+	live    map[string]bool
+	liveErr error
+}
+
+func (f *fakeWorktrees) RunLive(path string) (bool, error) {
+	return f.live[path], f.liveErr
 }
 
 func (f *fakeWorktrees) CheckedOutBranches() (map[string]string, error) {
@@ -802,6 +809,91 @@ func TestNextLeavesALiveTicketRunsWorktreeAlone(t *testing.T) {
 	}
 	if plan, _ := s.Plan(); len(plan) != 1 || plan[0].Skip != "branch held by #12 in the ticket loop" {
 		t.Errorf("plan = %+v, want the ticket loop's hold", plan)
+	}
+}
+
+// #384, twice in herd: the review stage's CI watch gave up on a red PR and logged
+// "keeping PR + worktree", and seconds later the retrospective found the worktree
+// gone and started in the host checkout. The red verdict ended both the watch and
+// pr-doctor's "checks pending" skip, and the ticket's branch was not in the
+// ticket loop's holds — its claim was not in the tracker's claim list — so the
+// clean, pushed worktree read as a leftover and was removed under the live run.
+// Replayed: the holds name nothing, but the worktree's run lock is held. The
+// worktree stays, the PR is skipped with the reason in the stream, and no attempt
+// is spent. Once the run ends the worktree is a leftover again and is reclaimed.
+func TestNextLeavesAWorktreeALiveRunIsInThoughTheHoldsMissIt(t *testing.T) {
+	gh := newFakeGitHub(harnessPR(384, "abc1234"))
+	gh.checks["abc1234"] = github.ChecksRed
+	path := "/herd/.claude/worktrees/gh-384"
+	wts := &fakeWorktrees{
+		branches: map[string]string{"feat/gh-384": path},
+		live:     map[string]bool{path: true},
+	}
+	log := &streamLog{}
+	s := NewSource(gh, testOptions, nil, log).WatchWorktrees(wts, ownWorktree)
+	s.now = func() time.Time { return testNow }
+
+	if item, _, ok, err := s.Next(); ok || err != nil {
+		t.Fatalf("Next = %+v ok %v err %v, want the PR left to the live run", item, ok, err)
+	}
+	if len(wts.removed) != 0 {
+		t.Fatalf("removed %v from under a live run", wts.removed)
+	}
+	if len(gh.posted[384])+len(gh.added[384]) != 0 {
+		t.Errorf("no attempt may be spent on a live run's PR; posted %v added %v", gh.posted[384], gh.added[384])
+	}
+	want := "branch checked out in worktree " + path + ", which a live run is in"
+	if skips := log.skips(); len(skips) != 1 || !strings.Contains(skips[0].Message, want) {
+		t.Errorf("stream skips = %+v, want one saying %q", skips, want)
+	}
+
+	wts.live = nil
+	if item, _, ok, err := s.Next(); err != nil || !ok || item.Key != "PR-384" {
+		t.Fatalf("Next = %+v ok %v err %v, want PR-384 worked once the run ended", item, ok, err)
+	}
+	if len(wts.removed) != 1 || wts.removed[0] != path {
+		t.Errorf("removed = %v, want the leftover worktree reclaimed once no run is in it", wts.removed)
+	}
+}
+
+// A run lock that cannot be read keeps the worktree: a failed read must never
+// remove a worktree from under a run that may be live.
+func TestNextKeepsAWorktreeWhoseRunLockCannotBeRead(t *testing.T) {
+	gh := newFakeGitHub(harnessPR(12, "abc1234"))
+	gh.checks["abc1234"] = github.ChecksRed
+	path := "/herd/.claude/worktrees/gh-12"
+	wts := &fakeWorktrees{branches: map[string]string{"feat/gh-12": path}, liveErr: errors.New("permission denied")}
+	s := NewSource(gh, testOptions, nil, &quietLog{}).WatchWorktrees(wts, ownWorktree)
+
+	if item, _, ok, err := s.Next(); ok || err != nil {
+		t.Fatalf("Next = %+v ok %v err %v, want the PR skipped", item, ok, err)
+	}
+	if len(wts.removed) != 0 {
+		t.Errorf("removed %v on a run lock it could not read", wts.removed)
+	}
+}
+
+// A run that takes its run lock while the poll reads GitHub, after Plan judged the
+// worktree a leftover, keeps it: the run lock is read again just before removing.
+func TestNextLeavesAWorktreeWhoseRunLockWasTakenMidPoll(t *testing.T) {
+	gh := newFakeGitHub(harnessPR(12, "abc1234"))
+	gh.checks["abc1234"] = github.ChecksRed
+	path := "/herd/.claude/worktrees/gh-12"
+	wts := &fakeWorktrees{branches: map[string]string{"feat/gh-12": path}}
+	reads := 0
+	held := func() (map[string]string, error) {
+		if reads++; reads > 1 {
+			wts.live = map[string]bool{path: true}
+		}
+		return nil, nil
+	}
+	s := NewSource(gh, testOptions, held, &quietLog{}).WatchWorktrees(wts, ownWorktree)
+
+	if item, _, ok, err := s.Next(); ok || err != nil {
+		t.Fatalf("Next = %+v ok %v err %v, want the PR left to the run that started", item, ok, err)
+	}
+	if len(wts.removed) != 0 {
+		t.Errorf("removed %v from under a run that took its lock mid-poll", wts.removed)
 	}
 }
 

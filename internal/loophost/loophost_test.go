@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/danoleary/agent-harness/internal/config"
+	gitpkg "github.com/danoleary/agent-harness/internal/git"
 	"github.com/danoleary/agent-harness/internal/gittest"
 	"github.com/danoleary/agent-harness/internal/hostio"
 	"github.com/danoleary/agent-harness/internal/hostlock"
@@ -589,6 +590,31 @@ func TestARunThatEndedNoLongerHoldsItsBranch(t *testing.T) {
 	}
 	if by, ok := held["feat/beh-1301"]; ok {
 		t.Errorf("feat/beh-1301 still held by %s after its run ended, so the PR loop skips herd#1386 forever", by)
+	}
+}
+
+// #384: the PR loop reads a ticket worktree's own run lock before it reclaims the
+// worktree, so a live run whose claim the tracker's claim list misses still keeps
+// it. The worktree is live while its ticket's run holds the lock, and a leftover
+// again once the run ends.
+func TestAWorktreeIsLiveWhileItsTicketsRunHoldsTheRunLock(t *testing.T) {
+	cfg := withProject(t, config.Config{Project: config.Project{BranchPrefix: gittest.Prefix}})
+	wts := NewWorktrees(cfg)
+	path := gitpkg.Open(cfg.ProjectPath, cfg.BranchPrefix).Worktree("beh-1301").Path()
+
+	release, err := HoldRun(cfg, "BEH-1301", "run-a", &narrator{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if live, err := wts.RunLive(path); err != nil || !live {
+		t.Fatalf("RunLive(%s) = %v, %v while BEH-1301's run holds its lock, want true", path, live, err)
+	}
+	release()
+	if live, err := wts.RunLive(path); err != nil || live {
+		t.Errorf("RunLive(%s) = %v, %v after the run ended, want false", path, live, err)
+	}
+	if live, err := wts.RunLive("/Users/someone/herd-trim-radix"); err != nil || live {
+		t.Errorf("RunLive of a worktree no run ever locked = %v, %v, want false", live, err)
 	}
 }
 

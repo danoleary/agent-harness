@@ -113,6 +113,15 @@ func Review(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Res
 		log.Event(fmt.Sprintf("review ✗ no worktree at %s — run `implementation %s` first", worktreePath, args.Identifier))
 		return Result{OK: false}
 	}
+	// Every way out of review keeps the worktree: the retrospective reads the
+	// branch's change in it and reaps it. One gone by the end of the stage was
+	// removed by something outside the run, and is named here, where it happened,
+	// rather than met only as a retrospective started in the host checkout (#384).
+	defer func() {
+		if !wt.Exists() {
+			log.Event(fmt.Sprintf("review ⚠ the worktree %s the run keeps is gone at the end of review — something outside the run removed it; the retrospective re-creates it from %s (#384)", worktreePath, wt.Branch()))
+		}
+	}()
 
 	// Fail fast if Docker can't run the container before we burn the session.
 	if err := h.Preflight(); err != nil {

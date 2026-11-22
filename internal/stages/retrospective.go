@@ -6,6 +6,7 @@ import (
 	"github.com/danoleary/agent-harness/internal/basegate"
 	"github.com/danoleary/agent-harness/internal/config"
 	"github.com/danoleary/agent-harness/internal/filing"
+	gitpkg "github.com/danoleary/agent-harness/internal/git"
 	"github.com/danoleary/agent-harness/internal/hostio"
 	"github.com/danoleary/agent-harness/internal/prompt"
 	"github.com/danoleary/agent-harness/internal/runlog"
@@ -65,6 +66,9 @@ func Retrospective(h hostio.Host, cfg config.Config, log *runlog.Logger, args Ar
 		return Result{Err: err}
 	}
 
+	if !args.DryRun {
+		restoreWorktree(wt, log)
+	}
 	subject := NewSubject(h, args.Identifier, log.Dir, t)
 	subject.GreenBase = args.GreenBase
 	res := RetrospectiveOver(h, cfg, log, subject, args.DryRun)
@@ -92,6 +96,25 @@ func Retrospective(h hostio.Host, cfg config.Config, log *runlog.Logger, args Ar
 	}
 
 	return Result{OK: true}
+}
+
+// restoreWorktree re-creates the run's worktree from its branch when the worktree
+// is gone but the branch is not (#384). The stages before keep the worktree for
+// the retrospective, so one missing here was removed from under the run, and the
+// session would start in the host checkout: with that checkout's skills and rules,
+// not the branch's, and with the worktree its prompt names absent. The branch is
+// re-attached as it stands, so nothing on it is lost. A run with no branch has no
+// worktree to restore, and a failed re-creation leaves the session to the host
+// checkout, as before, saying why.
+func restoreWorktree(wt gitpkg.Worktree, log *runlog.Logger) {
+	if wt.Exists() || !wt.BranchExists() {
+		return
+	}
+	if err := wt.Create(); err != nil {
+		log.Event(fmt.Sprintf("retrospective ⚠ worktree %s is gone and could not be re-created from %s (%v) — the session starts in the host checkout (#384)", wt.Path(), wt.Branch(), err))
+		return
+	}
+	log.Event(fmt.Sprintf("retrospective ↺ worktree %s was gone — re-created it from %s, so the session reads the branch there, not in the host checkout (#384)", wt.Path(), wt.Branch()))
 }
 
 // FindingsTeam is where a retrospective over a Work item no ticket names files

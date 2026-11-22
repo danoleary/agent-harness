@@ -408,11 +408,12 @@ func securityDryRun(l config.Loop, src interface {
 // prSource is the github_prs Source over the Consumer's checkout. It skips a
 // branch a live ticket run holds. A worktree other than the loop's own that has a
 // branch checked out, which git would refuse to check out again (#192), it removes
-// when that loses nothing, and otherwise skips the PR with the reason (#231).
+// when no live run is in it (#384) and that loses nothing, and otherwise skips the
+// PR with the reason (#231).
 func prSource(cfg config.Config, l config.Loop, pulls prloop.GitHub, held func() (map[string]string, error), log loop.Narrator) *prloop.Source {
-	co := gitpkg.Open(cfg.ProjectPath, cfg.BranchPrefix)
-	own := func(n int) string { return co.Worktree(ticket.Slug(prloop.Key(n))).Path() }
-	return prloop.NewSource(pulls, prloop.OptionsFrom(cfg, l), held, log).WatchWorktrees(co, own)
+	wts := loophost.NewWorktrees(cfg)
+	own := func(n int) string { return wts.Worktree(ticket.Slug(prloop.Key(n))).Path() }
+	return prloop.NewSource(pulls, prloop.OptionsFrom(cfg, l), held, log).WatchWorktrees(wts, own)
 }
 
 // limitsFrom maps the Consumer's config onto the daemon's knobs: the LOOP_* env

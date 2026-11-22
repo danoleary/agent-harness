@@ -276,6 +276,29 @@ func (s *TicketSource) HeldBranches() (map[string]string, error) {
 	return held, nil
 }
 
+// Worktrees is the checkout's worktrees as the PR loop reads and reclaims them,
+// with each worktree's own run lock read for a live run in it (#384). The holds
+// ([TicketSource.HeldBranches]) key on the tracker's claim list, and a live run
+// whose ticket that list misses would otherwise have its clean, pushed worktree
+// removed from under it the moment its PR went red. A ticket's worktree is
+// `.claude/worktrees/<slug>` and its run lock `runs/<slug>.lock`, so the lock is
+// named by the worktree's base name; a worktree no run ever locked reads as not
+// live.
+type Worktrees struct {
+	gitpkg.Checkout
+	projectPath string
+}
+
+// NewWorktrees is cfg's checkout's [Worktrees].
+func NewWorktrees(cfg config.Config) Worktrees {
+	return Worktrees{Checkout: gitpkg.Open(cfg.ProjectPath, cfg.BranchPrefix), projectPath: cfg.ProjectPath}
+}
+
+// RunLive says whether a live run holds the run lock of the worktree at path.
+func (w Worktrees) RunLive(path string) (bool, error) {
+	return hostlock.File(config.RunLockFile(w.projectPath, filepath.Base(filepath.Clean(path)))).Held()
+}
+
 // ErrRunLive is [HoldRun]'s refusal: another live run already holds the
 // ticket's run lock.
 var ErrRunLive = errors.New("another live run holds the ticket's run lock")
