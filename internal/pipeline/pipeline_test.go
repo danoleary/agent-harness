@@ -291,6 +291,31 @@ func TestRunPropagatesSpendingCapAbortFromAnyStage(t *testing.T) {
 	}
 }
 
+// #407: a cap that aborted implementation is still in force seconds later, so a
+// retrospective launched into it dies the same way and mines nothing. The slice
+// ends at implementation and the loop backs off until the reset; the capped
+// transcript stays under the ticket's logs for the next run's retrospective.
+func TestRunSkipsTheRetrospectiveAfterACapAbortedImplementation(t *testing.T) {
+	r := &recorder{}
+	reset := time.Date(2026, 11, 22, 3, 0, 0, 0, time.UTC)
+	out := Run(Deps{
+		FetchMain:      func() error { return nil },
+		Implementation: r.stage("impl", stages.Result{OK: false, Disposition: stages.CapAborted, CapResetAt: reset}),
+		Review:         r.stage("review", stages.Result{OK: true}),
+		Retrospective:  r.stage("retro", stages.Result{OK: true}),
+		Log:            r,
+	})
+	if want := []string{"impl"}; !reflect.DeepEqual(r.order, want) {
+		t.Errorf("stage order = %v, want %v (a cap-aborted implementation ends the slice)", r.order, want)
+	}
+	if out.Disposition != stages.CapAborted || !out.CapResetAt.Equal(reset) {
+		t.Errorf("out = %+v, want CapAborted resetting at %s", out, reset)
+	}
+	if !r.saw("skipping the rest of the slice, retrospective included (#407)") {
+		t.Errorf("no cap-abort skip narration; events = %v", r.events)
+	}
+}
+
 // The implementation stage's PreflightAborted (the Docker sandbox couldn't launch:
 // full disk / daemon down) propagates to the run so the loop reclaims disk +
 // backs off and the breaker stays blind to it. The abort is not Retryable, so the

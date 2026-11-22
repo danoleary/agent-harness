@@ -752,3 +752,73 @@ func TestReviewQuotesBlockedOnlyForAnEarlierBlockedLine(t *testing.T) {
 		}
 	}
 }
+
+// The incident shape of #407, line for line: the CLI's five-hour usage window
+// rejected the session at launch. The stream carried a rejected rate_limit_event,
+// then a synthetic assistant turn with error "rate_limit" and the newer "hit your
+// session limit" wording, then an is_error result that billed $0. Each line is a
+// cap abort, and the reset is the event's exact epoch, not the "resets 3am (UTC)"
+// prose read in the harness's own timezone.
+const (
+	sessionLimitEvent     = `{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":1795755600,"rateLimitType":"five_hour","overageStatus":"rejected","isUsingOverage":false},"uuid":"7c1d","session_id":"a1b2"}`
+	sessionLimitSynthetic = `{"type":"assistant","message":{"id":"msg_1","model":"<synthetic>","role":"assistant","content":[{"type":"text","text":"You've hit your session limit · resets 3am (UTC)"}]},"error":"rate_limit","session_id":"a1b2"}`
+	sessionLimitResult    = `{"type":"result","subtype":"success","is_error":true,"duration_ms":412,"num_turns":1,"result":"You've hit your session limit · resets 3am (UTC)","total_cost_usd":0,"session_id":"a1b2"}`
+)
+
+func TestTheSessionLimitAbortIsASpendingCapAbort(t *testing.T) {
+	for name, line := range map[string]string{
+		"rejected rate_limit_event": sessionLimitEvent,
+		"synthetic rate_limit turn": sessionLimitSynthetic,
+		"session-limit result":      sessionLimitResult,
+	} {
+		if !IsSpendingCapAbort(line) {
+			t.Errorf("%s should be a spending-cap abort", name)
+		}
+	}
+}
+
+func TestSpendingCapResetTimePrefersTheEventsEpoch(t *testing.T) {
+	now := time.Date(2026, 11, 22, 1, 0, 0, 0, time.FixedZone("PST", -8*3600))
+	got, ok := SpendingCapResetTime(sessionLimitEvent, now)
+	if !ok {
+		t.Fatal("expected the rejected event's resetsAt to give the reset time")
+	}
+	if want := time.Unix(1795755600, 0); !got.Equal(want) {
+		t.Errorf("got %s, want %s (the event's epoch)", got, want)
+	}
+	if got.Location() != now.Location() {
+		t.Errorf("location = %s, want now's %s", got.Location(), now.Location())
+	}
+}
+
+// The newer prose still yields a reset by the fallback regex when no event named one.
+func TestSpendingCapResetTimeReadsTheSessionLimitWording(t *testing.T) {
+	now := time.Date(2026, 11, 22, 1, 0, 0, 0, time.UTC)
+	got, ok := SpendingCapResetTime(sessionLimitResult, now)
+	if !ok {
+		t.Fatal("expected a reset time from the session-limit result text")
+	}
+	if want := time.Date(2026, 11, 22, 3, 0, 0, 0, time.UTC); !got.Equal(want) {
+		t.Errorf("got %s, want %s", got, want)
+	}
+}
+
+// A healthy session near its limit carries an allowed or allowed_warning event; a
+// real model turn carries no error; and a synthetic turn with another error is not
+// the rate limit. None of them is a cap abort.
+func TestRateLimitSignalsThatAreNotACapAbort(t *testing.T) {
+	for name, line := range map[string]string{
+		"allowed_warning event": `{"type":"rate_limit_event","rate_limit_info":{"status":"allowed_warning","resetsAt":1795755600,"rateLimitType":"five_hour","utilization":0.99}}`,
+		"allowed event":         `{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","resetsAt":1795755600,"rateLimitType":"five_hour"}}`,
+		"real turn with error":  `{"type":"assistant","message":{"model":"claude-opus-5-5","content":[{"type":"text","text":"rate limits are tricky"}]},"error":"rate_limit"}`,
+		"other synthetic error": `{"type":"assistant","message":{"model":"<synthetic>","content":[{"type":"text","text":"API Error: 500"}]},"error":"server_error"}`,
+		"real turn quoting it":  `{"type":"assistant","message":{"model":"claude-opus-5-5","content":[{"type":"text","text":"the CLI says you've hit your session limit"}]}}`,
+	} {
+		if IsSpendingCapAbort(line) {
+			t.Errorf("%s must not be a spending-cap abort", name)
+		}
+		if _, ok := SpendingCapResetTime(line, time.Now()); ok {
+			t.Errorf("%s must not yield a reset time", name)
+		}
+	}
+}
