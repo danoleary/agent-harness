@@ -607,7 +607,11 @@ func Implementation(h hostio.Host, cfg config.Config, log *runlog.Logger, args A
 			// "tdd", not implementationSession: the checkpoint subject is reviewer-
 			// facing, so it uses this stage's human name (matching its "tdd ✓/✗" logs)
 			// rather than the machine identifier used for container/transcript names.
-			if cErr := wt.Checkpoint(args.Identifier, "tdd"); cErr != nil {
+			// A worktree another live run holds carries that run's edits, not this
+			// session's: leave them uncommitted (#366).
+			if checkpointHeldElsewhere(cfg, args.Identifier, h.RunID(), wt.Path(), log) {
+				// narrated
+			} else if cErr := wt.Checkpoint(args.Identifier, "tdd"); cErr != nil {
 				log.Event("⚠ uncommitted work remains in the worktree at " + wt.Path() + " and the recovery checkpoint commit failed (" + cErr.Error() + ") — recover it manually before re-running")
 			} else {
 				log.Event("✓ harness recovery checkpoint committed on " + wt.Branch() + " — the session's uncommitted diff is preserved (unverified: finish or re-run, then amend, before opening a PR)")

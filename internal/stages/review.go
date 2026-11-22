@@ -352,7 +352,9 @@ func Review(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Res
 		// the worktree is already clean (a red-but-clean gate has nothing uncommitted
 		// to recover).
 		if !wt.Clean() {
-			if cErr := wt.Checkpoint(args.Identifier, reviewSession); cErr != nil {
+			if checkpointHeldElsewhere(cfg, args.Identifier, h.RunID(), worktreePath, log) {
+				// another live run's edits, not this session's (#366)
+			} else if cErr := wt.Checkpoint(args.Identifier, reviewSession); cErr != nil {
 				log.Event("⚠ review session left uncommitted edits and the recovery checkpoint commit failed (" + cErr.Error() + ") — recover them manually at " + worktreePath)
 			} else {
 				log.Event("✓ harness recovery checkpoint committed on " + wt.Branch() + " — the review session's in-progress edits are preserved (unverified: a resumed review will see them, finish or re-run before opening a PR)")

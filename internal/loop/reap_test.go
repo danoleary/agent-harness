@@ -235,3 +235,21 @@ func TestOneInstancesReaperSparesAnotherInstancesHealthyClaim(t *testing.T) {
 		t.Errorf("released = %v, want the dead claim BEH-9 reaped", releasedMidRun)
 	}
 }
+
+// #366, replayed from herd BEH-1470: the first run's sandbox started, the host
+// slept about 10 hours and the sandbox resumed on wake. By wall clock the claim
+// was far past the TTL with nothing pushed yet, so the reaper released the live
+// run's ticket to Todo and the next selection started a second run on its
+// worktree. A claim whose run is live is never reaped, however old it reads.
+func TestDoesNotReapTheClaimOfALiveRunAfterAHostSleep(t *testing.T) {
+	r := &recorder{}
+	var released []string
+	started := fixedNow.Add(-(10*time.Hour + 12*time.Minute))
+	claims := []StaleClaim{{Key: "BEH-1470", StartedAt: started, Live: true}, {Key: "BEH-1483", StartedAt: started}}
+	d, _ := reaperDeps(r, claims, &released)
+	Run(d)
+
+	if len(released) != 1 || released[0] != "BEH-1483" {
+		t.Fatalf("released = %v, want only BEH-1483, whose run is dead — BEH-1470's run still holds its run lock", released)
+	}
+}

@@ -112,8 +112,12 @@ func main() {
 	// One Host for the whole slice, bound to all three stages by the composition
 	// root the ticket loop shares (pipeline.ForTicket).
 	// The run lock says this run is live, so the PR loop stays off the ticket's
-	// branch while it runs and no longer (#231).
-	release := loophost.HoldRun(cfg, args.Identifier, log)
+	// branch while it runs and no longer (#231), and no second run starts on the
+	// ticket's worktree alongside it (#366). A run that cannot take it runs nothing.
+	release, err := loophost.HoldRun(cfg, args.Identifier, runID, log)
+	if err != nil {
+		os.Exit(1)
+	}
 	outcome := pipeline.Run(pipeline.ForTicket(cfg, log, runID, args))
 	release()
 	os.Exit(outcome.ExitCode())

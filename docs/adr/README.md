@@ -68,3 +68,4 @@ catches a duplicate there.
 - [ADR-0058](0058-host-git-refuses-a-command-the-repository-config-names.md): Host git refuses a command the repository's config names
 - [ADR-0059](0059-a-sandboxed-session-refuses-an-interactive-git-mode.md): A sandboxed session refuses an interactive git mode
 - [ADR-0060](0060-a-green-base-unsettles-a-stale-base-red-finding-and-says-so-on-it.md): A green base unsettles a stale base-red finding and says so on it
+- [ADR-0061](0061-a-run-that-cannot-take-its-run-lock-runs-nothing.md): A run that cannot take its run lock runs nothing
