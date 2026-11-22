@@ -230,19 +230,26 @@ func Review(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Res
 	// recoverable incompleteness class is worth another turn.
 	result := verify.Review(wt, gateRes.Outcome, reviewOutcome)
 
-	// #111: a host gate red over the commit the review session itself made is
-	// recoverable once. The session is re-launched with the failing gate's name and
-	// the tail of its log, and the gate re-runs over whatever it commits — so a
-	// Consumer prompt need not have the session run the heavy suites the host gate
-	// repeats on the same commit. The host gate stays the only push authority: the
-	// re-launch's own report decides nothing. verify.ReviewGateRetry keeps the
-	// handoff's own red, a dirty tree, an OOM, a cap and an unrunnable gate on the
-	// fail-closed path they always took.
+	// #111: a host gate red after the review is recoverable once. The session is
+	// re-launched with the failing gate's name and the tail of its log, and the gate
+	// re-runs over whatever it commits — so a Consumer prompt need not have the
+	// session run the heavy suites the host gate repeats on the same commit. That
+	// holds whether the red is over the review's own fix or over the implementation's
+	// handoff the review made no commit on (#400): neither session runs the
+	// `:changed` suites, so a red first seen on the host is expected, and failing
+	// the ticket over it threw away a complete implementation and review. The host
+	// gate stays the only push authority: the re-launch's own report decides
+	// nothing. verify.ReviewGateRetry keeps a dirty tree, a blocked verdict, an
+	// OOM, a cap and an unrunnable gate on the fail-closed path they always took.
 	headAfterReview, _ := wt.HeadSHA()
 	committed := headBeforeReview != "" && headAfterReview != headBeforeReview
-	if verify.ReviewGateRetry(gateRes.Outcome, reviewOutcome, committed, wt.Clean()) {
-		log.Event(fmt.Sprintf("review ↻ host gate %q is red (exit %d) over the review's own commit — re-launching the review once with its log tail (#111)", gateRes.FailedGate, gateExit))
-		run := reviewRun(cfg, subject, nil, &prompt.RedGate{Name: gateRes.FailedGate, Log: gateLogTail(log.Dir, gateRes)})
+	if verify.ReviewGateRetry(gateRes.Outcome, reviewOutcome, wt.Clean()) {
+		over := "the implementation's handoff"
+		if committed {
+			over = "the review's own commit"
+		}
+		log.Event(fmt.Sprintf("review ↻ host gate %q is red (exit %d) over %s — re-launching the review once with its log tail (#111)", gateRes.FailedGate, gateExit, over))
+		run := reviewRun(cfg, subject, nil, &prompt.RedGate{Name: gateRes.FailedGate, Log: gateLogTail(log.Dir, gateRes), OwnCommit: committed})
 		run.Label = reviewSession + "-gatefix"
 		reviewOutcome = launchReview(run, "red-gate re-launch 1/1")
 		gateRes = fixes.Gates(gateStep + "-gatefix")

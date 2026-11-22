@@ -873,22 +873,45 @@ func TestReviewRedGateRelaunchIsBoundedToOne(t *testing.T) {
 	}
 }
 
-// A red gate over a commit the review did not make — the implementation's
-// handoff, which the review found nothing to fix in — is not the review's to
-// recover: it fails as before, with no re-launch.
-func TestReviewRedGateOverTheHandoffIsNotRelaunched(t *testing.T) {
-	h, _ := handedOff(t, "PROJ-62")
+// #400, replayed: the implementation handed off, the review made no commit and
+// emitted a clear verdict, and the host re-run then went red on one gate with
+// one root-cause line in its log. That used to fail the ticket and throw both
+// sessions away. The review is now re-launched once over the handoff with the
+// gate's name and log tail, the gate re-runs over what it commits, and green
+// ships. The run log narrates the re-launch.
+func TestReviewRelaunchesOnceOnARedGateOverTheHandoff(t *testing.T) {
+	h, repo := handedOff(t, "PROJ-62")
 	log := stageLog(t, "PROJ-62")
-	h.AgentOutcome = session.Outcome{ReviewVerdictEmitted: true}
-	h.ShellFn = redFirstGate(log, session.Outcome{ExitCode: 1}, redGateLog)
+	h.AgentFn = func(call int, _ hostio.AgentRun) session.Outcome {
+		if call == 2 {
+			repo.Commit(h.Worktree(), "fix.txt", "the gate fix\n", "fix: the test the host gate caught")
+		}
+		return clearVerdict
+	}
+	gateLog := "ok  pkg/a\n--- FAIL: TestChangedSuite (0.01s)\n    changed_test.go:7: handoff broke the changed suite\nFAIL\n"
+	h.ShellFn = redFirstGate(log, session.Outcome{ExitCode: 1}, gateLog)
 
 	res := Review(h, stageCfg(), log, Args{Identifier: "PROJ-62"})
 
-	if res.OK {
-		t.Fatalf("a red gate over the handoff ships nothing, got %+v", res)
+	if !res.OK || res.Disposition != Shipped {
+		t.Fatalf("a re-launch over the handoff that turns the gate green ships, got %+v", res)
 	}
-	if got := labels(h.Agents); len(got) != 1 {
-		t.Errorf("agent runs = %v, want no re-launch for a commit the review did not make", got)
+	if got := labels(h.Agents); len(got) != 2 || got[1] != reviewSession+"-gatefix" {
+		t.Fatalf("agent runs = %v, want the review re-launched once under its own label", got)
+	}
+	for _, want := range []string{"gate `check`", "handoff broke the changed suite", "implementation"} {
+		if !strings.Contains(h.Agents[1].Prompt, want) {
+			t.Errorf("the re-launch's prompt is missing %q:\n%s", want, h.Agents[1].Prompt)
+		}
+	}
+	if strings.Contains(h.Agents[1].Prompt, "OVER YOUR LAST COMMIT") {
+		t.Error("the review made no commit, so the re-launch must not say the red is over its own commit")
+	}
+	if got := shellLabels(h.Shells); len(got) != 3 || got[2] != gateStep+"-gatefix-check" {
+		t.Errorf("shell runs = %v, want the gate re-run after the re-launch under its own label", got)
+	}
+	if said := narration(t, log); !strings.Contains(said, "over the implementation's handoff") {
+		t.Errorf("run.jsonl should narrate the re-launch over the handoff; got %s", said)
 	}
 }
 
@@ -957,7 +980,14 @@ func TestReviewRedGateNarratesTheStepLogTailAndPath(t *testing.T) {
 	log := stageLog(t, "PROJ-76")
 	h.AgentOutcome = session.Outcome{ReviewVerdictEmitted: true}
 	stdout := "check-adr: ADR-0041 is referenced in internal/stages/review.go but docs/adr/ has no 0041-*.md\n-- step exited 2 --\n"
-	h.ShellFn = redFirstGate(log, session.Outcome{ExitCode: 2, StderrTail: "make: *** [Makefile:41: check-adr] Error 1"}, stdout)
+	// Red on every run, so the gate is still red after the one re-launch (#400).
+	h.ShellFn = func(_ int, s hostio.ShellRun) session.Outcome {
+		if !strings.HasPrefix(s.Label, gateStep) {
+			return session.Outcome{}
+		}
+		_ = os.WriteFile(filepath.Join(log.Dir, s.Label+".log"), []byte(stdout), 0o644)
+		return session.Outcome{ExitCode: 2, StderrTail: "make: *** [Makefile:41: check-adr] Error 1"}
+	}
 
 	Review(h, stageCfg(), log, Args{Identifier: "PROJ-76"})
 
@@ -965,7 +995,7 @@ func TestReviewRedGateNarratesTheStepLogTailAndPath(t *testing.T) {
 	for _, want := range []string{
 		"docs/adr/ has no 0041-*.md",
 		"make: *** [Makefile:41: check-adr] Error 1",
-		filepath.Join(log.Dir, gateStep+"-check.log"),
+		filepath.Join(log.Dir, gateStep+"-gatefix-check.log"),
 	} {
 		if !strings.Contains(said, want) {
 			t.Errorf("run.jsonl should carry %q; got %s", want, said)
