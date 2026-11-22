@@ -36,8 +36,9 @@ judged the code.
   the tail of each failed log in `ci-flake-*.log` in the log dir: read it, and
   name the failing step and the key failure line in the body (the class of
   failure — a timeout, a dropped fetch, a race in one test — not a pasted
-  log). A step-less name means gh could not read that attempt; the file says
-  why, so say that instead.
+  log). A step-less name means no failing step was recorded — gh could not
+  read that attempt, or the job died before any step failed; the file says
+  which, so say that instead.
 
 Ignore one-off mistakes that a better instruction would not have prevented.
 
