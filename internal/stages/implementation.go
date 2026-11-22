@@ -411,6 +411,18 @@ func Implementation(h hostio.Host, cfg config.Config, log *runlog.Logger, args A
 		return Result{Err: err}
 	}
 
+	// A resumed branch that still stands on the verified handoff the last session
+	// left holds finished work: start the run at review instead of spending a whole
+	// session re-running the gates over it (#367, ADR-0061). Review re-provisions
+	// the worktree itself, so neither post_create nor the base gate runs here.
+	if head, ok := standingHandoff(wt, log.Dir); ok {
+		log.Event(fmt.Sprintf(
+			"tdd ⏭ skipping the implementation session — %s stands on the verified handoff %s the last session left, with no commit since but harness checkpoints; starting at review (#367)",
+			wt.Branch(), shortCommit(head),
+		))
+		return Result{OK: true}
+	}
+
 	// Create the worktree + branch host-side and run the Consumer's post_create
 	// toolchain hook before launching the session (ADR-0008/BEH-636). A failure means
 	// there is no worktree to run against, so release the claim (best-effort) and
@@ -476,6 +488,8 @@ func Implementation(h hostio.Host, cfg config.Config, log *runlog.Logger, args A
 		capAborted bool
 		outcome    session.Outcome
 	)
+	// Whatever the session does is the latest session's word on the handoff.
+	clearHandoff(log.Dir)
 	for attempt := 1; attempt <= maxTddAttempts; attempt++ {
 		launch := sessionRun
 		if attempt > 1 {
@@ -575,6 +589,9 @@ func Implementation(h hostio.Host, cfg config.Config, log *runlog.Logger, args A
 		// all regenerable, so a strip failure must not fail the run.
 		if err := wt.StripPaths(cfg.HandoffStripPaths); err != nil {
 			log.Event("⚠ could not strip " + strings.Join(cfg.HandoffStripPaths, ", ") + " from the worktree (" + err.Error() + ") — the reviewer should re-run the project's post_create")
+		}
+		if outcome.ExitCode == 0 {
+			recordVerifiedHandoff(wt, log)
 		}
 	} else {
 		// A spending-cap abort (BEH-494) killed the session before it did any work,

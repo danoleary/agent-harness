@@ -403,6 +403,31 @@ func (w Worktree) CommitSubjects() []string {
 	return subjects
 }
 
+// SubjectsSince returns the subject lines of the commits on the feature branch
+// after rev, oldest first, and ok=false when the branch does not carry rev: a
+// commit a rebase rewrote, one never on the branch, or one that does not resolve.
+// A resumed run reads it to tell whether anything landed on the branch since its
+// verified handoff (#367). Read from the main checkout, like
+// [Worktree.CommitSubjects].
+func (w Worktree) SubjectsSince(rev string) (subjects []string, ok bool) {
+	if rev == "" || strings.HasPrefix(rev, "-") {
+		return nil, false
+	}
+	if w.run("git", "-C", w.repo, "merge-base", "--is-ancestor", rev, "refs/heads/"+w.branch) != nil {
+		return nil, false
+	}
+	out, err := w.output("git", "-C", w.repo, "log", "--reverse", "--format=%s", rev+"..refs/heads/"+w.branch, "--")
+	if err != nil {
+		return nil, false
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if s := strings.TrimSpace(line); s != "" {
+			subjects = append(subjects, s)
+		}
+	}
+	return subjects, true
+}
+
 // Clean reports whether the worktree has no uncommitted changes — the guarantee
 // that the tree the host-side gate validated is exactly the tree that [Worktree.Push]
 // ships. The gate runs against the worktree's working files (committed +
