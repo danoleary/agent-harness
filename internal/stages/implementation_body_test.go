@@ -3,6 +3,7 @@ package stages
 import (
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -230,6 +231,43 @@ func TestImplementationSkipsWorkAlreadyMergedOnMain(t *testing.T) {
 	}
 	if len(forced.Agents) != 1 {
 		t.Errorf("--force must still launch the session, got %v", labels(forced.Agents))
+	}
+}
+
+// #364: the envelope tells the session origin/main is already fetched and not
+// to fetch it, since the sandbox has no network and no credentials. So every
+// launch reads the remote's origin/main, fetched host-side by worktree
+// provisioning: Create on a fresh worktree, FastForward on a reused one. The run
+// passes --force, so the already-on-main guard's own fetch does not run, and is
+// the standalone `implementation` tool, so no pipeline fetched at the top.
+func TestImplementationFetchesOriginMainBeforeTheSession(t *testing.T) {
+	for name, host := range map[string]func(*testing.T, string) (*hostio.Fake, *gittest.Repo){
+		"fresh worktree":   fresh,
+		"resumed worktree": handedOff,
+	} {
+		t.Run(name, func(t *testing.T) {
+			h, repo := host(t, "gh-364")
+			repo.Merge("sibling.txt", "a sibling's change\n", "a sibling lands (#363)")
+			current := repo.OnOrigin("main")
+			var seen string
+			h.AgentFn = func(call int, run hostio.AgentRun) session.Outcome {
+				out, err := exec.Command("git", "-C", h.Worktree().Path(), "rev-parse", "refs/remotes/origin/main").Output()
+				if err != nil {
+					t.Fatalf("read origin/main in the worktree: %v", err)
+				}
+				seen = strings.TrimSpace(string(out))
+				return commitsHandoff(h, repo)(call, run)
+			}
+
+			Implementation(h, stageCfg(), stageLog(t, "gh-364"), Args{Identifier: "gh-364", Force: true})
+
+			if len(h.Agents) != 1 || !strings.Contains(h.Agents[0].Prompt, "do not run `git fetch`") {
+				t.Fatalf("want one session told not to fetch, got %v", labels(h.Agents))
+			}
+			if seen != current {
+				t.Errorf("the session saw origin/main at %s, want the remote's %s: the host must fetch it before the launch", seen, current)
+			}
+		})
 	}
 }
 
