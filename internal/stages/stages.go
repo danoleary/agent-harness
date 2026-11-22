@@ -311,6 +311,16 @@ const (
 	// slow or queued CI graph cannot trip it. A watch that pushed a fix first is
 	// Shipped, whatever its CI has yet to say.
 	CIPending
+	// SessionBlocked — the implementation session stopped because a human must
+	// decide something first, and said why in the blocked marker's reason and
+	// questions (#368, ADR-0070): the ticket's premise is false, or it asks for a
+	// decision the session cannot make. Only the implementation stage produces it,
+	// whatever the session left on its branch. Nothing is handed off, so review
+	// does not run, but the slice did its job. The loop keeps the claim, labels
+	// the ticket blocked and comments the reason and questions, so selection
+	// passes over it until a human removes the label. The breaker stays blind.
+	// BlockedWhy and BlockedQuestions carry them.
+	SessionBlocked
 )
 
 func (d Disposition) String() string {
@@ -339,6 +349,8 @@ func (d Disposition) String() string {
 		return "run-live"
 	case CIPending:
 		return "ci-pending"
+	case SessionBlocked:
+		return "session-blocked"
 	default:
 		return "no-pr"
 	}
@@ -391,6 +403,10 @@ type Result struct {
 	// (#331); empty otherwise.
 	ResolvedBy  string
 	ResolvedWhy string
+	// BlockedWhy is the session's reason, and BlockedQuestions what it asks a
+	// human to decide, when Disposition is SessionBlocked (#368); empty otherwise.
+	BlockedWhy       string
+	BlockedQuestions []string
 	// GreenBase is the base SHA the implementation stage found green, gated
 	// fresh or read from its recorded verdict, for the run's retrospective to
 	// unsettle the base-gates-red class on (#311). Empty when the base was red,

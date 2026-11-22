@@ -169,6 +169,10 @@ func Run(d Deps) stages.Result {
 		// The session found the ticket already fixed on main and stopped without
 		// committing (#329): a sanctioned stop with nothing to review, not a failure.
 		d.Log.Event("pipeline — implementation found the ticket already resolved on main by " + impl.ResolvedBy + "; skipping review (nothing to review). Retrospective still runs.")
+	} else if impl.Disposition == stages.SessionBlocked {
+		// The session stopped for a human to decide (#368): whatever its branch
+		// holds is not a handoff, so review must not ship it.
+		d.Log.Event("pipeline — implementation stopped blocked on a human; skipping review (nothing handed off). Retrospective still runs.")
 	} else {
 		d.Log.Event("pipeline — implementation failed; skipping review (nothing to review). Retrospective still runs.")
 	}
@@ -193,14 +197,17 @@ func Run(d Deps) stages.Result {
 
 	// One folded Result for the whole slice: OK iff every stage that *ran* did its
 	// job, and one Disposition for the loop to act on.
-	// A ResolvedOnMain implementation did its job, though it handed nothing off.
-	implDone := impl.OK || impl.Disposition == stages.ResolvedOnMain
+	// A ResolvedOnMain or SessionBlocked implementation did its job, though it
+	// handed nothing off.
+	implDone := impl.OK || impl.Disposition == stages.ResolvedOnMain || impl.Disposition == stages.SessionBlocked
 	return stages.Result{
-		OK:          implDone && (!reviewRan || review.OK) && retro.OK,
-		Disposition: folded,
-		CapResetAt:  firstResetTime(impl, review, retro),
-		ResolvedBy:  impl.ResolvedBy,
-		ResolvedWhy: impl.ResolvedWhy,
+		OK:               implDone && (!reviewRan || review.OK) && retro.OK,
+		Disposition:      folded,
+		CapResetAt:       firstResetTime(impl, review, retro),
+		ResolvedBy:       impl.ResolvedBy,
+		ResolvedWhy:      impl.ResolvedWhy,
+		BlockedWhy:       impl.BlockedWhy,
+		BlockedQuestions: impl.BlockedQuestions,
 	}
 }
 
@@ -217,7 +224,8 @@ func interrupted(log Narrator, stage string, res stages.Result) stages.Result {
 
 // fold reduces the three stage dispositions to the run's one, in strict
 // precedence order. Only review can ship or recommend-close and only
-// implementation can preflight-abort or find the ticket resolved on main, so at
+// implementation can preflight-abort, find the ticket resolved on main or stop
+// blocked on a human, so at
 // most one stage carries any given
 // value; the order is what decides between *different* stages disagreeing — a
 // retrospective that cap-aborts after a review that already shipped (or already
@@ -229,7 +237,7 @@ func interrupted(log Narrator, stage string, res stages.Result) stages.Result {
 // implementation or review, and drops an interrupted retrospective from it.
 func fold(stagesInOrder ...stages.Result) stages.Disposition {
 	for _, want := range []stages.Disposition{
-		stages.Shipped, stages.RecommendClose, stages.CapAborted, stages.PreflightAborted, stages.ResolvedOnMain,
+		stages.Shipped, stages.RecommendClose, stages.CapAborted, stages.PreflightAborted, stages.ResolvedOnMain, stages.SessionBlocked,
 	} {
 		for _, s := range stagesInOrder {
 			if s.Disposition == want {

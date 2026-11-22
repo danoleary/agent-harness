@@ -195,6 +195,12 @@ human to close it, and keeps the claim. The breaker stays blind (ADR-0052).
 naming the ticket and launched no session. Review and retrospective do not run; the
 loop labels the ticket blocked, comments the commit for a human to close it, and
 keeps the claim. The breaker stays blind (ADR-0056).
+**SessionBlocked** means the implementation session stopped because a human must
+decide something first, giving a reason and questions in `/findings/blocked.json`.
+Review does not run; the loop labels the ticket blocked, comments the reason and
+questions, and keeps the claim, so no run picks it up until a human removes the
+label. The breaker stays blind. The same marker's `follow_ups` are filed as
+tickets linked to this one, not ready (ADR-0070).
 _Avoid_: outcome, signal, status.
 
 **Landing**:

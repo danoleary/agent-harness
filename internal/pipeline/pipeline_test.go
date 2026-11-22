@@ -618,3 +618,27 @@ func TestRetrospectiveGetsTheGreenBaseImplementationFound(t *testing.T) {
 		t.Errorf("retrospective got green bases %v, want the re-attempt's [bbb]", got)
 	}
 }
+
+// #368: an implementation whose session stopped blocked on a human handed
+// nothing off, so review must not run, even over a branch the session committed
+// to. The slice did its job: it exits 0 and carries SessionBlocked, with the
+// reason and questions, to the loop.
+func TestRunImplementationSessionBlockedSkipsReviewAndIsNoFailure(t *testing.T) {
+	r := &recorder{}
+	out := Run(Deps{
+		FetchMain:      func() error { return nil },
+		Implementation: r.stage("impl", stages.Result{Disposition: stages.SessionBlocked, BlockedWhy: "premise is false", BlockedQuestions: []string{"keep it?"}}),
+		Review:         r.stage("review", stages.Result{OK: true, Disposition: stages.Shipped}),
+		Retrospective:  r.stage("retro", stages.Result{OK: true}),
+		Log:            r,
+	})
+	if want := []string{"impl", "retro"}; !reflect.DeepEqual(r.order, want) {
+		t.Errorf("stage order = %v, want %v (nothing handed off to review; retro still runs)", r.order, want)
+	}
+	if out.ExitCode() != 0 || out.Disposition != stages.SessionBlocked || out.BlockedWhy != "premise is false" || !reflect.DeepEqual(out.BlockedQuestions, []string{"keep it?"}) {
+		t.Errorf("out = %+v, want an exit-0 SessionBlocked carrying the reason and questions", out)
+	}
+	if r.saw("implementation failed") || !r.saw("blocked on a human") {
+		t.Errorf("events = %v, want the block narrated, not a failure", r.events)
+	}
+}

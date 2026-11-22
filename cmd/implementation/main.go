@@ -54,9 +54,9 @@ func main() {
 		fmt.Fprintf(os.Stderr, "%v\n", res.Err)
 		os.Exit(1)
 	}
-	// A ticket the session found already resolved on main handed nothing off, but
-	// the Stage did its job (#329).
-	if !res.OK && res.Disposition != stages.ResolvedOnMain {
+	// A ticket the session found already resolved on main, or stopped on blocked
+	// for a human, handed nothing off, but the Stage did its job (#329, #368).
+	if !res.OK && res.Disposition != stages.ResolvedOnMain && res.Disposition != stages.SessionBlocked {
 		os.Exit(1)
 	}
 }

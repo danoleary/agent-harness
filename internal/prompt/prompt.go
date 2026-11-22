@@ -422,6 +422,15 @@ func freshWorktreeInstr(slug, worktreePath, branchPrefix string) string {
 // already-fixed-on-branch steer instead.
 const resolvedOnMainProtocol = "If you find the ticket is already fixed on `origin/main` (for example by a commit for a different ticket that never names this one), stop without committing and write `/findings/resolved.json` as one JSON object `{\"commit\": \"<sha>\", \"reason\": \"<why that commit already fixes this ticket>\"}`, naming the `origin/main` commit that fixes it. The harness checks that commit is on `origin/main`, records the run as already resolved rather than failed, and asks a human to close the ticket with your reason. Do not write the file in any other case: a ticket that still needs work needs a handoff commit."
 
+// blockedProtocol is how an implementation session reports the two outcomes a
+// handoff commit cannot carry (#368, ADR-0070): a ticket blocked on a human's
+// decision, and a further ticket the work needs. The session cannot reach the
+// tracker, so it writes the blocked marker; the host comments the reason and
+// questions on the ticket and labels it blocked, and files each follow-up as an
+// issue linked to this one, not ready. Every variant gets it: a resumed session
+// can meet a block or a split too.
+const blockedProtocol = "If you cannot go on until a human decides something (the ticket's premise is false, or it asks for a decision you cannot make), stop and write `/findings/blocked.json` as one JSON object `{\"reason\": \"<why you stopped>\", \"questions\": [\"<what a human must decide>\"]}`. Do not record the block in an empty handoff commit: the harness posts the reason and questions on the ticket, labels it blocked so no run picks it up until a human removes the label, and does not send the branch to review. If the work needs a further ticket (for example, the ticket says to split it into two pull requests and you ship only the first half), add `\"follow_ups\": [{\"title\": \"<title>\", \"body\": \"<what it must do>\"}]` to the same file, with or without a `reason`, and still commit your handoff for this ticket: the harness files each follow-up as a new ticket linked to this one, for a human to make ready."
+
 // worktreeAt is where the envelope says the worktree is: its absolute path, since
 // the session starts in the worktree rather than in the checkout a relative path
 // resolves from (#245). A Context built without one — a test's — falls back to
@@ -464,6 +473,7 @@ func implement(c Context) string {
 	return join(
 		body(c),
 		worktreeState,
+		blockedProtocol,
 		ticketContext(c.Ticket),
 		sentrySection(c.Sentry),
 		greenBaseSection(c.GreenBase),
