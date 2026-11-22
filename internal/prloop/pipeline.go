@@ -45,6 +45,10 @@ type Pipeline struct {
 	// refuses (#232), and hands the PR to a human when a run's leftover work could
 	// not be saved (#246). Nil leaves the attempt spent and the PR unlabelled.
 	Source *Source
+	// RunLock is held for the whole fix, checkout to cleanup, the retrospective
+	// included, so another loop's merged-worktree prune leaves the worktree while
+	// the run is in it (#416). Nil holds none.
+	RunLock loop.RunLock
 }
 
 var _ loop.Pipeline = Pipeline{}
@@ -69,8 +73,9 @@ func (p Pipeline) Run(item loop.WorkItem, claim *lease.Lease) stages.Result {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		return stages.Result{}
 	}
-	h := hostio.NewOnBranch(cfg, log, runlog.MakeRunID(time.Now()), false, ticket.Slug(item.Key), item.Branch)
-	out := Fix(h, cfg, log, it, p.Loop)
+	runID := runlog.MakeRunID(time.Now())
+	h := hostio.NewOnBranch(cfg, log, runID, false, ticket.Slug(item.Key), item.Branch)
+	out := p.RunLock.Under(item.Key, runID, func() stages.Result { return Fix(h, cfg, log, it, p.Loop) })
 	// Before the deferred release, so settling the lease sees the PR handed off.
 	if p.Source != nil {
 		var unsaved *UnsavedError

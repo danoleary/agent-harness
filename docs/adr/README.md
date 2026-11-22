@@ -75,3 +75,4 @@ catches a duplicate there.
 - [ADR-0065](0065-a-session-is-told-its-role-and-whether-it-may-write.md): A session is told its role and whether it may write
 - [ADR-0066](0066-the-merged-worktree-prune-leaves-a-worktree-a-live-run-is-in.md): The merged-worktree prune leaves a worktree a live run is in
 - [ADR-0067](0067-a-cap-abort-is-read-from-the-streams-rate-limit-signal-and-ends-the-slice.md): A cap abort is read from the stream's rate-limit signal, and ends the slice
+- [ADR-0068](0068-a-pr-or-security-alerts-run-holds-a-run-lock.md): A PR or security-alerts run holds a run lock, as a ticket's run does

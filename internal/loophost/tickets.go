@@ -349,6 +349,19 @@ func underRunLock(cfg config.Config, key, runID string, log loop.Narrator, run f
 	return run()
 }
 
+// RunLock is [underRunLock] over cfg's checkout, narrated to log: the run lock
+// the PR and security-alerts loops' runs hold, as a ticket's run does. Their
+// worktree, `.claude/worktrees/<slug>`, is named by the item's key as a ticket's
+// is, so the merged-worktree prune's shield and the PR loop's reclaim see it live
+// for as long as the run is in it. A PR-loop run's retrospective runs after its
+// push, and once that PR merges the worktree passes the prune's test for dead
+// (#416, ADR-0068).
+func RunLock(cfg config.Config, log loop.Narrator) loop.RunLock {
+	return func(key, runID string, run func() stages.Result) stages.Result {
+		return underRunLock(cfg, key, runID, log, run)
+	}
+}
+
 // runLockTries and runLockRetry bound how long HoldRun waits out a held run lock:
 // long past a liveness probe, short against a run that really holds it.
 const (

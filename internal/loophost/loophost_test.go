@@ -18,6 +18,7 @@ import (
 	"github.com/danoleary/agent-harness/internal/loop"
 	"github.com/danoleary/agent-harness/internal/loopstream"
 	"github.com/danoleary/agent-harness/internal/nowork"
+	"github.com/danoleary/agent-harness/internal/prloop"
 	"github.com/danoleary/agent-harness/internal/ship"
 	"github.com/danoleary/agent-harness/internal/stages"
 	"github.com/danoleary/agent-harness/internal/ticket"
@@ -599,6 +600,52 @@ func TestPruneMergedWorktreesLeavesAWorktreeALiveRunIsIn(t *testing.T) {
 	}
 	if out := repo.Git(repo.Dir, "worktree", "list", "--porcelain"); strings.Contains(out, "locked") {
 		t.Errorf("the prune left a worktree locked:\n%s", out)
+	}
+}
+
+// #416: a PR-loop run rebases the PR's branch, pushes it, and then runs its
+// retrospective in its own worktree, .claude/worktrees/pr-<n>. Once the pushed PR
+// merges, that worktree is merged and clean, and the run held no run lock, so the
+// shield of #404 did not see it: another loop's prune removed it from under the
+// session. Replayed: the PR loop's run holds PR-416's run lock through
+// [RunLock] while a prune that removes every merged, clean worktree runs. The
+// run's worktree stays, and the lock is let go when the run ends.
+func TestPruneMergedWorktreesLeavesAWorktreeAPRLoopRunIsIn(t *testing.T) {
+	repo := gittest.New(t)
+	script := filepath.Join(repo.Dir, "scripts", "prune-merged-worktrees.sh")
+	if err := os.MkdirAll(filepath.Dir(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := "#!/bin/sh\nn=0\nfor wt in $(git worktree list --porcelain | sed -n 's|^worktree \\(.*/.claude/worktrees/.*\\)|\\1|p'); do\n" +
+		"  if git worktree remove --force \"$wt\" 2>/dev/null; then n=$((n+1)); fi\ndone\necho \"Pruned $n worktree(s).\"\n"
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	repo.Git(repo.Dir, "add", "-A")
+	repo.Git(repo.Dir, "commit", "-q", "-m", "add the prune script")
+	repo.Git(repo.Dir, "push", "-q", "origin", "main")
+	wt := repo.Worktree(ticket.Slug(prloop.Key(416)))
+	if err := wt.Create(); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := config.Config{Project: config.Project{BranchPrefix: gittest.Prefix}}
+	cfg.ProjectPath = repo.Dir
+	lock := hostlock.File(config.RunLockFile(cfg.ProjectPath, ticket.Slug(prloop.Key(416))))
+	got := RunLock(cfg, &narrator{})(prloop.Key(416), "run-retro", func() stages.Result {
+		if _, err := hostFor(t, cfg).PruneMergedWorktrees(); err != nil {
+			t.Fatalf("PruneMergedWorktrees: %v", err)
+		}
+		return stages.Result{OK: true, Disposition: stages.Shipped}
+	})
+	if !wt.Exists() {
+		t.Fatal("the prune removed PR-416's worktree while its PR-loop run, in its retrospective, was live")
+	}
+	if got.Disposition != stages.Shipped {
+		t.Errorf("Disposition = %v, want the run's own", got.Disposition)
+	}
+	if held, _ := lock.Held(); held {
+		t.Error("the run lock is still held after the PR-loop run ended")
 	}
 }
 
