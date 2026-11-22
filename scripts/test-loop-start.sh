@@ -28,14 +28,50 @@ SCRIPT_PATH="$(cd "$(dirname "$0")" && pwd)/loop-start.sh"
 TEST_DIR=$(mktemp -d)
 
 # Track every fake daemon we launch so the trap can tear them down — a detached
-# nohup child outlives this test process otherwise.
+# nohup child outlives this test process otherwise. The stub caffeinate below
+# appends its own pid to CAFF_PIDS, since some cases never learn it.
 STARTED_PIDS=""
+CAFF_PIDS="$TEST_DIR/caffeinate-pids"
 
-cleanup() {
-    for p in $STARTED_PIDS; do
+# reap_and_remove DIR PID... signals each pid, waits for it to exit, then
+# removes DIR. A child still writing when rm -rf walks the dir puts a new entry
+# in it and the rmdir fails, which once turned a script whose every case passed
+# red (#398). `wait` reaps a direct child; a detached nohup child is not ours to
+# wait on, so a bounded poll on kill -0 covers it, and SIGKILL ends one that
+# ignores TERM. A grandchild we never signalled can still land a last write, so
+# a failed removal is retried, and never fails the run: the cases decide that.
+reap_and_remove() {
+    dir="$1"
+    shift
+    for p in "$@"; do
         kill "$p" 2>/dev/null || true
     done
-    rm -rf "$TEST_DIR"
+    # One ~5s budget shared by every pid, so a wedged child cannot stall the
+    # trap once per pid.
+    polls=0
+    for p in "$@"; do
+        wait "$p" 2>/dev/null || true
+        while kill -0 "$p" 2>/dev/null && [ "$polls" -lt 50 ]; do
+            sleep 0.1
+            polls=$((polls + 1))
+        done
+        if kill -0 "$p" 2>/dev/null; then
+            kill -9 "$p" 2>/dev/null || true
+        fi
+    done
+    tries=1
+    until rm -rf "$dir" 2>/dev/null; do
+        if [ "$tries" -ge 5 ]; then
+            echo "warning: could not remove $dir" >&2
+            return 0
+        fi
+        sleep 0.2
+        tries=$((tries + 1))
+    done
+}
+
+cleanup() {
+    reap_and_remove "$TEST_DIR" $STARTED_PIDS $(cat "$CAFF_PIDS" 2>/dev/null || true)
 }
 trap cleanup EXIT
 
@@ -492,6 +528,7 @@ CAFF_RECORD="$TEST_DIR/caffeinate-argv"
 mkdir -p "$CAFF_BIN"
 cat > "$CAFF_BIN/caffeinate" <<EOF
 #!/bin/bash
+echo "\$\$" >> "$CAFF_PIDS"
 echo "\$*" >> "$CAFF_RECORD"
 waited=""
 while [ \$# -gt 0 ]; do
@@ -861,6 +898,55 @@ explicit_pid="$(cat "$EXPLICIT_PROJ/.agent-harness/loop.pid" 2>/dev/null || true
 STARTED_PIDS="$STARTED_PIDS $explicit_pid"
 if [ -z "$explicit_pid" ] || ! kill -0 "$explicit_pid" 2>/dev/null; then
     echo -e "${RED}FAIL${NC} - an explicit LOOP_BIN was refused"
+    exit 1
+else
+    echo -e "${GREEN}PASS${NC}"
+fi
+
+# --- cleanup waits for a still-writing child before removing the dir (#398) ----
+#
+# The EXIT trap once killed the daemons and ran rm -rf straight away; a child
+# still writing then put a new entry in the dir mid-walk, rm failed with
+# "Directory not empty" and a script whose every case passed exited 1. This
+# fake loop writes into its dir until signalled and keeps flushing for a moment
+# after TERM, as a daemon writing its last log lines does.
+echo -n "the cleanup waits for a child still writing into the dir and still exits 0 ... "
+BUSY_DIR="$TEST_DIR/busy"
+mkdir -p "$BUSY_DIR"
+BUSY_BIN="$TEST_DIR/busy-loop"
+cat > "$BUSY_BIN" <<EOF
+#!/bin/bash
+flushing=0
+trap 'flushing=1' TERM
+i=0
+echo started > "$BUSY_DIR/ready"
+while [ "\$flushing" = 0 ]; do
+    : > "$BUSY_DIR/f\$((i % 200))" 2>/dev/null
+    i=\$((i + 1))
+done
+end=\$((i + 20000))
+while [ "\$i" -lt "\$end" ]; do
+    : > "$BUSY_DIR/f\$((i % 200))" 2>/dev/null
+    i=\$((i + 1))
+done
+EOF
+chmod +x "$BUSY_BIN"
+LOOP_BIN="$BUSY_BIN" LOOP_PIDFILE="$TEST_DIR/busy.pid" LOOP_LOGFILE="$TEST_DIR/busy.log" "$SCRIPT_PATH" > /dev/null 2>&1
+busy_pid="$(cat "$TEST_DIR/busy.pid" 2>/dev/null || true)"
+STARTED_PIDS="$STARTED_PIDS $busy_pid"
+wait_for_log "$BUSY_DIR/ready" started || true
+busy_err="$( (reap_and_remove "$BUSY_DIR" "$busy_pid") 2>&1 )" && busy_rc=0 || busy_rc=$?
+if [ -z "$busy_pid" ]; then
+    echo -e "${RED}FAIL${NC} - the writing fake loop did not start"
+    exit 1
+elif [ "$busy_rc" != "0" ]; then
+    echo -e "${RED}FAIL${NC} - the cleanup exited $busy_rc with a child still writing: $busy_err"
+    exit 1
+elif [ -e "$BUSY_DIR" ]; then
+    echo -e "${RED}FAIL${NC} - the cleanup left $BUSY_DIR behind"
+    exit 1
+elif kill -0 "$busy_pid" 2>/dev/null; then
+    echo -e "${RED}FAIL${NC} - the writing fake loop $busy_pid outlived the cleanup"
     exit 1
 else
     echo -e "${GREEN}PASS${NC}"
