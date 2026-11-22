@@ -122,7 +122,7 @@ type Result struct {
 // CIWatch parameterises the post-PR CI watch. The host owns the whole gh side —
 // polling checks, re-running them, fetching failed logs, pushing, and the
 // reactive rebase — so a Stage supplies only Fix, the sandboxed diagnose-and-fix
-// session it wants run against a red check. That collapses ci.NewGhDriver's nine
+// session it wants run against a red check. That collapses ci.NewGhDriver's ten
 // positional parameters at the call site to one field.
 //
 // Resolve is optional: when the reactive rebase hits a content conflict, the host

@@ -30,11 +30,16 @@ func Summarize(failed []Check) string {
 	return b.String()
 }
 
-// checkNames joins the checks' names for a one-line run-log reason, in poll order.
-func checkNames(checks []Check) string {
+// flakeNames joins the checks' names for a one-line run-log reason, in poll
+// order, each followed by its failing step where steps has one, e.g.
+// "lint / Run golangci-lint, e2e" (#371).
+func flakeNames(checks []Check, steps map[string]string) string {
 	names := make([]string, len(checks))
 	for i, c := range checks {
 		names[i] = c.Name
+		if step := steps[c.Name]; step != "" {
+			names[i] += " / " + step
+		}
 	}
 	return strings.Join(names, ", ")
 }

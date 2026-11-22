@@ -1519,6 +1519,12 @@ own namespace with no edit to the workflow.
     `-- step exited <code> … --` footer (`runlog.StepFooter`) so an OOM-kill is
     visible at the tail rather than an opaque truncation needing a `run.jsonl`
     cross-reference (BEH-537).
+  - `.agent-harness/logs/BEH-NNN/ci-flake-<run-id>.log` — the failed attempt
+    of each check a CI re-run washed out: its failing step and the last 100
+    lines of its `gh run view --attempt <n> --log-failed` log. A retrospective
+    cannot reach the remote, so this is what tells it a network blip from a
+    flaky test. Fetching it is best-effort and never changes the CI verdict
+    (#371).
   - `.agent-harness/logs/BEH-NNN/findings/retrospective/out.json` — the dropbox.
   - `.agent-harness/logs/BEH-NNN/run.jsonl` — the per-ticket structured event
     stream (machine-readable mirror of the console, scoped to one ticket's arc).

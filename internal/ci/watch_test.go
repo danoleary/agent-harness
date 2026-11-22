@@ -50,6 +50,12 @@ type fakeDriver struct {
 
 	clock   *fakeClock
 	fixCost time.Duration
+
+	// flakeSteps is what RecordFlake reports: each washed-out check's failing step
+	// (#371). flakeRecords counts the calls and flakeRecorded keeps their checks.
+	flakeSteps    map[string]string
+	flakeRecords  int
+	flakeRecorded []Check
 }
 
 func (d *fakeDriver) Poll() (Verdict, []Check, error) {
@@ -72,6 +78,11 @@ func (d *fakeDriver) Fix([]Check) error {
 		return d.fixErrs[min(d.fixes, len(d.fixErrs))-1]
 	}
 	return d.fixErr
+}
+func (d *fakeDriver) RecordFlake(failed []Check) map[string]string {
+	d.flakeRecords++
+	d.flakeRecorded = failed
+	return d.flakeSteps
 }
 func (d *fakeDriver) Push() error         { d.pushes++; return nil }
 func (d *fakeDriver) AwaitHeadRun() error { d.awaits++; return d.awaitErr }
@@ -367,6 +378,49 @@ func TestWatchFlakeThenMergeConflictStillNamesTheFlakedChecks(t *testing.T) {
 	out := WatchAndFix(d, testWatchCfg(), newFakeClock().now)
 	if out.OK || !strings.HasPrefix(out.Reason, mergeConflictReason) || !strings.Contains(out.Reason, "flake: lint") {
 		t.Fatalf("outcome = %+v, want the merge conflict with the flaked check named", out)
+	}
+}
+
+// #371: a washed-out flake is recorded before the watch reports green, and the
+// flake: reason names each check's failing step, so a retrospective that cannot
+// reach the remote can tell a network blip from a flaky test. A check whose step
+// the record could not find is still named on its own.
+func TestWatchFlakeResolvedByRerunNamesTheFailingStep(t *testing.T) {
+	d := &fakeDriver{
+		polls: []pollResult{
+			{v: Failed, checks: []Check{
+				{Name: "lint", Bucket: BucketFail},
+				{Name: "build", Bucket: BucketPass},
+				{Name: "e2e (chromium)", Bucket: BucketFail},
+			}},
+			{v: Passed},
+		},
+		mergeState: MergeClean,
+		flakeSteps: map[string]string{"lint": "Run golangci-lint"},
+	}
+	out := WatchAndFix(d, testWatchCfg(), newFakeClock().now)
+	want := "CI green after re-running the failed checks (flake: lint / Run golangci-lint, e2e (chromium))"
+	if !out.OK || out.Reason != want {
+		t.Fatalf("outcome = %+v, want OK with reason %q", out, want)
+	}
+	if d.flakeRecords != 1 || len(d.flakeRecorded) != 2 {
+		t.Fatalf("RecordFlake calls = %d over %v, want one call over the two failed checks", d.flakeRecords, d.flakeRecorded)
+	}
+}
+
+// #371: only a re-run that washes the red out is a flake to record. A red that
+// survives the re-run goes to the fix loop, and a first-poll green has nothing to
+// record.
+func TestWatchRecordsNoFlakeWhenNothingWashedOut(t *testing.T) {
+	for name, polls := range map[string][]pollResult{
+		"green first poll":    {{v: Passed}},
+		"red after the rerun": {{v: Failed, checks: failChecks()}, {v: Failed, checks: failChecks()}, {v: Passed}},
+	} {
+		d := &fakeDriver{polls: polls, mergeState: MergeClean}
+		WatchAndFix(d, testWatchCfg(), newFakeClock().now)
+		if d.flakeRecords != 0 {
+			t.Errorf("%s: RecordFlake calls = %d, want 0", name, d.flakeRecords)
+		}
 	}
 }
 

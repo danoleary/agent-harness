@@ -16,6 +16,12 @@ type Driver interface {
 	// Rerun re-triggers the given failed checks once, to wash out flakes before
 	// the harness starts editing code.
 	Rerun(failed []Check) error
+	// RecordFlake records the failed attempt of checks a re-run washed out: their
+	// failing steps and a bounded tail of the failed log, kept in the ticket's log
+	// dir for the retrospective, which cannot reach the remote (#371). It returns
+	// each check's failing step by check name. It is best-effort: what it could not
+	// fetch is missing from the map, and it never fails the watch.
+	RecordFlake(failed []Check) map[string]string
 	// Fix fetches the failed logs and runs a sandboxed Claude session over the
 	// worktree to diagnose + fix + commit locally.
 	Fix(failed []Check) error
@@ -190,8 +196,9 @@ func WatchAndFix(d Driver, cfg Config, now func() time.Time) Outcome {
 		// Name the checks the re-run washed out: every caller writes Reason to the
 		// run log, where the retrospective tells a one-off blip from a check that
 		// flakes on every PR (#357). A non-OK verdict from the mergeability gate
-		// replaces the green reason, so it carries the names too.
-		flake := "flake: " + checkNames(failed)
+		// replaces the green reason, so it carries the names too. Each name carries
+		// its failing step where the flake record found one (#371).
+		flake := "flake: " + flakeNames(failed, d.RecordFlake(failed))
 		out := greenOutcome(d, "CI green after re-running the failed checks ("+flake+")")
 		if !out.OK {
 			out.Reason += " (CI went green only after re-running the failed checks; " + flake + ")"
