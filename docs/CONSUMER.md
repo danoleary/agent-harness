@@ -45,7 +45,9 @@ remote (ADR-0002).
 Each session starts in the ticket's worktree and loads your
 `.claude/settings.json`, hooks and all. That includes the read-only
 retrospective and triage sessions, so a Stop hook that guards a handoff should
-stand down when `HARNESS_SESSION_READ_ONLY` is `1`. The
+stand down when `HARNESS_SESSION_READ_ONLY` is `1`. A format hook should also
+report a crashed check (a missing module or a missing `node_modules`) as an
+environment fault rather than as unformatted code. The
 [environment variables](reference/env.md) reference has the guard.
 
 ## Choosing a tracker

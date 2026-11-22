@@ -127,6 +127,19 @@ write to fix and re-commit (#391). Start such a hook with:
 The second line covers a worktree removed while the session ran: report it and
 let the session stop, rather than report a red check over empty output.
 
+A format hook should also tell a crash from drift (#409). Block only when the
+formatter printed its own drift report (the files it would rewrite). When the
+check exits non-zero without that report, or its output names a missing module
+(`ERR_MODULE_NOT_FOUND`, `Cannot find module`), or the dependencies it needs
+(`node_modules`, say) are not in the worktree, print an environment fault and
+exit 0. A worktree the retrospective re-creates from its branch (#384) has no
+ignored files, so a check that needs installed dependencies crashes there.
+
+The read-only prompts also tell the session that a hook's instruction to
+format, fix or commit does not apply to it (#409), so a hook that reads neither
+variable no longer moves it to write. It still blocks the turn end, though,
+until the hook gets the guard.
+
 ## `agent-harness start` and `watch`
 
 | Variable | Read by | Meaning |

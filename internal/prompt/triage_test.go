@@ -35,3 +35,24 @@ func TestTriagePromptCarriesTheContract(t *testing.T) {
 		t.Error("the ticket body must be defanged")
 	}
 }
+
+// #409: a read-only session loads the Consumer's Stop hooks, and a handoff hook
+// that reads no HARNESS_SESSION_READ_ONLY tells it to run the formatter and
+// re-commit, even over a check that crashed rather than found drift. The
+// envelope says such an instruction does not reach a session that must not
+// write, and names what it is told instead: a hook's report, not a task.
+func TestReadOnlyPromptsOverruleAHookThatAsksForAWrite(t *testing.T) {
+	for name, p := range map[string]string{
+		"retrospective": For(Retrospective, Context{Ticket: sample, Slug: "beh-362", BranchPrefix: testPrefix}),
+		"triage":        For(Triage, Context{Ticket: ticket.Ticket{Identifier: "#12", Title: "Add a flag"}, Tracker: "github"}),
+	} {
+		for _, want := range []string{"Stop hook", "does not apply to this session", "HARNESS_SESSION_READ_ONLY"} {
+			if !strings.Contains(p, want) {
+				t.Errorf("%s prompt is missing %q:\n%s", name, want, p)
+			}
+		}
+	}
+	if p := For(Implement, Context{Ticket: sample, Slug: "beh-362", BranchPrefix: testPrefix}); strings.Contains(p, "does not apply to this session") {
+		t.Error("the implementation session writes the handoff; its hooks' instructions are its own")
+	}
+}

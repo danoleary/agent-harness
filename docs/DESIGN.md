@@ -1290,7 +1290,10 @@ The launcher also tells each session its role: `HARNESS_SESSION_ROLE`
 (`implementation`, `review`, `retrospective`, …), and `HARNESS_SESSION_READ_ONLY=1`
 for the retrospective and triage. The harness cannot remove the Consumer's own
 hooks from a session, so a Consumer's handoff Stop hooks read these and stand
-down in a session that must not write (ADR-0065, #391).
+down in a session that must not write (ADR-0065, #391). The read-only prompts
+also tell the session that a hook's instruction to format, fix or commit does
+not apply to it, which covers a Consumer whose hook reads neither variable
+(#409).
 
 ### Consumer image composition (build-or-pull)
 
