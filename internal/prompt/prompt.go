@@ -387,7 +387,7 @@ func branchHandoffContract(branchPrefix, slug string) string {
 // credentials (ADR-0002), so a session told to fetch lost a turn to `fatal:
 // could not read Username` and then could not tell whether its origin/main was
 // stale (#364). Worktree provisioning fetches it host-side before every
-// implementation launch (Worktree.Create on a fresh tree, Worktree.FastForward on
+// implementation launch (Worktree.Create on a new or re-attached tree, Worktree.FastForward on
 // a reused one), and the worktree shares the checkout's refs.
 const originMainFetched = "The harness already fetched `origin/main` into this worktree before the session started, and the sandbox has no network and no credentials: do not run `git fetch`."
 

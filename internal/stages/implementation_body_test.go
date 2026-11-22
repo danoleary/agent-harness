@@ -244,6 +244,13 @@ func TestImplementationFetchesOriginMainBeforeTheSession(t *testing.T) {
 	for name, host := range map[string]func(*testing.T, string) (*hostio.Fake, *gittest.Repo){
 		"fresh worktree":   fresh,
 		"resumed worktree": handedOff,
+		// BEH-554: the branch survives but its worktree dir was torn down, so
+		// Create re-attaches to it rather than cutting a new one.
+		"re-attached branch": func(t *testing.T, key string) (*hostio.Fake, *gittest.Repo) {
+			h, repo := handedOff(t, key)
+			repo.Git(repo.Dir, "worktree", "remove", "--force", h.Worktree().Path())
+			return h, repo
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			h, repo := host(t, "gh-364")
