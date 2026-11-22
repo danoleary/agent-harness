@@ -115,19 +115,36 @@ func TestRouteLeavesOtherFindingsBodiesAlone(t *testing.T) {
 	}
 }
 
-// The record is the Consumer's raw CI output, so a harness finding bound for the
-// public Upstream repo files as the session wrote it (ADR-0011's sanitize rule).
-func TestRouteKeepsTheFlakeLogOffAnUpstreamHarnessFinding(t *testing.T) {
+// The sanitize rule binds host code too (ADR-0011, #389): every harness finding
+// bound for the public Upstream repo files as the session wrote it, plus only the
+// observing-build footer, even when the host has Consumer evidence to hand. The
+// record is the Consumer's raw CI output; the project finding in the same dropbox
+// still gets it, so the split, not a missing record, is what keeps it off.
+func TestRouteFilesAnUpstreamHarnessFindingAsTheSessionWroteIt(t *testing.T) {
 	logDir := t.TempDir()
 	dir := filepath.Join(logDir, "findings", "retrospective")
 	writeFlakeRecord(t, logDir, "r1", flakeRecord("test", "Run go test", 3))
-	writeDropbox(t, dir, `[{"title":"Fix the flaky test check","body":"test flaked.","key":"ci-flaky-check-test","audience":"harness"}]`)
+	writeDropbox(t, dir, `[
+		{"title":"Fix the flaky test check","body":"test flaked.","key":"ci-flaky-check-test","audience":"harness"},
+		{"title":"sandbox missing deps","body":"libnss3 absent from the base image.","key":"sandbox-deps","audience":"harness"},
+		{"title":"Fix the flaky test check in the app","body":"app test flaked.","key":"ci-flaky-check-test","audience":"project"}
+	]`)
 	upstreamFiler := &fakeFiler{}
+	projectFiler := &fakeFiler{}
 	up := &Upstream{Sink: sink(upstreamFiler, noExisting(), nil), Container: "o/agent-harness", Project: "p"}
 
-	Router{Project: sink(&fakeFiler{}, noExisting(), nil), Upstream: up, LogDir: logDir, Log: &recorder{}}.Route(dir, "team", "PR-9")
+	Router{Project: sink(projectFiler, noExisting(), nil), Upstream: up, LogDir: logDir, Log: &recorder{}}.Route(dir, "team", "PR-9")
 
-	if len(upstreamFiler.calls) != 1 || upstreamFiler.calls[0].Body != stamped("test flaked.") {
-		t.Errorf("filed upstream %+v, want the body untouched", upstreamFiler.calls)
+	want := []string{stamped("test flaked."), stamped("libnss3 absent from the base image.")}
+	if len(upstreamFiler.calls) != len(want) {
+		t.Fatalf("filed upstream %+v, want %d findings", upstreamFiler.calls, len(want))
+	}
+	for i, w := range want {
+		if got := upstreamFiler.calls[i].Body; got != w {
+			t.Errorf("upstream body %d = %q, want %q", i, got, w)
+		}
+	}
+	if len(projectFiler.calls) != 1 || !strings.Contains(projectFiler.calls[0].Body, "Run go test") {
+		t.Errorf("filed to project %+v, want the flake log on the project finding", projectFiler.calls)
 	}
 }

@@ -230,7 +230,12 @@ reads, dedups, and files it after the session. The sandbox never reaches a remot
 
 **Upstream sink**:
 The public, harness-maintainer-owned GitHub repo where opted-in **Harness
-findings** are filed as issues (default off; ADR-0011).
+findings** are filed as issues (default off; ADR-0011). The sanitize rule binds
+the host as well as the session. An Upstream-bound Harness finding carries only
+what the session wrote under the sanitize rule, plus harness metadata such as the
+observing-build footer. Host code never adds Consumer-derived content (logs, paths,
+ticket text) to it. Any body enrichment happens after the audience split and
+applies only to Project findings and to Harness findings kept locally.
 
 ## Relationships
 

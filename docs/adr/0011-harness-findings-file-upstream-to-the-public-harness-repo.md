@@ -77,3 +77,16 @@ from a closed one. So the host appends `Observed by agent-harness <version>
 same line as `observed_by` on a local artifact. The version is what `--version`
 prints; the commit is stamped into `internal/version.Commit` at build time. The
 line is harness metadata, not Consumer content, so the sanitize rule is unaffected.
+
+## Amendment (2026-11-22, #389): the sanitize rule binds host code too
+
+The sanitize rule was written as a rule for the session, so host code that adds
+to a finding's body had no cue to respect it: #378 first added the Consumer's
+recorded CI log to every flake finding before the audience split, which would have
+carried it to the public Upstream sink. The rule now binds the host as well. A
+Harness finding bound for the Upstream sink carries only what the session wrote
+under the sanitize rule, plus harness metadata (the observing-build footer, a
+probable-duplicate note built from an open finding's own key and title). Host code
+never adds Consumer-derived content (logs, paths, ticket text) to it. Any body
+enrichment runs after `Route`'s audience split and applies only to Project
+findings and to Harness findings kept locally.
