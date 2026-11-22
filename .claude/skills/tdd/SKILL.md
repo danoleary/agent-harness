@@ -17,8 +17,9 @@ prompt around this skill tells you the ticket, the worktree and the branch.
    `/findings/resolved.json` as `{"commit": "<sha>", "reason": "<why>"}`. The
    harness checks that commit is on `origin/main` and hands the ticket to a
    human to close rather than failing the run (ADR-0052).
-   A ticket that came from a retrospective finding ends in a footer naming the
-   build that observed it: `Observed by agent-harness <version> (<sha>)`. Run
+   A ticket that came from a retrospective finding carries a line, just above
+   its `_Surfaced during …_` footer, naming the build that observed it:
+   `Observed by agent-harness <version> (<sha>)`. Run
    `git log <sha>..origin/main -- <the files that own the behaviour>` before
    tracing the reported behaviour: a later commit there may already have
    changed it, and then you can say plainly whether the bug is fixed rather than
