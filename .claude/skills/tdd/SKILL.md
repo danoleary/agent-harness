@@ -64,6 +64,10 @@ prompt around this skill tells you the ticket, the worktree and the branch.
   Markdown) or `adr/NNNN-<slug>.md` link must name an existing file, and
   every ADR has a line in the index, `docs/adr/README.md`, in ascending
   order** — `check-adr` (`scripts/check-adr-numbers.sh`); see Finish.
+  The scan covers comments in `_test.go` files too, against the real
+  `docs/adr/`: a test fixture's made-up ADR number written as `ADR-` plus
+  digits reds the gate, so write it without the hyphen (`ADR 0064`,
+  `0064-x.md`). Go string literals are not scanned (#386).
 - **Every relative link in a `.md` on `install.sh`'s `DOCS` list (the README,
   `docs/DESIGN.md`, …), resolved from that doc's own directory, must name a
   file on that list** (not a directory, not a path outside the bundle), and
