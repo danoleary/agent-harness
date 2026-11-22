@@ -18,6 +18,7 @@ package loop
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/danoleary/agent-harness/internal/lease"
@@ -608,6 +609,8 @@ func Run(d Deps) int {
 			d.handToHuman(key, outcome.Refusal)
 		case stages.ResolvedOnMain:
 			d.handResolvedToHuman(key, outcome.ResolvedBy, outcome.ResolvedWhy)
+		case stages.SessionBlocked:
+			d.handBlockedToHuman(key, outcome.BlockedWhy, outcome.BlockedQuestions)
 		case stages.AlreadyOnMain:
 			d.handMergedToHuman(key, outcome.ResolvedBy, outcome.ResolvedWhy)
 		case stages.RunLive:
@@ -751,6 +754,30 @@ func (d Deps) handResolvedToHuman(key, sha, why string) {
 		reason = " The session's reason: " + why
 	}
 	d.comment(key, "Autonomous run found this ticket already resolved on `main` by commit `"+sha+"`, so it stopped without committing anything; there is nothing to ship."+reason+" Please confirm and close this ticket, or remove the blocked label and say what is still missing if that commit does not fix it. "+label)
+}
+
+// handBlockedToHuman settles a run whose session stopped because a human must
+// decide something first (#368). Releasing it would re-run it to the same stop,
+// so the claim is kept and the ticket labelled blocked: selection passes over a
+// blocked-labelled ticket, and a human removing the label is the only signal that
+// it may be worked again. One comment carries the session's reason and questions.
+func (d Deps) handBlockedToHuman(key, why string, questions []string) {
+	d.Log.Structured(loopstream.Record{Kind: loopstream.KindTicketReleased, Ticket: key, Message: "loop — " + key + " is blocked on a human (" + why + "); labelled blocked, left In Progress, not released (#368)"})
+	label := "It is labelled blocked and was left In Progress rather than released to Todo, so it will not be re-run until a human removes the label."
+	if err := d.Source.Block(key); err != nil {
+		d.Log.Event("loop … warning: could not label " + key + " blocked: " + err.Error())
+		label = "It was left In Progress rather than released to Todo, but it could not be labelled blocked (" + err.Error() + "), so please label it blocked by hand to keep a later run from picking it up."
+	}
+	var b strings.Builder
+	b.WriteString("Autonomous run stopped on this ticket without handing anything off, because a human must decide something first.\n\n**Why it stopped:** " + why)
+	if len(questions) > 0 {
+		b.WriteString("\n\n**What a human must decide:**\n")
+		for _, q := range questions {
+			b.WriteString("\n- " + q)
+		}
+	}
+	b.WriteString("\n\n" + label + " Answer the questions on the ticket, change it if its premise is wrong, then remove the blocked label to have it worked again.")
+	d.comment(key, b.String())
 }
 
 // handMergedToHuman settles a run the implementation stage skipped because a

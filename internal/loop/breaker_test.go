@@ -240,3 +240,18 @@ func TestBreakerNeutralOnCIPending(t *testing.T) {
 		t.Fatalf("CI still pending must not advance the streak; tripped with %v", b.streak)
 	}
 }
+
+// #368: a session that stopped for a human to decide made the sanctioned stop
+// for a ticket it cannot settle: neutral.
+func TestBreakerNeutralOnSessionBlocked(t *testing.T) {
+	b := newBreaker(2)
+	b.record("BEH-1", stages.Result{})
+	b.record("BEH-2", stages.Result{Disposition: stages.SessionBlocked})
+	if b.tripped() {
+		t.Error("session-blocked must not advance the counter")
+	}
+	b.record("BEH-3", stages.Result{})
+	if !b.tripped() {
+		t.Error("session-blocked must not reset the counter either")
+	}
+}

@@ -1256,3 +1256,31 @@ func TestImplementFreshTellsTheSessionHowToReportAlreadyResolvedOnMain(t *testin
 		t.Error("the resumed-branch prompt must not offer the resolved-on-main marker")
 	}
 }
+
+// #368: every implementation envelope documents the blocked marker next to the
+// resolved one: a reason and questions for a ticket blocked on a human, and
+// follow-ups for a further ticket the work needs, such as a split's second half.
+func TestImplementTellsTheSessionHowToReportABlockAndFollowUps(t *testing.T) {
+	for name, p := range map[string]string{
+		"fresh":         bImpl(t, sample, "beh-362"),
+		"resumed":       bResumed(t, sample, "beh-362"),
+		"after refusal": For(Implement, Context{Ticket: sample, Slug: "beh-362", BranchPrefix: testPrefix, Body: exampleBody(t, "implement"), Resume: AfterRefusal}),
+	} {
+		for _, want := range []string{
+			"/findings/blocked.json", `"reason"`, `"questions"`, `"follow_ups"`, `"title"`, `"body"`,
+			"Do not record the block in an empty handoff commit",
+			"labels it blocked so no run picks it up until a human removes the label",
+			"does not send the branch to review",
+			"still commit your handoff for this ticket",
+			"files each follow-up as a new ticket linked to this one",
+		} {
+			if !strings.Contains(p, want) {
+				t.Errorf("%s implement prompt missing %q", name, want)
+			}
+		}
+	}
+	fresh := bImpl(t, sample, "beh-362")
+	if r, b := strings.Index(fresh, "/findings/resolved.json"), strings.Index(fresh, "/findings/blocked.json"); r < 0 || b < r {
+		t.Errorf("the fresh envelope must document blocked.json right after resolved.json (resolved at %d, blocked at %d)", r, b)
+	}
+}

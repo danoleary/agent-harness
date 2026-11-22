@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -894,7 +895,7 @@ func TestRecoveredMapsTheRecoveryOntoADisposition(t *testing.T) {
 		{ship.Recovery{Attempted: true}, stages.Result{}},
 	}
 	for _, tc := range cases {
-		if got := recovered(tc.rec); got != tc.want {
+		if got := recovered(tc.rec); !reflect.DeepEqual(got, tc.want) {
 			t.Errorf("recovered(%+v) = %+v, want %+v", tc.rec, got, tc.want)
 		}
 	}

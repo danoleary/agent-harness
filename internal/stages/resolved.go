@@ -23,16 +23,6 @@ type resolvedReport struct {
 	Reason string `json:"reason"`
 }
 
-// clearResolved removes a resolved marker an earlier run of the ticket left in
-// its findings dir, which is keyed on the ticket, not the run, so the stale
-// marker cannot resolve this run. An absent marker is a no-op.
-func clearResolved(findingsDir string) error {
-	if err := os.Remove(filepath.Join(findingsDir, ResolvedMarker)); err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	return nil
-}
-
 // resolvedOnMain reads the session's resolved marker and checks it against the
 // ground truth: origin/main must contain the commit it names. ok is false when
 // there is no marker. When there is one, err says why it does not hold, and is

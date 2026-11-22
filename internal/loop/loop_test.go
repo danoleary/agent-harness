@@ -2471,6 +2471,58 @@ func TestResolvedOnMainHandsTheTicketToAHumanToClose(t *testing.T) {
 	}
 }
 
+// #368: a run whose session stopped blocked on a human is not released (it would
+// re-run to the same stop): the loop keeps the claim, labels the ticket blocked so
+// selection passes over it until a human removes the label, and posts the reason
+// and questions as one comment. Selection here offers the ticket for as long as it
+// is unlabelled, so a missing label would dispatch it again.
+func TestSessionBlockedLabelsTheTicketBlockedAndCommentsTheQuestions(t *testing.T) {
+	r := &recorder{}
+	var released, blocked, comments []string
+	runs := 0
+	code := Run(Deps{
+		Host: &fakeHost{stopRequested: stopAfter(3)},
+		Source: &fakeSource{
+			next: func() (string, bool) {
+				if len(blocked) > 0 {
+					return "", false
+				}
+				return "BEH-368", true
+			},
+			release: func(id string) error { released = append(released, id); return nil },
+			block:   func(id string) error { blocked = append(blocked, id); return nil },
+			comment: func(id, body string) error { comments = append(comments, body); return nil },
+		},
+		Pipeline: &fakePipeline{
+			run: func(string) stages.Result {
+				runs++
+				return stages.Result{OK: true, Disposition: stages.SessionBlocked, BlockedWhy: "the premise is false", BlockedQuestions: []string{"Keep the helper?", "Who owns the port?"}}
+			},
+		},
+		Limits: Limits{PollInterval: time.Minute, TickInterval: 2 * time.Second, MaxConsecutiveFailures: 1},
+		Clock:  testClock{sleep: func(time.Duration) {}},
+		Log:    r,
+	})
+	if code != 0 {
+		t.Errorf("exit code = %d, want 0", code)
+	}
+	if runs != 1 {
+		t.Errorf("pipeline runs = %d, want 1: a blocked-labelled ticket is not dispatched again", runs)
+	}
+	if len(released) != 0 {
+		t.Errorf("released = %v, want none", released)
+	}
+	if want := []string{"BEH-368"}; !reflect.DeepEqual(blocked, want) {
+		t.Errorf("blocked = %v, want %v", blocked, want)
+	}
+	if len(comments) != 1 || !strings.Contains(comments[0], "the premise is false") || !strings.Contains(comments[0], "- Keep the helper?") || !strings.Contains(comments[0], "- Who owns the port?") || !strings.Contains(comments[0], "remove the blocked label") {
+		t.Errorf("comments = %q, want one comment carrying the reason and each question", comments)
+	}
+	if !r.saw("blocked on a human") || r.saw("circuit breaker") {
+		t.Errorf("events = %v, want the block narrated and the breaker untouched", r.events)
+	}
+}
+
 // #331, replaying BEH-1391: a merged ticket the tracker left in Todo is offered
 // by selection every poll. The implementation stage skips it as already merged on
 // main. Before the fix the loop released it to Todo and selected it again within

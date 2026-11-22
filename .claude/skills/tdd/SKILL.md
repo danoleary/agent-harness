@@ -17,6 +17,12 @@ prompt around this skill tells you the ticket, the worktree and the branch.
    `/findings/resolved.json` as `{"commit": "<sha>", "reason": "<why>"}`. The
    harness checks that commit is on `origin/main` and hands the ticket to a
    human to close rather than failing the run (ADR-0052).
+   If the ticket's premise is false or it needs a decision you cannot make,
+   do not record that in an empty handoff commit: write
+   `/findings/blocked.json` with a `reason` and `questions`, and the harness
+   comments them on the ticket and labels it blocked. If the work needs a
+   further ticket, such as a split's second half, list it in that file's
+   `follow_ups` and still commit your handoff (ADR-0070).
    A ticket that came from a retrospective finding carries a line, just above
    its `_Surfaced during …_` footer, naming the build that observed it:
    `Observed by agent-harness <version> (<sha>)`. Run

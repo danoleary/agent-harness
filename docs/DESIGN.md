@@ -66,7 +66,12 @@ runnable by hand against a ticket id before the next is added:
    A session that finds the ticket already fixed on `origin/main` stops without
    committing and names the fixing commit in `/findings/resolved.json`; once git
    confirms `origin/main` contains it, the run is **ResolvedOnMain** rather than a
-   failed `tdd ✗` (ADR-0052).
+   failed `tdd ✗` (ADR-0052). A session that cannot go on until a human decides
+   writes a reason and questions in `/findings/blocked.json` instead: the run is
+   **SessionBlocked**, review is skipped, and the loop labels the ticket blocked
+   and comments them. The same file's `follow_ups` are filed as tickets linked
+   to this one, not ready
+   ([ADR-0070](https://github.com/danoleary/agent-harness/blob/main/docs/adr/0070-a-session-reports-a-block-or-a-follow-up-in-a-marker.md)).
    To keep the "recommend close" verdict from firing on valid tickets (BEH-629),
    extraction reads only inline-code spans outside fenced blocks, pairing
    backtick runs by length so a fence can't shift the pairing onto prose (#66);
