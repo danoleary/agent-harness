@@ -22,6 +22,7 @@ import (
 
 	"github.com/danoleary/agent-harness/internal/findings"
 	"github.com/danoleary/agent-harness/internal/tracker"
+	"github.com/danoleary/agent-harness/internal/version"
 )
 
 // dropboxFile is the fixed filename the agent drops findings into, under the
@@ -324,6 +325,9 @@ func (r Router) fileTo(sink tracker.FindingsSink, fs []findings.Finding, teamID,
 			r.Log.Event(fmt.Sprintf("finding ⚠ %q is a probable duplicate of %s (close token overlap) — filing anyway, flagged", f.Title, dup.Identifier))
 			f.Body += fmt.Sprintf("\n\n_Probable duplicate of %s (%s) — the harness found a close key/title match among open findings. Check before triaging._", dup.Identifier, dup.Title)
 		}
+		// Stamp the build that observed it (#395): a later commit may already have
+		// changed the behaviour, and the picking-up session checks against this.
+		f.Body += "\n\n_" + version.ObservedBy() + "._"
 		created, err := sink.FileFinding(f, tracker.FileFindingOptions{
 			TeamID: teamID, RelatedKey: relatedIdentifier, Ready: ready,
 		})

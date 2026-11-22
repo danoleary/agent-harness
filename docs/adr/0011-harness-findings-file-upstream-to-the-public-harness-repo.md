@@ -67,3 +67,13 @@ whose key or title closely matches an open one by normalized token overlap: the
 local artifact records `probable_duplicate_of`, an issue body gets a note naming
 the open issue. The flag adds no content beyond the open finding's own key and
 title, so the sanitize rule is unaffected.
+
+## Amendment (2026-11-22, #395): every filing names the build that observed it
+
+A finding filed from a Consumer run can describe behaviour a later harness commit
+has already changed, and the session that picked one up could not tell a live bug
+from a closed one. So the host appends `Observed by agent-harness <version>
+(<commit>)` to the body of every finding it files, to either sink, and records the
+same line as `observed_by` on a local artifact. The version is what `--version`
+prints; the commit is stamped into `internal/version.Commit` at build time. The
+line is harness metadata, not Consumer content, so the sanitize rule is unaffected.

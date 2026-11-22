@@ -10,6 +10,7 @@ package version
 
 import (
 	"fmt"
+	"runtime/debug"
 	"strconv"
 	"strings"
 )
@@ -21,6 +22,51 @@ const DevVersion = "dev"
 // `-ldflags "-X github.com/danoleary/agent-harness/internal/version.Version=v1.2.3"`.
 // It defaults to DevVersion so a plain `go build` never claims to be a release.
 var Version = DevVersion
+
+// Commit is the commit the binary was built from, set alongside Version with
+// `-X github.com/danoleary/agent-harness/internal/version.Commit=<sha>`. Empty
+// falls back to the Go toolchain's own VCS stamp, which every `-buildvcs=false`
+// build (the Makefile's and the release's) leaves out.
+var Commit = ""
+
+// unknownCommit names the commit of a build stamped with none.
+const unknownCommit = "unknown commit"
+
+// shortCommitLen is how much of a full SHA ObservedBy keeps: enough to stay
+// unambiguous in `git log <sha>..origin/main`.
+const shortCommitLen = 12
+
+// ObservedBy is the footer the harness stamps on every finding it files (#395):
+// the version `--version` prints and the commit the binary was built from. A
+// finding filed from a Consumer run may describe behaviour later commits have
+// already changed; the footer lets the session that picks it up check with
+// `git log <sha>..origin/main` instead of re-deriving whether the premise holds.
+// It is harness metadata only, so it sits inside ADR-0011's sanitize rule.
+func ObservedBy() string {
+	return fmt.Sprintf("Observed by agent-harness %s (%s)", Version, commit())
+}
+
+// commit is Commit, else the toolchain's vcs.revision, shortened; or
+// unknownCommit when the build recorded neither.
+func commit() string {
+	c := strings.TrimSpace(Commit)
+	if c == "" {
+		if info, ok := debug.ReadBuildInfo(); ok {
+			for _, s := range info.Settings {
+				if s.Key == "vcs.revision" {
+					c = s.Value
+				}
+			}
+		}
+	}
+	if c == "" {
+		return unknownCommit
+	}
+	if len(c) > shortCommitLen {
+		c = c[:shortCommitLen]
+	}
+	return c
+}
 
 // IsDev reports whether v is an unversioned from-source build, which cannot be
 // compared against a pin.

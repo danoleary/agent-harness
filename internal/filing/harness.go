@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/danoleary/agent-harness/internal/findings"
+	"github.com/danoleary/agent-harness/internal/version"
 )
 
 // harnessFindingRecord is the on-disk shape of a harness-audience finding: the
@@ -27,6 +28,9 @@ type harnessFindingRecord struct {
 	// closely matches by token overlap (#65) — the same class under a drifted key.
 	// The owner reviewing the dir merges or deletes it; the harness never does.
 	ProbableDuplicateOf string `json:"probable_duplicate_of,omitempty"`
+	// ObservedBy names the harness build that wrote the record (#395), the same
+	// footer a tracker filing carries, so an owner who files it by hand keeps it.
+	ObservedBy string `json:"observed_by,omitempty"`
 }
 
 // HarnessFindingsDir is the local artifact dir where harness-audience findings
@@ -65,6 +69,7 @@ func WriteHarnessFindings(harnessDir, relatedIdentifier string, fs []findings.Fi
 		rec := harnessFindingRecord{
 			Title: f.Title, Body: f.Body, Audience: findings.AudienceHarness,
 			Kind: f.Kind, Key: f.Key, RelatedKey: relatedIdentifier,
+			ObservedBy: version.ObservedBy(),
 		}
 		if dup, ok := probableDuplicateRecord(f, slug, written); ok {
 			rec.ProbableDuplicateOf = dup

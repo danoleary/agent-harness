@@ -10,15 +10,18 @@
 # command (build/install/run/test) ever drops the flag.
 # No -X version stamp on purpose: a local build is not a release, so it reports
 # "dev" and a Consumer's min_harness_version pin skips rather than compares. The
-# release workflow is what stamps a real version in.
+# release workflow is what stamps a real version in. The commit IS stamped: it
+# is the footer every filed finding carries (#395), and a pin never reads it.
+HARNESS_COMMIT := $(shell git rev-parse HEAD 2>/dev/null)
+COMMIT_LDFLAGS = -ldflags "-X github.com/danoleary/agent-harness/internal/version.Commit=$(HARNESS_COMMIT)"
 build:
-	go build -buildvcs=false -o bin/agent-harness ./cmd/agent-harness
-	go build -buildvcs=false -o bin/implementation ./cmd/implementation
-	go build -buildvcs=false -o bin/review ./cmd/review
-	go build -buildvcs=false -o bin/retrospective ./cmd/retrospective
-	go build -buildvcs=false -o bin/pipeline ./cmd/pipeline
-	go build -buildvcs=false -o bin/loop ./cmd/loop
-	go build -buildvcs=false -o bin/watch ./cmd/watch
+	go build -buildvcs=false $(COMMIT_LDFLAGS) -o bin/agent-harness ./cmd/agent-harness
+	go build -buildvcs=false $(COMMIT_LDFLAGS) -o bin/implementation ./cmd/implementation
+	go build -buildvcs=false $(COMMIT_LDFLAGS) -o bin/review ./cmd/review
+	go build -buildvcs=false $(COMMIT_LDFLAGS) -o bin/retrospective ./cmd/retrospective
+	go build -buildvcs=false $(COMMIT_LDFLAGS) -o bin/pipeline ./cmd/pipeline
+	go build -buildvcs=false $(COMMIT_LDFLAGS) -o bin/loop ./cmd/loop
+	go build -buildvcs=false $(COMMIT_LDFLAGS) -o bin/watch ./cmd/watch
 
 # Install a from-source build into PREFIX, in the SAME layout install.sh produces:
 # the dispatcher alone in bin/, the stage binaries in a private libexec dir, the

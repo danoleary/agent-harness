@@ -10,6 +10,7 @@ import (
 
 	"github.com/danoleary/agent-harness/internal/findings"
 	"github.com/danoleary/agent-harness/internal/tracker"
+	"github.com/danoleary/agent-harness/internal/version"
 )
 
 // fakeFiler records the findings (and their filing options) it was asked to file
@@ -167,6 +168,10 @@ func TestWriteHarnessFindingsWritesJSONPerFinding(t *testing.T) {
 	// Provenance: the ticket whose session surfaced it (useful for BEH-640 upstreaming).
 	if got["related_key"] != "BEH-639" {
 		t.Errorf("related_key = %v, want BEH-639", got["related_key"])
+	}
+	// And the harness build that observed it (#395).
+	if got["observed_by"] != version.ObservedBy() {
+		t.Errorf("observed_by = %v, want %q", got["observed_by"], version.ObservedBy())
 	}
 	if !strings.Contains(strings.Join(rec.events, "\n"), "sandbox-playwright-deps") {
 		t.Errorf("expected narration mentioning the finding, got %q", rec.events)
@@ -1122,5 +1127,40 @@ func TestWriteDropboxFilesThroughTheRouter(t *testing.T) {
 	}
 	if filer.opts[0].Ready {
 		t.Error("a needs_human finding must not be filed agent-ready (ADR-0033)")
+	}
+}
+
+// Every finding the harness files carries a footer naming the harness build that
+// observed it (#395), so the session that later picks the ticket up can run
+// `git log <sha>..origin/main` instead of re-deriving whether the premise still
+// holds. Both sinks get it: the Consumer's tracker and the public harness repo.
+func TestFileStampsObservingBuildOnTheBody(t *testing.T) {
+	defer func(v, c string) { version.Version, version.Commit = v, c }(version.Version, version.Commit)
+	version.Version, version.Commit = "v9.8.7", "abc1234"
+
+	dir := t.TempDir()
+	writeDropbox(t, dir, `[
+		{"title":"flaky spec","body":"retries","audience":"project"},
+		{"title":"worktree reclaimed mid-retrospective","body":"reaped early","key":"worktree-reclaimed","audience":"harness"}
+	]`)
+	projectFiler := &fakeFiler{}
+	upstreamFiler := &fakeFiler{}
+	up := &Upstream{Sink: sink(upstreamFiler, noExisting(), nil), Container: "example-org/agent-harness", Project: "herd"}
+
+	Router{Project: sink(projectFiler, noExisting(), nil), Upstream: up, Log: &recorder{}}.Route(dir, "team-uuid", "BEH-639")
+
+	const footer = "Observed by agent-harness v9.8.7 (abc1234)"
+	for name, calls := range map[string][]findings.Finding{"project": projectFiler.calls, "upstream": upstreamFiler.calls} {
+		if len(calls) != 1 {
+			t.Fatalf("%s filer calls = %d, want 1", name, len(calls))
+		}
+		body := calls[0].Body
+		lines := strings.Split(strings.TrimRight(body, "\n"), "\n")
+		if !strings.Contains(lines[len(lines)-1], footer) {
+			t.Errorf("%s body = %q, want it to end in a %q footer", name, body, footer)
+		}
+		if !strings.HasPrefix(body, map[string]string{"project": "retries", "upstream": "reaped early"}[name]) {
+			t.Errorf("%s body = %q, want the finding's own body kept ahead of the footer", name, body)
+		}
 	}
 }

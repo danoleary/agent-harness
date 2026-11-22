@@ -11,6 +11,10 @@ Read `.agent-harness/harness-findings/` from time to time. A new finding whose
 key or title closely matches one already there is still written, but carries
 `probable_duplicate_of: <slug>`. Merge or delete it.
 
+Each record's `observed_by` names the harness version and commit that wrote it.
+Keep that line if you file the finding by hand: it tells whoever works it which
+build saw the failure.
+
 ## Opt in to filing them upstream
 
 Read ADR-0011 first if your codebase is proprietary: the destination is a

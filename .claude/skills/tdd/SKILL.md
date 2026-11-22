@@ -17,6 +17,13 @@ prompt around this skill tells you the ticket, the worktree and the branch.
    `/findings/resolved.json` as `{"commit": "<sha>", "reason": "<why>"}`. The
    harness checks that commit is on `origin/main` and hands the ticket to a
    human to close rather than failing the run (ADR-0052).
+   A ticket that came from a retrospective finding ends in a footer naming the
+   build that observed it: `Observed by agent-harness <version> (<sha>)`. Run
+   `git log <sha>..origin/main -- <the files that own the behaviour>` before
+   tracing the reported behaviour: a later commit there may already have
+   changed it, and then you can say plainly whether the bug is fixed rather than
+   hedge about which binary the run used. A `dev` version or `unknown commit`
+   means a from-source build; fall back to the finding's date.
 2. Read `CONTEXT.md` and use its terms (Stage, Gate, Lease, Landing,
    Disposition, …) in names, comments and commit messages.
 3. Find the module that owns the behaviour and its `_test.go`. Follow the

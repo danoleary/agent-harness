@@ -73,3 +73,28 @@ func TestVersionDefaultsToDev(t *testing.T) {
 		t.Errorf("Version = %q, want a dev default when no ldflags are set", Version)
 	}
 }
+
+// A finding filed from a Consumer run may describe behaviour later commits have
+// already changed, so its body names the build that observed it (#395): the
+// string `--version` prints and the commit the binary was built from.
+func TestObservedBy(t *testing.T) {
+	defer func(v, c string) { Version, Commit = v, c }(Version, Commit)
+
+	Version, Commit = "v0.12.1", "f1d0479"
+	if got, want := ObservedBy(), "Observed by agent-harness v0.12.1 (f1d0479)"; got != want {
+		t.Errorf("ObservedBy() = %q, want %q", got, want)
+	}
+
+	// A full SHA is shortened to the form `git log <sha>..` reads as well.
+	Commit = "f1d0479c2a8e3b4d5e6f708192a3b4c5d6e7f809"
+	if got, want := ObservedBy(), "Observed by agent-harness v0.12.1 (f1d0479c2a8e)"; got != want {
+		t.Errorf("ObservedBy() = %q, want %q", got, want)
+	}
+
+	// A plain `go build -buildvcs=false` knows neither; it says so rather than
+	// leaving an empty pair of parentheses.
+	Version, Commit = DevVersion, ""
+	if got := ObservedBy(); !strings.HasPrefix(got, "Observed by agent-harness dev (") || strings.Contains(got, "()") {
+		t.Errorf("ObservedBy() = %q, want the dev version and a named commit or %q", got, unknownCommit)
+	}
+}
