@@ -803,13 +803,15 @@ func TestSpendingCapResetTimeReadsTheSessionLimitWording(t *testing.T) {
 	}
 }
 
-// A healthy session near its limit carries an allowed or allowed_warning event; a
-// real model turn carries no error; and a synthetic turn with another error is not
+// A healthy session near its limit carries an allowed or allowed_warning event; one
+// past it but allowed overage carries a rejected event with isUsingOverage and keeps
+// working; a real model turn carries no error; and a synthetic turn with another error is not
 // the rate limit. None of them is a cap abort.
 func TestRateLimitSignalsThatAreNotACapAbort(t *testing.T) {
 	for name, line := range map[string]string{
 		"allowed_warning event": `{"type":"rate_limit_event","rate_limit_info":{"status":"allowed_warning","resetsAt":1795755600,"rateLimitType":"five_hour","utilization":0.99}}`,
 		"allowed event":         `{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","resetsAt":1795755600,"rateLimitType":"five_hour"}}`,
+		"rejected but overage":  `{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":1795755600,"rateLimitType":"five_hour","overageStatus":"allowed","isUsingOverage":true}}`,
 		"real turn with error":  `{"type":"assistant","message":{"model":"claude-opus-5-5","content":[{"type":"text","text":"rate limits are tricky"}]},"error":"rate_limit"}`,
 		"other synthetic error": `{"type":"assistant","message":{"model":"<synthetic>","content":[{"type":"text","text":"API Error: 500"}]},"error":"server_error"}`,
 		"real turn quoting it":  `{"type":"assistant","message":{"model":"claude-opus-5-5","content":[{"type":"text","text":"the CLI says you've hit your session limit"}]}}`,

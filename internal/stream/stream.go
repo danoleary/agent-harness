@@ -32,9 +32,12 @@ type event struct {
 	Error string `json:"error"`
 	// RateLimitInfo is a rate_limit_event's payload: Status is "allowed",
 	// "allowed_warning" or "rejected", and ResetsAt the Unix epoch the window clears.
+	// IsUsingOverage is the CLI's "rejected, but overage is allowed" — the window is
+	// spent and the session carries on billing overage.
 	RateLimitInfo struct {
-		Status   string `json:"status"`
-		ResetsAt int64  `json:"resetsAt"`
+		Status         string `json:"status"`
+		ResetsAt       int64  `json:"resetsAt"`
+		IsUsingOverage bool   `json:"isUsingOverage"`
 	} `json:"rate_limit_info"`
 	Message struct {
 		// Model is the model that produced the turn. A spending-cap abort ships a
@@ -88,11 +91,13 @@ const rateLimitError = "rate_limit"
 
 // rateLimitRejected is the rate_limit_event status of a request the usage window
 // refused. "allowed_warning" is not it: a healthy session near its limit carries
-// that one.
+// that one. Nor is a rejected event with isUsingOverage set: the CLI stamps that on
+// a session that carries on under overage.
 const rateLimitRejected = "rejected"
 
 // IsSpendingCapAbort reports whether a stream-json line is a spending-cap abort
-// (BEH-494): a `rate_limit_event` whose status is rejected, a `model:"<synthetic>"`
+// (BEH-494): a `rate_limit_event` whose status is rejected (and not running on
+// overage), a `model:"<synthetic>"`
 // assistant turn with error "rate_limit" (#407), or — by the message wording — the
 // `is_error` result or synthetic turn carrying the cap text (BEH-568). The
 // structured signals come first because the prose changes with the CLI's version:
@@ -126,7 +131,7 @@ func capAbort(line string) (capSignal, bool) {
 	}
 	switch e.Type {
 	case "rate_limit_event":
-		if e.RateLimitInfo.Status == rateLimitRejected {
+		if e.RateLimitInfo.Status == rateLimitRejected && !e.RateLimitInfo.IsUsingOverage {
 			return capSignal{resetsAt: e.RateLimitInfo.ResetsAt}, true
 		}
 	case "result":

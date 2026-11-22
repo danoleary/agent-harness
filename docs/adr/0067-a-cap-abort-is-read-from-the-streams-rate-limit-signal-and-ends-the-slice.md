@@ -30,7 +30,9 @@ wording: a `rate_limit_event` whose `rate_limit_info.status` is `rejected`, with
    matches a `rate_limit_event` with status `rejected`, or a synthetic assistant
    turn with error `rate_limit`. The text markers stay as the fallback, for both
    wordings: `Spending cap reached` and `hit your session limit`. No other
-   rate-limit status counts.
+   rate-limit status counts, and neither does a rejected event with
+   `isUsingOverage` set: the CLI stamps that on a session past its window that
+   carries on under overage.
 2. **The reset is the event's epoch.** `stream.SpendingCapResetTime` returns
    `resetsAt` when the line carries it. The `resets h:mm am` regex is only the
    fallback, for a line that names no epoch. The session keeps the first cap
