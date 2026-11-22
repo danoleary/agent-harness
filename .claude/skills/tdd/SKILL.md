@@ -100,6 +100,14 @@ prompt around this skill tells you the ticket, the worktree and the branch.
   on a value it can't parse. To read the CLI's own code, search the binary for
   a fixed string as `docs/how-to/sandbox-image.md` §Searching the bundled
   Claude CLI shows; a `.{N}literal` context regex on it runs for minutes (#310).
+  The CLI also defines the stream-json events the harness parses
+  (`internal/stream`). When a change makes the harness branch on a field's
+  value (event type, status, error class, flag), search the binary the same
+  way for where that field is set. List every value it can take and every
+  companion field that changes its meaning, and add a negative test for each
+  value that must not match. A ticket's sample line is one instance, not the
+  schema: the same status can mean a different thing beside another flag
+  (#413).
 - A changed `scripts/<name>.sh` that has a sibling `scripts/test-<name>.sh` must
   change that test too (CI checks this), and `check-scripts` runs every
   `scripts/test-*.sh`.

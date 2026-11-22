@@ -294,3 +294,23 @@ func TestTheTDDAndReviewSkillsSayWhereAReleaseNoteGoes(t *testing.T) {
 		}
 	}
 }
+
+// TestTheTDDAndReviewSkillsCheckAStreamJSONFieldAgainstTheBundledCLI pins the
+// rule that a ticket's sample stream-json line is one instance, not the schema
+// (#413): before the harness branches on a field's value, the implementing and
+// the reviewing session search the bundled CLI for every value and companion
+// field, and a negative test covers each value that must not match.
+func TestTheTDDAndReviewSkillsCheckAStreamJSONFieldAgainstTheBundledCLI(t *testing.T) {
+	root := repoRoot(t)
+	for _, c := range []struct{ skill, section string }{
+		{".claude/skills/tdd/SKILL.md", "Repo guards"},
+		{".claude/skills/review-worktree/SKILL.md", "2. Read the diff"},
+	} {
+		text := section(t, filepath.Join(root, c.skill), c.section)
+		for _, want := range []string{"stream-json", "`internal/stream`", "§Searching the bundled Claude CLI", "every value", "companion field", "negative test", "not the schema"} {
+			if !strings.Contains(text, want) {
+				t.Errorf("%s §%s does not mention %q; say to check a stream-json field's full value set in the bundled CLI", c.skill, c.section, want)
+			}
+		}
+	}
+}

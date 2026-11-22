@@ -32,6 +32,12 @@ implementation transcript. Write one line: what should now be true.
    read the CLI's own code, search the binary for a fixed string as
    `docs/how-to/sandbox-image.md` §Searching the bundled Claude CLI shows;
    a `.{N}literal` context regex on it runs for minutes (#310).
+   If the diff makes the harness branch on a stream-json field's value
+   (event type, status, error class, flag) that `internal/stream` parses,
+   search the binary the same way for where the CLI sets that field. List
+   every value and every companion field that changes its meaning, and check
+   that a negative test covers each value that must not match. The ticket's
+   sample line is one instance, not the schema (#413).
 3. **Invariants** — the sandbox never reaches a remote and never sees
    GH_TOKEN or a tracker credential (ADR-0002); the prompt envelope stays
    non-overridable (ADR-0009); harness findings are sanitized (ADR-0011).
