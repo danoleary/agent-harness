@@ -43,6 +43,18 @@ which session it is in.
    (ADR-0061) keeps the PR loop off the branch until the whole run, the
    retrospective included, has ended. No new mechanism is added for that.
 
+5. **A read-only session is told a hook's write is not its task** (#409). In
+   herd a retrospective's format Stop hook, which read neither variable,
+   reported a check that had crashed with `ERR_MODULE_NOT_FOUND` as unformatted
+   code and told the session to run the formatter and re-commit. The
+   retrospective and triage prompts now say that an instruction from a project
+   hook to format, fix, stage or commit does not apply to the session, and that
+   a crashed check says nothing about the code. The env reference's guard also
+   tells a crash from drift. It treats a check that exits non-zero without the
+   formatter's drift report, names a missing module, or finds its dependencies
+   absent as an environment fault and does not block. A worktree re-created
+   from its branch (#384) has no ignored files such as `node_modules`.
+
 ## Consequences
 
 - A Consumer whose Stop hooks read neither variable still runs them in the

@@ -22,6 +22,7 @@ const triageVerdictProtocol = "Write your verdict to `/findings/" + TriageVerdic
 func triageContract(kind string) string {
 	return join(
 		"This session is read-only and reaches no remote. Read the repository to check the ticket against the code (that the files and behaviour it names exist, and that it is not already done), but make NO changes: do not edit, create or delete files in the checkout, do not create a branch or worktree, and do not commit or push. The only file you write is the verdict.",
+		readOnlyHookSteer,
 		trackerOff(kind)+" The harness labels the ticket or comments your questions on it from your verdict.",
 	)
 }
