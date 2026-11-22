@@ -216,13 +216,15 @@ func WatchAndFix(d Driver, cfg Config, now func() time.Time) Outcome {
 	}
 	failed = FailedChecks(checks)
 
-	// The re-run checks failed twice on the same commit. Without this line the run
-	// log went from "watching CI" to the first fix session, and nothing showed a
-	// re-run happened (#397). A check with no Actions run behind it was not re-run,
-	// so the second red says nothing about it.
-	redOnRerun := len(rerun) > 0
+	// The re-run checks still red failed twice on the same commit. Without this line
+	// the run log went from "watching CI" to the first fix session, and nothing showed
+	// a re-run happened (#397). A check with no Actions run behind it was not re-run,
+	// so the second red says nothing about it; a re-run check that went green washed
+	// out, so it is not named as failing twice.
+	twice := stillFailing(rerun, failed)
+	redOnRerun := len(twice) > 0
 	if redOnRerun {
-		d.Narrate("CI still red after re-running the failed checks (" + flakeNames(rerun, nil) + ") — treating as real")
+		d.Narrate("CI still red after re-running the failed checks (" + flakeNames(twice, nil) + ") — treating as real")
 	}
 
 	// Real failure: bounded diagnose + fix + push + re-poll.

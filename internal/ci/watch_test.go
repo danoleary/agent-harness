@@ -470,6 +470,30 @@ func TestWatchNarratesARedRerunAndTellsTheFixItFailedTwice(t *testing.T) {
 	}
 }
 
+// #397: a re-run check that went green washed out, so the narration names only the
+// check that failed twice, not every check the watch re-ran.
+func TestWatchNarratesOnlyTheChecksRedOnTheRerun(t *testing.T) {
+	lint := Check{Name: "lint", Bucket: BucketFail, Link: "https://github.com/o/r/actions/runs/100/job/2"}
+	e2e := Check{Name: "e2e", Bucket: BucketFail, Link: "https://github.com/o/r/actions/runs/101/job/7"}
+	lintGreen := Check{Name: "lint", Bucket: BucketPass, Link: lint.Link}
+	d := &fakeDriver{
+		polls: []pollResult{
+			{v: Failed, checks: []Check{lint, e2e}},
+			{v: Failed, checks: []Check{lintGreen, e2e}},
+			{v: Passed},
+		},
+		mergeState: MergeClean,
+	}
+	WatchAndFix(d, testWatchCfg(), newFakeClock().now)
+	want := "CI still red after re-running the failed checks (e2e) — treating as real"
+	if len(d.narrated) != 1 || d.narrated[0] != want {
+		t.Errorf("narrated %q, want just %q", d.narrated, want)
+	}
+	if fmt.Sprint(d.fixRedOnRerun) != "[true]" {
+		t.Errorf("Fix redOnRerun = %v, want [true]", d.fixRedOnRerun)
+	}
+}
+
 // #397: a failed check with no Actions run behind it cannot be re-run, so a red
 // second poll says nothing about a re-run: nothing is narrated and the fix is not
 // told the check failed twice.

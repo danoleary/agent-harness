@@ -40,3 +40,19 @@ func rerunnable(checks []Check) []Check {
 	}
 	return out
 }
+
+// stillFailing is the checks in rerun that are failing again in failed, by name,
+// in rerun's order.
+func stillFailing(rerun, failed []Check) []Check {
+	red := make(map[string]bool, len(failed))
+	for _, c := range failed {
+		red[c.Name] = true
+	}
+	var out []Check
+	for _, c := range rerun {
+		if red[c.Name] {
+			out = append(out, c)
+		}
+	}
+	return out
+}
