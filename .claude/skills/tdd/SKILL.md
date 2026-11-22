@@ -125,14 +125,16 @@ harness has to spend a whole extra cycle recovering the diff (#224).
 1. Update docs the change makes stale (README, `docs/DESIGN.md`, an ADR, and
    the `docs/reference/` page for a key, variable, command or message you
    added or changed: `config.md`, `env.md`, `cli.md`, `errors.md`).
-   Before numbering a new ADR, check `origin/main`'s `docs/adr/` (`git fetch`
-   first), not local main, and expect a sibling branch may take the same number.
+   Before numbering a new ADR, check `origin/main`'s `docs/adr/`, not local
+   main, and expect a sibling branch may take the same number. The harness
+   fetched `origin/main` before the session started; the sandbox has no network
+   and no credentials, so do not run `git fetch` (#364).
    A number the ticket gives a new ADR is a guess from when it was drafted: use
    the next free one anyway, and say in the commit body which number shipped.
    Append the new ADR's line to the end of `docs/adr/README.md`: a sibling that
    took the same number then conflicts with yours there (ADR-0034), and
    `make check` (`scripts/check-adr-numbers.sh`) fails on a collision as the
-   backstop. That fetch is read-only: do not rebase or merge `origin/main` into
+   backstop. `origin/main` is read-only: do not rebase or merge it into
    the branch, even if main has moved. The harness rebases it before push and
    resolves conflicts in its own session.
 2. Run `go test` and `go vet` on the packages the diff touches, then

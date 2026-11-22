@@ -199,7 +199,9 @@ func provisionWorktree(h hostio.Host, cfg config.Config, log *runlog.Logger) (pr
 		// A reused branch with nothing ahead has nothing to preserve: move it onto
 		// current origin/main before post_create and the base gate, so neither speaks
 		// for a base main has left behind (#334). Best-effort — a failure leaves the
-		// tree where it was, which is what reuse did before.
+		// tree where it was, which is what reuse did before. FastForward fetches
+		// origin/main first, as Create does, which is what lets the envelope tell
+		// the session not to fetch it (#364).
 		if from, to, err := wt.FastForward(); err != nil {
 			log.Event("⚠ could not fast-forward the reused worktree onto origin/main (" + err.Error() + ") — the session starts from its old base")
 		} else if from != "" {

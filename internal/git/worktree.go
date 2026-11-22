@@ -151,8 +151,11 @@ func (w Worktree) Exists() bool {
 func (w Worktree) Create() error {
 	// Resumed-branch case (BEH-554): the branch already exists from a prior session
 	// but its worktree dir was torn down. Re-attach a worktree to it (no `-b`, which
-	// would fail "branch already exists") so the prior work is preserved.
+	// would fail "branch already exists") so the prior work is preserved. It still
+	// refreshes origin/main: the session is told the host fetched it and not to
+	// fetch it itself (#364).
 	if w.run("git", "-C", w.repo, "rev-parse", "--verify", "-q", "refs/heads/"+w.branch) == nil {
+		_ = w.freshBase()
 		return w.run("git", "-C", w.repo, "worktree", "add", w.path, w.branch)
 	}
 	return w.run("git", "-C", w.repo, "worktree", "add", "-b", w.branch, w.path, w.freshBase())

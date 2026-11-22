@@ -379,8 +379,17 @@ const implementFindingsSteer = "Do NOT emit or file any harness-improvement find
 // session that syncs onto a moved main itself only adds turns and a hand-rebuilt
 // commit (#133). It is appended structurally, so a body cannot drop it.
 func branchHandoffContract(branchPrefix, slug string) string {
-	return "The harness keys its handoff check, push, PR, and review off the canonical `" + branchPrefix + "/" + slug + "` branch, so committing to any other branch (e.g. `fix/" + slug + "`) silently strands your work where the harness never sees it. Do not rebase or merge `origin/main` into the branch; the harness rebases it before push and resolves conflicts in its own session. Fetch `origin/main` only to read it (e.g. the next free ADR number)."
+	return "The harness keys its handoff check, push, PR, and review off the canonical `" + branchPrefix + "/" + slug + "` branch, so committing to any other branch (e.g. `fix/" + slug + "`) silently strands your work where the harness never sees it. Do not rebase or merge `origin/main` into the branch; the harness rebases it before push and resolves conflicts in its own session. " + originMainFetched + " Read `origin/main` as it is, e.g. for the next free ADR number."
 }
+
+// originMainFetched tells a sandboxed session that origin/main is already as
+// fresh as the host can make it. The sandbox has no network and no GitHub
+// credentials (ADR-0002), so a session told to fetch lost a turn to `fatal:
+// could not read Username` and then could not tell whether its origin/main was
+// stale (#364). Worktree provisioning fetches it host-side before every
+// implementation launch (Worktree.Create on a new or re-attached tree, Worktree.FastForward on
+// a reused one), and the worktree shares the checkout's refs.
+const originMainFetched = "The harness already fetched `origin/main` into this worktree before the session started, and the sandbox has no network and no credentials: do not run `git fetch`."
 
 // freshWorktreeInstr is the implementation stage's worktree instruction for a
 // fresh run. The harness now creates the worktree + canonical branch host-side
@@ -547,7 +556,7 @@ func adrNumberSection(files []string) string {
 	for i, f := range files {
 		quoted[i] = "`" + f + "`"
 	}
-	return defang("The ticket names ADR files by number: " + strings.Join(quoted, ", ") + ". An ADR that already exists keeps its number. For a new ADR the number is a guess made when the ticket was drafted, and a sibling may have taken it since: give it the next free number on origin/main (`git fetch`, then see `git ls-tree origin/main docs/adr/`), whatever the ticket says, and if that differs from the ticket's, say which number shipped in your commit body. That numbering rule is per ADR-0034, which is not itself the number to use.")
+	return defang("The ticket names ADR files by number: " + strings.Join(quoted, ", ") + ". An ADR that already exists keeps its number. For a new ADR the number is a guess made when the ticket was drafted, and a sibling may have taken it since: give it the next free number on origin/main (see `git ls-tree origin/main docs/adr/`), whatever the ticket says, and if that differs from the ticket's, say which number shipped in your commit body. That numbering rule is per ADR-0034, which is not itself the number to use. " + originMainFetched)
 }
 
 // subIssuesSection renders the inlined child sub-issue specs for an umbrella/batch
