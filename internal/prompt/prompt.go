@@ -166,6 +166,11 @@ type Context struct {
 	// instead of replaying it, for a branch a human opted in: its history must not
 	// be rewritten (ADR-0019).
 	Merge bool
+	// Conflicted names the paths the harness's own replay of the branch onto
+	// origin/main left unmerged, which is what makes a RebaseFix a genuine content
+	// conflict. None means the only sign of a conflict is GitHub's mergeability,
+	// which ignores the merge drivers .gitattributes sets (#403).
+	Conflicted []string
 
 	// Alerts are the open Dependabot alerts on one package that a SecurityFix
 	// session fixes together (ADR-0040, decision 1).
@@ -1096,6 +1101,16 @@ const overlapsProtocol = "Write each overlap you did NOT switch to `/findings/" 
 // a branch an earlier session already renumbered on top.
 const foldADRRenumber = "If origin/main already has the number of an ADR this branch adds (compare `git diff --name-only --diff-filter=A origin/main..._premerge -- docs/adr/` with `git ls-tree --name-only origin/main docs/adr/`), give it the next free number on origin/main INSIDE the commit that added it, never in a new commit on top. The ADR index merges by line union in a replay, so a renumber in a later commit lets the next replay bring the adding commit's old index line back beside the new one, with no conflict to warn you. In place of the single cherry-pick above: `git log --format=%H --diff-filter=A origin/main.._premerge -- 'docs/adr/*-<slug>.md'` names the adding commit (match the slug, not the number, which an earlier renumber may have changed); run `git cherry-pick origin/main..<adding commit>`, `git mv` the file to the new number, update its heading and its index line, `git add` them and `git commit --amend --no-edit`, then `git cherry-pick <adding commit>.._premerge` for the rest. `git cherry-pick --skip` a later commit that only renumbered that ADR (an earlier resolution's), and fix the old number in anything the later commits add in one last commit. After ANY replay, whether or not you renumbered (a branch an earlier session renumbered on top can bring an old line back with no collision today), check that every line of the ADR index names a file that exists in `docs/adr/`, and delete a stale line with a fixed-string filter, e.g. `grep -vF '(<old file>)' docs/adr/README.md > /tmp/adr-index && mv /tmp/adr-index docs/adr/README.md`, not a `sed` regex, where an unescaped `.`, `[` or `/` can keep the pattern from matching and the line stays."
 
+// conflictTrigger is what a RebaseFix session is told brought it: genuine, when
+// the harness's replay left paths unmerged, else GitHub's mergeability alone,
+// which is not a claim that the changes overlap (#403).
+func conflictTrigger(c Context, genuine string) string {
+	if len(c.Conflicted) > 0 {
+		return genuine
+	}
+	return "GitHub reports the open PR for " + c.Ticket.Identifier + " as conflicting with `main`, but the harness has not seen git stop on a conflict: GitHub's merge ignores the merge drivers `.gitattributes` sets, such as the ADR index's `merge=union`, so bringing the branch onto origin/main as below may apply with no unmerged paths. Resolve only what git actually stops on."
+}
+
 // rebaseFix builds the `-p` prompt for the sandboxed conflict-resolution
 // session the review stage launches when the proactive pre-push rebase hits a
 // genuine content conflict (BEH-581). The branch already passed the cold review +
@@ -1113,7 +1128,7 @@ func rebaseFix(c Context) string {
 	}
 	t, branch, worktreePath := c.Ticket, c.branch(), c.WorktreePath
 	lines := []string{
-		"A pre-push rebase for " + t.Identifier + " hit a genuine content conflict. The branch already passed the cold review and the harness gate, but origin/main advanced underneath it (a sibling PR merged) and the changes overlap, so it cannot be replayed automatically. The worktree already exists at `" + worktreePath + "` on branch `" + branch + "` — work in it; do NOT create a new worktree.",
+		conflictTrigger(c, "A replay of "+t.Identifier+" onto origin/main hit a genuine content conflict: git left "+codeList(c.Conflicted)+" unmerged. The branch already passed the harness gate, but origin/main advanced underneath it (a sibling PR merged) and the changes overlap, so it cannot be replayed automatically.") + " The worktree already exists at `" + worktreePath + "` on branch `" + branch + "` — work in it; do NOT create a new worktree.",
 		"",
 		"Do NOT use `git rebase` here. This is a LINKED worktree (`git worktree add`), and `git rebase`'s detach-to-onto checkout false-fails with `Your local changes to the following files would be overwritten by merge` / `could not detach HEAD` even when the tree is byte-clean (`git status` empty) — a worktree checkout-safety artifact, not a real conflict. Burning attempts on `git rebase`/`git rebase --merge` here is wasted effort (BEH-618).",
 		"",
@@ -1167,7 +1182,7 @@ func rebaseFix(c Context) string {
 func mergeFix(c Context) string {
 	t, branch, worktreePath := c.Ticket, c.branch(), c.WorktreePath
 	lines := []string{
-		"The open PR " + t.Identifier + " conflicts with `main`: origin/main advanced underneath it and the changes overlap. The worktree already exists at `" + worktreePath + "` on branch `" + branch + "` — work in it; do NOT create a new worktree.",
+		conflictTrigger(c, "The open PR "+t.Identifier+" hit a genuine content conflict with `main`: origin/main advanced underneath it and the changes overlap, and git left "+codeList(c.Conflicted)+" unmerged.") + " The worktree already exists at `" + worktreePath + "` on branch `" + branch + "` — work in it; do NOT create a new worktree.",
 		"",
 		"A human owns this branch, so its history must NOT be rewritten. Do NOT rebase, `reset --hard`, cherry-pick onto a new base, amend, or squash. The harness pushes your result WITHOUT force, so any rewrite will be rejected.",
 		"",

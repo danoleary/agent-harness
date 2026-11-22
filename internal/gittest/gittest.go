@@ -116,8 +116,16 @@ func (r *Repo) Dirty(wt gitpkg.Worktree) {
 // as a sibling PR merging would. The checkout does not see it until it fetches.
 func (r *Repo) Merge(file, body, subject string) {
 	r.t.Helper()
+	r.MergeFiles(map[string]string{file: body}, subject)
+}
+
+// MergeFiles is [Repo.Merge] writing each file in files to its body in one commit.
+func (r *Repo) MergeFiles(files map[string]string, subject string) {
+	r.t.Helper()
 	r.Git(r.others, "pull", "-q", "--ff-only", "origin", "main")
-	r.write(r.others, file, body)
+	for file, body := range files {
+		r.write(r.others, file, body)
+	}
 	r.Git(r.others, "add", "-A")
 	r.Git(r.others, "commit", "-q", "-m", subject)
 	r.Git(r.others, "push", "-q", "origin", "main")
@@ -156,9 +164,18 @@ func (r *Repo) Publish(branch string) string {
 // PublishFile is [Repo.Publish] with the branch's one commit writing body to file.
 func (r *Repo) PublishFile(branch, file, body string) string {
 	r.t.Helper()
+	return r.PublishFiles(branch, map[string]string{file: body})
+}
+
+// PublishFiles is [Repo.Publish] with the branch's one commit writing each file in
+// files to its body.
+func (r *Repo) PublishFiles(branch string, files map[string]string) string {
+	r.t.Helper()
 	r.Git(r.others, "pull", "-q", "--ff-only", "origin", "main")
 	r.Git(r.others, "checkout", "-q", "-b", branch)
-	r.write(r.others, file, body)
+	for file, body := range files {
+		r.write(r.others, file, body)
+	}
 	r.Git(r.others, "add", "-A")
 	r.Git(r.others, "commit", "-q", "-m", "a change on "+branch)
 	r.Git(r.others, "push", "-q", "origin", branch)

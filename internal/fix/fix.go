@@ -31,6 +31,7 @@ import (
 	"github.com/danoleary/agent-harness/internal/runlog"
 	"github.com/danoleary/agent-harness/internal/sandbox"
 	"github.com/danoleary/agent-harness/internal/session"
+	"github.com/danoleary/agent-harness/internal/ship"
 	"github.com/danoleary/agent-harness/internal/ticket"
 	"github.com/danoleary/agent-harness/internal/verify"
 )
@@ -573,6 +574,9 @@ type Conflict struct {
 	Target
 	Strategy Strategy
 	Regate   func() GateResult
+	// Conflicted names the paths the harness's replay left unmerged, which the
+	// session is told; none means only GitHub reported the conflict (#403).
+	Conflicted []string
 }
 
 // ConflictResult is how a conflict resolution ended. OK authorises the push.
@@ -679,6 +683,7 @@ func (e Env) ResolveConflict(c Conflict) ConflictResult {
 	e.Log.Event(fmt.Sprintf("launching conflict-resolution session (%s onto origin/main, cap %d min active)", c.Strategy, int(e.Cfg.ReviewTimeout.Minutes())))
 	pctx := e.promptContext(c.Target)
 	pctx.Merge = c.Strategy == Merge
+	pctx.Conflicted = c.Conflicted
 	dropbox := e.overlapDropbox(c.Strategy)
 	res := e.Host.Agent(hostio.AgentRun{
 		Label:       "rebasefix",
@@ -708,11 +713,14 @@ func (e Env) ResolveConflict(c Conflict) ConflictResult {
 		e.Log.Event(e.Who + " ✓ " + verdict.Reason)
 	}
 
-	overlaps := e.readOverlaps(dropbox)
+	return e.regate(c, e.readOverlaps(dropbox))
+}
 
-	// The resolution rewrote the tree, so any earlier gate result is stale — re-run
-	// the gates before trusting the push. Push only on a green gate over a
-	// still-clean worktree.
+// regate re-runs c's gates over a resolved branch. The resolution rewrote the
+// tree, so any earlier gate result is stale: push only on a green gate over a
+// still-clean worktree.
+func (e Env) regate(c Conflict, overlaps []Overlap) ConflictResult {
+	wt := e.Host.Worktree()
 	gate := c.Regate()
 	if !gate.Green() {
 		if base := e.redBase(gate); base != nil {
@@ -728,6 +736,48 @@ func (e Env) ResolveConflict(c Conflict) ConflictResult {
 	}
 	e.Log.Event(e.Who + " ✓ post-resolution gate re-run is green — clear to push")
 	return ConflictResult{OK: true, Resolved: true, Gate: gate, Overlaps: overlaps}
+}
+
+// HostReplay is what [Env.ReplayOnBase] did. Replayed marks a branch the host
+// replayed onto origin/main with no session, and Result is then the verdict over
+// it. Otherwise nothing changed, and Conflicted names the paths git left unmerged
+// (none when the replay failed for another reason), for the session that takes
+// over.
+type HostReplay struct {
+	Replayed   bool
+	Result     ConflictResult
+	Conflicted []string
+}
+
+// ReplayOnBase tries the replay a conflict-resolution session would run, host-side
+// and before one is launched (#403): the cherry-pick onto origin/main that
+// Landing's pre-push rebase uses ([ship.ReplayDetail]). GitHub calls a PR
+// conflicting where a local replay applies clean: its merge ignores the ADR
+// index's merge=union, so two ADRs under one number read as a conflict. A clean
+// replay has each ADR whose number origin/main now holds renumbered, as Landing
+// does (#374), and is re-gated as a resolution is. Only a rebase is replayed: a
+// merge strategy's branch keeps its history, and its session merges.
+func (e Env) ReplayOnBase(c Conflict) HostReplay {
+	if c.Strategy != Rebase {
+		return HostReplay{}
+	}
+	wt := e.Host.Worktree()
+	replayed, conflicted := ship.ReplayDetail(e.Host, e.Log)
+	if replayed != ship.ReplayClean {
+		return HostReplay{Conflicted: conflicted}
+	}
+	e.Log.Event(fmt.Sprintf("%s ✓ replayed %s onto origin/main host-side with no unmerged paths — the conflict was GitHub's alone, so no conflict-resolution session (#403)", e.Who, wt.Branch()))
+	switch moved, err := wt.RenumberCollidingADRs(); {
+	case err != nil:
+		e.Log.Event(fmt.Sprintf("%s ⚠ could not renumber the branch's ADRs against origin/main (%v) — pushing it as replayed; check-adr may fail in CI on a duplicate number (#374)", e.Who, err))
+	case len(moved) > 0:
+		var names []string
+		for _, m := range moved {
+			names = append(names, "ADR-"+m.From+" → ADR-"+m.To)
+		}
+		e.Log.Event(fmt.Sprintf("%s ✓ renumbered %s: origin/main took the number while the branch was in flight (#374)", e.Who, strings.Join(names, ", ")))
+	}
+	return HostReplay{Replayed: true, Result: e.regate(c, nil)}
 }
 
 // overlapDropbox is the dropbox a replay's resolution session writes its overlap

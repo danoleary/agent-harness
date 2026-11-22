@@ -80,12 +80,13 @@ const (
 // means: a landing rebases onto the ref it has, while the CI watch refuses to
 // re-push a branch replayed onto a base it could not refresh.
 func Replay(h Port, log EventSink) Replayed {
-	r, _ := replay(h, log)
+	r, _ := ReplayDetail(h, log)
 	return r
 }
 
-// replay is [Replay] that also names the files git reported as conflicted, which
-// a landing hands its Resolve hook (#114).
+// ReplayDetail is [Replay] that also names the files git reported as conflicted,
+// which a landing hands its Resolve hook (#114) and the PR loop tells its
+// conflict-resolution session (#403).
 //
 // A replay that failed with no content conflict is run once more before it is
 // reported (#164). The failures behind it — an index.lock another git process
@@ -94,7 +95,7 @@ func Replay(h Port, log EventSink) Replayed {
 // and two extra gate runs, found nothing to resolve. The retry runs only when git
 // put the branch back on the tip it started from: re-pinning any other tip would
 // replay the wrong commits.
-func replay(h Port, log EventSink) (Replayed, []string) {
+func ReplayDetail(h Port, log EventSink) (Replayed, []string) {
 	wt := h.Worktree()
 	tip, _ := wt.HeadSHA()
 	r := wt.RebaseDetail()
@@ -225,7 +226,7 @@ func LandAs(h Port, log EventSink, opening Opening, resolve Resolve) Landing {
 		log.Event("ship … warning: could not fetch origin/main before rebase: " + err.Error())
 	}
 	var note string
-	switch replayed, conflicted := replay(h, log); replayed {
+	switch replayed, conflicted := ReplayDetail(h, log); replayed {
 	case ReplayDisjoint:
 		return Landing{Verdict: Disjoint}
 	case ReplayFailed:

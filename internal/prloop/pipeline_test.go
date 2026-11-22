@@ -65,13 +65,19 @@ func pipelineLog(t *testing.T) *runlog.Logger {
 
 // prHost is a healthy Fake for it's PR over a real repo: the PR's head branch is on
 // origin, main has moved on past where it was cut, and it is polled at the head
-// origin really has. A conflict-resolution session really brings the branch onto
-// origin/main; every other session does what NewFake scripts.
+// origin really has. A Conflict PR's main changed the branch's own file, so git
+// stops on it too and the host cannot replay it (#403). A conflict-resolution
+// session really brings the branch onto origin/main; every other session does
+// what NewFake scripts.
 func prHost(t *testing.T, it Item) (*hostio.Fake, Item, *gittest.Repo) {
 	t.Helper()
 	repo := gittest.New(t)
 	it.PR.HeadSHA = repo.Publish(it.PR.HeadBranch)
-	repo.Merge("other.txt", "unrelated\n", "main moved on")
+	if it.Kind == Conflict {
+		conflictWithMain(repo, it.PR.HeadBranch)
+	} else {
+		repo.Merge("other.txt", "unrelated\n", "main moved on")
+	}
 	h := hostio.NewFake(repo.Checkout(), ticket.Slug(Key(it.PR.Number)))
 	h.Branch = it.PR.HeadBranch
 	h.AgentFn = func(_ int, run hostio.AgentRun) session.Outcome {
@@ -81,6 +87,12 @@ func prHost(t *testing.T, it Item) (*hostio.Fake, Item, *gittest.Repo) {
 		return h.AgentOutcome
 	}
 	return h, it, repo
+}
+
+// conflictWithMain lands on main a different edit to the file [gittest.Repo.Publish]
+// wrote for branch, so the branch's replay onto origin/main stops on it.
+func conflictWithMain(repo *gittest.Repo, branch string) {
+	repo.Merge(strings.ReplaceAll(branch, "/", "-")+".txt", "main's change\n", "main changed the same file")
 }
 
 func harnessItem(k Kind) Item {
@@ -131,6 +143,9 @@ func TestFixRebasesAHarnessBranchAndPushesForceWithLease(t *testing.T) {
 	}
 	if !strings.Contains(h.Agents[0].Prompt, "git reset --hard origin/main") {
 		t.Error("a harness branch is resolved with the rebase recipe")
+	}
+	if !strings.Contains(h.Agents[0].Prompt, "genuine content conflict: git left `feat-gh-7.txt` unmerged") {
+		t.Errorf("the session is told the paths the host's replay left unmerged (#403); prompt:\n%s", h.Agents[0].Prompt)
 	}
 	if h.Watches[0].KeepHistory {
 		t.Error("the CI watch may rebase a harness branch reactively")
@@ -885,16 +900,17 @@ func TestFixThatCannotSaveTheCheckpointNeedsAHuman(t *testing.T) {
 
 // rebasingHost is prHost whose conflict-resolution session really rebases the
 // branch onto origin/main, rewriting its history, as the RebaseFix recipe does on
-// a harness branch, and whose gates are red while red is set.
+// a harness branch, and whose gates are red while red is set. The session
+// resolves the conflict [conflictWithMain] made by keeping the branch's side.
 func rebasingHost(t *testing.T, repo *gittest.Repo, it Item, red *bool) *hostio.Fake {
 	t.Helper()
 	h := hostio.NewFake(repo.Checkout(), ticket.Slug(Key(it.PR.Number)))
 	h.Branch = it.PR.HeadBranch
 	h.AgentFn = func(_ int, run hostio.AgentRun) session.Outcome {
 		if run.Label == "rebasefix" {
-			if res := h.Worktree().Rebase(); res != gitpkg.RebaseClean {
-				t.Fatalf("the fixture's rebase must replay cleanly, got %v", res)
-			}
+			wt := h.Worktree()
+			repo.Git(wt.Path(), "reset", "-q", "--hard", "origin/main")
+			repo.Commit(wt, strings.ReplaceAll(it.PR.HeadBranch, "/", "-")+".txt", "a change\n", "a change on "+it.PR.HeadBranch)
 		}
 		return session.Outcome{}
 	}
@@ -918,7 +934,7 @@ func TestFixKeepsACommittedResolutionWhoseRegateWentRed(t *testing.T) {
 	repo := gittest.New(t)
 	it := harnessItem(Conflict)
 	it.PR.HeadSHA = repo.Publish(it.PR.HeadBranch)
-	repo.Merge("other.txt", "unrelated\n", "main moved on")
+	conflictWithMain(repo, it.PR.HeadBranch)
 	red := true
 	first := rebasingHost(t, repo, it, &red)
 	log := pipelineLog(t)
@@ -967,7 +983,7 @@ func TestFixResolvesAfreshOnceOriginMainMovesPastASavedResolution(t *testing.T) 
 	repo := gittest.New(t)
 	it := harnessItem(Conflict)
 	it.PR.HeadSHA = repo.Publish(it.PR.HeadBranch)
-	repo.Merge("other.txt", "unrelated\n", "main moved on")
+	conflictWithMain(repo, it.PR.HeadBranch)
 	red := true
 	if res := Fix(rebasingHost(t, repo, it, &red), pipelineCfg(), pipelineLog(t), it, prDoctor()); res.OK {
 		t.Fatalf("a red re-gate pushes nothing, got %+v", res)
@@ -1238,5 +1254,110 @@ func TestFixLeavesThePRAloneWhenTheReplayReportsNoOverlap(t *testing.T) {
 	Fix(h, pipelineCfg(), pipelineLog(t), it, prDoctor())
 	if strings.Contains(calls(h), "edit-pr") {
 		t.Errorf("no overlap was reported, so the PR is not edited; calls = %v", h.Calls)
+	}
+}
+
+// adrClashHost is the #403 incident: the ADR index merges by line union
+// (.gitattributes), the PR adds ADR 0040 and its index line, and main then merges a
+// sibling's ADR 0040, whose index line lands at the same spot. GitHub, which
+// ignores merge=union, reads the PR as conflicting; a local replay applies clean.
+func adrClashHost(t *testing.T, it Item) (*hostio.Fake, Item, *gittest.Repo) {
+	t.Helper()
+	repo := gittest.New(t)
+	index := "# Architecture decision records\n\n- [ADR 0039](0039-an-earlier-decision.md): An earlier decision\n"
+	repo.MergeFiles(map[string]string{
+		".gitattributes":                       "docs/adr/README.md merge=union\n",
+		"docs/adr/README.md":                   index,
+		"docs/adr/0039-an-earlier-decision.md": "# ADR 0039: an earlier decision\n",
+	}, "the ADR index unions")
+	it.PR.HeadSHA = repo.PublishFiles(it.PR.HeadBranch, map[string]string{
+		"docs/adr/0040-a-pr-records-its-decision.md": "# ADR 0040: a PR records its decision\n",
+		"docs/adr/README.md":                         index + "- [ADR 0040](0040-a-pr-records-its-decision.md): A PR records its decision\n",
+	})
+	repo.MergeFiles(map[string]string{
+		"docs/adr/0040-main-decided-first.md": "# ADR 0040: main decided first\n",
+		"docs/adr/README.md":                  index + "- [ADR 0040](0040-main-decided-first.md): Main decided first\n",
+	}, "a sibling's ADR")
+	h := hostio.NewFake(repo.Checkout(), ticket.Slug(Key(it.PR.Number)))
+	h.Branch = it.PR.HeadBranch
+	return h, it, repo
+}
+
+// #403, replayed: GitHub flagged the PR conflicting only because main and the
+// branch each added an ADR under one number. The run replays the branch onto
+// origin/main host-side, renumbers the branch's ADR, re-gates and force-pushes,
+// with no conflict-resolution session.
+func TestFixReplaysAGitHubOnlyConflictHostSideAndRenumbersTheClashingADR(t *testing.T) {
+	it := harnessItem(Conflict)
+	it.PR.Title = "#7: Record the decision in ADR-0040"
+	h, it, repo := adrClashHost(t, it)
+	log := pipelineLog(t)
+
+	res := Fix(h, pipelineCfg(), log, it, prDoctor())
+
+	if !res.OK || res.Disposition != stages.Shipped {
+		t.Fatalf("a branch that replays clean ships, got %+v", res)
+	}
+	if len(h.Agents) != 0 {
+		t.Errorf("a replay that applies clean host-side launches no session, got %v", agentLabels(h))
+	}
+	got := calls(h)
+	if !strings.Contains(got, "shell gate-check|") || strings.Index(got, "shell gate-check") > strings.Index(got, "push-force|") {
+		t.Errorf("the replayed branch is re-gated, then force-pushed: %v", h.Calls)
+	}
+	if !onMain(repo, it.PR.HeadBranch) {
+		t.Error("what reached origin must sit on origin/main")
+	}
+	files := repo.Git(repo.Origin, "ls-tree", "--name-only", it.PR.HeadBranch, "docs/adr/")
+	if !strings.Contains(files, "0041-a-pr-records-its-decision.md") || strings.Contains(files, "0040-a-pr-records-its-decision.md") {
+		t.Errorf("the branch's ADR must be renumbered past main's 0040, got:\n%s", files)
+	}
+	readme := repo.Git(repo.Origin, "show", it.PR.HeadBranch+":docs/adr/README.md")
+	if !strings.Contains(readme, "(0040-main-decided-first.md)") || !strings.Contains(readme, "(0041-a-pr-records-its-decision.md)") || strings.Contains(readme, "(0040-a-pr-records-its-decision.md)") {
+		t.Errorf("the index must keep main's line and carry the branch's under its new number, got:\n%s", readme)
+	}
+	if len(h.PREdits) != 1 || h.PREdits[0].Title != "#7: Record the decision in ADR-0041" {
+		t.Errorf("the PR title follows the renumber, got %+v", h.PREdits)
+	}
+	if events := readEvents(t, log); strings.Contains(events, "launching conflict-resolution session") || !strings.Contains(events, "replayed") {
+		t.Errorf("the run log must say the host replayed the branch, not that a session resolved a conflict:\n%s", events)
+	}
+}
+
+// #403: a replay that applies clean host-side but whose re-gate is red is held
+// like a session's resolution (#252): saved, not pushed, and no session runs.
+func TestFixSavesAHostReplayWhoseRegateWentRed(t *testing.T) {
+	h, it, repo := adrClashHost(t, harnessItem(Conflict))
+	h.ShellFn = func(_ int, s hostio.ShellRun) session.Outcome {
+		if strings.HasPrefix(s.Label, "gate") {
+			return session.Outcome{ExitCode: 1}
+		}
+		return session.Outcome{}
+	}
+
+	if res := Fix(h, pipelineCfg(), pipelineLog(t), it, prDoctor()); res.OK {
+		t.Fatalf("a red re-gate pushes nothing, got %+v", res)
+	}
+	if len(h.Agents) != 0 {
+		t.Errorf("a clean host replay launches no session, red gate or not, got %v", agentLabels(h))
+	}
+	assertNothingPushed(t, h, repo, it.PR.HeadBranch, it.PR.HeadSHA)
+	if saved := repo.Git(repo.Dir, "rev-parse", "refs/harness/resolved/pr-12/"+it.PR.HeadSHA); !onMainAt(repo, saved) {
+		t.Errorf("the replayed tip %s is saved on origin/main for the next run", saved)
+	}
+}
+
+// A human's branch keeps its history (ADR-0019), so the host never replays it:
+// its session merges, and is told only GitHub reported the conflict (#403).
+func TestFixLeavesAHumanBranchsGitHubOnlyConflictToTheMergeSession(t *testing.T) {
+	h, it, _ := adrClashHost(t, humanItem(Conflict))
+
+	Fix(h, pipelineCfg(), pipelineLog(t), it, prDoctor())
+
+	if labels := agentLabels(h); len(labels) == 0 || labels[0] != "rebasefix" {
+		t.Fatalf("a human branch's conflict goes to the merge session, got %v", labels)
+	}
+	if p := h.Agents[0].Prompt; !strings.Contains(p, "GitHub reports") || strings.Contains(p, "genuine content conflict") {
+		t.Errorf("the session is told only GitHub reported the conflict; prompt:\n%s", p)
 	}
 }

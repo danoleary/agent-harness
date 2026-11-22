@@ -419,7 +419,7 @@ func Review(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Res
 	reviewedBase, _ := wt.BaseSHA()
 	reviewedHead, _ := wt.HeadSHA()
 	landing := ship.Land(h, log, t, func(conflicted []string) ship.Resolution {
-		resolved := resolveRebaseConflict(fixes, target, comment, "pre-push rebase", gateStep+"-postrebase")
+		resolved := resolveRebaseConflict(fixes, target, comment, "pre-push rebase", gateStep+"-postrebase", conflicted)
 		if !resolved.OK {
 			return ship.Resolution{}
 		}
@@ -554,12 +554,13 @@ func stepLogTail(logDir, name string, n int) string {
 // the session reported the branch duplicates of main (#255). Any other failure keeps
 // the worktree and leaves a tracker breadcrumb so the work surfaces (a
 // spending-cap abort defers quietly — it retries after reset, not a conflict).
-func resolveRebaseConflict(fixes fix.Env, target fix.Target, comment func(string), trigger, gateLabel string) fix.ConflictResult {
+func resolveRebaseConflict(fixes fix.Env, target fix.Target, comment func(string), trigger, gateLabel string, conflicted []string) fix.ConflictResult {
 	fixes.Log.Event("review ↻ " + trigger + " hit a content conflict — launching a sandboxed conflict-resolution session (BEH-581)")
 	res := fixes.ResolveConflict(fix.Conflict{
-		Target:   target,
-		Strategy: fix.Rebase,
-		Regate:   func() fix.GateResult { return fixes.Gates(gateLabel) },
+		Target:     target,
+		Strategy:   fix.Rebase,
+		Regate:     func() fix.GateResult { return fixes.Gates(gateLabel) },
+		Conflicted: conflicted,
 	})
 	branch := fixes.Host.Worktree().Branch()
 	switch {

@@ -55,7 +55,7 @@ const (
 
 func (k Kind) describe() string {
 	if k == Conflict {
-		return "merge conflict with main"
+		return "conflict with main on GitHub"
 	}
 	return "red CI"
 }

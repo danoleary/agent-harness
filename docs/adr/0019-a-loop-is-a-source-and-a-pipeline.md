@@ -511,3 +511,29 @@ changed since its push, before CI was re-triggered.
   already gated green merged with the same origin/main commit is not gated again
   either. A moved origin/main is the one new input a fix that changed nothing
   brings, so the merge gate still runs then.
+
+## Amendment, 2026-11-22: the host replays a conflicting harness PR before a session does (#403)
+
+GitHub read a PR as conflicting because main and the branch had each added an
+ADR under one number, so each added a line at the same spot in the ADR index.
+GitHub's merge ignores the index's `merge=union`; a local replay does not. The
+PR loop launched a RebaseFix session told of "a genuine content conflict", whose
+replay in the sandbox applied with nothing unmerged. Its only work was the ADR
+renumber Landing already does host-side (#374).
+
+- **The host replays first.** Before a conflict-resolution session, the PR loop
+  runs Landing's replay over a harness branch (`fix.Env.ReplayOnBase`, through
+  `ship.ReplayDetail`): `reset --hard origin/main`, then `cherry-pick`. If it
+  applies with no unmerged paths, `RenumberCollidingADRs` moves a clashing ADR,
+  the gates run as over a resolution, and a green branch is force-pushed with no
+  session and no retrospective. A red re-gate is saved as a resolution (#252) and
+  a red base held (#250), as after a session.
+- **Otherwise the session runs as before, told what triggered it.** A replay
+  that left paths unmerged is aborted, and the RebaseFix prompt names them as a
+  genuine content conflict; the review stage's pre-push resolution names its
+  paths the same way. With none named (a git failure, a disjoint history), the
+  prompt says only GitHub reported the conflict and that the replay may apply
+  clean. So does the merge variant.
+- **A human's branch is not replayed.** Its history is kept, so its merge session
+  runs as before. A run that resumed a recovery checkpoint (#246) is not
+  replayed either: the host's reset would discard it.

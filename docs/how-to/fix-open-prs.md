@@ -72,6 +72,13 @@ A human's branch is never rewritten, because someone else may have it checked
 out. For the same reason, the CI watch does not reactively rebase a human's
 branch.
 
+On a harness branch the loop first replays the branch onto `origin/main` itself.
+GitHub's merge ignores the ADR index's `merge=union`, so two ADRs added under one
+number read as a conflict there and nowhere else. When the replay applies with
+nothing unmerged, the loop renumbers the branch's clashing ADR, runs every Gate
+and pushes, with no session. Only a replay that git stops on goes to a
+conflict-resolution session, which is told the paths git left unmerged.
+
 ## What it does to red CI
 
 The loop re-runs the failed checks once, to rule out a flake. If they are still
