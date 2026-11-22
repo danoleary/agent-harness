@@ -3,6 +3,7 @@ package loophost
 import (
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -226,6 +227,7 @@ func TestCheckAccessRejectsADeadTokenOrTracker(t *testing.T) {
 	var cfg config.Config
 	cfg.Tracker.Kind = "linear"
 	h := NewDaemon(withProject(t, cfg), config.Loop{Name: "tickets"}, sourceFor(t, cfg, trk).CheckAccess)
+	h.lookPath = func(string) (string, error) { return "/usr/bin/gh", nil }
 	dead := errors.New("GH_TOKEN check failed")
 	h.checkToken = func() error { return dead }
 	trk.nextErr = errors.New("HTTP 401")
@@ -242,6 +244,27 @@ func TestCheckAccessRejectsADeadTokenOrTracker(t *testing.T) {
 	trk.nextErr = nil
 	if err := h.CheckAccess(); err != nil {
 		t.Errorf("CheckAccess() = %v with both credentials good, want nil", err)
+	}
+}
+
+// #383: every PR the daemon opens, reads or watches goes through gh, so a daemon
+// on a host whose PATH has no gh refuses to start, naming the fix, before the token
+// or the tracker is read — instead of losing each ticket's CI verdict to it later.
+func TestCheckAccessRefusesToStartWithoutGh(t *testing.T) {
+	var cfg config.Config
+	h := NewDaemon(withProject(t, cfg), config.Loop{Name: "tickets"}, nil)
+	missing := &exec.Error{Name: "gh", Err: exec.ErrNotFound}
+	h.lookPath = func(string) (string, error) { return "", missing }
+	tokenRead := false
+	h.checkToken = func() error { tokenRead = true; return nil }
+
+	err := h.CheckAccess()
+
+	if !errors.Is(err, exec.ErrNotFound) || !strings.Contains(err.Error(), "install it from https://cli.github.com") {
+		t.Errorf("CheckAccess() = %v, want the missing gh and how to install it", err)
+	}
+	if tokenRead {
+		t.Error("the token must not be read once gh is known to be missing")
 	}
 }
 

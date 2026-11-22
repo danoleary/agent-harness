@@ -903,3 +903,40 @@ func TestWatchFailsSoftWhenGhReportsTheHostOffline(t *testing.T) {
 		t.Fatalf("an offline host must not trigger rerun/fix; got rerun=%d fix=%d", d.reruns, d.fixes)
 	}
 }
+
+// #383: the watch that could not run gh at all, and the one whose gh call failed
+// for any other reason, never read CI's verdict. Both end as a poll fault — no
+// re-run, no fix, and a reason that does not read as a red CI — so the operator can
+// tell a tooling fault from a red build. A missing gh names the fix.
+func TestWatchReportsAPollFaultApartFromARedCI(t *testing.T) {
+	cases := map[string]struct {
+		err  error
+		want string
+	}{
+		"gh not on PATH": {fmt.Errorf("%w: %v", errGhMissing, `exec: "gh": executable file not found in $PATH`), "install gh"},
+		"gh failed":      {errors.New("gh pr checks failed: exit status 1: HTTP 500"), "polling CI failed"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			d := &fakeDriver{polls: []pollResult{{v: Pending, err: tc.err}}}
+			out := WatchAndFix(d, testWatchCfg(), newFakeClock().now)
+			if out.OK || !out.PollFault {
+				t.Fatalf("want a non-OK poll fault, got %+v", out)
+			}
+			if d.reruns != 0 || d.fixes != 0 {
+				t.Fatalf("a poll fault must not re-run or fix; got rerun=%d fix=%d", d.reruns, d.fixes)
+			}
+			if !strings.Contains(out.Reason, tc.want) {
+				t.Fatalf("reason %q should contain %q", out.Reason, tc.want)
+			}
+		})
+	}
+
+	// A red CI the auto-fix could not turn green is not a poll fault.
+	d := &fakeDriver{polls: []pollResult{{v: Failed, checks: failChecks()}}}
+	cfg := testWatchCfg()
+	cfg.MaxFixAttempts = 0
+	if out := WatchAndFix(d, cfg, newFakeClock().now); out.OK || out.PollFault {
+		t.Fatalf("a red CI must be non-OK and not a poll fault, got %+v", out)
+	}
+}

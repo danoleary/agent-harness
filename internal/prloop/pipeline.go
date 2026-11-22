@@ -405,8 +405,12 @@ func (r *run) watch() stages.Result {
 	case res.SpendingCapAbort && !r.pushed:
 		r.log.Event(who + " ↻ CI auto-fix deferred — spending cap reached, retry after reset")
 		return stages.Result{Disposition: stages.CapAborted}
+	case res.PollFault:
+		// The watch never read CI's verdict: a tooling fault, not a red CI (#383).
+		r.log.Event(who + " ✗ could not poll CI (not a red CI): " + res.Reason)
+	default:
+		r.log.Event(who + " ✗ CI did not go green: " + res.Reason)
 	}
-	r.log.Event(who + " ✗ CI did not go green: " + res.Reason)
 	if r.pushed {
 		return stages.Result{Disposition: stages.Shipped}
 	}

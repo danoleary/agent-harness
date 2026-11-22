@@ -30,6 +30,7 @@ Nothing restarts a stopped loop. The `loop` exit code tells a deliberate stop
 | `GH_TOKEN is not set` | — | create a [classic `repo` token](tokens.md#gh_token) |
 | `PROJECT_PATH is not set.` / `a relative path` / `does not exist` / `is a file` | — | an absolute path to the checkout directory |
 | `startup GitHub check: … GH_TOKEN was rejected (expired or revoked?)` | the loop's first GitHub read got HTTP 401 | replace the token |
+| `the gh CLI is not on PATH (…); the harness opens, reads and watches pull requests with it` | the loop daemon found no `gh` on the PATH it runs with, so it did not start (#383) | install the [GitHub CLI](https://cli.github.com), or put its directory on the PATH the harness runs with (a launchd or cron PATH is often shorter than your shell's) |
 | `the <kind> tracker rejected a queue read` | the tracker credential or config is wrong | `agent-harness doctor` |
 | `LINEAR_API_KEY is not set` / `JIRA_… not set` | `kind` needs a credential that is missing | [Linear](../how-to/linear.md), [Jira](../how-to/jira.md) |
 | `GH_TOKEN cannot read check runs` (warning) | a fine-grained or non-SSO-authorized token | the PR still ships, unwatched; use a classic `repo` token |
@@ -223,6 +224,8 @@ How a review ends when it takes the branch to a PR (`ship.Land`).
 | `review ✗ gh pr create failed: … branch pushed, open the PR manually` | PRFailed | open the PR yourself |
 | `review ✓ PR open; CI is left to the PR loop` | Shipped | nothing blocks: the ticket loop's review stage ends at the open PR and never watches its CI (ADR-0063). A check that goes red later, or a conflict with `main`, is fixed by a running PR loop: run `agent-harness loop pr-doctor` beside the ticket loop, or red CI waits for a human |
 | `✓ CI green after re-running the failed checks (flake: …)` | Shipped | nothing blocks: the first CI poll was red, and one re-run of the named checks on the same commit went green, so no fix session ran. A merge-conflict outcome after that re-run names them too, as `(CI went green only after re-running the failed checks; flake: …)`. Each check is named with the step that failed, as `flake: <check> / <step>`, where gh reported one; the failed attempt's steps and the last 100 lines of each check's failed log are in `ci-flake-<run-id>.log` in the ticket's log dir, best-effort, so a step-less name means gh could not read that attempt and the file says why (#371). A check named here on run after run is a flaky test, not an infra blip; the retrospective files it (#357) |
+| `✗ could not poll CI (not a red CI): CI watch could not run: the gh CLI is not on the harness PATH` | — | the PR loop's or security-alerts loop's CI watch could not start `gh` (`exec: "gh": executable file not found in $PATH`), so it read no verdict. It stops at the first poll instead of retrying, and the PR stays open (#383). Install `gh` where the harness runs, then check the PR's CI by hand |
+| `✗ could not poll CI (not a red CI): polling CI failed: gh pr checks failed: …` | — | a `gh pr checks` call failed with an error that is not a network blip, a 401 or a 403 (an HTTP 500, a branch gh could not find), so the watch read no verdict. It is not a red CI (#383). Read gh's error at the end of the line, then check the PR's CI by hand |
 
 ## The loop
 

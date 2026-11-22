@@ -352,6 +352,29 @@ func watchingLoop() config.Loop {
 	return l
 }
 
+// #383: a watch that could not run gh never read CI, so the run log says the
+// harness could not poll CI, not that CI went red.
+func TestFixNarratesAPollFaultApartFromARedCI(t *testing.T) {
+	it := lodashItem()
+	h, _ := secHost(t, it)
+	h.CI = ci.Outcome{PollFault: true, Reason: "CI watch could not run: the gh CLI is not on the harness PATH"}
+	log := secLog(t)
+
+	Fix(h, securityCfg(t), log, it, watchingLoop())
+
+	b, err := os.ReadFile(filepath.Join(log.Dir, "run.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := string(b)
+	if !strings.Contains(events, "could not poll CI (not a red CI): CI watch could not run") {
+		t.Errorf("the run log must name the poll fault; events:\n%s", events)
+	}
+	if strings.Contains(events, "did not go green") {
+		t.Errorf("a poll fault must not read as a red CI; events:\n%s", events)
+	}
+}
+
 // CI goes red once over the opened PR: the CIFix session commits a fix, the gates
 // run green over it, the watch pushes it, and CI then goes green. The fix is
 // pr-doctor's gated CI fix, and the watch may rebase the harness's own branch.

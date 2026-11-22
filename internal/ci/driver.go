@@ -3,6 +3,7 @@ package ci
 import (
 	"errors"
 	"fmt"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -39,6 +40,12 @@ var errChecksUnauthenticated = errors.New("CI checks not readable: gh not authen
 // so it says nothing about whether a check failed. The poller retries it, and only a run of them in a row
 // ends the watch, failing soft to "CI watch unavailable" (#194).
 var errPollTransient = errors.New("CI checks poll could not reach GitHub (network error)")
+
+// errGhMissing marks a poll that could not run gh at all: the binary is not on the
+// harness PATH. That is a permanent configuration fault, not a network blip, so the
+// poller stops at the first call instead of retrying, and the watch reports it as a
+// poll fault rather than a red CI (#383).
+var errGhMissing = errors.New("the gh CLI is not on the harness PATH")
 
 // transientSignatures are lower-cased fragments of gh's stderr that mark a network
 // failure rather than an answer from GitHub (#194).
@@ -365,6 +372,11 @@ func interpretChecksOutput(stdout, stderr []byte, runErr error) ([]Check, error)
 		return checks, nil
 	}
 	if runErr != nil {
+		// exec could not find gh: nothing ran, so there is no stderr to read and
+		// no retry that helps (#383).
+		if errors.Is(runErr, exec.ErrNotFound) {
+			return nil, fmt.Errorf("%w: %v", errGhMissing, runErr)
+		}
 		s := strings.TrimSpace(string(stderr))
 		// gh exits non-zero with this message in the brief window before Actions
 		// registers the run — transient, not a real failure.

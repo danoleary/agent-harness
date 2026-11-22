@@ -136,6 +136,11 @@ type Outcome struct {
 	// the poll budget on a PR that can never meaningfully go green; the PR and
 	// security-alerts loops report it as CI not green, with its Reason.
 	RecommendClose bool
+	// PollFault marks the non-OK outcome where the watch never read CI's verdict:
+	// gh is not on the harness PATH, or a gh call failed in a way the watch does not
+	// degrade past. It is a tooling fault, not a red CI, and the callers narrate it
+	// as "could not poll CI" rather than "CI did not go green" (#383).
+	PollFault bool
 }
 
 // WatchAndFix polls CI for the just-pushed PR and, on failure, drives a bounded
@@ -410,13 +415,19 @@ const unauthenticatedReason = "CI watch unavailable: gh not authenticated for th
 // network error follows it for diagnosis.
 const unreachableReason = "CI watch unavailable: network errors reaching GitHub, check CI manually — PR was pushed OK; last error: "
 
+// ghMissingReason prefixes the operator-facing summary when the checks poll could
+// not run gh at all (#383). Every gh read the watch makes needs it, so nothing more
+// polling does helps; exec's lookup error follows it.
+const ghMissingReason = "CI watch could not run: the gh CLI is not on the harness PATH — PR was pushed, check CI manually and install gh (https://cli.github.com) where the harness runs; "
+
 // pollErrOutcome turns a poll error into an outcome. An unobservable-checks error
 // is a *success* that degrades — the PR shipped, the token just can't read CI, so
 // leave it for a human rather than abort or auto-fix. A bad-credentials error and
 // a run of network errors (errPollTransient, #194) degrade the same way: the harness
 // could not read CI, and no check was seen to fail. A timeout means CI never
-// settled (report the still-non-green checks); any other error is a real gh
-// failure surfaced verbatim.
+// settled (report the still-non-green checks). A missing gh (#383) and any other
+// error are a poll fault: the watch never read a verdict, so the outcome says so
+// instead of passing for a red CI.
 func pollErrOutcome(err error, checks []Check) Outcome {
 	if errors.Is(err, errChecksUnobservable) {
 		return Outcome{OK: true, Reason: unobservableReason}
@@ -441,7 +452,10 @@ func pollErrOutcome(err error, checks []Check) Outcome {
 			Failing: notGreen(checks),
 		}
 	}
-	return Outcome{OK: false, Reason: "polling CI failed: " + err.Error(), Failing: FailedChecks(checks)}
+	if errors.Is(err, errGhMissing) {
+		return Outcome{OK: false, PollFault: true, Reason: ghMissingReason + err.Error()}
+	}
+	return Outcome{OK: false, PollFault: true, Reason: "polling CI failed: " + err.Error(), Failing: FailedChecks(checks)}
 }
 
 // ciRerunErrOutcome turns an AwaitHeadRun failure into an outcome. The fix was

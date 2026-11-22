@@ -255,6 +255,11 @@ func (r *run) watch() {
 		r.log.Event(who + " ✓ " + res.Reason)
 		return
 	}
+	if res.PollFault {
+		// The watch never read CI's verdict: a tooling fault, not a red CI (#383).
+		r.log.Event(who + " ✗ could not poll CI (not a red CI): " + res.Reason)
+		return
+	}
 	r.log.Event(who + " ✗ CI did not go green: " + res.Reason)
 }
 
