@@ -36,15 +36,20 @@ session and starts at review.**
    - the worktree exists, is clean, and its branch is ahead of `origin/main`;
    - the record names a commit the branch still carries
      (`Worktree.SubjectsSince`);
-   - every commit after it is a harness recovery checkpoint (`git.IsCheckpoint`).
+   - every commit after it is a harness recovery checkpoint (`git.IsCheckpoint`);
+   - the last review's host Gate re-run (`review-verdict.json`) did not go red
+     over it or over the current HEAD. `verify.Tdd` passes a handoff on its
+     commits alone, so a handoff whose own Gate is red is not finished work, and
+     starting at review would fail on the same Gate every re-run.
 3. **When it holds**, the stage logs `tdd ⏭ skipping the implementation session
    — <branch> stands on the verified handoff <sha> …` and returns OK, so the
    pipeline runs review and the retrospective as for a fresh handoff. Review
    re-provisions the worktree through `post_create` itself, so neither
    `post_create` nor the base gate runs in the skipped stage.
 4. **Anything else** starts at implementation, as before: no record, an
-   unreadable record, a commit after the handoff, a dirty tree, or a branch a
-   rebase rewrote (it no longer carries the recorded commit).
+   unreadable record, a commit after the handoff, a dirty tree, a branch a
+   rebase rewrote (it no longer carries the recorded commit), or a red host
+   Gate over the handoff.
 
 ## Alternatives considered
 

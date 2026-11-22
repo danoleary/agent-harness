@@ -8,6 +8,7 @@ import (
 	"github.com/danoleary/agent-harness/internal/hostio"
 	"github.com/danoleary/agent-harness/internal/runlog"
 	"github.com/danoleary/agent-harness/internal/session"
+	"github.com/danoleary/agent-harness/internal/ship"
 )
 
 // noSession fails the test if a re-run launches an implementation session.
@@ -78,14 +79,21 @@ func TestImplementationStartsAtReviewOverACheckpointAfterTheHandoff(t *testing.T
 // Every way the branch does not stand on a verified handoff starts the re-run at
 // implementation, as before #367.
 func TestImplementationLaunchesASessionWhenTheBranchHasMovedOffItsVerifiedHandoff(t *testing.T) {
-	for name, since := range map[string]func(h *hostio.Fake, repo *gittest.Repo, log *runlog.Logger){
-		"a commit after the handoff": func(h *hostio.Fake, repo *gittest.Repo, _ *runlog.Logger) {
+	for name, since := range map[string]func(t *testing.T, h *hostio.Fake, repo *gittest.Repo, log *runlog.Logger){
+		"a commit after the handoff": func(_ *testing.T, h *hostio.Fake, repo *gittest.Repo, _ *runlog.Logger) {
 			repo.Commit(h.Worktree(), "more.txt", "more\n", "a human's follow-up")
 		},
-		"a later session that did not exit OK": func(h *hostio.Fake, repo *gittest.Repo, log *runlog.Logger) {
+		"a later session that did not exit OK": func(_ *testing.T, h *hostio.Fake, repo *gittest.Repo, log *runlog.Logger) {
 			repo.Commit(h.Worktree(), "more.txt", "more\n", "a human's follow-up")
 			h.AgentFn = func(int, hostio.AgentRun) session.Outcome { return session.Outcome{ExitCode: 1} }
 			Implementation(h, stageCfg(), log, Args{Identifier: "#367"})
+		},
+		"a review whose host gate went red over the handoff": func(t *testing.T, h *hostio.Fake, _ *gittest.Repo, log *runlog.Logger) {
+			head, _ := h.Worktree().HeadSHA()
+			gate := ship.PushGate{Head: head, Disposition: "Disposition: clear — fine", GateRan: true, GateExit: 2, FailedGate: "check"}
+			if err := recordPushGate(log.Dir, gate); err != nil {
+				t.Fatalf("recordPushGate: %v", err)
+			}
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -95,7 +103,7 @@ func TestImplementationLaunchesASessionWhenTheBranchHasMovedOffItsVerifiedHandof
 			if res := Implementation(h, stageCfg(), log, Args{Identifier: "#367"}); !res.OK {
 				t.Fatalf("first run: want a verified handoff, got %+v", res)
 			}
-			since(h, repo, log)
+			since(t, h, repo, log)
 			h.AgentFn = func(int, hostio.AgentRun) session.Outcome { return session.Outcome{} }
 			sessions := len(h.Agents)
 

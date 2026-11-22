@@ -43,7 +43,8 @@ func clearHandoff(logDir string) { os.Remove(filepath.Join(logDir, handoffFile))
 //   - the last implementation session exited 0 and verify.Tdd passed its
 //     handoff, which recorded the HEAD it left;
 //   - the branch still carries that commit, and nothing has landed on it since
-//     but harness recovery checkpoints.
+//     but harness recovery checkpoints;
+//   - no review's host Gate re-run went red over it.
 //
 // A branch a rebase rewrote no longer carries the recorded commit, so it reads as
 // not standing and the run starts at implementation, as before #367.
@@ -65,6 +66,15 @@ func standingHandoff(wt gitpkg.Worktree, logDir string) (string, bool) {
 	}
 	for _, s := range since {
 		if !gitpkg.IsCheckpoint(s) {
+			return "", false
+		}
+	}
+	// verify.Tdd passes a handoff on its commits alone. A review whose host Gate
+	// re-run went red over it has shown the work is not finished, and only an
+	// implementation session can fix the handoff's own red: starting at review
+	// would fail on the same Gate every re-run.
+	if g := LastPushGate(logDir); g != nil && g.GateRan && g.GateExit != 0 {
+		if head, _ := wt.HeadSHA(); g.Head == r.Head || g.Head == head {
 			return "", false
 		}
 	}
