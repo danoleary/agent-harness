@@ -167,10 +167,15 @@ harness has to spend a whole extra cycle recovering the diff (#224).
    new helper on its own and wires it in afterwards never sees a red test for
    the wiring, and the wiring is usually the change that closes the ticket.
    For each place the diff wires new code into an existing path (a call
-   wrapped, a value passed through, a condition added), revert just that line,
-   for example with a `sed -i` on the call site, and run the owning package's
-   tests. At least one must fail. Then restore the line and check
-   `git diff` shows it back. If none failed, write a test through that path's
+   wrapped, a value passed through, a condition added), first copy the file
+   aside with `cp <file> /tmp/<name>.bak`, then revert just that line, for
+   example with a `sed -i` on the call site, and run the owning package's
+   tests as their own Bash call. At least one must fail. Then restore the line
+   with `cp /tmp/<name>.bak <file>` and check `git diff` shows it back. Do not
+   restore with `git checkout` or `git restore`: the file is not committed
+   yet, so they would discard its whole uncommitted implementation, not just
+   the reverted line, and the sandbox blocks `git checkout -p` (ADR-0059,
+   #434). If none failed, write a test through that path's
    public interface, one that runs the wiring itself and not the helper, and
    see it go red with the line reverted. Review found this gap after the fact
    three times, each costing a second commit: the retry conditions in

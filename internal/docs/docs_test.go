@@ -320,10 +320,13 @@ func TestTheTDDAndReviewSkillsCheckAStreamJSONFieldAgainstTheBundledCLI(t *testi
 // in afterwards never sees a red test for the wiring, so before the commit it
 // reverts each new call site, runs the owning package's tests, and writes a test
 // through the path's public interface if none fails. Review found the gap after
-// the fact in #111, #313 and #416.
+// the fact in #111, #313 and #416. The check runs before the commit, so it names
+// one safe restore (#434): copy the file aside and copy it back, because
+// `git checkout`/`git restore` would discard the uncommitted implementation and
+// the ADR-0059 guard blocks `git checkout -p`.
 func TestTheTDDSkillChecksEachNewCallSiteTurnsATestRed(t *testing.T) {
 	text := section(t, filepath.Join(repoRoot(t), ".claude/skills/tdd/SKILL.md"), "Finish")
-	for _, want := range []string{"call site", "revert just that line", "`sed -i`", "owning package", "At least one must fail", "restore the line", "public interface", "#111", "#313", "#416"} {
+	for _, want := range []string{"call site", "revert just that line", "`sed -i`", "owning package", "At least one must fail", "restore the line", "public interface", "#111", "#313", "#416", "`cp <file> /tmp/<name>.bak`", "`cp /tmp/<name>.bak <file>`", "`git restore`", "uncommitted implementation", "`git checkout -p`", "#434"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("/tdd §Finish does not mention %q; say to check that reverting each new call site's wiring turns a test red", want)
 		}
