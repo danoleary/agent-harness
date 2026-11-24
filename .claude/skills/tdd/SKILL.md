@@ -36,6 +36,10 @@ prompt around this skill tells you the ticket, the worktree and the branch.
 3. Find the module that owns the behaviour and its `_test.go`. Follow the
    existing test style there — table tests, fakes over mocks, the port
    interfaces in `internal/hostio` and friends — rather than inventing a new one.
+   Build a test's run log with `runlogtest.New` (or `runlogtest.Quiet` on one
+   you opened), never a bare `runlog.New`: a bare one narrates to the test
+   binary's stdout, and a red package then prints every passing test's canned
+   `--- FAIL:` gate tails beside the real failure (#460).
 4. If the ticket describes a concrete incident or reproducing scenario (specific
    events, timestamps, IDs, inputs), plan a test that replays that scenario's
    actual data — not a tidied-up fixture — and asserts the incident no longer

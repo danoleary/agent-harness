@@ -10,6 +10,7 @@ import (
 	"github.com/danoleary/agent-harness/internal/filing"
 	"github.com/danoleary/agent-harness/internal/hostio"
 	"github.com/danoleary/agent-harness/internal/runlog"
+	"github.com/danoleary/agent-harness/internal/runlog/runlogtest"
 	"github.com/danoleary/agent-harness/internal/sandbox"
 	"github.com/danoleary/agent-harness/internal/session"
 	"github.com/danoleary/agent-harness/internal/ticket"
@@ -260,6 +261,7 @@ func TestRetrospectiveOverAPRLoopRunListsTheLoopsOwnTranscripts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	runlogtest.Quiet(t, log)
 
 	res := RetrospectiveOver(h, cfg, log, Subject{Ticket: ticket.Ticket{Identifier: "PR-178"}, Slug: "pr-178", LogDir: logDir}, false)
 
@@ -304,6 +306,7 @@ func TestRetrospectiveRunsTheBranchRangeInTheRunsWorktree(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	runlogtest.Quiet(t, log)
 
 	res := RetrospectiveOver(h, cfg, log, Subject{
 		Ticket: ticket.Ticket{Identifier: "PR-178"}, Slug: "pr-178", WorktreePath: wt, Branch: "fix/login-redirect", LogDir: logDir,

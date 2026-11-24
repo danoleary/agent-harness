@@ -29,9 +29,9 @@ type Logger struct {
 	// feed, separate from the per-ticket run.jsonl. It is the daemon→viewer contract
 	// (ADR-0005); nil-safe so a hand-built Logger{} in tests never panics.
 	stream *loopstream.Stream
-	// Console is where the narration lines go; nil means stdout. A test sets it to
-	// keep a fake run's narration beside its own failure instead of in the
-	// package's stdout (#225).
+	// Console is where the narration lines go; nil means stdout. A test builds
+	// its Logger with runlogtest, which sets it to keep a fake run's narration
+	// beside its own failure instead of in the package's stdout (#225, #460).
 	Console io.Writer
 }
 

@@ -19,6 +19,7 @@ import (
 	"github.com/danoleary/agent-harness/internal/gittest"
 	"github.com/danoleary/agent-harness/internal/hostio"
 	"github.com/danoleary/agent-harness/internal/runlog"
+	"github.com/danoleary/agent-harness/internal/runlog/runlogtest"
 	"github.com/danoleary/agent-harness/internal/session"
 	"github.com/danoleary/agent-harness/internal/stages"
 	"github.com/danoleary/agent-harness/internal/ticket"
@@ -56,11 +57,7 @@ func withoutSteps(drop ...string) config.Loop {
 
 func pipelineLog(t *testing.T) *runlog.Logger {
 	t.Helper()
-	log, err := runlog.New(t.TempDir(), "PR-12")
-	if err != nil {
-		t.Fatalf("runlog.New: %v", err)
-	}
-	return log
+	return runlogtest.New(t, "PR-12")
 }
 
 // prHost is a healthy Fake for it's PR over a real repo: the PR's head branch is on

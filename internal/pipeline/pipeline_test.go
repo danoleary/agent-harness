@@ -9,7 +9,7 @@ import (
 
 	"github.com/danoleary/agent-harness/internal/config"
 	"github.com/danoleary/agent-harness/internal/loopstream"
-	"github.com/danoleary/agent-harness/internal/runlog"
+	"github.com/danoleary/agent-harness/internal/runlog/runlogtest"
 	"github.com/danoleary/agent-harness/internal/session"
 	"github.com/danoleary/agent-harness/internal/stages"
 )
@@ -451,10 +451,7 @@ func TestRunWithoutARetrospectiveEndsAfterReview(t *testing.T) {
 // and the ticket loop both bind all three Stages to one Host through it, so the
 // two can never wire a slice differently. Building it launches nothing.
 func TestForTicketBindsEveryStageToOneSlice(t *testing.T) {
-	log, err := runlog.New(t.TempDir(), "PROJ-1")
-	if err != nil {
-		t.Fatal(err)
-	}
+	log := runlogtest.New(t, "PROJ-1")
 	d := ForTicket(config.Config{}, log, "run", stages.Args{Identifier: "PROJ-1"})
 	if d.FetchMain == nil || d.Implementation == nil || d.Review == nil || d.Retrospective == nil {
 		t.Fatalf("ForTicket must bind the fetch and all three Stages, got %+v", d)

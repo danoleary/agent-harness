@@ -15,6 +15,7 @@ import (
 	"github.com/danoleary/agent-harness/internal/hostio"
 	"github.com/danoleary/agent-harness/internal/lease"
 	"github.com/danoleary/agent-harness/internal/runlog"
+	"github.com/danoleary/agent-harness/internal/runlog/runlogtest"
 	"github.com/danoleary/agent-harness/internal/sandbox"
 	"github.com/danoleary/agent-harness/internal/session"
 	"github.com/danoleary/agent-harness/internal/ticket"
@@ -85,11 +86,7 @@ func stageCfg() config.Config {
 // deliberately does not abstract.
 func stageLog(t *testing.T, key string) *runlog.Logger {
 	t.Helper()
-	log, err := runlog.New(t.TempDir(), key)
-	if err != nil {
-		t.Fatalf("runlog.New: %v", err)
-	}
-	return log
+	return runlogtest.New(t, key)
 }
 
 func narration(t *testing.T, log *runlog.Logger) string {
