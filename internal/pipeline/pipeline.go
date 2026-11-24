@@ -35,6 +35,8 @@ type Stage func() stages.Result
 // origin/main fast-forward, the three stages, and the narrator. Retrospective may
 // be nil: a loop that leaves out the retro step runs none.
 type Deps struct {
+	// Ticket is the slice's ticket identifier, named in an operator hint.
+	Ticket         string
 	FetchMain      func() error
 	Implementation Stage
 	Review         Stage
@@ -58,6 +60,7 @@ func ForTicket(cfg config.Config, log *runlog.Logger, runID string, args stages.
 		},
 	)
 	return Deps{
+		Ticket:         args.Identifier,
 		FetchMain:      host.FetchMain,
 		Implementation: impl,
 		Review:         func() stages.Result { return stages.Review(host, cfg, log, args) },
@@ -162,6 +165,11 @@ func Run(d Deps) stages.Result {
 		review = d.Review()
 		reviewRan = true
 		narrateErr(d.Log, "review", review)
+		if review.Err != nil {
+			// The handoff is finished but unpushed, so the retrospective keeps its
+			// worktree: review alone can pick it up again (#444).
+			d.Log.Event("pipeline ⏸ review failed hard, so the handoff commit is left unreviewed on its branch — re-run review alone with `agent-harness review " + d.Ticket + "` (#444)")
+		}
 		if review.Disposition == stages.Interrupted {
 			return interrupted(d.Log, "review", review)
 		}
