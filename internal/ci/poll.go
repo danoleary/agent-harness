@@ -13,6 +13,35 @@ import (
 // pass or fail. The caller treats it as a non-success that keeps the PR.
 var ErrPollTimeout = errors.New("ci checks did not reach a terminal state within the poll budget")
 
+// PollSpend is the budget a timed-out poll ran to: how long it polled, and the soft
+// budget (CI_POLL_BUDGET_MS) and hard ceiling (CI_POLL_MAX_BUDGET_MS) that bounded it.
+// The pending narration names it, so an operator whose CI graph outlasts the poll
+// sees which budget it used (#424).
+type PollSpend struct {
+	Waited    time.Duration
+	Budget    time.Duration
+	MaxBudget time.Duration
+}
+
+// pollTimeoutError is the ErrPollTimeout a poll returns, carrying its PollSpend.
+type pollTimeoutError struct{ spend PollSpend }
+
+func (e *pollTimeoutError) Error() string {
+	return fmt.Sprintf("%s (polled %s)", ErrPollTimeout, e.spend.Waited)
+}
+
+func (e *pollTimeoutError) Unwrap() error { return ErrPollTimeout }
+
+// pollSpendOf reads the PollSpend off a poll timeout; false for any other error, or a
+// bare ErrPollTimeout that carries none.
+func pollSpendOf(err error) (PollSpend, bool) {
+	var t *pollTimeoutError
+	if errors.As(err, &t) {
+		return t.spend, true
+	}
+	return PollSpend{}, false
+}
+
 // ErrPollStalled is returned when the check set stops changing for the stall
 // window while still pending — the live run has settled but a context is wedged
 // pending (the classic merge-queue / branch-protection trap: a job gated on
@@ -192,7 +221,8 @@ func poll(fetch func() ([]Check, error), headRuns func() (string, bool, error), 
 		if !now().Add(cfg.interval).Before(deadline) {
 			extend := hasRealPending(checks) && now().Add(cfg.interval).Before(hardDeadline)
 			if !extend {
-				return Pending, checks, ErrPollTimeout
+				spend := PollSpend{Waited: now().Sub(start), Budget: cfg.budget, MaxBudget: cfg.maxBudget}
+				return Pending, checks, &pollTimeoutError{spend: spend}
 			}
 		}
 		sleep(cfg.interval)

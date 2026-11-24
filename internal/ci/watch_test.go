@@ -1064,3 +1064,24 @@ func TestWatchReportsCIPendingPastThePollBudgetApartFromARedCI(t *testing.T) {
 		}
 	}
 }
+
+// #424: a poll timeout's run-log line names how long the watch polled and the two
+// budgets it ran to, so an operator whose CI graph outlasts them knows what to raise,
+// and still never reads as a red CI.
+func TestWatchPendingNarrationNamesTheBudgetUsed(t *testing.T) {
+	timeout := &pollTimeoutError{spend: PollSpend{Waited: 24*time.Minute + 45*time.Second, Budget: 12 * time.Minute, MaxBudget: 25 * time.Minute}}
+	d := &fakeDriver{polls: []pollResult{{v: Pending, checks: []Check{{Name: "storybook", Bucket: BucketPending}}, err: timeout}}}
+	out := WatchAndFix(d, testWatchCfg(), newFakeClock().now)
+	if !out.Pending {
+		t.Fatalf("expected a Pending outcome, got %+v", out)
+	}
+	line := PendingNarration(out)
+	for _, want := range []string{"not a red CI", "storybook", "after 24m45s", "CI_POLL_BUDGET_MS=12m0s", "CI_POLL_MAX_BUDGET_MS=25m0s"} {
+		if !strings.Contains(line, want) {
+			t.Errorf("narration %q does not contain %q", line, want)
+		}
+	}
+	if strings.Contains(line, "did not go green") {
+		t.Errorf("narration %q reads as a red CI", line)
+	}
+}
