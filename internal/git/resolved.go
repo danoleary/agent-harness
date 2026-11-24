@@ -245,9 +245,11 @@ func classifyCitedSymbols(description string) citedSymbols {
 	return c
 }
 
-// outputPrefix is the set of line openers `go test` prints: a span that starts
-// with one quotes a run's output, not a reference to repo code (#455).
-var outputPrefix = []string{"---", "FAIL", "ok ", "ok\t", "=== RUN", "PASS"}
+// outputLine matches the line openers `go test` prints: a span that starts with
+// one quotes a run's output, not a reference to repo code (#455). A bare word
+// opener must end at whitespace or the span's end, so a constant that merely
+// starts with it (`FAILED_PRECONDITION`, `PASSWORD_HASH`) is still cited.
+var outputLine = regexp.MustCompile(`^(---|=== RUN|(FAIL|PASS|ok)(\s|$))`)
 
 // placeholder matches a `<name>` placeholder standing as its own token, as in
 // `go test -run <TestName>`. A `<` right after an identifier is a generic type
@@ -261,13 +263,7 @@ var placeholder = regexp.MustCompile(`(^|[^A-Za-z0-9_])<[A-Za-z][^<>]*>`)
 // example, so their absence from source says nothing about the ticket (#455).
 // Skipping them only ever suppresses an advisory, the safe direction.
 func quotedOutput(inner string) bool {
-	trimmed := strings.TrimLeft(inner, " ")
-	for _, p := range outputPrefix {
-		if strings.HasPrefix(trimmed, p) {
-			return true
-		}
-	}
-	return placeholder.MatchString(inner)
+	return outputLine.MatchString(strings.TrimLeft(inner, " ")) || placeholder.MatchString(inner)
 }
 
 // vendorPrefix is the set of third-party package roots whose internal symbols a

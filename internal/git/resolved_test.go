@@ -553,6 +553,12 @@ func TestExtractCitedSymbolsSkipsQuotedToolOutput(t *testing.T) {
 			t.Errorf("%s: quoted tool output should cite no symbols, got %v", span, got)
 		}
 	}
+	// A span that merely starts with a name sharing an output word is code.
+	for _, desc := range []string{"set `FAILOVER=newFailoverRouter`", "read `PASSWORD_FILE` in loadSecrets via `PASSWORD_FILE=secretPath`"} {
+		if got := extractCitedSymbols(desc); len(got) == 0 {
+			t.Errorf("%q: a span opening with a name, not output, should still be cited", desc)
+		}
+	}
 	// A generic type argument is code, not a placeholder.
 	if got := extractCitedSymbols("returns `Promise<UserRecord>`"); !contains(got, "UserRecord") {
 		t.Errorf("a generic type argument should still be cited, got %v", got)
