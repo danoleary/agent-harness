@@ -98,6 +98,35 @@ func TestStartupClearsStaleStopThenFetchesMain(t *testing.T) {
 	}
 }
 
+// #461: a host running a harness binary older than main's own harness fixes
+// says so once at startup, after the fetch it is measured against, and keeps
+// going: a stale build is a warning, never a stop.
+func TestStartupWarnsOfAStaleHarnessBuildAfterFetchingMain(t *testing.T) {
+	r := &recorder{}
+	const warning = "⚠ this agent-harness binary was built from a9e5c7378763, which lacks 1 harness commit on origin/main"
+	code := Run(Deps{
+		Host: &fakeHost{
+			fetchMain:     func() error { r.order = append(r.order, "fetch-main"); return nil },
+			staleBuild:    func() string { r.order = append(r.order, "stale-build"); return warning },
+			stopRequested: stopAfter(1),
+		},
+		Source:   &fakeSource{next: func() (string, bool) { r.order = append(r.order, "resolve"); return "", false }},
+		Pipeline: &fakePipeline{},
+		Limits:   Limits{PollInterval: time.Minute, TickInterval: time.Minute},
+		Clock:    testClock{sleep: func(time.Duration) {}},
+		Log:      r,
+	})
+	if code != 0 {
+		t.Errorf("exit code = %d, want 0", code)
+	}
+	if !r.saw(warning) {
+		t.Errorf("events %q; want the stale-build warning", r.events)
+	}
+	if len(r.order) < 3 || r.order[0] != "fetch-main" || r.order[1] != "stale-build" || r.order[2] != "resolve" {
+		t.Errorf("order %v; want fetch-main, then the stale-build check, then the loop still selecting", r.order)
+	}
+}
+
 // TestEmptyQueueIdlesThenRePollsNotExit is the defining daemon behaviour: an
 // empty queue must NOT exit (that's `pipeline --next`) — it idles for PollInterval
 // then re-polls. Here selection returns empty on the first turn (→ idle + re-poll)

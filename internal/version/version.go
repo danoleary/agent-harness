@@ -54,19 +54,9 @@ func Build() string {
 	return fmt.Sprintf("agent-harness %s (%s)", Version, commit())
 }
 
-// commit is Commit, else the toolchain's vcs.revision, shortened; or
-// unknownCommit when the build recorded neither.
+// commit is Revision, shortened; or unknownCommit when the build recorded none.
 func commit() string {
-	c := strings.TrimSpace(Commit)
-	if c == "" {
-		if info, ok := debug.ReadBuildInfo(); ok {
-			for _, s := range info.Settings {
-				if s.Key == "vcs.revision" {
-					c = s.Value
-				}
-			}
-		}
-	}
+	c := Revision()
 	if c == "" {
 		return unknownCommit
 	}
@@ -74,6 +64,22 @@ func commit() string {
 		c = c[:shortCommitLen]
 	}
 	return c
+}
+
+// Revision is the full commit the binary was built from: Commit, else the
+// toolchain's vcs.revision, else empty when the build recorded neither.
+func Revision() string {
+	if c := strings.TrimSpace(Commit); c != "" {
+		return c
+	}
+	if info, ok := debug.ReadBuildInfo(); ok {
+		for _, s := range info.Settings {
+			if s.Key == "vcs.revision" {
+				return s.Value
+			}
+		}
+	}
+	return ""
 }
 
 // IsDev reports whether v is an unversioned from-source build, which cannot be

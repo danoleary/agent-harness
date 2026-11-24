@@ -66,3 +66,10 @@ however far main moves.**
 - A session that named the wrong commit is not retried until a human edits
   the ticket, removes the blocked label after the loop applies it, or deletes
   `.agent-harness/locks/no-work/<slug>`.
+- A record written by a binary built before this decision has no
+  `resolved_by`, so it goes stale on the next move of main as ADR-0053's did:
+  the ticket is dispatched once more after the rebuild, and that run writes a
+  record that names the commit. This is accepted rather than backfilled from
+  the previous run's log, a parse of old logs for a one-time cost (#461). The
+  loop warns at startup when it runs on the harness's own repo with a binary
+  older than `origin/main`'s harness commits, so the rebuild is not missed.

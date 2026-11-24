@@ -32,6 +32,7 @@ import (
 	"github.com/danoleary/agent-harness/internal/loop"
 	"github.com/danoleary/agent-harness/internal/proc"
 	"github.com/danoleary/agent-harness/internal/sandbox"
+	"github.com/danoleary/agent-harness/internal/selfbuild"
 )
 
 // The disk-reclaim and hard-abort shell-outs are all bounded, so a stalled `gh`,
@@ -208,6 +209,12 @@ func (h *Daemon) checkout() gitpkg.Checkout {
 func (h *Daemon) FetchMain() error { return h.checkout().FetchMain() }
 
 func (h *Daemon) MainSHA() (string, error) { return h.checkout().MainSHA() }
+
+// StaleBuild warns when the Consumer checkout is this harness's own repo and the
+// running binary lacks harness commits origin/main has (#461).
+func (h *Daemon) StaleBuild() string {
+	return selfbuild.Stale(selfbuild.Running(), h.cfg.ProjectPath, h.checkout().MainCommitsSince)
+}
 
 // CheckAccess proves the gh CLI is on PATH, then that both host credentials work
 // before the daemon polls: GH_TOKEN

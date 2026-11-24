@@ -26,6 +26,7 @@ type fakeHost struct {
 	pruneWorktrees func() (int, error)
 	cachePrune     func() error
 	dockerPrune    func() error
+	staleBuild     func() string
 }
 
 var _ Host = (*fakeHost)(nil)
@@ -91,6 +92,13 @@ func (h *fakeHost) DockerPrune() error {
 		return nil
 	}
 	return h.dockerPrune()
+}
+
+func (h *fakeHost) StaleBuild() string {
+	if h.staleBuild == nil {
+		return ""
+	}
+	return h.staleBuild()
 }
 
 // fakeSource is a scripted queue of keyed items. next yields the next key (ok=false

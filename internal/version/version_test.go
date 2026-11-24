@@ -98,3 +98,13 @@ func TestObservedBy(t *testing.T) {
 		t.Errorf("ObservedBy() = %q, want the dev version and a named commit or %q", got, unknownCommit)
 	}
 }
+
+// The stale-build check (#461) counts main's commits since the binary's commit,
+// so it needs the whole SHA, not ObservedBy's shortened one.
+func TestRevisionIsTheFullStampedCommit(t *testing.T) {
+	defer func(c string) { Commit = c }(Commit)
+	Commit = "f1d0479c2a8e3b4d5e6f708192a3b4c5d6e7f809"
+	if got := Revision(); got != Commit {
+		t.Errorf("Revision() = %q, want %q", got, Commit)
+	}
+}

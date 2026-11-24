@@ -1321,6 +1321,23 @@ func (c Checkout) OnMain(commit string) (bool, error) {
 	return err == nil, err
 }
 
+// MainCommitsSince counts the commits origin/main, as of the last FetchMain, has
+// and commit lacks, among those touching paths: how many of the harness's own
+// changes a binary built from commit is missing (#461). A commit main already
+// contains, or one ahead of it, counts none. A commit git cannot resolve is an
+// error, so the caller can tell a check that never ran.
+func (c Checkout) MainCommitsSince(commit string, paths ...string) (int, error) {
+	if commit == "" || strings.HasPrefix(commit, "-") {
+		return 0, fmt.Errorf("not a commit: %q", commit)
+	}
+	args := append([]string{"-C", c.path, "rev-list", "--count", commit + "..refs/remotes/" + BaseRef, "--"}, paths...)
+	out, err := c.output("git", args...)
+	if err != nil {
+		return 0, err
+	}
+	return strconv.Atoi(strings.TrimSpace(string(out)))
+}
+
 // TicketAlreadyOnMain reports whether the ticket Key already appears in recent
 // origin/main history — i.e. its work merged, so dispatching a fresh tdd session
 // would burn a whole worktree + install only to discover an empty diff and raise
