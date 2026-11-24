@@ -122,8 +122,9 @@ type GateResult struct {
 	Outcome    session.Outcome
 	FailedGate string
 	// Log is the failing gate's step log, a filename under the ticket's log dir
-	// (`gate-<name>-<run>.log`); empty when every gate passed. The review hands its
-	// tail to the session it re-launches over a red gate (#111).
+	// (`gate-<name>-<run>.log`); empty when every gate passed. For a gate re-run
+	// over an infra signature and red again, it is the first run's log (#450). The
+	// review hands its tail to the session it re-launches over a red gate (#111).
 	Log string
 	// Logs is every gate run's step log by gate name, green ones included: the
 	// red-base check reads whether the base run of a gate selected anything (#448).
@@ -265,7 +266,7 @@ func (e Env) gatesIn(worktreePath string, gates []config.Gate, labelPrefix strin
 		r := e.Host.Shell(run)
 		// Each red is narrated with its class (#312): infra, re-run once, or a test
 		// failure, which is final. An infra red that is red again is final too.
-		again := ""
+		again, first := "", r.Transcript
 		if why := rerunReason(r.Outcome, e.gateLog(r.Transcript), fixed); why != "" {
 			e.Log.Event(fmt.Sprintf("%s ↻ gate %q is red (exit %d) with %s: infra — re-running it once before it counts as red (#167)", e.Who, g.Name, r.ExitCode, why))
 			run.Label += "-rerun"
@@ -275,7 +276,10 @@ func (e Env) gatesIn(worktreePath string, gates []config.Gate, labelPrefix strin
 		if r.ExitCode != 0 && !r.Retryable() {
 			e.Log.Event(fmt.Sprintf("%s ✗ gate %q is red%s (exit %d): test failure (#312)", e.Who, g.Name, again, r.ExitCode))
 		}
-		lastLog = r.Transcript
+		// A red re-run hands on the first run's log: the classifier read that one,
+		// and it carries the root cause, which the re-run's secondary failures
+		// (timeouts after a broken import) can bury (#450).
+		lastLog = first
 		logs[g.Name] = r.Transcript
 		return r.Outcome
 	})
