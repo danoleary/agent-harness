@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -124,6 +125,9 @@ type GateResult struct {
 	// (`gate-<name>-<run>.log`); empty when every gate passed. The review hands its
 	// tail to the session it re-launches over a red gate (#111).
 	Log string
+	// Logs is every gate run's step log by gate name, green ones included: the
+	// red-base check reads whether the base run of a gate selected anything (#448).
+	Logs map[string]string
 }
 
 // Green reports whether every gate passed.
@@ -244,6 +248,7 @@ func (e Env) gatesIn(worktreePath string, gates []config.Gate, labelPrefix strin
 	defer release()
 	// RunGates stops at the first red, so the last gate run is the failing one.
 	var lastLog string
+	logs := map[string]string{}
 	res := RunGates(gates, func(g config.Gate) session.Outcome {
 		e.Log.Event(fmt.Sprintf("%s · gate %q: %s", e.Who, g.Name, g.Command))
 		run := GateRun(e.Cfg, worktreePath, labelPrefix, g)
@@ -271,11 +276,13 @@ func (e Env) gatesIn(worktreePath string, gates []config.Gate, labelPrefix strin
 			e.Log.Event(fmt.Sprintf("%s ✗ gate %q is red%s (exit %d): test failure (#312)", e.Who, g.Name, again, r.ExitCode))
 		}
 		lastLog = r.Transcript
+		logs[g.Name] = r.Transcript
 		return r.Outcome
 	})
 	if !res.Green() {
 		res.Log = lastLog
 	}
+	res.Logs = logs
 	return res
 }
 
@@ -858,13 +865,22 @@ func (e Env) redBase(regate GateResult) *BaseRed {
 		e.Log.Event(fmt.Sprintf("%s … warning: could not read %s to check whether the base fails gate %q too: %v", e.Who, gitpkg.BaseRef, regate.FailedGate, err))
 		return nil
 	}
+	failed := e.gateNamed(regate.FailedGate)
 	verdicts := basegate.For(e.Cfg)
 	if v, ok := verdicts.Read(sha); ok {
-		if v.Gate != regate.FailedGate {
+		if v.Gate == regate.FailedGate {
+			e.Log.Event(fmt.Sprintf("%s · base %s failed gate %q at %s already — not gating it again (#250)", e.Who, shortSHA(sha), v.Gate, v.At.Format(time.RFC3339)))
+			return &BaseRed{SHA: sha, Verdict: v}
+		}
+		// A green verdict says nothing of a diff-scoped gate, which selected
+		// nothing on the base it was recorded for (#448): compare that one anyway.
+		if !v.Green() || !diffScoped(failed) {
 			return nil
 		}
-		e.Log.Event(fmt.Sprintf("%s · base %s failed gate %q at %s already — not gating it again (#250)", e.Who, shortSHA(sha), v.Gate, v.At.Format(time.RFC3339)))
-		return &BaseRed{SHA: sha, Verdict: v}
+	}
+	gates, ok := e.baseGates(wt, failed)
+	if !ok {
+		return nil
 	}
 
 	e.Log.Event(fmt.Sprintf("%s · gating %s %s alone, to tell a red base from a red branch (#250)", e.Who, gitpkg.BaseRef, shortSHA(sha)))
@@ -881,10 +897,10 @@ func (e Env) redBase(regate GateResult) *BaseRed {
 	if !e.provisionIn(b.Path(), "prep-"+baseGateStep) {
 		return nil
 	}
-	res := e.gatesIn(b.Path(), e.Cfg.Gates, baseGateStep, nil)
+	res := e.gatesIn(b.Path(), gates, baseGateStep, nil)
 	if !res.Green() && !environmental(res) {
 		e.Log.Event(fmt.Sprintf("%s ↻ base gate %q is red (exit %d) — re-running the gates once before the base counts as red (#189)", e.Who, res.FailedGate, res.Outcome.ExitCode))
-		res = e.gatesIn(b.Path(), e.Cfg.Gates, baseConfirmStep, nil)
+		res = e.gatesIn(b.Path(), gates, baseConfirmStep, nil)
 	}
 	if environmental(res) {
 		e.Log.Event(fmt.Sprintf("%s ⚠ base gate %q failed environmentally (exit %d) — that says nothing about the base; the red re-gate stays the branch's", e.Who, res.FailedGate, res.Outcome.ExitCode))
@@ -895,10 +911,84 @@ func (e Env) redBase(regate GateResult) *BaseRed {
 		e.Log.Event("⚠ could not record the base verdict (" + err.Error() + ") — the next run on this base gates it again")
 	}
 	if v.Gate != regate.FailedGate {
+		if v.Green() && selectedNothing(e.gateLog(res.Logs[regate.FailedGate])) {
+			e.Log.Event(fmt.Sprintf("%s ⚠ base check inconclusive: gate %q ran no tests on origin/main alone, so its green there is no proof the base passes it — the red re-gate stays the branch's (#448)", e.Who, regate.FailedGate))
+		}
 		return nil
 	}
 	return &BaseRed{SHA: sha, Verdict: v, Recorded: true, Gate: res}
 }
+
+// gateNamed is the configured Gate called name; zero when there is none.
+func (e Env) gateNamed(name string) config.Gate {
+	for _, g := range e.Cfg.Gates {
+		if g.Name == name {
+			return g
+		}
+	}
+	return config.Gate{}
+}
+
+// diffScoped reports whether g selects what it runs from the diff against
+// origin/main, as herd's `--changed origin/main` gates do. Over origin/main alone
+// that diff is empty, so g as configured runs nothing there and passes (#448). A
+// gate with a base_command says it is.
+func diffScoped(g config.Gate) bool {
+	return g.BaseCommand != "" || strings.Contains(g.Command, gitpkg.BaseRef)
+}
+
+// baseGates is the gate list the red-base check runs over origin/main alone to
+// compare failed, the gate the branch's re-gate failed (#448). A gate that is not
+// diff-scoped runs as configured. A diff-scoped one runs its base_command, with
+// {paths} the paths the branch's diff against origin/main touches: the targets
+// its own run selected from. When there is no base_command, or no paths to give
+// it, the base cannot be compared on that gate; ok is false and the log says the
+// check is inconclusive, rather than gate a base that would pass by selecting
+// nothing.
+func (e Env) baseGates(wt gitpkg.Worktree, failed config.Gate) ([]config.Gate, bool) {
+	if !diffScoped(failed) {
+		return e.Cfg.Gates, true
+	}
+	inconclusive := func(why string) ([]config.Gate, bool) {
+		e.Log.Event(fmt.Sprintf("%s ⚠ base check inconclusive: 0 targets selected — gate %q is scoped by the diff against %s, which is empty on %s alone, and %s; the red re-gate stays the branch's (#448)", e.Who, failed.Name, gitpkg.BaseRef, gitpkg.BaseRef, why))
+		return nil, false
+	}
+	if failed.BaseCommand == "" {
+		return inconclusive("it sets no base_command to run the branch's targets there")
+	}
+	paths, err := wt.DiffPaths()
+	if err != nil {
+		return inconclusive("the branch's diff could not be read (" + err.Error() + ")")
+	}
+	if len(paths) == 0 {
+		return inconclusive("the branch's diff is empty")
+	}
+	gates := make([]config.Gate, len(e.Cfg.Gates))
+	for i, g := range e.Cfg.Gates {
+		if g.Name == failed.Name {
+			g.Command = strings.ReplaceAll(g.BaseCommand, "{paths}", shellQuote(paths))
+		}
+		gates[i] = g
+	}
+	return gates, true
+}
+
+// shellQuote is paths as bash words, each single-quoted.
+func shellQuote(paths []string) string {
+	words := make([]string, len(paths))
+	for i, p := range paths {
+		words[i] = "'" + strings.ReplaceAll(p, "'", `'\''`) + "'"
+	}
+	return strings.Join(words, " ")
+}
+
+// selectedNothingRE is a test runner's report that it ran nothing: herd's
+// "0 stories ran" and "no test reaches the diff", unittest's "Ran 0 tests".
+var selectedNothingRE = regexp.MustCompile(`(?i)(?:^|[^\d])0 (?:tests?|stor(?:y|ies)|specs?|suites?|test files?) (?:ran|run|were run|executed|selected)\b|\bran 0 (?:tests?|stor(?:y|ies)|specs?)\b|\bno (?:tests?|stor(?:y|ies)|specs?) (?:ran|reach(?:es)?|selected|to run)\b`)
+
+// selectedNothing reports whether a gate's log says it ran zero tests: on the
+// base, a green that is no proof of anything (#448).
+func selectedNothing(log string) bool { return selectedNothingRE.MatchString(log) }
 
 // environmental reports whether a red gate failed for its environment, not its
 // tree: an OOM-kill or a failed launch through its retries, or its cap.

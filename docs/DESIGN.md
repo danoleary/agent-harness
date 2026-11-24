@@ -706,6 +706,8 @@ pipeline (one PR, worktree .claude/worktrees/pr-<n> on the PR's head branch):
     a gate red over the resolution: is origin/main red on that gate by itself?  // #250, ADR-0048
       the base verdict record (shared with the ticket loop) answers, or gate origin/main
       alone in .claude/worktrees/pr-<n>.base (red confirmed by a re-run)
+      a gate scoped by the diff against origin/main runs its base_command over   // #448, ADR-0072
+        the branch's paths there; no base_command, or 0 tests ran -> inconclusive
       yes -> BaseRed: nothing pushed, void marker takes the attempt back, the loop
         holds on that base (ADR-0039); the run that recorded the red files base-gates-red
     resolved but the gates red -> save the tip as refs/harness/resolved/pr-<n>/<head>  // #252

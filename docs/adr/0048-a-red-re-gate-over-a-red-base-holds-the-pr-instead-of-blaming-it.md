@@ -3,6 +3,7 @@
 - Status: Accepted
 - Date: 2026-11-10
 - Amends: ADR-0036, ADR-0039 (extends the red-base hold to the PR loop)
+- Amended by: [ADR-0072](0072-a-diff-scoped-gate-is-compared-on-the-base-over-the-branchs-paths.md) (a diff-scoped gate is compared over the branch's paths, or the check is inconclusive)
 
 ## Context
 
