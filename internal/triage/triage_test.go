@@ -11,6 +11,7 @@ import (
 	"github.com/danoleary/agent-harness/internal/hostio"
 	"github.com/danoleary/agent-harness/internal/loop"
 	"github.com/danoleary/agent-harness/internal/runlog"
+	"github.com/danoleary/agent-harness/internal/runlog/runlogtest"
 	"github.com/danoleary/agent-harness/internal/sandbox"
 	"github.com/danoleary/agent-harness/internal/session"
 	"github.com/danoleary/agent-harness/internal/stages"
@@ -86,7 +87,12 @@ func pipeline(t *testing.T, l config.Loop, b *fakeBacklog, sb *fakeSandbox) Pipe
 	cfg.Tracker.ReadyLabel = "ready-for-agent"
 	return Pipeline{
 		Loop: l, Cfg: cfg, Backlog: b, Store: StoreFor(dir),
-		NewSandbox: func(config.Config, *runlog.Logger) Sandbox { return sb },
+		// The run opens its own log; quiet it here so its narration stays out
+		// of the package's stdout (#460).
+		NewSandbox: func(_ config.Config, log *runlog.Logger) Sandbox {
+			runlogtest.Quiet(t, log)
+			return sb
+		},
 	}
 }
 

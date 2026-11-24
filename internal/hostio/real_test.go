@@ -7,16 +7,13 @@ import (
 
 	"github.com/danoleary/agent-harness/internal/config"
 	"github.com/danoleary/agent-harness/internal/gittest"
-	"github.com/danoleary/agent-harness/internal/runlog"
+	"github.com/danoleary/agent-harness/internal/runlog/runlogtest"
 	"github.com/danoleary/agent-harness/internal/session"
 )
 
 func testReal(t *testing.T, cfg config.Config) *Real {
 	t.Helper()
-	log, err := runlog.New(t.TempDir(), "PROJ-1")
-	if err != nil {
-		t.Fatalf("runlog.New: %v", err)
-	}
+	log := runlogtest.New(t, "PROJ-1")
 	return New(cfg, log, "20260920-101500", false, "proj-7")
 }
 
@@ -220,10 +217,7 @@ func TestFakeScriptedPushFailureReachesNothing(t *testing.T) {
 // ADR-0019: the PR loop's Host binds its slug to the PR's head branch, which the
 // harness did not name; the worktree path stays slug-keyed.
 func TestNewOnBranchBindsOneSlugToTheNamedBranch(t *testing.T) {
-	log, err := runlog.New(t.TempDir(), "PR-12")
-	if err != nil {
-		t.Fatalf("runlog.New: %v", err)
-	}
+	log := runlogtest.New(t, "PR-12")
 	cfg := config.Config{Host: config.Host{ProjectPath: "/p"}, Project: config.Project{BranchPrefix: "feat"}}
 	h := NewOnBranch(cfg, log, "20260920-101500", false, "pr-12", "alice/widget")
 

@@ -14,6 +14,7 @@ import (
 	"github.com/danoleary/agent-harness/internal/gittest"
 	"github.com/danoleary/agent-harness/internal/hostio"
 	"github.com/danoleary/agent-harness/internal/runlog"
+	"github.com/danoleary/agent-harness/internal/runlog/runlogtest"
 	"github.com/danoleary/agent-harness/internal/sandbox"
 	"github.com/danoleary/agent-harness/internal/session"
 	"github.com/danoleary/agent-harness/internal/stages"
@@ -79,11 +80,7 @@ func secHost(t *testing.T, it Item) (*hostio.Fake, *gittest.Repo) {
 
 func secLog(t *testing.T) *runlog.Logger {
 	t.Helper()
-	log, err := runlog.New(t.TempDir(), "SEC-npm-lodash")
-	if err != nil {
-		t.Fatalf("runlog.New: %v", err)
-	}
-	return log
+	return runlogtest.New(t, "SEC-npm-lodash")
 }
 
 func calls(h *hostio.Fake) string { return strings.Join(h.Calls, "|") + "|" }

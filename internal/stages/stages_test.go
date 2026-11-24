@@ -14,6 +14,7 @@ import (
 	"github.com/danoleary/agent-harness/internal/config"
 	"github.com/danoleary/agent-harness/internal/hostio"
 	"github.com/danoleary/agent-harness/internal/runlog"
+	"github.com/danoleary/agent-harness/internal/runlog/runlogtest"
 	"github.com/danoleary/agent-harness/internal/sandbox"
 	"github.com/danoleary/agent-harness/internal/session"
 	"github.com/danoleary/agent-harness/internal/ticket"
@@ -23,11 +24,7 @@ import (
 // provisioning path emits has somewhere to go.
 func newProvisionLog(t *testing.T, identifier string) *runlog.Logger {
 	t.Helper()
-	log, err := runlog.New(t.TempDir(), identifier)
-	if err != nil {
-		t.Fatalf("runlog.New: %v", err)
-	}
-	return log
+	return runlogtest.New(t, identifier)
 }
 
 // BEH-636/BEH-796: provisionWorktree creates the worktree host-side only when it is
@@ -461,7 +458,7 @@ func TestRetrospectiveSkipsWhenNoPipelineInputs(t *testing.T) {
 	if err := os.MkdirAll(logDir, 0o755); err != nil {
 		t.Fatalf("setup log dir: %v", err)
 	}
-	log := &runlog.Logger{Dir: logDir}
+	log := runlogtest.Quiet(t, &runlog.Logger{Dir: logDir})
 
 	h, _ := fresh(t, "BEH-318") // no feat/ branch: the /tdd step produced nothing
 

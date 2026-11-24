@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/danoleary/agent-harness/internal/config"
-	"github.com/danoleary/agent-harness/internal/runlog"
+	"github.com/danoleary/agent-harness/internal/runlog/runlogtest"
 	"github.com/danoleary/agent-harness/internal/sandbox"
 	"github.com/danoleary/agent-harness/internal/session"
 )
@@ -27,10 +27,7 @@ type launch struct {
 // deterministic pid and an instant sleep.
 func testRunner(t *testing.T, outcomes ...session.Outcome) (*Runner, *[]launch) {
 	t.Helper()
-	log, err := runlog.New(t.TempDir(), "PROJ-1")
-	if err != nil {
-		t.Fatalf("runlog.New: %v", err)
-	}
+	log := runlogtest.New(t, "PROJ-1")
 	var seen []launch
 	r := NewRunner(config.Config{
 		Host: config.Host{

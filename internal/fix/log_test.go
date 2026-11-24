@@ -1,11 +1,10 @@
 package fix
 
 import (
-	"strings"
-	"sync"
 	"testing"
 
 	"github.com/danoleary/agent-harness/internal/runlog"
+	"github.com/danoleary/agent-harness/internal/runlog/runlogtest"
 )
 
 // testLog is a run log under a temp dir whose narration is kept from stdout and
@@ -14,35 +13,5 @@ import (
 // and slot chatter (#225).
 func testLog(t *testing.T) *runlog.Logger {
 	t.Helper()
-	log, err := runlog.New(t.TempDir(), "PROJ-1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	console := &lockedBuilder{}
-	log.Console = console
-	t.Cleanup(func() {
-		if t.Failed() {
-			t.Logf("run-log narration:\n%s", console.String())
-		}
-	})
-	return log
-}
-
-// lockedBuilder is a strings.Builder the gate goroutines of concurrent runs can
-// narrate into at once.
-type lockedBuilder struct {
-	mu sync.Mutex
-	b  strings.Builder
-}
-
-func (l *lockedBuilder) Write(p []byte) (int, error) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.b.Write(p)
-}
-
-func (l *lockedBuilder) String() string {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.b.String()
+	return runlogtest.New(t, "PROJ-1")
 }

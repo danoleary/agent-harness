@@ -2,6 +2,7 @@ package stages
 
 import (
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -844,6 +845,54 @@ func TestReviewRelaunchesOnceOnARedGateOverItsOwnCommit(t *testing.T) {
 	if got := shellLabels(h.Shells); len(got) != 3 || got[2] != gateStep+"-gatefix-check" {
 		t.Errorf("shell runs = %v, want the gate re-run after the re-launch under its own label", got)
 	}
+}
+
+// #460, replayed: a red-gate review over the canned redGateLog narrates the
+// gate's tail, which is a fake `--- FAIL:` block. That narration once reached the
+// test binary's stdout, so a package red over one real test printed it as if a
+// dozen more had failed. The stage logs tests build keep it off stdout.
+func TestARedGateReviewsNarrationStaysOffTheTestBinarysStdout(t *testing.T) {
+	h, _ := handedOff(t, "PROJ-60")
+	log := stageLog(t, "PROJ-60")
+	h.AgentOutcome = session.Outcome{ReviewVerdictEmitted: true}
+	// Red on every run, so the review narrates the tail of a gate still red
+	// after its one re-launch.
+	h.ShellFn = func(_ int, s hostio.ShellRun) session.Outcome {
+		if !strings.HasPrefix(s.Label, gateStep) {
+			return session.Outcome{}
+		}
+		_ = os.WriteFile(filepath.Join(log.Dir, s.Label+".log"), []byte(redGateLog), 0o644)
+		return session.Outcome{ExitCode: 1}
+	}
+
+	printed := stdoutOf(t, func() { Review(h, stageCfg(), log, Args{Identifier: "PROJ-60"}) })
+
+	if !strings.Contains(narration(t, log), "--- FAIL: TestTheReviewFix") {
+		t.Fatalf("the review should narrate the red gate's tail to its run log; got %s", narration(t, log))
+	}
+	if printed != "" {
+		t.Errorf("the review printed to the test binary's stdout:\n%s", printed)
+	}
+}
+
+// stdoutOf runs fn with os.Stdout swapped for a pipe and returns what it wrote.
+func stdoutOf(t *testing.T, fn func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	was := os.Stdout
+	os.Stdout = w
+	read := make(chan string)
+	go func() {
+		b, _ := io.ReadAll(r)
+		read <- string(b)
+	}()
+	defer func() { os.Stdout = was }()
+	fn()
+	_ = w.Close()
+	return <-read
 }
 
 // The re-launch is bounded to one: a gate still red after it is the failure it
