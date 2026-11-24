@@ -226,6 +226,11 @@ type Host interface {
 	// of the last FetchMain. The loop compares it with the base a red-base hold
 	// was on, so it idles while main has not moved (#190).
 	MainSHA() (string, error)
+	// StaleBuild is a warning when the Consumer checkout is the harness's own
+	// repo and the running binary lacks harness commits origin/main already has,
+	// so a fix merged there is not running (#461); "" otherwise. The loop logs it
+	// once at startup, after FetchMain, and carries on: it is never a stop.
+	StaleBuild() string
 
 	// FreeDisk reports the bytes available on the worktrees volume via a cheap statfs;
 	// it gates the reclaim step so a healthy disk triggers no shell-out / gh calls. A
@@ -340,6 +345,9 @@ func Run(d Deps) int {
 	}
 	if err := d.Host.FetchMain(); err != nil {
 		d.Log.Event("loop … warning: could not fast-forward origin/main at startup: " + err.Error())
+	}
+	if w := d.Host.StaleBuild(); w != "" {
+		d.Log.Event("loop … " + w)
 	}
 
 	clock := d.clock()

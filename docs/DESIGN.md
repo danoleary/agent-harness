@@ -1037,6 +1037,12 @@ shared        : STOP (every loop), STOP-tickets (every instance), locks/claim.lo
   protect. Otherwise it logs, drops a Linear breadcrumb comment, and continues;
   worktrees are the recoverable artifact and are never deleted on failure.
 - **Pull `origin/main` at startup and after every session.**
+- **Say when the harness runs on its own repo with a stale binary.** When the
+  Consumer checkout's `go.mod` names the harness's own module, startup counts
+  the commits under `internal/` and `cmd/` that `origin/main` has and the
+  binary's build commit lacks, and logs one `⚠` line asking for a rebuild
+  (#461). A dispatch fix merged to main does nothing until the binary is
+  rebuilt. It is a warning, never a stop.
 
 ## Ticket selection (Linear GraphQL, harness-owned)
 
