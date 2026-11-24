@@ -1304,6 +1304,23 @@ func (c Checkout) MainSHA() (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
+// OnMain reports whether origin/main, as of the last FetchMain, contains commit:
+// whether the commit a run found already resolving a ticket is still on main
+// (#453). A revert that rewrote main's history, or a force-push, leaves it off.
+// git's not-an-ancestor exit is false; any other failure, an unknown commit
+// included, is an error, so the caller can tell a check that never ran.
+func (c Checkout) OnMain(commit string) (bool, error) {
+	if commit == "" || strings.HasPrefix(commit, "-") {
+		return false, fmt.Errorf("not a commit: %q", commit)
+	}
+	err := c.run("git", "-C", c.path, "merge-base", "--is-ancestor", commit, "refs/remotes/"+BaseRef)
+	var exit *exec.ExitError
+	if errors.As(err, &exit) && exit.ExitCode() == 1 {
+		return false, nil
+	}
+	return err == nil, err
+}
+
 // TicketAlreadyOnMain reports whether the ticket Key already appears in recent
 // origin/main history — i.e. its work merged, so dispatching a fresh tdd session
 // would burn a whole worktree + install only to discover an empty diff and raise

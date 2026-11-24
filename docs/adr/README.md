@@ -80,3 +80,4 @@ catches a duplicate there.
 - [ADR-0070](0070-a-session-reports-a-block-or-a-follow-up-in-a-marker.md): A session reports a block or a follow-up ticket in a marker, and the host settles both on the tracker
 - [ADR-0071](0071-a-handoff-that-left-work-uncommitted-reaches-review-as-a-named-checkpoint.md): A handoff that left work uncommitted reaches review as a named checkpoint
 - [ADR-0072](0072-a-diff-scoped-gate-is-compared-on-the-base-over-the-branchs-paths.md): A diff-scoped gate is compared on the base over the branch's paths, or not at all
+- [ADR-0073](0073-a-resolved-on-main-ticket-waits-for-close-not-for-main.md): A resolved-on-main ticket waits for close, not for main

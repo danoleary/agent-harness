@@ -102,3 +102,54 @@ func exits(o session.Outcome) func(*hostio.Fake, *gittest.Repo) func(int, hostio
 		return func(int, hostio.AgentRun) session.Outcome { return o }
 	}
 }
+
+// #453: a session that found the ticket already resolved on main by a commit
+// records that commit, so selection passes over the ticket while main still has
+// it, however often main moves.
+func TestImplementationRecordsTheCommitASessionFoundResolvingTheTicket(t *testing.T) {
+	h, repo := fresh(t, "PROJ-20")
+	repo.Merge("helper.go", "func helper() {}\n", "PROJ-99: add the helper")
+	fix := repo.Git(repo.Origin, "rev-parse", "main")
+	h.AgentFn = resolvedBy(t, fix[:9])
+	cfg := sharedCfg(t)
+	log := stageLog(t, "PROJ-20")
+
+	res := Implementation(h, cfg, log, Args{Identifier: "PROJ-20", Selected: selectedAs})
+
+	if res.Disposition != ResolvedOnMain {
+		t.Fatalf("got %+v, want ResolvedOnMain", res)
+	}
+	rec, ok := nowork.For(cfg).Read("PROJ-20")
+	if !ok || rec.ResolvedBy != fix || rec.Ticket != selectedAs {
+		t.Fatalf("record = %+v, %v; want it resolved by %s", rec, ok, fix)
+	}
+	if got := narration(t, log); !strings.Contains(got, "already resolved on main by "+fix[:12]+" — it is not dispatched again while main has that commit") {
+		t.Errorf("the record must be narrated; run.jsonl = %s", got)
+	}
+}
+
+// The pre-dispatch own-key scan's skip records the merge commit too: without
+// it, every main move dispatched the ticket into the same skip (#453).
+func TestImplementationRecordsTheMergeCommitOfWorkAlreadyOnMain(t *testing.T) {
+	h, repo := fresh(t, "PROJ-4")
+	repo.Merge("fix.txt", "the fix\n", "PROJ-4: the fix")
+	merged := repo.OnOrigin("main")
+	cfg := sharedCfg(t)
+
+	res := Implementation(h, cfg, stageLog(t, "PROJ-4"), Args{Identifier: "PROJ-4", Selected: selectedAs})
+
+	if res.Disposition != AlreadyOnMain {
+		t.Fatalf("got %+v, want AlreadyOnMain", res)
+	}
+	if rec, ok := nowork.For(cfg).Read("PROJ-4"); !ok || rec.ResolvedBy != merged || rec.Ticket != selectedAs {
+		t.Errorf("record = %+v, %v; want it resolved by %s", rec, ok, merged)
+	}
+
+	handPassed, repo := fresh(t, "PROJ-4")
+	repo.Merge("fix.txt", "the fix\n", "PROJ-4: the fix")
+	cfg = sharedCfg(t)
+	Implementation(handPassed, cfg, stageLog(t, "PROJ-4"), Args{Identifier: "PROJ-4"})
+	if rec, ok := nowork.For(cfg).Read("PROJ-4"); ok {
+		t.Errorf("a hand-passed run records nothing, got %+v", rec)
+	}
+}

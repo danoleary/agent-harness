@@ -1089,8 +1089,16 @@ A ticket is eligible iff **all** hold:
   `.agent-harness/locks/no-work/<slug>`. Selection passes over the ticket
   (logging `skipping #N: last run found no work against origin/main <sha>;
   unchanged`) while `origin/main` is on that SHA and the ticket reads the same.
-  Once main moves or a human edits the ticket, it dispatches. A main that cannot
-  be read fails *open*. A hand-passed `pipeline <KEY>` is never screened.
+  Once main moves or a human edits the ticket, it dispatches. A run that found
+  the ticket already resolved on main (`ResolvedOnMain`, `AlreadyOnMain`) also
+  records the resolving commit. That record stands while `origin/main` still
+  contains the commit, however far main moves (logging `skipping #N: already
+  resolved on main by <sha>; awaiting close`), until the ticket changes or the
+  commit leaves main (#453,
+  [ADR-0073](https://github.com/danoleary/agent-harness/blob/main/docs/adr/0073-a-resolved-on-main-ticket-waits-for-close-not-for-main.md)).
+  Labelling a ticket blocked clears its record, so removing the label
+  dispatches it. A main or an ancestry check that cannot be read fails *open*.
+  A hand-passed `pipeline <KEY>` is never screened.
 - **not gated on a telemetry re-measure**: a low-confidence perf *watch/confirm*
   ticket whose first acceptance criterion is to re-pull the metric over a wider
   Sentry window before any fix is excluded — the Implementation stage owns no

@@ -187,6 +187,39 @@ func TestTicketAlreadyOnMainFailsOpenWhenGitErrors(t *testing.T) {
 	}
 }
 
+// OnMain is what keeps a ticket resolved on main passed over as main moves
+// (#453): the resolving commit stays on main through an unrelated merge, and a
+// force-push that drops it leaves it off. A commit git cannot resolve is a check
+// that did not run, not a commit main lacks.
+func TestOnMainFollowsTheResolvingCommitThroughMainMoves(t *testing.T) {
+	author, host := newSharedRemote(t)
+	c := Open(host, testPrefix)
+	commitAndPush(t, author, "fix: the resolving commit")
+	fix := headSHA(t, author)
+	commitAndPush(t, author, "docs: an unrelated change")
+	if err := c.FetchMain(); err != nil {
+		t.Fatalf("FetchMain: %v", err)
+	}
+	if on, err := c.OnMain(fix); !on || err != nil {
+		t.Fatalf("OnMain(fix) = %v, %v after an unrelated merge; want true", on, err)
+	}
+
+	runGit(t, author, "reset", "-q", "--hard", "HEAD~2")
+	runGit(t, author, "push", "-q", "-f", "origin", "main")
+	if err := c.FetchMain(); err != nil {
+		t.Fatalf("FetchMain: %v", err)
+	}
+	if on, err := c.OnMain(fix); on || err != nil {
+		t.Errorf("OnMain(fix) = %v, %v after a force-push dropped it; want false, no error", on, err)
+	}
+
+	for _, commit := range []string{"0123456789abcdef0123456789abcdef01234567", "", "--all"} {
+		if on, err := c.OnMain(commit); on || err == nil {
+			t.Errorf("OnMain(%q) = %v, %v; want an error", commit, on, err)
+		}
+	}
+}
+
 // MainSHA is what the loop compares a red-base hold against (#190): the commit
 // origin/main points at as of the last FetchMain, so it moves when a fetch brings
 // in a merge and not before.

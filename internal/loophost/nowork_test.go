@@ -1,6 +1,7 @@
 package loophost
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/danoleary/agent-harness/internal/config"
@@ -74,5 +75,67 @@ func TestTheSelectedTicketReachesTheStageArgs(t *testing.T) {
 	}
 	if a := ticketArgs(loop.WorkItem{Key: "#330"}, nil); a.Selected != "" {
 		t.Errorf("an item with no selection context records nothing, got %q", a.Selected)
+	}
+}
+
+// #453, replayed through the Source: the ticket's last run found it already
+// resolved on main by a commit, and the ticket waits open for a human to close
+// it. An unrelated merge moves main, and the next poll still passes over the
+// ticket, because main still has the fix.
+func TestNextPassesOverAResolvedTicketAfterAnUnrelatedMerge(t *testing.T) {
+	repo := gittest.New(t)
+	cfg := config.Config{Project: config.Project{BranchPrefix: gittest.Prefix}}
+	cfg.ProjectPath = repo.Dir
+	repo.Merge("helper.go", "func helper() {}\n", "PROJ-99: add the helper")
+	fix := repo.OnOrigin("main")
+	if err := repo.Checkout().FetchMain(); err != nil {
+		t.Fatal(err)
+	}
+	if err := nowork.For(cfg).WriteResolved("#330", fix, nowork.Of(issue330), fix); err != nil {
+		t.Fatal(err)
+	}
+	repo.Merge("docs.md", "an unrelated docs change\n", "Land a docs change")
+	trk := newQueueTracker()
+	trk.next, trk.nextOK = issue330, true
+	log := &narrator{}
+	s := NewTicketSource(cfg, log, trk)
+
+	if _, claim, ok, err := s.Next(); ok || claim != nil || err != nil {
+		t.Fatalf("Next() = (%v, %v, %v), want #330 passed over while main still has its fix", claim, ok, err)
+	}
+	if !saw(log, "skipping #330: already resolved on main by "+fix[:12]+"; awaiting close (#330)") {
+		t.Errorf("events = %v, want the skip named", log.events)
+	}
+}
+
+// Once the loop labels a resolved ticket blocked for a human, the label holds
+// it, and removing the label is how a human says the commit does not fix it. The
+// removal restores the labels the record's fingerprint was read with, so a kept
+// record would pass the ticket over for as long as main has the commit: Block
+// clears it. A label that could not be applied leaves the record to hold the
+// ticket (#453).
+func TestBlockingATicketForAHumanClearsItsNoWorkRecord(t *testing.T) {
+	for name, c := range map[string]struct {
+		blockErr error
+		kept     bool
+	}{
+		"labelled":      {},
+		"label refused": {blockErr: errors.New("no tracker.blocked_label is configured"), kept: true},
+	} {
+		cfg := config.Config{Project: config.Project{BranchPrefix: gittest.Prefix}}
+		cfg.ProjectPath = t.TempDir()
+		records := nowork.For(cfg)
+		if err := records.WriteResolved("#330", "base", nowork.Of(issue330), "fix"); err != nil {
+			t.Fatal(err)
+		}
+		trk := newQueueTracker()
+		trk.BlockErr = c.blockErr
+		s := NewTicketSource(cfg, &narrator{}, trk)
+
+		s.Block("#330")
+
+		if _, ok := records.Read("#330"); ok != c.kept {
+			t.Errorf("%s: record kept = %v, want %v", name, ok, c.kept)
+		}
 	}
 }

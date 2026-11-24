@@ -135,24 +135,36 @@ func foundNothing(o session.Outcome, wt gitpkg.Worktree) bool {
 
 // recordNoWork keeps the record selection reads to pass over a ticket whose last
 // run found nothing (#330, ADR-0053): the origin/main SHA the run worked against
-// and the ticket as its selection read it. Any other end clears it, so a record
-// only ever describes the latest run. A hand-passed run was not selected, so
-// there is no reading of the ticket to record. Best-effort: a failed write costs
-// at most one more run, as before the record existed.
-func recordNoWork(cfg config.Config, log *runlog.Logger, args Args, wt gitpkg.Worktree, o session.Outcome, ok bool) {
-	records := nowork.For(cfg)
+// and the ticket as its selection read it, and resolvedBy, the commit the session
+// found already resolving the ticket, if any (#453). Any other end clears it, so
+// a record only ever describes the latest run. A hand-passed run was not
+// selected, so there is no reading of the ticket to record. Best-effort: a failed
+// write costs at most one more run, as before the record existed.
+func recordNoWork(cfg config.Config, log *runlog.Logger, args Args, wt gitpkg.Worktree, o session.Outcome, ok bool, resolvedBy string) {
 	if ok || args.Selected == "" || !foundNothing(o, wt) {
-		records.Clear(args.Identifier)
+		nowork.For(cfg).Clear(args.Identifier)
 		return
 	}
+	writeNoWork(cfg, log, args, wt, resolvedBy)
+}
+
+// writeNoWork writes the record of a selected run that found nothing to hand off
+// against the origin/main wt reads, resolved on main by resolvedBy when it is
+// set, and narrates what selection will now wait for.
+func writeNoWork(cfg config.Config, log *runlog.Logger, args Args, wt gitpkg.Worktree, resolvedBy string) {
+	records := nowork.For(cfg)
 	base, err := wt.RefSHA(gitpkg.BaseRef)
 	if err != nil {
 		log.Event("⚠ could not read origin/main to record that the run found no work (" + err.Error() + ") — the next poll may dispatch " + args.Identifier + " again")
 		records.Clear(args.Identifier)
 		return
 	}
-	if err := records.Write(args.Identifier, base, args.Selected); err != nil {
+	if err := records.WriteResolved(args.Identifier, base, args.Selected, resolvedBy); err != nil {
 		log.Event("⚠ could not record that the run found no work (" + err.Error() + ") — the next poll may dispatch " + args.Identifier + " again")
+		return
+	}
+	if resolvedBy != "" {
+		log.Event("tdd · " + args.Identifier + " is already resolved on main by " + shortCommit(resolvedBy) + " — it is not dispatched again while main has that commit, until the ticket changes or a human closes it (#453)")
 		return
 	}
 	log.Event("tdd · the session ran to completion with no work against origin/main " + base[:min(12, len(base))] + " — " + args.Identifier + " is not dispatched again until main moves or the ticket changes (#330)")
@@ -374,6 +386,11 @@ func Implementation(h hostio.Host, cfg config.Config, log *runlog.Logger, args A
 				"skipped %s — already merged on main (%s %q references it); re-run with --force to dispatch anyway",
 				args.Identifier, shortCommit(merged.SHA), merged.Subject,
 			))
+			// Selection passes over the ticket while main still has the commit, so
+			// each main move does not dispatch it into this skip again (#453).
+			if args.Selected != "" {
+				writeNoWork(cfg, log, args, h.Worktree(), merged.SHA)
+			}
 			return Result{OK: true, Disposition: AlreadyOnMain, ResolvedBy: merged.SHA, ResolvedWhy: merged.Subject}
 		}
 	}
@@ -558,11 +575,6 @@ func Implementation(h hostio.Host, cfg config.Config, log *runlog.Logger, args A
 		}
 	}
 
-	// Before the checkpoint below can commit anything, note whether the session
-	// found nothing to hand off, so selection does not dispatch the ticket into the
-	// same nothing while main and the ticket stand still (#330).
-	recordNoWork(cfg, log, args, wt, outcome, result.OK)
-
 	// A session that found the ticket already fixed on origin/main stops without
 	// committing, as the skill sanctions, and names the fixing commit in its
 	// resolved marker (#329). Only a clean tree with nothing ahead can be that
@@ -576,6 +588,12 @@ func Implementation(h hostio.Host, cfg config.Config, log *runlog.Logger, args A
 			result.Reason += "; the session's " + ResolvedMarker + " does not hold: " + mErr.Error()
 		}
 	}
+
+	// Before the checkpoint below can commit anything, note whether the session
+	// found nothing to hand off, so selection does not dispatch the ticket into the
+	// same nothing while main and the ticket stand still (#330), nor, when it found
+	// the ticket resolved on main, while main still has the fix (#453).
+	recordNoWork(cfg, log, args, wt, outcome, result.OK, resolved.ResolvedBy)
 
 	// A session that cannot go on until a human decides says why in its blocked
 	// marker, and names any further ticket the work needs, such as a split's second

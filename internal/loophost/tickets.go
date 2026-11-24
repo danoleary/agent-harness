@@ -131,7 +131,7 @@ func (s *TicketSource) Next() (loop.WorkItem, *lease.Lease, bool, error) {
 func (s *TicketSource) Resolver() pipeline.NextResolver {
 	if s.screen == nil {
 		s.screen = pipeline.SkipLive(s.client, s.runLive, s.log)
-		s.screen = pipeline.SkipNoWork(s.screen, nowork.For(s.cfg), s.freshMain, s.log)
+		s.screen = pipeline.SkipNoWork(s.screen, nowork.For(s.cfg), s.freshMain, s.checkout().OnMain, s.log)
 		if s.prs != nil {
 			policy := overlap.Policy{Threshold: s.cfg.OverlapThreshold, EscapeLabel: s.cfg.OverlapEscapeLabel}
 			branch := func(key string) string { return s.checkout().Worktree(ticket.Slug(key)).Branch() }
@@ -206,8 +206,18 @@ func (s *TicketSource) inFlight() ([]overlap.Work, error) {
 // Release returns a stale claim to Todo.
 func (s *TicketSource) Release(key string) error { return s.client.ReleaseToTodo(key) }
 
-// Block labels the ticket blocked for a human (#230).
-func (s *TicketSource) Block(key string) error { return s.client.MarkBlocked(key) }
+// Block labels the ticket blocked for a human (#230). The label then holds the
+// ticket, and its removal is a human's word to work it again, so Block clears the
+// ticket's no-work record: removing the label restores the labels the record was
+// read with, and a resolved record would pass the ticket over for as long as main
+// has its fix (#453). A label that was not applied leaves the record holding it.
+func (s *TicketSource) Block(key string) error {
+	if err := s.client.MarkBlocked(key); err != nil {
+		return err
+	}
+	nowork.For(s.cfg).Clear(key)
+	return nil
+}
 
 // Comment posts a breadcrumb on the ticket.
 func (s *TicketSource) Comment(key, body string) error { return s.client.AddComment(key, body) }
