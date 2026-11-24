@@ -79,3 +79,4 @@ catches a duplicate there.
 - [ADR-0069](0069-ci-still-pending-past-the-poll-budget-is-unknown-not-red.md): CI still pending past the poll budget is unknown, not red
 - [ADR-0070](0070-a-session-reports-a-block-or-a-follow-up-in-a-marker.md): A session reports a block or a follow-up ticket in a marker, and the host settles both on the tracker
 - [ADR-0071](0071-a-handoff-that-left-work-uncommitted-reaches-review-as-a-named-checkpoint.md): A handoff that left work uncommitted reaches review as a named checkpoint
+- [ADR-0072](0072-a-diff-scoped-gate-is-compared-on-the-base-over-the-branchs-paths.md): A diff-scoped gate is compared on the base over the branch's paths, or not at all

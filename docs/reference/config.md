@@ -47,6 +47,7 @@ host-side, in the sandbox image, before the harness pushes and opens the PR.
 | `command` | shell command, run as `bash -c` | yes |
 | `skip_when_only` | list of repo-relative glob paths | no |
 | `cache_isolate` | list of worktree-relative directories | no |
+| `base_command` | shell command, run as `bash -c` | no |
 
 ```toml
 [[gates]]
@@ -89,6 +90,28 @@ A path must be relative, stay inside the worktree (no `..` out of it, not the
 worktree itself) and carry no comma. A bad path fails config validation. The
 tmpfs counts against the gate container's memory, so list cache directories,
 not whole dependency trees. With the key absent, nothing changes.
+
+`base_command` is for a gate scoped by the diff against origin/main, such as
+one that runs only the tests `--changed origin/main` reaches. When a conflict
+resolution's re-gate is red, the harness gates `main` alone to tell a red base
+from a red branch. There that diff is empty, so the gate as configured selects
+nothing and passes. The check runs `base_command` in its place, with `{paths}`
+replaced by the paths the branch's diff against origin/main touches,
+shell-quoted. The paths are relative to the repository root, not to a
+directory the command `cd`s into, and include files the branch deleted. Write
+it to run the tests those paths reach:
+
+```toml
+[[gates]]
+name = "test-storybook"
+command = "cd web && pnpm storybook-gate --changed origin/main"
+base_command = "cd web && pnpm storybook-gate --files {paths}"
+```
+
+A gate whose command names `origin/main` and sets no `base_command` is not
+compared on the base: the check logs that it is inconclusive, and the red stays
+the branch's. A base run that passes but reports it ran zero tests is
+inconclusive too (ADR-0072). Every other run of the gate uses `command`.
 
 A red gate whose log shows an environment failure (the test browser closing, a
 test timeout, a Vite re-optimise and reload, a memory kill, a download failure)

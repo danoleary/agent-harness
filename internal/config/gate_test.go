@@ -145,3 +145,32 @@ cache_isolate = ["`+p+`"]
 		assertMentions(t, err, `gates[0] ("check") cache_isolate path "`+p+`"`)
 	}
 }
+
+// A gate's base_command is read verbatim, {paths} included; a gate without the
+// key has none.
+func TestLoadProjectReadsAGatesBaseCommand(t *testing.T) {
+	dir := t.TempDir()
+	writeProjectConfig(t, dir, `
+image = "x"
+[tracker]
+kind = "github"
+repo = "o/r"
+[[gates]]
+name = "test-storybook"
+command = "pnpm storybook-gate --changed origin/main"
+base_command = "pnpm storybook-gate --files {paths}"
+[[gates]]
+name = "build"
+command = "make build"
+`)
+	pc, err := LoadProject(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := pc.Gates[0].BaseCommand; got != "pnpm storybook-gate --files {paths}" {
+		t.Errorf("gates[0].base_command = %q", got)
+	}
+	if got := pc.Gates[1].BaseCommand; got != "" {
+		t.Errorf("gates[1].base_command = %q, want none", got)
+	}
+}

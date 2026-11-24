@@ -146,6 +146,8 @@ what it found, it warns and dispatches rather than hold a ticket on a guess.
 | `⚠ could not tell the open base-gates-red finding <KEY> the base is green (…)` | the comment on that issue failed to post. It is not retried on a later green base | the same |
 | `⚠ could not record that <KEY> was told the base is green (…) — a later green base may tell it again` | the mark under `.agent-harness/locks/base-gates/told-green/` could not be written | nothing urgent: close the issue, or check that directory is writable |
 | `⚠ could not discard the untouched worktree on the red base (…)` | the held ticket's worktree or branch could not be removed | remove it with `git worktree remove` and `git branch -D`, or the next attempt reuses it at the old base |
+| `⚠ base check inconclusive: 0 targets selected — gate "…" is scoped by the diff against origin/main, which is empty on origin/main alone` | a conflict resolution's re-gate was red on a gate whose command names `origin/main` (such as `--changed origin/main`). On `main` alone that diff is empty, so the gate would select nothing and pass, so the base is not gated. The red stays the branch's (#448, ADR-0072) | give the gate a `base_command` that takes `{paths}`, the branch's changed paths, so the check runs the branch's targets on `main` ([config](config.md#gates)) |
+| `⚠ base check inconclusive: gate "…" ran no tests on origin/main alone` | the base run of the branch's red gate passed, but its log says it ran zero tests (`0 tests ran`, `no story reaches the diff`), so the pass proves nothing. The red stays the branch's | the same: the gate is diff-scoped behind a wrapper; give it a `base_command` |
 
 ## Worktree setup and gates
 
