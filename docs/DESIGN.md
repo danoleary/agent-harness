@@ -1311,7 +1311,11 @@ A second PreToolUse hook on Bash refuses a git mode that prompts on stdin
 Bash tool never answers the prompt, so the call would otherwise hang for the
 full 10-minute Bash timeout. `diff`, `log` and `show -p` print and pass, and a
 commit message or grep pattern that names the command is not mistaken for it
-(ADR-0059, #353).
+(ADR-0059, #353). The guard is a script file: a SessionStart hook in the same
+`--settings` writes it to `/tmp/agent-harness/interactive-git-guard.sh`, and the
+PreToolUse hook is one line that runs it. The CLI echoes the whole hook command
+with every block, so an inline guard would hand the session 3 KB of awk first.
+A missing script lets the call through (#433).
 
 The launcher also tells each session its role: `HARNESS_SESSION_ROLE`
 (`implementation`, `review`, `retrospective`, …), and `HARNESS_SESSION_READ_ONLY=1`

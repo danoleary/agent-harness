@@ -105,41 +105,79 @@ END {
 }
 `
 
-// interactiveGitGuardCommand is the PreToolUse hook that refuses a Bash command
-// running a git mode that prompts: add, checkout, restore, reset, stash or
-// commit with -p/--patch, add, clean or rebase with -i, and --interactive (#353).
-// The prompt waits on a stdin the Bash tool never answers, so the call hangs
-// until the Bash timeout, which the sandbox raises to 10 minutes. Exit 2 blocks
-// the call and hands stderr to the session, so it learns at once and can rerun
-// the non-interactive form. diff, log and show -p print and never prompt, so
-// they pass. An awk that fails lets the call through: the guard only saves time.
-func interactiveGitGuardCommand() string {
+// interactiveGitGuardScript is the guard that refuses a Bash command running a
+// git mode that prompts: add, checkout, restore, reset, stash or commit with
+// -p/--patch, add, clean or rebase with -i, and --interactive (#353). The prompt
+// waits on a stdin the Bash tool never answers, so the call hangs until the Bash
+// timeout, which the sandbox raises to 10 minutes. Exit 2 blocks the call and
+// hands stderr to the session, so it learns at once and can rerun the
+// non-interactive form. diff, log and show -p print and never prompt, so they
+// pass. An awk that fails lets the call through: the guard only saves time.
+//
+// The checkout and restore advice warns that they drop every uncommitted change
+// to the path: a session reaches for checkout -p to drop only part of its work
+// (#433).
+func interactiveGitGuardScript() string {
 	return strings.Join([]string{
 		`hit=$(jq -r '.tool_input.command // empty' | awk '` + interactiveGitAwk + `') || exit 0`,
-		`echo "Blocked: $hit is an interactive git mode. It waits on a prompt this sandbox's Bash never answers, so the call would hang until its timeout. Use the non-interactive form instead: git checkout -- <path> or git restore <path> to discard a change, git add <path> to stage a file, git stash push -- <path>, or edit the file." >&2`,
+		`echo "Blocked: $hit is an interactive git mode. It waits on a prompt this sandbox's Bash never answers, so the call would hang until its timeout. Use the non-interactive form instead: git add <path> to stage a file, git stash push -- <path>, or edit the file. git checkout -- <path> and git restore <path> discard every uncommitted change to the path, not one hunk: to undo a temporary edit, copy the file aside first and copy it back, or edit the file." >&2`,
 		`exit 2`,
 	}, "\n")
+}
+
+// guardDir is where a sandboxed session's SessionStart hook installs the
+// interactive-git guard script.
+const guardDir = "/tmp/agent-harness"
+
+// guardScriptPath is the guard script's path under dir.
+func guardScriptPath(dir string) string { return dir + "/interactive-git-guard.sh" }
+
+// installGuardCommand is the SessionStart hook that writes the guard script into
+// dir, before the session's first tool call. The guard is installed as a file
+// rather than inlined in its PreToolUse hook because the CLI prefixes a block's
+// reason with the whole hook command: an inline guard handed the session 3 KB of
+// awk before the one line it needed (#433). Written aside and moved, so a hook
+// never runs a half-written script.
+func installGuardCommand(dir string) string {
+	const eof = "AGENT_HARNESS_GUARD_EOF"
+	p := guardScriptPath(dir)
+	return "mkdir -p " + dir + " && cat > " + p + ".tmp <<'" + eof + "' && mv " + p + ".tmp " + p + "\n" +
+		interactiveGitGuardScript() + "\n" + eof
+}
+
+// interactiveGitGuardCommand is the PreToolUse hook that runs the guard script
+// installGuardCommand wrote into dir. One short line, since the CLI echoes it
+// with every block. A missing script lets the call through, as a failing awk does.
+func interactiveGitGuardCommand(dir string) string {
+	p := guardScriptPath(dir)
+	return "[ -f " + p + " ] || exit 0; exec sh " + p
 }
 
 // sessionSettings is the `--settings` JSON every sandboxed session starts with.
 // It travels on the command line rather than in the image so a change reaches
 // the next session without a new base image release, and it adds to the
 // Consumer's own project settings rather than replacing them.
-func sessionSettings() string {
+func sessionSettings() string { return sessionSettingsIn(guardDir) }
+
+// sessionSettingsIn is sessionSettings with the guard script installed in dir.
+func sessionSettingsIn(dir string) string {
 	type hook struct {
 		Type    string `json:"type"`
 		Command string `json:"command"`
 		Timeout int    `json:"timeout"`
 	}
 	type matcher struct {
-		Matcher string `json:"matcher"`
+		Matcher string `json:"matcher,omitempty"`
 		Hooks   []hook `json:"hooks"`
 	}
 	raw, err := json.Marshal(map[string]any{
 		"hooks": map[string][]matcher{
+			"SessionStart": {{Hooks: []hook{
+				{Type: "command", Command: installGuardCommand(dir), Timeout: 30},
+			}}},
 			"PreToolUse": {{Matcher: "Bash", Hooks: []hook{
 				{Type: "command", Command: reapLeftoversCommand("/proc"), Timeout: 30},
-				{Type: "command", Command: interactiveGitGuardCommand(), Timeout: 30},
+				{Type: "command", Command: interactiveGitGuardCommand(dir), Timeout: 30},
 			}}},
 		},
 	})

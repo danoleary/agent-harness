@@ -118,23 +118,27 @@ func TestTheReaperLeavesProcessesAloneForACommandThatRunsNoStory(t *testing.T) {
 	}
 }
 
+// hookSettings is the hooks half of the `--settings` JSON.
+type hookSettings struct {
+	Hooks map[string][]struct {
+		Matcher string `json:"matcher"`
+		Hooks   []struct {
+			Type    string `json:"type"`
+			Command string `json:"command"`
+		} `json:"hooks"`
+	} `json:"hooks"`
+}
+
 // Every sandboxed session carries the reaper and the interactive-git guard as
-// PreToolUse hooks on Bash, in settings passed on the command line, so they reach
-// the session without a new base image.
+// PreToolUse hooks on Bash, and a SessionStart hook that installs the guard, in
+// settings passed on the command line, so they reach the session without a new
+// base image.
 func TestEverySessionCarriesTheReaperAndTheGitGuardAsBashPreToolUseHooks(t *testing.T) {
 	raw := valuesForFlag(BuildDockerRunArgs(baseConfig()), "--settings")
 	if len(raw) != 1 {
 		t.Fatalf("want one --settings, got %v", raw)
 	}
-	var settings struct {
-		Hooks map[string][]struct {
-			Matcher string `json:"matcher"`
-			Hooks   []struct {
-				Type    string `json:"type"`
-				Command string `json:"command"`
-			} `json:"hooks"`
-		} `json:"hooks"`
-	}
+	var settings hookSettings
 	if err := json.Unmarshal([]byte(raw[0]), &settings); err != nil {
 		t.Fatalf("--settings is not JSON: %v", err)
 	}
@@ -145,9 +149,52 @@ func TestEverySessionCarriesTheReaperAndTheGitGuardAsBashPreToolUseHooks(t *test
 	if h := pre[0].Hooks[0]; h.Type != "command" || h.Command != reapLeftoversCommand("/proc") {
 		t.Errorf("the first hook must run the reaper over /proc, got %+v", h)
 	}
-	if h := pre[0].Hooks[1]; h.Type != "command" || h.Command != interactiveGitGuardCommand() {
+	if h := pre[0].Hooks[1]; h.Type != "command" || h.Command != interactiveGitGuardCommand(guardDir) {
 		t.Errorf("the second hook must run the interactive-git guard, got %+v", h)
 	}
+	start := settings.Hooks["SessionStart"]
+	if len(start) != 1 || start[0].Matcher != "" || len(start[0].Hooks) != 1 || start[0].Hooks[0].Command != installGuardCommand(guardDir) {
+		t.Errorf("want one SessionStart hook, on every source, that installs the guard in %s, got %+v", guardDir, start)
+	}
+}
+
+// #433: the CLI prefixes a block's reason with the whole hook command, so the
+// guard's PreToolUse command is one short line that runs the installed script,
+// not the 3 KB of awk.
+func TestTheGuardHookCommandIsOneShortLine(t *testing.T) {
+	c := interactiveGitGuardCommand(guardDir)
+	if strings.Contains(c, "\n") || len(c) > 120 || strings.Contains(c, "awk") {
+		t.Errorf("the guard's hook command must be one short line naming the script, got %d bytes: %q", len(c), c)
+	}
+}
+
+// guardHooks returns the guard's installer and hook commands as the session
+// settings carry them, with the script installed under dir.
+func guardHooks(t *testing.T, dir string) (install, guard string) {
+	t.Helper()
+	var settings hookSettings
+	if err := json.Unmarshal([]byte(sessionSettingsIn(dir)), &settings); err != nil {
+		t.Fatalf("session settings are not JSON: %v", err)
+	}
+	return settings.Hooks["SessionStart"][0].Hooks[0].Command, settings.Hooks["PreToolUse"][0].Hooks[1].Command
+}
+
+// runSh runs command under sh with stdin, and returns its exit code and stderr.
+func runSh(t *testing.T, command, stdin string) (int, string) {
+	t.Helper()
+	c := exec.Command("sh", "-c", command)
+	c.Stdin = strings.NewReader(stdin)
+	var stderr strings.Builder
+	c.Stderr = &stderr
+	err := c.Run()
+	if err == nil {
+		return 0, stderr.String()
+	}
+	if ee, ok := err.(*exec.ExitError); ok {
+		return ee.ExitCode(), stderr.String()
+	}
+	t.Fatalf("hook did not run: %v", err)
+	return 0, ""
 }
 
 // #248: a session that drives no browser starts no MCP servers. The CLI's
@@ -168,29 +215,22 @@ func TestASessionWithoutMCPPassesStrictMCPConfig(t *testing.T) {
 	}
 }
 
-// runGuard runs the interactive-git guard as Claude Code runs a PreToolUse hook,
-// and returns its exit code and stderr. Exit 2 blocks the Bash call and hands
+// runGuard runs the interactive-git guard as a session meets it: the
+// SessionStart hook installs it, then Claude Code runs the PreToolUse hook. It
+// returns the hook's exit code and stderr. Exit 2 blocks the Bash call and hands
 // stderr to the session.
 func runGuard(t *testing.T, command string) (int, string) {
 	t.Helper()
+	install, guard := guardHooks(t, t.TempDir())
+	if code, stderr := runSh(t, install, `{"hook_event_name":"SessionStart","source":"startup"}`); code != 0 {
+		t.Fatalf("the SessionStart hook failed to install the guard: exit %d; stderr %q", code, stderr)
+	}
 	event, _ := json.Marshal(map[string]any{
 		"hook_event_name": "PreToolUse",
 		"tool_name":       "Bash",
 		"tool_input":      map[string]any{"command": command},
 	})
-	c := exec.Command("sh", "-c", interactiveGitGuardCommand())
-	c.Stdin = strings.NewReader(string(event))
-	var stderr strings.Builder
-	c.Stderr = &stderr
-	err := c.Run()
-	if err == nil {
-		return 0, stderr.String()
-	}
-	if ee, ok := err.(*exec.ExitError); ok {
-		return ee.ExitCode(), stderr.String()
-	}
-	t.Fatalf("guard hook did not run: %v", err)
-	return 0, ""
+	return runSh(t, guard, string(event))
 }
 
 // #353, replayed: a compound Bash command with `git checkout -p` in it, its
@@ -201,7 +241,7 @@ func TestTheGuardBlocksTheCompoundCheckoutPatchThatHungTheSession(t *testing.T) 
 	if code != 2 {
 		t.Fatalf("want exit 2 (block), got %d; stderr %q", code, stderr)
 	}
-	for _, want := range []string{"git checkout -p", "interactive", "git checkout -- <path>", "git restore <path>"} {
+	for _, want := range []string{"git checkout -p", "interactive", "git checkout -- <path>", "git restore <path>", "discard every uncommitted change", "copy the file aside"} {
 		if !strings.Contains(stderr, want) {
 			t.Errorf("the block message must name %q, got %q", want, stderr)
 		}
@@ -266,5 +306,14 @@ func TestTheGuardBlocksOnlyGitModesThatPrompt(t *testing.T) {
 func TestTheGuardLetsThroughAnUnterminatedHeredoc(t *testing.T) {
 	if code, stderr := runGuard(t, "cat <<EOF\ngit add -p"); code != 0 {
 		t.Errorf("want exit 0, got %d; stderr %q", code, stderr)
+	}
+}
+
+// A guard script that was never installed, or was removed, lets the call
+// through, as a failing awk does: the guard only saves time.
+func TestTheGuardLetsThroughWhenItsScriptIsMissing(t *testing.T) {
+	_, guard := guardHooks(t, t.TempDir())
+	if code, stderr := runSh(t, guard, `{"tool_input":{"command":"git add -p"}}`); code != 0 {
+		t.Errorf("want exit 0 with no installed script, got %d; stderr %q", code, stderr)
 	}
 }
