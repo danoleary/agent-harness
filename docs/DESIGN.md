@@ -722,7 +722,8 @@ pipeline (one PR, worktree .claude/worktrees/pr-<n> on the PR's head branch):
       did not touch, is re-run once before it refuses the fix (#167)
     a human branch is never reactively rebased (CIWatch.KeepHistory)
     CI still pending past the poll budget -> ci.Outcome.Pending, unknown not red:  // #421, ADR-0069
-      narrate "⧗ CI still pending past the poll budget (not a red CI) on <checks>"
+      narrate "⧗ CI still pending past the poll budget (not a red CI) on <checks> after <d> of polling
+        (CI_POLL_BUDGET_MS=<d>, CI_POLL_MAX_BUDGET_MS=<d>)"  // the budget it used, #424
       a fix was pushed -> Shipped;  nothing pushed -> CIPending: void marker takes the
       attempt back, breaker-neutral, and the next poll re-checks that commit's CI
       (pending or green -> skip; red -> work it) before it launches a session

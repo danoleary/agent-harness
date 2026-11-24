@@ -43,6 +43,14 @@ routinely outlasts the budget could trip the breaker on waiting alone.
    `CI_POLL_MAX_BUDGET_MS` are read from the Consumer's own `.agent-harness/.env`,
    so a Consumer with a long CI graph already raises them without a new
    `config.toml` key. The narration and the error catalogue point at them.
+5. **The pending line names the budget the watch used** (#424). The poll's
+   timeout carries how long it polled and both budgets, and the narration
+   appends `after <d> of polling (CI_POLL_BUDGET_MS=<d>, CI_POLL_MAX_BUDGET_MS=<d>)`.
+   An operator then sees whether the Consumer's own values or the defaults
+   applied, and how far to raise them. The 25m default ceiling stays: it is
+   kept under the 30m `CI_FIX_BUDGET_MS`, so the extension cannot outlive the
+   whole watch and fix loop. A Consumer whose CI graph takes longer raises
+   both knobs.
 
 ## Consequences
 

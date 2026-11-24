@@ -152,6 +152,9 @@ type Outcome struct {
 	// the PR loop re-checks that commit's CI on its next poll before it launches
 	// any fix session (#421).
 	Pending bool
+	// Polled is the budget a Pending outcome's poll ran to, when the poll recorded
+	// it; the zero value otherwise (#424).
+	Polled PollSpend
 }
 
 // PendingNarration is the run-log line the PR and security-alerts loops write for
@@ -162,6 +165,9 @@ func PendingNarration(o Outcome) string {
 	line := "CI still pending past the poll budget (not a red CI)"
 	if len(o.Failing) > 0 {
 		line += " on " + flakeNames(o.Failing, nil)
+	}
+	if p := o.Polled; p.Waited > 0 {
+		line += fmt.Sprintf(" after %s of polling (CI_POLL_BUDGET_MS=%s, CI_POLL_MAX_BUDGET_MS=%s)", p.Waited.Round(time.Second), p.Budget, p.MaxBudget)
 	}
 	return line + " — for a CI graph that takes longer, raise CI_POLL_BUDGET_MS and CI_POLL_MAX_BUDGET_MS"
 }
@@ -484,12 +490,14 @@ func pollErrOutcome(err error, checks []Check) Outcome {
 		}
 	}
 	if errors.Is(err, ErrPollTimeout) {
-		return Outcome{
+		out := Outcome{
 			OK:      false,
 			Pending: true,
 			Reason:  "CI never reached a terminal state (still pending past the poll budget)",
 			Failing: notGreen(checks),
 		}
+		out.Polled, _ = pollSpendOf(err)
+		return out
 	}
 	if errors.Is(err, errGhMissing) {
 		return Outcome{OK: false, PollFault: true, Reason: ghMissingReason + err.Error()}

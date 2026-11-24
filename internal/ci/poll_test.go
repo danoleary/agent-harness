@@ -528,3 +528,31 @@ func TestPollSurfacesTransientErrorWhenBudgetRunsOut(t *testing.T) {
 		t.Fatalf("err = %v, want errPollTransient", err)
 	}
 }
+
+// #424: the pr-doctor run's CI watch polled a still-running real gate for about 25
+// minutes, ran out of the default budgets (CI_POLL_BUDGET_MS 12m, CI_POLL_MAX_BUDGET_MS
+// 25m, re-polled every 15s), and its log never said which budget it had used. The
+// timeout carries how long it polled and both budgets, so the run log can name them.
+func TestPollTimeoutCarriesTheBudgetItUsed(t *testing.T) {
+	clock := newFakeClock()
+	sleep := func(d time.Duration) { clock.sleep(d) }
+	fetch, _ := scriptedChecks([]Check{
+		{Name: "build", Bucket: BucketPass, State: "SUCCESS"},
+		{Name: "storybook", Bucket: BucketPending, State: "IN_PROGRESS"},
+	})
+	cfg := pollConfig{interval: 15 * time.Second, budget: 12 * time.Minute, maxBudget: 25 * time.Minute}
+	_, _, err := poll(fetch, nil, cfg, sleep, clock.now)
+	if !errors.Is(err, ErrPollTimeout) {
+		t.Fatalf("err = %v, want ErrPollTimeout", err)
+	}
+	spend, ok := pollSpendOf(err)
+	if !ok {
+		t.Fatalf("pollSpendOf(%v) = false, want the budget the poll used", err)
+	}
+	if spend.Budget != 12*time.Minute || spend.MaxBudget != 25*time.Minute {
+		t.Fatalf("spend = %+v, want Budget 12m and MaxBudget 25m", spend)
+	}
+	if spend.Waited <= 24*time.Minute || spend.Waited > 25*time.Minute {
+		t.Fatalf("spend.Waited = %v, want just under the 25m ceiling", spend.Waited)
+	}
+}
