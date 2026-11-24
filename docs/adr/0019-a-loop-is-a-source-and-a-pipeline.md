@@ -507,7 +507,8 @@ review cap before the fix session started.
 - **A Vite reload is matched only on Vite's re-optimise and reload lines**:
   `optimized dependencies changed`, `new dependencies optimized`, `Vite
   unexpectedly reloaded a test`, or a failed dynamic import of an optimised-deps
-  chunk (`/.vite/deps/`). A pre-transform error, an internal server error or a
+  chunk (`/.vite/deps/`, Vitest's `/.vite/vitest/<hash>/deps/` or Storybook's
+  `/sb-vite/deps/`). A pre-transform error, an internal server error or a
   failed import of a test file is the diff's, and final.
 - **A gate can classify its own red.** A log line that is exactly
   `gate-classification: not-infra` makes the red final before any signature is

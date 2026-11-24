@@ -49,8 +49,10 @@ var infraSignatures = []struct{ cause, needle string }{
 const viteReload = "a Vite reload"
 
 // reloadImportRE is a failed dynamic import of a chunk Vite optimised, which its
-// re-optimisation invalidates mid-run (#312). Over lower-cased text.
-var reloadImportRE = regexp.MustCompile(`failed to fetch dynamically imported module: \S*/\.vite/deps/`)
+// re-optimisation invalidates mid-run (#312): under Vite's own cache dir
+// (/.vite/deps/), Vitest's (/.vite/vitest/<hash>/deps/) or Storybook's
+// (/sb-vite/deps/). Over lower-cased text.
+var reloadImportRE = regexp.MustCompile(`failed to fetch dynamically imported module: \S*/(?:\.vite|sb-vite)/(?:\S*/)?deps/`)
 
 // notInfraRE is the line a Consumer's gate prints to say its red is the diff's,
 // whatever else its log holds: no signature re-runs it (#427). Over lower-cased
