@@ -1625,6 +1625,10 @@ own namespace with no edit to the workflow.
   - `.agent-harness/logs/BEH-NNN/findings/retrospective/out.json` — the dropbox.
   - `.agent-harness/logs/BEH-NNN/run.jsonl` — the per-ticket structured event
     stream (machine-readable mirror of the console, scoped to one ticket's arc).
+    Each Stage's header line, `run <id> — <stage> <KEY>`, ends with the build
+    that ran it, `· agent-harness <version> (<commit>)` (#458), so old
+    behaviour in a run reads as a stale binary, not a regression, when that
+    commit predates the fix on main.
   - `.agent-harness/logs/loop.jsonl` — a **global** structured event stream across
     all tickets and stages, written by the shared narration sink and truncated at
     daemon startup (bounded to one daemon run). Each record is `{ts, kind, ticket,

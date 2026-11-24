@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/danoleary/agent-harness/internal/loopstream"
+	"github.com/danoleary/agent-harness/internal/version"
 )
 
 // Structured mirrors the console line + run.jsonl exactly like Event, and ALSO
@@ -41,8 +42,8 @@ func TestStructuredAppendsRecordToGlobalStream(t *testing.T) {
 	if r.Stage != "implementation" {
 		t.Errorf("stage = %q, want implementation", r.Stage)
 	}
-	if r.Message != "run X — implementation BEH-1" {
-		t.Errorf("message = %q, want the console line verbatim", r.Message)
+	if want := "run X — implementation BEH-1 · " + version.Build(); r.Message != want {
+		t.Errorf("message = %q, want the console line verbatim, %q", r.Message, want)
 	}
 	if r.TS == "" {
 		t.Errorf("expected a stamped timestamp")
@@ -77,5 +78,37 @@ func TestStructuredKeepsExplicitTicket(t *testing.T) {
 	_ = json.Unmarshal([]byte(strings.TrimSpace(readFile(t, filepath.Join(root, "loop.jsonl")))), &r)
 	if r.Ticket != "BEH-99" {
 		t.Errorf("ticket = %q, want the explicit BEH-99 preserved", r.Ticket)
+	}
+}
+
+// A Stage-start record is the run's header, and it names the harness build that
+// ran it (#458): a retrospective that sees behaviour a commit on main already
+// fixed can tell a stale binary from a regression without diffing the transcript
+// against the source.
+func TestStageStartHeaderNamesTheHarnessBuild(t *testing.T) {
+	defer func(v, c string) { version.Version, version.Commit = v, c }(version.Version, version.Commit)
+	version.Version, version.Commit = "v0.12.2", "a9e5c7378763"
+
+	root := t.TempDir()
+	log, _ := New(root, "BEH-4")
+	log.Structured(loopstream.Record{Kind: loopstream.KindStageStart, Stage: "implementation", Message: "run X — implementation BEH-4"})
+	log.Structured(loopstream.Record{Kind: loopstream.KindIdle, Message: "idle"})
+
+	want := "run X — implementation BEH-4 · agent-harness v0.12.2 (a9e5c7378763)"
+	lines := strings.Split(strings.TrimSpace(readFile(t, filepath.Join(log.Dir, "run.jsonl"))), "\n")
+	var header, other struct{ Message string }
+	_ = json.Unmarshal([]byte(lines[0]), &header)
+	_ = json.Unmarshal([]byte(lines[1]), &other)
+	if header.Message != want {
+		t.Errorf("run.jsonl header = %q, want %q", header.Message, want)
+	}
+	if other.Message != "idle" {
+		t.Errorf("a non-header line = %q, want it unchanged", other.Message)
+	}
+
+	var r loopstream.Record
+	_ = json.Unmarshal([]byte(strings.Split(strings.TrimSpace(readFile(t, filepath.Join(root, "loop.jsonl"))), "\n")[0]), &r)
+	if r.Message != want {
+		t.Errorf("loop.jsonl header = %q, want it to match run.jsonl's %q", r.Message, want)
 	}
 }

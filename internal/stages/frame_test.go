@@ -15,6 +15,7 @@ import (
 	"github.com/danoleary/agent-harness/internal/runlog"
 	"github.com/danoleary/agent-harness/internal/session"
 	"github.com/danoleary/agent-harness/internal/ticket"
+	"github.com/danoleary/agent-harness/internal/version"
 )
 
 // The frame is the lifecycle every Stage shares (#29). These tests are its only
@@ -49,7 +50,7 @@ func records(t *testing.T, log *runlog.Logger) []loopstream.Record {
 }
 
 // A Stage announces itself to the viewer once, naming the run and the ticket, and
-// says when the run is only a plan.
+// says when the run is only a plan. The header ends with the harness build (#458).
 func TestFrameStartRecordsTheStageStart(t *testing.T) {
 	for _, dry := range []bool{false, true} {
 		log := stageLog(t, "PROJ-1")
@@ -63,6 +64,7 @@ func TestFrameStartRecordsTheStageStart(t *testing.T) {
 		if dry {
 			want += " (dry-run)"
 		}
+		want += " · " + version.Build()
 		if got[0].Message != want {
 			t.Errorf("start message = %q, want %q", got[0].Message, want)
 		}

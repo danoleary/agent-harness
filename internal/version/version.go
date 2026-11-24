@@ -43,7 +43,15 @@ const shortCommitLen = 12
 // `git log <sha>..origin/main` instead of re-deriving whether the premise holds.
 // It is harness metadata only, so it sits inside ADR-0011's sanitize rule.
 func ObservedBy() string {
-	return fmt.Sprintf("Observed by agent-harness %s (%s)", Version, commit())
+	return "Observed by " + Build()
+}
+
+// Build names the running binary: "agent-harness <version> (<commit>)". Every
+// run's header in run.jsonl carries it (#458), so a retrospective that sees
+// behaviour a commit on main already fixed can tell a stale binary from a
+// regression.
+func Build() string {
+	return fmt.Sprintf("agent-harness %s (%s)", Version, commit())
 }
 
 // commit is Commit, else the toolchain's vcs.revision, shortened; or
