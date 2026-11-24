@@ -4,7 +4,9 @@
 // when a session ran to completion and left no commit ahead of origin/main, and
 // clears it on any other end. Selection reads it and passes over the ticket while
 // main and the ticket are both unchanged, because a second run would find the same
-// nothing for the same reason.
+// nothing for the same reason. A run that found the ticket already resolved on
+// main also names the resolving commit, and selection passes over the ticket for
+// as long as main still has that commit, however far main moves (#453).
 package nowork
 
 import (
@@ -47,6 +49,10 @@ type Record struct {
 	Ticket Fingerprint `json:"ticket"`
 	// At is when the run recorded it, for the operator reading the file.
 	At time.Time `json:"at"`
+	// ResolvedBy is the full SHA of the origin/main commit the run found already
+	// resolving the ticket (ResolvedOnMain or AlreadyOnMain), or empty. A main
+	// that moved still holds that fix while the commit is on it (#453).
+	ResolvedBy string `json:"resolved_by,omitempty"`
 }
 
 // Records is the per-ticket record every loop instance of one Consumer shares
@@ -86,7 +92,13 @@ func (r Records) Read(key string) (Record, bool) {
 // ticket selection read as fp. The rename makes it atomic, so a concurrent reader
 // sees the old record or the new one, never half of one.
 func (r Records) Write(key, base string, fp Fingerprint) error {
-	raw, err := json.Marshal(Record{Base: base, Ticket: fp, At: r.now()})
+	return r.WriteResolved(key, base, fp, "")
+}
+
+// WriteResolved is Write for a run that found key already resolved on main by
+// the commit by (#453). An empty by is a plain Write.
+func (r Records) WriteResolved(key, base string, fp Fingerprint, by string) error {
+	raw, err := json.Marshal(Record{Base: base, Ticket: fp, At: r.now(), ResolvedBy: by})
 	if err != nil {
 		return err
 	}

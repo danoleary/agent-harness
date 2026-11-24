@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
@@ -45,7 +46,7 @@ func TestSkipNoWorkPassesOverATicketWhoseLastRunFoundNothingOnTheSameMain(t *tes
 	q := &readyQueue{ready: []ticket.Ticket{issue330, {Identifier: "#331", Description: "Other work."}}}
 	rec := &recorder{}
 
-	sel := ResolveNext(SkipNoWork(q, records, (&mainRef{sha: resolvedOn}).read, rec), &mutexLock{}, false, "", rec)
+	sel := ResolveNext(SkipNoWork(q, records, (&mainRef{sha: resolvedOn}).read, mainHolds(), rec), &mutexLock{}, false, "", rec)
 
 	if !sel.Proceed || sel.Identifier != "#331" {
 		t.Fatalf("selection = %+v, want #330 passed over and #331 dispatched", sel)
@@ -67,7 +68,7 @@ func TestSkipNoWorkWithOnlyThatTicketReadyHoldsTheQueue(t *testing.T) {
 	}
 	q := &readyQueue{ready: []ticket.Ticket{issue330}}
 	rec := &recorder{}
-	r := SkipNoWork(q, records, (&mainRef{sha: resolvedOn}).read, rec)
+	r := SkipNoWork(q, records, (&mainRef{sha: resolvedOn}).read, mainHolds(), rec)
 
 	for poll := 0; poll < 2; poll++ {
 		sel := ResolveNext(r, &mutexLock{}, false, "", rec)
@@ -109,7 +110,7 @@ func TestSkipNoWorkDispatchesOnceMainOrTheTicketMoved(t *testing.T) {
 		q := &readyQueue{ready: []ticket.Ticket{c.ticket}}
 		rec := &recorder{}
 
-		sel := ResolveNext(SkipNoWork(q, records, (&mainRef{sha: c.main}).read, rec), &mutexLock{}, false, "", rec)
+		sel := ResolveNext(SkipNoWork(q, records, (&mainRef{sha: c.main}).read, mainHolds(), rec), &mutexLock{}, false, "", rec)
 
 		if !sel.Proceed || sel.Identifier != "#330" {
 			t.Errorf("%s: selection = %+v, want #330 dispatched", name, sel)
@@ -130,7 +131,7 @@ func TestSkipNoWorkFailsOpenWhenMainCannotBeRead(t *testing.T) {
 	q := &readyQueue{ready: []ticket.Ticket{issue330}}
 	rec := &recorder{}
 
-	sel := ResolveNext(SkipNoWork(q, records, (&mainRef{err: errors.New("no origin/main")}).read, rec), &mutexLock{}, false, "", rec)
+	sel := ResolveNext(SkipNoWork(q, records, (&mainRef{err: errors.New("no origin/main")}).read, mainHolds(), rec), &mutexLock{}, false, "", rec)
 
 	if !sel.Proceed || sel.Identifier != "#330" {
 		t.Fatalf("selection = %+v, want #330 dispatched when main cannot be read", sel)
@@ -157,11 +158,102 @@ func TestAQueueHeldByOverlapsAndNoWorkNamesBoth(t *testing.T) {
 	}
 	q := &readyQueue{ready: []ticket.Ticket{issue330, {Identifier: "#1", Description: "Tidy internal/loop/loop.go."}}}
 	rec := &recorder{}
-	r := DeferOverlaps(SkipNoWork(q, records, (&mainRef{sha: resolvedOn}).read, rec), (&inFlight{work: []overlap.Work{openPR}}).read, branchOf, overlap.Policy{Threshold: 1}, rec)
+	r := DeferOverlaps(SkipNoWork(q, records, (&mainRef{sha: resolvedOn}).read, mainHolds(), rec), (&inFlight{work: []overlap.Work{openPR}}).read, branchOf, overlap.Policy{Threshold: 1}, rec)
 
 	sel := ResolveNext(r, &mutexLock{}, false, "", rec)
 
 	if want := "1 ticket(s) deferred by overlaps (#1); 1 ticket(s) whose last run found no work on an unchanged main (#330)"; sel.Proceed || sel.Held != want {
 		t.Errorf("selection = %+v, want Held %q", sel, want)
+	}
+}
+
+// mainHolds answers whether origin/main still contains a commit: yes for each of
+// on, no for any other.
+func mainHolds(on ...string) OnMain {
+	return func(sha string) (bool, error) { return slices.Contains(on, sha), nil }
+}
+
+// fixedBy is the commit #453's implementation session found already fixing it.
+const fixedBy = "5e1f0c2d9b8a7f6e5d4c3b2a1908f7e6d5c4b3a2"
+
+// issue453 is #453 as selection read it when its first run was dispatched.
+var issue453 = ticket.Ticket{
+	Identifier:  "#453",
+	Title:       "Keep passing over a resolved-on-main ticket while its resolving commit is still on origin/main",
+	Description: "What happened: an implementation session found the ticket already fixed on origin/main…",
+	Labels:      []string{"agent-ready", "stage-flow"},
+}
+
+// #453, replayed: the session found the ticket already fixed on origin/main by
+// a commit it named, and the ticket waited open for a human to close it. Then
+// main moved by one unrelated docs commit, and the screen dispatched the ticket
+// again: a base gate, a session and a retrospective, for the same verdict. Now
+// a resolved record stands while its resolving commit is still on main.
+func TestSkipNoWorkPassesOverAResolvedTicketWhileItsFixIsStillOnMain(t *testing.T) {
+	records := noWorkRecords(t)
+	if err := records.WriteResolved("#453", resolvedOn, nowork.Of(issue453), fixedBy); err != nil {
+		t.Fatal(err)
+	}
+	q := &readyQueue{ready: []ticket.Ticket{issue453, {Identifier: "#454", Description: "Other work."}}}
+	rec := &recorder{}
+	docsCommit := "dadf13a000000000000000000000000000000000"
+
+	sel := ResolveNext(SkipNoWork(q, records, (&mainRef{sha: docsCommit}).read, mainHolds(fixedBy), rec), &mutexLock{}, false, "", rec)
+
+	if !sel.Proceed || sel.Identifier != "#454" {
+		t.Fatalf("selection = %+v, want #453 passed over and #454 dispatched", sel)
+	}
+	if !rec.saw("skipping #453: already resolved on main by 5e1f0c2d9b8a; awaiting close (#330)") {
+		t.Errorf("the skip must name the ticket and the resolving commit; events = %v", rec.events)
+	}
+}
+
+// A queue that only holds a resolved ticket is held, and says why.
+func TestSkipNoWorkWithOnlyAResolvedTicketReadyHoldsTheQueue(t *testing.T) {
+	records := noWorkRecords(t)
+	if err := records.WriteResolved("#453", resolvedOn, nowork.Of(issue453), fixedBy); err != nil {
+		t.Fatal(err)
+	}
+	q := &readyQueue{ready: []ticket.Ticket{issue453}}
+	rec := &recorder{}
+
+	sel := ResolveNext(SkipNoWork(q, records, (&mainRef{sha: resolvedOn}).read, mainHolds(fixedBy), rec), &mutexLock{}, false, "", rec)
+
+	if want := "1 ticket(s) already resolved on main, awaiting close (#453)"; sel.Proceed || sel.Held != want {
+		t.Fatalf("selection = %+v, want nothing claimed and Held %q", sel, want)
+	}
+}
+
+// A resolved record stops standing once a human edits the ticket, once the
+// resolving commit leaves main (a revert that rewrote history, a force-push), or
+// once git cannot say whether main still has it: the screen fails open.
+func TestSkipNoWorkDispatchesAResolvedTicketOnceItsFixLeftMainOrTheTicketMoved(t *testing.T) {
+	edited := issue453
+	edited.Description += "\n\nThat commit does not fix it: see #460."
+	moved := "dadf13a000000000000000000000000000000000"
+	for name, c := range map[string]struct {
+		ticket ticket.Ticket
+		onMain OnMain
+		says   string
+	}{
+		"ticket edited": {ticket: edited, onMain: mainHolds(fixedBy), says: "#453's last run found no work against origin/main 1c26ab0f3e5d; the ticket changed since — dispatching it again (#330)"},
+		"fix gone":      {ticket: issue453, onMain: mainHolds(), says: "#453's last run found it already resolved on main by 5e1f0c2d9b8a; main is now dadf13a00000 and no longer has it — dispatching it again (#330)"},
+		"check failed":  {ticket: issue453, onMain: func(string) (bool, error) { return false, errors.New("git broke") }, says: "#453's last run found it already resolved on main by 5e1f0c2d9b8a, but whether main dadf13a00000 still has it could not be read (git broke) — dispatching it (#330)"},
+	} {
+		records := noWorkRecords(t)
+		if err := records.WriteResolved("#453", resolvedOn, nowork.Of(issue453), fixedBy); err != nil {
+			t.Fatal(err)
+		}
+		q := &readyQueue{ready: []ticket.Ticket{c.ticket}}
+		rec := &recorder{}
+
+		sel := ResolveNext(SkipNoWork(q, records, (&mainRef{sha: moved}).read, c.onMain, rec), &mutexLock{}, false, "", rec)
+
+		if !sel.Proceed || sel.Identifier != "#453" {
+			t.Errorf("%s: selection = %+v, want #453 dispatched", name, sel)
+		}
+		if !rec.saw(c.says) {
+			t.Errorf("%s: want %q; events = %v", name, c.says, rec.events)
+		}
 	}
 }

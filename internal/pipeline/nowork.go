@@ -12,6 +12,10 @@ import (
 // MainSHA reads the commit origin/main points at, as of the last fetch.
 type MainSHA func() (string, error)
 
+// OnMain reports whether origin/main, as of the last fetch, contains commit. An
+// error is a check that could not run, not a commit main lacks.
+type OnMain func(commit string) (bool, error)
+
 // noWorkScreen is a NextResolver that passes over a ticket whose last run found
 // nothing to hand off against the origin/main that is still current, for the
 // ticket as it still reads, and offers the next ready ticket instead.
@@ -19,9 +23,12 @@ type noWorkScreen struct {
 	NextResolver
 	records nowork.Records
 	main    MainSHA
+	onMain  OnMain
 	log     Narrator
 	// skipped is the tickets the last selection passed over, in queue order.
 	skipped []string
+	// awaitingClose is those of skipped passed over as already resolved on main.
+	awaitingClose []string
 	// streamed is the skip line each ticket last sent to the loop stream, so a
 	// skip that stands poll after poll streams once (#281).
 	streamed map[string]string
@@ -36,24 +43,35 @@ type noWorkScreen struct {
 // unchanged` and selects again past it. Once main moves or a human edits the
 // ticket, it dispatches.
 //
+// A record naming the commit that already resolves the ticket does not go stale
+// when main moves: the fix is still there. While onMain still finds that commit on
+// main and the ticket reads as it did, the screen logs `skipping <key>: already
+// resolved on main by <sha>; awaiting close` and passes over it, until a human
+// closes the ticket (#453).
+//
 // It reads and never writes: the implementation stage keeps the record, and a
-// dry-run selects through this screen too. A main that cannot be read fails OPEN,
-// so the ticket dispatches as it did before the record existed.
-func SkipNoWork(r NextResolver, records nowork.Records, main MainSHA, log Narrator) NextResolver {
-	return &noWorkScreen{NextResolver: r, records: records, main: main, log: log, streamed: map[string]string{}}
+// dry-run selects through this screen too. A main that cannot be read, or an
+// ancestry check that cannot run, fails OPEN, so the ticket dispatches as it did
+// before the record existed.
+func SkipNoWork(r NextResolver, records nowork.Records, main MainSHA, onMain OnMain, log Narrator) NextResolver {
+	return &noWorkScreen{NextResolver: r, records: records, main: main, onMain: onMain, log: log, streamed: map[string]string{}}
 }
 
 func (s *noWorkScreen) held() []string {
-	if len(s.skipped) == 0 {
-		return heldBy(s.NextResolver)
+	var held []string
+	if unchanged := slices.DeleteFunc(slices.Clone(s.skipped), func(key string) bool { return slices.Contains(s.awaitingClose, key) }); len(unchanged) > 0 {
+		held = append(held, heldReason(unchanged, "whose last run found no work on an unchanged main"))
 	}
-	return append([]string{heldReason(s.skipped, "whose last run found no work on an unchanged main")}, heldBy(s.NextResolver)...)
+	if len(s.awaitingClose) > 0 {
+		held = append(held, heldReason(s.awaitingClose, "already resolved on main, awaiting close"))
+	}
+	return append(held, heldBy(s.NextResolver)...)
 }
 
 // SelectNextTicket selects past every ticket whose last run found nothing on the
 // main and the ticket that still stand.
 func (s *noWorkScreen) SelectNextTicket(skip ...string) (ticket.Ticket, bool, error) {
-	s.skipped = nil
+	s.skipped, s.awaitingClose = nil, nil
 	skip = slices.Clone(skip)
 	main, mainErr := "", error(nil)
 	read := false
@@ -82,19 +100,39 @@ func (s *noWorkScreen) SelectNextTicket(skip ...string) (ticket.Ticket, bool, er
 		switch {
 		case mainErr != nil:
 			s.log.Event(fmt.Sprintf("%s's last run found no work against origin/main %s, but origin/main could not be read (%v) — dispatching it (#330)", t.Identifier, short, mainErr))
-		case main != rec.Base:
+		case main != rec.Base && rec.ResolvedBy == "":
 			s.log.Event(fmt.Sprintf("%s's last run found no work against origin/main %s; main is now %s — dispatching it again (#330)", t.Identifier, short, shortSHA(main)))
 		case nowork.Of(t) != rec.Ticket:
 			s.log.Event(fmt.Sprintf("%s's last run found no work against origin/main %s; the ticket changed since — dispatching it again (#330)", t.Identifier, short))
+		case rec.ResolvedBy == "":
+			s.pass(t.Identifier, fmt.Sprintf("skipping %s: last run found no work against origin/main %s; unchanged (#330)", t.Identifier, short))
+			skip = append(skip, t.Identifier)
+			continue
 		default:
-			s.narrate(t.Identifier, fmt.Sprintf("skipping %s: last run found no work against origin/main %s; unchanged (#330)", t.Identifier, short))
-			s.skipped = append(s.skipped, t.Identifier)
+			by := shortSHA(rec.ResolvedBy)
+			held, err := s.onMain(rec.ResolvedBy)
+			if err != nil {
+				s.log.Event(fmt.Sprintf("%s's last run found it already resolved on main by %s, but whether main %s still has it could not be read (%v) — dispatching it (#330)", t.Identifier, by, shortSHA(main), err))
+				break
+			}
+			if !held {
+				s.log.Event(fmt.Sprintf("%s's last run found it already resolved on main by %s; main is now %s and no longer has it — dispatching it again (#330)", t.Identifier, by, shortSHA(main)))
+				break
+			}
+			s.pass(t.Identifier, fmt.Sprintf("skipping %s: already resolved on main by %s; awaiting close (#330)", t.Identifier, by))
+			s.awaitingClose = append(s.awaitingClose, t.Identifier)
 			skip = append(skip, t.Identifier)
 			continue
 		}
 		delete(s.streamed, t.Identifier)
 		return t, true, nil
 	}
+}
+
+// pass records that this selection passed over key, saying why in line.
+func (s *noWorkScreen) pass(key, line string) {
+	s.narrate(key, line)
+	s.skipped = append(s.skipped, key)
 }
 
 // narrate logs a skip each poll, and sends it to the loop stream the first time

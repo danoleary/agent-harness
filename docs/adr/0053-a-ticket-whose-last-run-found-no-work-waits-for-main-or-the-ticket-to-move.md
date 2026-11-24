@@ -3,6 +3,7 @@
 - Status: Accepted
 - Date: 2026-11-14
 - Extends: ADR-0003 (claim-on-select), ADR-0032 (selection screens)
+- Extended by: ADR-0073 (a record naming the commit that resolves the ticket stands while main has that commit)
 
 ## Context
 
