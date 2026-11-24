@@ -216,6 +216,43 @@ func TestRunNarratesStageHardError(t *testing.T) {
 	}
 }
 
+// A review that failed hard (#444: one timed-out tracker read) left a finished
+// handoff unreviewed and unpushed; the narration tells the operator so, and how
+// to re-run review alone, instead of only the bare error.
+func TestRunNarratesHowToRerunAReviewThatFailedHard(t *testing.T) {
+	r := &recorder{}
+	Run(Deps{
+		Ticket:         "444",
+		FetchMain:      func() error { return nil },
+		Implementation: r.stage("impl", stages.Result{OK: true}),
+		Review:         r.stage("review", stages.Result{Err: errors.New("read tcp: i/o timeout")}),
+		Retrospective:  r.stage("retro", stages.Result{OK: true}),
+		Log:            r,
+	})
+	if !r.saw("review hard error: read tcp: i/o timeout") {
+		t.Errorf("expected the review's hard error narrated; events = %v", r.events)
+	}
+	if !r.saw("agent-harness review 444") {
+		t.Errorf("expected the narration to name `agent-harness review 444`; events = %v", r.events)
+	}
+}
+
+// Only review gets the re-run hint: an implementation hard error has no handoff.
+func TestRunDoesNotOfferAReviewRerunForAnImplementationHardError(t *testing.T) {
+	r := &recorder{}
+	Run(Deps{
+		Ticket:         "444",
+		FetchMain:      func() error { return nil },
+		Implementation: r.stage("impl", stages.Result{Err: errors.New("fetch failed")}),
+		Review:         r.stage("review", stages.Result{OK: true}),
+		Retrospective:  r.stage("retro", stages.Result{OK: true}),
+		Log:            r,
+	})
+	if r.saw("agent-harness review") {
+		t.Errorf("an implementation hard error offered a review re-run; events = %v", r.events)
+	}
+}
+
 func TestRunFetchMainFailureIsWarnOnlyAndStagesStillRun(t *testing.T) {
 	r := &recorder{}
 	out := Run(Deps{
@@ -424,6 +461,9 @@ func TestForTicketBindsEveryStageToOneSlice(t *testing.T) {
 	}
 	if d.Log != log {
 		t.Errorf("the pipeline narrates to the slice's own runlog, got %v", d.Log)
+	}
+	if d.Ticket != "PROJ-1" {
+		t.Errorf("Ticket = %q, want the slice's identifier for the review re-run hint (#444)", d.Ticket)
 	}
 }
 
