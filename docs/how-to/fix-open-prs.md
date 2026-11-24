@@ -67,10 +67,19 @@ The strategy depends on whose branch it is:
 |---|---|---|
 | On your `branch_prefix` (the harness's) | rebase onto `origin/main` | `--force-with-lease` |
 | Opted in with the label (a human's) | merge `origin/main` into the branch | plain push, never forced |
+| Under `dependabot/` (Dependabot's) | comment `@dependabot rebase`, once per head | none: Dependabot pushes its own rebase |
 
 A human's branch is never rewritten, because someone else may have it checked
 out. For the same reason, the CI watch does not reactively rebase a human's
 branch.
+
+Dependabot regenerates its lockfiles when it rebases, and force-pushes over
+anything merged into its branch, so the loop runs no session on a Dependabot
+conflict and spends no attempt on it. The comment carries a hidden marker naming
+the head, so the loop skips the PR until Dependabot pushes a new head. If
+Dependabot never rebases, check that the loop's GitHub account has write access to
+the repository, since Dependabot ignores commands from other accounts. Red CI on a
+Dependabot branch is fixed as on any other branch (#439).
 
 On a harness branch the loop first replays the branch onto `origin/main` itself.
 GitHub's merge ignores the ADR index's `merge=union`, so two ADRs added under one

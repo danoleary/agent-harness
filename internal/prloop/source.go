@@ -182,6 +182,10 @@ type Candidate struct {
 	// tip lacks. Next removes it before it works anything, so the checkout can
 	// succeed (#231); the dry-run only names it.
 	Worktree string
+	// AskRebase marks a conflict on Dependabot's branch at a head the loop has not
+	// yet asked Dependabot to rebase: Next comments `@dependabot rebase` instead of
+	// working it, and spends no attempt (#439).
+	AskRebase bool
 }
 
 // Worktrees is the checkout's worktrees as the PR loop reads and reclaims them
@@ -402,8 +406,20 @@ func (s *Source) judge(pr github.PullRequest, held holds) Candidate {
 	for _, a := range c.Tried {
 		c.Unpushed = c.Unpushed || (a.SHA == pr.HeadSHA && a.Kind == c.Kind)
 	}
+	// Dependabot rebases its own branch, and force-pushes over whatever a
+	// conflict-resolution session merged into it (#439). It is asked once per head;
+	// its push is a new head, which the next poll judges afresh.
+	if c.Kind == Conflict && dependabot(pr.HeadBranch) {
+		if rebaseAsked(comments, pr.HeadSHA) {
+			return skip("conflict on Dependabot's branch — asked Dependabot to rebase at %s; waiting for its push", short(pr.HeadSHA))
+		}
+		c.AskRebase = true
+	}
 	return c
 }
+
+// dependabot says whether branch is one Dependabot opened, and so rebases itself.
+func dependabot(branch string) bool { return strings.HasPrefix(branch, "dependabot/") }
 
 // Next works the first PR worth working: it holds the PR's lease, records the
 // attempt on the PR, and hands the daemon the item. A PR past its budget is handed
@@ -447,6 +463,10 @@ func (s *Source) Next() (loop.WorkItem, *lease.Lease, bool, error) {
 	s.report(cands)
 	for _, c := range cands {
 		if c.Skip != "" {
+			continue
+		}
+		if c.AskRebase {
+			s.askRebase(c)
 			continue
 		}
 		if c.Exhausted {
@@ -497,6 +517,21 @@ func (s *Source) report(cands []Candidate) {
 		if !seen[n] {
 			delete(s.reported, n)
 		}
+	}
+}
+
+// askRebase comments `@dependabot rebase` on a conflicting Dependabot PR in place
+// of a conflict-resolution session (#439). No lease is held and no attempt
+// recorded: the marker after the command only keeps the next poll at this head
+// from asking again. Best-effort: a failure is narrated and the next poll asks
+// again.
+func (s *Source) askRebase(c Candidate) {
+	key := Key(c.PR.Number)
+	s.log.Structured(loopstream.Record{Kind: loopstream.KindItemSkipped, Ticket: key, Message: fmt.Sprintf("loop — skip %s: %s at %s on Dependabot's branch %s; commenting @dependabot rebase instead of running a conflict-resolution session — not an attempt (#439)", key, c.Kind.describe(), short(c.PR.HeadSHA), c.PR.HeadBranch)})
+	body := fmt.Sprintf("@dependabot rebase\n\n%s\nagent-harness found this PR in conflict with `%s` at `%s`. Dependabot rebases its own branch, so agent-harness asked it to rather than resolve the conflict itself; this does not count as an attempt.\n",
+		rebaseMarker(c.PR.HeadSHA), s.opts.BaseBranch, short(c.PR.HeadSHA))
+	if err := s.gh.Comment(c.PR.Number, body); err != nil {
+		s.log.Event("loop … warning: could not ask Dependabot to rebase " + key + ": " + err.Error())
 	}
 }
 
@@ -624,7 +659,7 @@ func (s *Source) settle(c Candidate) {
 			continue
 		}
 		// Still failing at the head this run tried: the run pushed nothing.
-		if now := s.judge(pr, held); now.Skip == "" && now.Exhausted && now.Unpushed {
+		if now := s.judge(pr, held); now.Skip == "" && !now.AskRebase && now.Exhausted && now.Unpushed {
 			s.handOff(now)
 		}
 		return
@@ -761,6 +796,22 @@ var (
 	attemptRE = regexp.MustCompile(`<!-- agent-harness:pr-fix attempt sha=([0-9a-fA-F]+) kind=(\w+) -->`)
 	voidRE    = regexp.MustCompile(`<!-- agent-harness:pr-fix void sha=([0-9a-fA-F]+) kind=(\w+) -->`)
 )
+
+// rebaseMarker records that the loop asked Dependabot to rebase the head sha
+// (#439). It is no attempt.
+func rebaseMarker(sha string) string {
+	return fmt.Sprintf("%sdependabot-rebase sha=%s -->", markerPrefix, sha)
+}
+
+// rebaseAsked says whether the loop already asked Dependabot to rebase the head sha.
+func rebaseAsked(comments []github.PRComment, sha string) bool {
+	for _, c := range comments {
+		if strings.Contains(c.Body, rebaseMarker(sha)) {
+			return true
+		}
+	}
+	return false
+}
 
 func attemptMarker(sha string, k Kind) string {
 	return fmt.Sprintf("%sattempt sha=%s kind=%s -->", markerPrefix, sha, k)

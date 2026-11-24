@@ -678,6 +678,8 @@ poll (Source github_prs, read-only judgement — also what --dry-run prints):
       else skip with the reason, once per reason in the stream (item-skipped); no attempt spent
     kind = conflict if mergeable=CONFLICTING/DIRTY, else ci if a check is red, else skip
     skip if source.when leaves the kind out
+    conflict on a dependabot/* branch -> comment `@dependabot rebase` once per head  // #439
+      (marker sha=<head>), no lease, no session, no attempt; asked already -> skip
     attempts since the last hand-off >= source.max_attempts | PR_LOOP_MAX_ATTEMPTS
       -> comment what was tried + label blocked (once), skip
     a marker for (head sha, kind) = an attempt that pushed nothing -> work it again  // #167
