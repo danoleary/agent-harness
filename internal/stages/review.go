@@ -88,6 +88,14 @@ func Review(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Res
 	if prior != nil {
 		log.Event(fmt.Sprintf("review — branch unchanged since the last review at %s (%s); handing the session that verdict (#44)", prior.Head, prior.Disposition))
 	}
+	// A tip that is a recovery checkpoint is work a session left uncommitted when it
+	// was cut off: the session is told so, and which paths it changes, so it reviews
+	// that work and writes its handoff rather than clear only the commits below it,
+	// or find it by chance (#431).
+	if cp, ok := wt.TipCheckpoint(); ok {
+		subject.Unhanded = &prompt.Unhanded{Commit: cp.Commit, Since: cp.Since, Paths: cp.Paths}
+		log.Event(fmt.Sprintf("review — the branch tip %s is a recovery checkpoint of work no session handed off (%s); the session is told to review it and write its handoff (#431)", shortCommit(cp.Commit), strings.Join(cp.Paths, ", ")))
+	}
 	reviewSessionRun := reviewRun(cfg, subject, prior, nil)
 	prep := prepRun(cfg, worktreePath)
 	prep.Retry = hostio.Retry{
