@@ -161,7 +161,9 @@ func Fix(h hostio.Host, cfg config.Config, log *runlog.Logger, it Item, l config
 	// The branch on origin is the record. What a session left uncommitted is saved
 	// as a local recovery checkpoint, which the next attempt at this head starts
 	// from (#246). If it cannot be saved, the next checkout would refuse the dirty
-	// worktree, so the PR goes to a human now rather than spend its attempts.
+	// worktree, so the PR goes to a human now rather than spend its attempts. A
+	// merge, rebase or cherry-pick a session left stopped is aborted, not saved
+	// (#428).
 	defer func() {
 		if err := fixes.Checkpoint(key); err != nil {
 			log.Event(fmt.Sprintf("%s ✗ could not save the uncommitted work in %s as a recovery checkpoint: %v — handing %s to a human", who, wt.Path(), err, key))

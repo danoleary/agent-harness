@@ -507,9 +507,23 @@ func sessionError(outcome session.Outcome, attempt int) error {
 // pushes nothing (#246). The worktree is then clean, so [Env.Cleanup] removes it,
 // and a later checkout can start from the checkpoint. A clean worktree, or none,
 // is a no-op. It fails when the commit does, leaving the worktree dirty.
+//
+// A merge, rebase or cherry-pick the session left stopped is aborted first, not
+// saved: a half-resolved conflict is not worth resuming from (#428). What is left
+// uncommitted after the abort is saved as usual. It fails when the abort does.
 func (e Env) Checkpoint(identifier string) error {
 	wt := e.Host.Worktree()
-	if !wt.Exists() || wt.Clean() {
+	if !wt.Exists() {
+		return nil
+	}
+	aborted, err := wt.AbortUnfinished()
+	if err != nil {
+		return fmt.Errorf("abort the merge, rebase or cherry-pick the session left unfinished: %w", err)
+	}
+	if aborted != "" {
+		e.Log.Event(fmt.Sprintf("%s ⊘ aborted the unfinished %s in %s — a half-resolved conflict is not saved as a recovery checkpoint (#428)", e.Who, aborted, wt.Path()))
+	}
+	if wt.Clean() {
 		return nil
 	}
 	if err := wt.Checkpoint(identifier, e.Who); err != nil {

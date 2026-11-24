@@ -559,3 +559,28 @@ renumber Landing already does host-side (#374).
 - **A human's branch is not replayed.** Its history is kept, so its merge session
   runs as before. A run that resumed a recovery checkpoint (#246) is not
   replayed either: the host's reset would discard it.
+
+## Amendment, 2026-11-24: an unfinished merge, rebase or cherry-pick is aborted, not checkpointed (#428)
+
+On herd PR-1615, a Dependabot branch, the conflict-resolution session merged
+origin/main and stopped on the lockfile: `MERGE_HEAD` set, the lockfile
+unmerged, 30 files staged. Dependabot then force-pushed a rebase, and the next
+attempt's checkout could not drop the worktree, so the PR went to a human before
+any session. On git 2.39 the #246 path does not fail there: `add -A` stages the
+conflicted file and the checkpoint commits it, markers included, as a merge
+commit. That commit is worthless to resume from, and a retry at the same head
+would have been told to start from it. Which step failed on herd's host is not
+known; the harness version it ran was not recorded.
+
+- **A stopped operation is disposable.** When a PR run ends, before the
+  checkpoint, the Pipeline (`fix.Env.Checkpoint`, through
+  `git.Worktree.AbortUnfinished`) looks in the worktree's git dir for
+  `rebase-merge/`, `rebase-apply/`, `CHERRY_PICK_HEAD` or `MERGE_HEAD`, runs that
+  operation's `--abort`, and logs one line naming the worktree and the
+  operation. Whatever is still uncommitted afterwards is saved as a recovery
+  checkpoint, as before.
+- **An abort git refuses goes to a human,** as a checkpoint that cannot be
+  committed does: the worktree is still mid-operation, so the next checkout
+  would refuse it.
+- **Removal stays unforced.** `Worktree.Remove` never passes `--force`; ordinary
+  uncommitted work is still saved, never discarded.
