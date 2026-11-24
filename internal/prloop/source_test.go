@@ -1253,3 +1253,145 @@ func TestCIPendingSpendsNoAttemptAndTheNextPollReChecksTheCommit(t *testing.T) {
 		t.Errorf("waiting on CI must not have spent an attempt; posted %q", last)
 	}
 }
+
+// dependabotPR is herd's PR-1615 as pr-doctor polled it: Dependabot's
+// production-deps group, opted in by scope all.
+func dependabotPR(sha string) github.PullRequest {
+	return github.PullRequest{Number: 1615, Title: "Bump the production-deps group", HeadBranch: "dependabot/npm_and_yarn/web/production-deps-d6f8155", HeadSHA: sha, BaseBranch: "main"}
+}
+
+func allPRsSource(gh *fakeGitHub, log loop.Narrator) *Source {
+	opts := testOptions
+	opts.AllPRs = true
+	s := NewSource(gh, opts, nil, log)
+	s.now = func() time.Time { return testNow }
+	return s
+}
+
+// #439, replaying herd PR-1615: attempt 2 (kind=conflict) merged origin/main
+// into the Dependabot branch and stopped on web/pnpm-lock.yaml, then Dependabot
+// force-pushed its own rebase (c85d057). A conflict on a dependabot/* branch is
+// Dependabot's to rebase: the loop asks it to, once per head, launches no
+// session and spends no attempt.
+func TestAConflictOnADependabotBranchAsksDependabotToRebase(t *testing.T) {
+	gh := newFakeGitHub(dependabotPR("9a41b2e"))
+	gh.merge[1615] = ci.MergeConflicting
+	log := &streamLog{}
+	s := allPRsSource(gh, log)
+
+	if item, _, ok, err := s.Next(); ok || err != nil {
+		t.Fatalf("Next = %+v ok %v err %v, want no work item: no session on Dependabot's branch", item, ok, err)
+	}
+	if len(gh.posted[1615]) != 1 || !strings.HasPrefix(gh.posted[1615][0], "@dependabot rebase") {
+		t.Fatalf("posted = %q, want one comment that starts with @dependabot rebase", gh.posted[1615])
+	}
+	if len(gh.added[1615]) != 0 {
+		t.Errorf("added = %v, want no lease label: nothing is worked", gh.added[1615])
+	}
+	if !containsAll(log.events, "PR-1615", "9a41b2e", "@dependabot rebase") {
+		t.Errorf("the stream must name the PR and the head it asked Dependabot to rebase; events %q", log.events)
+	}
+	plan, _ := s.Plan()
+	if len(plan) != 1 || plan[0].Attempts != 0 || len(plan[0].Tried) != 0 {
+		t.Errorf("plan = %+v, want the full budget untouched", plan)
+	}
+
+	// The next poll at the same head waits for Dependabot's push.
+	if _, _, ok, _ := s.Next(); ok {
+		t.Error("the next poll at the same head must not work the PR")
+	}
+	if len(gh.posted[1615]) != 1 {
+		t.Errorf("posted = %q, want no second @dependabot rebase at the same head", gh.posted[1615])
+	}
+	if skips := log.skips(); len(skips) != 1 || skips[0].Ticket != "PR-1615" {
+		t.Errorf("skips = %+v, want the skip in the stream once, under PR-1615", skips)
+	}
+	if plan, _ := s.Plan(); len(plan) != 1 || !strings.Contains(plan[0].Skip, "Dependabot") {
+		t.Errorf("plan = %+v, want the PR skipped while Dependabot rebases", plan)
+	}
+
+	// Dependabot rebased, and the rebase still conflicts: ask again at the new head.
+	gh.prs[0].HeadSHA = "c85d057"
+	if _, _, ok, _ := s.Next(); ok {
+		t.Error("a conflict at the new head is Dependabot's to rebase too")
+	}
+	if len(gh.posted[1615]) != 2 || !strings.HasPrefix(gh.posted[1615][1], "@dependabot rebase") {
+		t.Errorf("posted = %q, want a second @dependabot rebase at the new head", gh.posted[1615])
+	}
+}
+
+// #439: red CI on a Dependabot branch is still the loop's to fix, and a
+// Dependabot rebase request at that head is no attempt.
+func TestRedCIOnADependabotBranchIsStillWorked(t *testing.T) {
+	gh := newFakeGitHub(dependabotPR("c85d057"))
+	gh.checks["c85d057"] = github.ChecksRed
+	s := allPRsSource(gh, &quietLog{})
+
+	item, _, ok, err := s.Next()
+	if it, _ := item.Context.(Item); !ok || err != nil || it.Kind != CIRed {
+		t.Fatalf("Next = %+v ok %v err %v, want the red CI worked", item, ok, err)
+	}
+	if posted := gh.posted[1615]; len(posted) != 1 || !strings.Contains(posted[0], "attempt 1 of 3") || strings.Contains(posted[0], "@dependabot") {
+		t.Errorf("posted = %q, want only the attempt marker", posted)
+	}
+}
+
+// A branch that only looks like Dependabot's is a human's, and its conflict is
+// merged as before.
+func TestAConflictOffTheDependabotPrefixIsWorked(t *testing.T) {
+	pr := dependabotPR("9a41b2e")
+	pr.HeadBranch = "alice/dependabot-bumps"
+	gh := newFakeGitHub(pr)
+	gh.merge[1615] = ci.MergeConflicting
+
+	if item, _, ok, _ := allPRsSource(gh, &quietLog{}).Next(); !ok || item.Context.(Item).Kind != Conflict {
+		t.Fatalf("Next = %+v ok %v, want the conflict worked", item, ok)
+	}
+}
+
+// The dry-run says it would ask Dependabot to rebase, and asks nothing.
+func TestPlanOnlySaysItWouldAskDependabotToRebase(t *testing.T) {
+	gh := newFakeGitHub(dependabotPR("9a41b2e"))
+	gh.merge[1615] = ci.MergeConflicting
+
+	plan, _ := allPRsSource(gh, &quietLog{}).Plan()
+
+	if out := RenderPlan(plan); !strings.Contains(out, "would comment @dependabot rebase — no session, not an attempt") {
+		t.Errorf("dry-run:\n%s", out)
+	}
+	if len(gh.posted[1615]) != 0 {
+		t.Errorf("posted = %q, want nothing from a dry-run", gh.posted[1615])
+	}
+}
+
+// A Dependabot PR whose budget is spent but which now conflicts is Dependabot's
+// to rebase, not a human's: neither releasing the last attempt nor the next poll
+// hands it off.
+func TestASpentDependabotPRThatConflictsIsAskedToRebaseNotHandedOff(t *testing.T) {
+	gh := newFakeGitHub(dependabotPR("9a41b2e"))
+	gh.checks["9a41b2e"] = github.ChecksRed
+	gh.comments[1615] = []github.PRComment{
+		{Body: attemptMarker("9a41b2e", Conflict), CreatedAt: testNow},
+		{Body: attemptMarker("9a41b2e", CIRed), CreatedAt: testNow},
+	}
+	s := allPRsSource(gh, &quietLog{})
+	_, claim, ok, _ := s.Next()
+	if !ok {
+		t.Fatal("the red CI is worked with the last attempt")
+	}
+
+	gh.merge[1615] = ci.MergeConflicting
+	if err := claim.Release(); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, ok, _ := s.Next(); ok {
+		t.Error("the conflict is Dependabot's to rebase")
+	}
+
+	if strings.Contains(strings.Join(gh.added[1615], ","), "blocked") {
+		t.Errorf("added = %v, want no blocked label", gh.added[1615])
+	}
+	if last := gh.posted[1615][len(gh.posted[1615])-1]; !strings.HasPrefix(last, "@dependabot rebase") {
+		t.Errorf("last comment = %q, want @dependabot rebase", last)
+	}
+}

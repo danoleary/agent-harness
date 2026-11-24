@@ -34,6 +34,8 @@ func RenderPlan(cands []Candidate) string {
 		switch {
 		case c.Skip != "":
 			fmt.Fprintf(&b, "  skip: %s\n", c.Skip)
+		case c.AskRebase:
+			fmt.Fprintf(&b, "  %s on Dependabot's branch: would comment @dependabot rebase — no session, not an attempt\n", c.Kind.describe())
 		case c.Exhausted:
 			fmt.Fprintf(&b, "  %s, but its %d-attempt budget is used up: would comment with what was tried and label it blocked\n", c.Kind.describe(), c.Attempts)
 		case c.Unpushed:

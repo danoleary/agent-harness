@@ -584,3 +584,23 @@ known; the harness version it ran was not recorded.
   would refuse it.
 - **Removal stays unforced.** `Worktree.Remove` never passes `--force`; ordinary
   uncommitted work is still saved, never discarded.
+
+## Amendment, 2026-11-24: a conflict on a Dependabot branch is Dependabot's to rebase (#439)
+
+On herd PR-1615, Dependabot's `production-deps` group, attempt 2
+(`kind=conflict`) merged origin/main into the branch and stopped on
+`web/pnpm-lock.yaml`. Dependabot was rebasing the branch itself and
+force-pushed `c85d057` over it, so the merge was wasted and cost an attempt.
+Dependabot regenerates its lockfiles on a rebase; a merge session cannot do that
+better, and whatever it pushes Dependabot overwrites.
+
+- **The Source asks Dependabot instead.** A `conflict` item on a head branch
+  under `dependabot/` is not yielded. Next comments `@dependabot rebase`, with a
+  `dependabot-rebase sha=<head>` marker after the command, takes no lease and
+  records no attempt, and puts an item-skipped line naming the PR and the head
+  in the stream. The budget is not consulted: nothing is spent.
+- **Once per head.** A poll at a head the marker names skips the PR, waiting for
+  Dependabot's push, which is a new head the loop judges afresh. A rebase that
+  still conflicts is asked again at the new head.
+- **Red CI is unchanged.** A `ci` item on a Dependabot branch is worked as on
+  any human's branch.
