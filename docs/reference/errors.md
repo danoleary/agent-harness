@@ -78,6 +78,17 @@ doubling with each abort in a row up to 16. The `ticket-released` record in
 | `sandbox image "…" missing and the pull failed` | check the ref and `docker login` |
 | `is out of date with <Dockerfile> and the rebuild failed` | the same as a failed build |
 
+A build or pull the preflight starts is narrated in the run log, so a
+multi-minute wait shows as that rather than as a gap between two events (#464).
+Docker's own build output stays on stderr.
+
+| Message | Cause | Fix |
+|---|---|---|
+| `sandbox image "…" missing — building it from <Dockerfile>` / `missing — pulling it` | the image is not present locally: a first run, or a prune deleted it | nothing: it is built or pulled once |
+| `sandbox image "…" is out of date — the Dockerfile changed since the image was built` | the image's Dockerfile fingerprint label does not match the Dockerfile, usually after a harness upgrade or a base pin bump. It is rebuilt | nothing |
+| `sandbox image "…" rebuilt in 6m21s` / `built in …` / `pulled in …` | the build or pull finished, after that long | nothing |
+| `sandbox image "…" rebuild failed after …: …` / `build failed after` / `pull failed after` | the build or pull failed. The preflight error above follows | as for that error |
+
 Once the image is ready, a session's own launch can still go wrong:
 
 | Message | Cause | Fix |
