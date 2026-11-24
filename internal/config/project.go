@@ -252,7 +252,8 @@ type Gate struct {
 	// BaseCommand is what the red-base check runs over origin/main alone in place
 	// of Command, for a gate scoped by the diff against origin/main: there that
 	// diff is empty, so Command selects nothing and passes (#448, ADR-0072).
-	// `{paths}` in it becomes the paths the branch's diff touches, shell-quoted.
+	// `{paths}` in it becomes the repo-relative paths the branch's diff touches,
+	// shell-quoted.
 	// Empty leaves a red diff-scoped gate's base check inconclusive.
 	BaseCommand string `toml:"base_command"`
 }

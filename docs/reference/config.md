@@ -97,7 +97,9 @@ resolution's re-gate is red, the harness gates `main` alone to tell a red base
 from a red branch. There that diff is empty, so the gate as configured selects
 nothing and passes. The check runs `base_command` in its place, with `{paths}`
 replaced by the paths the branch's diff against origin/main touches,
-shell-quoted. Write it to run the tests those paths reach:
+shell-quoted. The paths are relative to the repository root, not to a
+directory the command `cd`s into, and include files the branch deleted. Write
+it to run the tests those paths reach:
 
 ```toml
 [[gates]]
