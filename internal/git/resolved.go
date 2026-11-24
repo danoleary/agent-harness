@@ -203,8 +203,9 @@ func spanQualifiers(inner string) []qualifiedRange {
 	return out
 }
 
-// classifyCitedSymbols walks each inline-code span outside fenced blocks, drops
-// known third-party package symbols (BEH-629), and sorts each surviving code
+// classifyCitedSymbols walks each inline-code span outside fenced blocks, skips
+// a span that quotes tool output (#455), drops known third-party package
+// symbols (BEH-629), and sorts each surviving code
 // identifier into expected vs proposed by whether an add/introduce/extraction verb
 // sits immediately before its span. A symbol cited behind a package-shaped
 // qualifier has that qualifier recorded (#69). Order-preserving and de-duplicated
@@ -215,6 +216,9 @@ func classifyCitedSymbols(description string) citedSymbols {
 	description = stripFencedCode(description)
 	for _, span := range codeSpans(description) {
 		inner := description[span[1]:span[2]]
+		if quotedOutput(inner) {
+			continue
+		}
 		proposed := inAddContext(description[:span[0]])
 		qualified := spanQualifiers(inner)
 		for _, w := range wordIdentifier.FindAllStringIndex(inner, -1) {
@@ -239,6 +243,31 @@ func classifyCitedSymbols(description string) citedSymbols {
 		}
 	}
 	return c
+}
+
+// outputPrefix is the set of line openers `go test` prints: a span that starts
+// with one quotes a run's output, not a reference to repo code (#455).
+var outputPrefix = []string{"---", "FAIL", "ok ", "ok\t", "=== RUN", "PASS"}
+
+// placeholder matches a `<name>` placeholder standing as its own token, as in
+// `go test -run <TestName>`. A `<` right after an identifier is a generic type
+// argument (`Promise<UserRecord>`), which is code, so it doesn't count.
+var placeholder = regexp.MustCompile(`(^|[^A-Za-z0-9_])<[A-Za-z][^<>]*>`)
+
+// quotedOutput reports whether an inline-code span quotes sample tool output or
+// a command template rather than citing repo code: it opens like a `go test`
+// output line (`--- FAIL: TestX`, `=== RUN TestX`, `ok  pkg`) or carries a
+// `<…>` placeholder. Its identifiers are sample names, often made up for the
+// example, so their absence from source says nothing about the ticket (#455).
+// Skipping them only ever suppresses an advisory, the safe direction.
+func quotedOutput(inner string) bool {
+	trimmed := strings.TrimLeft(inner, " ")
+	for _, p := range outputPrefix {
+		if strings.HasPrefix(trimmed, p) {
+			return true
+		}
+	}
+	return placeholder.MatchString(inner)
 }
 
 // vendorPrefix is the set of third-party package roots whose internal symbols a
@@ -446,15 +475,19 @@ func symbolPresentIn(srcRoot, symbol string) bool {
 }
 
 // neverInHistory reports whether a symbol is absent from the git history of
-// every source root — added and removed in no commit, so it never existed and
-// can't have been deleted by a fix that already landed (#116). The pickaxe
-// (`git log -S`) matches a substring, not a whole word, so a longer name that
-// once held it (`NewThingy` for `NewThing`) counts as history; that errs toward
-// keeping the strong verdict, the behaviour before this check. A root that isn't
-// in a git repo, or any git error, also counts as history for the same reason.
+// every source root — on no added or removed line of any commit, so it never
+// existed and can't have been deleted by a fix that already landed (#116). The
+// match is whole-word, as symbolPresentIn's `grep -w` is: a longer name that
+// once held it (`NewThingy` for `NewThing`) is not history (#455). `git log -G`
+// compiles its pattern as a POSIX extended regex on every platform, so the word
+// boundary is spelled as a non-word character class rather than `\b`, which
+// macOS's regex library lacks; cited symbols are alphanumeric, so they need no
+// escaping. A root that isn't in a git repo, or any git error, counts as
+// history, which keeps the strong verdict, the behaviour before this check.
 func neverInHistory(srcRoots []string, symbol string) bool {
+	word := "(^|[^A-Za-z0-9_])" + symbol + "([^A-Za-z0-9_]|$)"
 	for _, root := range srcRoots {
-		argv, err := HostArgs("-C", root, "log", "-S"+symbol, "--oneline", "-1", "--", ".")
+		argv, err := HostArgs("-C", root, "log", "-G"+word, "--oneline", "-1", "--", ".")
 		if err != nil {
 			return false
 		}

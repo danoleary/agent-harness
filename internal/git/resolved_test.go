@@ -511,3 +511,64 @@ func TestResolvedAdvisoryKeepsStrongVerdictForSymbolRemovedFromHistory(t *testin
 		t.Fatalf("a symbol removed from history must keep the strong verdict, got: %s", msg)
 	}
 }
+
+// --- Quoted tool output and prefix-only history (#455) ---
+
+// commitFile writes content to the store package's file and commits it.
+func commitFile(t *testing.T, root, content, msg string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(root, "store", "store.go"), []byte(content), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	runGit(t, filepath.Dir(root), "commit", "-q", "-am", msg)
+}
+
+// #455: history matching is whole-word, as the source check is. A symbol that
+// only ever appeared as the prefix of a longer name (`NewThing` inside
+// `NewThingy`) never existed, so it was never removed and gets the soft note.
+func TestResolvedAdvisoryNoRecommendCloseForSymbolOnlyAPrefixInHistory(t *testing.T) {
+	root := writeGitModule(t)
+	commitFile(t, root, "package store\n\nfunc NewThingy() {}\n", "add NewThingy")
+	commitFile(t, root, "package store\n", "drop NewThingy")
+
+	msg := ResolvedAdvisory([]string{root}, "#455", "Give the pipeline one composition root, `store.NewThing`, that both callers use")
+	if strings.Contains(msg, "recommend close") {
+		t.Fatalf("a symbol seen in history only as a prefix must not read as removed, got: %s", msg)
+	}
+	if !strings.Contains(msg, "NewThing") {
+		t.Fatalf("the soft advisory should still name the symbol, got: %s", msg)
+	}
+}
+
+// #455: a code span quoting tool output, not repo code, names no symbols.
+func TestExtractCitedSymbolsSkipsQuotedToolOutput(t *testing.T) {
+	for _, span := range []string{
+		"`--- FAIL: TestWidgetName (0.00s)`",
+		"`FAIL example.com/app/store TestWidgetName`",
+		"`ok  \texample.com/app/store 0.01s`",
+		"`=== RUN   TestWidgetName`",
+		"`go test -run <TestName> ./internal/storeLayer/`",
+	} {
+		if got := extractCitedSymbols("the run printed " + span + " and stopped"); len(got) != 0 {
+			t.Errorf("%s: quoted tool output should cite no symbols, got %v", span, got)
+		}
+	}
+	// A generic type argument is code, not a placeholder.
+	if got := extractCitedSymbols("returns `Promise<UserRecord>`"); !contains(got, "UserRecord") {
+		t.Errorf("a generic type argument should still be cited, got %v", got)
+	}
+}
+
+// The #455 incident: the ticket's only cited symbol is a placeholder test name
+// inside sample `go test` output, and the repo's history holds that name only
+// as the prefix of longer test names. That must not get "recommend close".
+func TestResolvedAdvisoryNoRecommendCloseForPlaceholderInSampleOutput(t *testing.T) {
+	root := writeGitModule(t)
+	commitFile(t, root, "package store\n\nfunc TestWidgetNameParses() {}\nfunc TestWidgetNameRejects() {}\n", "add tests")
+	commitFile(t, root, "package store\n", "move tests")
+
+	msg := ResolvedAdvisory([]string{root}, "#455", "a red gate prints `--- FAIL: TestWidgetName` and the session should read the line after it")
+	if strings.Contains(msg, "recommend close") || strings.Contains(msg, "already resolved") {
+		t.Fatalf("a placeholder in sample output must not read as already resolved, got: %s", msg)
+	}
+}
