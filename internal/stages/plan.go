@@ -37,6 +37,9 @@ type Subject struct {
 	// Landed is the commits that reached main after the ticket was filed and
 	// changed a file it names, for the implementation prompt (#335).
 	Landed []prompt.Landed
+	// Unhanded is the recovery checkpoint at the branch tip that review is told to
+	// take on as unhanded-off work (#431); nil when the tip was handed off.
+	Unhanded *prompt.Unhanded
 }
 
 // NewSubject resolves identifier's worktree and branch through p — the run's Host,
@@ -195,7 +198,7 @@ func prepRun(cfg config.Config, worktreePath string) hostio.ShellRun {
 func reviewRun(cfg config.Config, s Subject, prior *prompt.PriorReview, redGate *prompt.RedGate) hostio.AgentRun {
 	pctx := prompt.Context{
 		Ticket: s.Ticket, Slug: s.Slug, BranchPrefix: cfg.BranchPrefix, Branch: s.Branch, Tracker: cfg.Tracker.Kind, WorktreePath: s.WorktreePath, Body: cfg.Prompts.Review,
-		PriorReview: prior, RedGate: redGate, Base: s.Base, Sentry: s.Sentry,
+		PriorReview: prior, RedGate: redGate, Base: s.Base, Sentry: s.Sentry, Unhanded: s.Unhanded,
 	}
 	return hostio.AgentRun{
 		Label:    reviewSession,

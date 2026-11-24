@@ -936,7 +936,12 @@ shared        : STOP (every loop), STOP-tickets (every instance), locks/claim.lo
   refusal, a crash) is a `git log` away on `feat/beh-nnn` rather than a bare
   worktree needing manual rescue. The checkpoint does **not** flip the verdict —
   the run still fails and its subject (`checkpoint(harness): …`) loudly marks it
-  unverified so a reviewer never mistakes it for a real handoff. To keep refusals rare, every
+  unverified so a reviewer never mistakes it for a real handoff. A session whose
+  handoff passes but that left work uncommitted (cut off between a slice's green
+  and its commit) gets the same checkpoint, and the review over a branch whose tip
+  is a checkpoint is told its commit and paths, to review them as unhanded-off work
+  and write their handoff (#431,
+  [ADR-0071](https://github.com/danoleary/agent-harness/blob/main/docs/adr/0071-a-handoff-that-left-work-uncommitted-reaches-review-as-a-named-checkpoint.md)). To keep refusals rare, every
   session is pinned to an exact Opus snapshot (`claude-opus-5-5`), not the floating
   `opus` alias that once resolved to a stale, refusal-prone Opus 4.1. `HARNESS_MODEL`
   moves every stage at once; `TDD_MODEL`, `REVIEW_MODEL` and `RETROSPECTIVE_MODEL`

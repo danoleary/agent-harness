@@ -78,3 +78,4 @@ catches a duplicate there.
 - [ADR-0068](0068-a-pr-or-security-alerts-run-holds-a-run-lock.md): A PR or security-alerts run holds a run lock, as a ticket's run does
 - [ADR-0069](0069-ci-still-pending-past-the-poll-budget-is-unknown-not-red.md): CI still pending past the poll budget is unknown, not red
 - [ADR-0070](0070-a-session-reports-a-block-or-a-follow-up-in-a-marker.md): A session reports a block or a follow-up ticket in a marker, and the host settles both on the tracker
+- [ADR-0071](0071-a-handoff-that-left-work-uncommitted-reaches-review-as-a-named-checkpoint.md): A handoff that left work uncommitted reaches review as a named checkpoint

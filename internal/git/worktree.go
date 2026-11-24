@@ -434,6 +434,58 @@ func (w Worktree) SubjectsSince(rev string) (subjects []string, ok bool) {
 	return subjects, true
 }
 
+// TipCheckpoint is the run of harness recovery checkpoints at a branch's tip:
+// work a session left uncommitted when it was cut off, which the harness
+// committed and no session has handed off since (#431).
+type TipCheckpoint struct {
+	// Commit is the newest checkpoint, the branch tip.
+	Commit string
+	// Since is the commit the run of checkpoints sits on: the last handed-off
+	// commit, or the base when the branch holds nothing else.
+	Since string
+	// Paths are the paths the checkpoints change, Since..Commit.
+	Paths []string
+}
+
+// TipCheckpoint reads the run of recovery checkpoints at the branch tip, and
+// ok=false when the tip is not one: a checkpoint a later commit sits on was
+// handed off by the session that made that commit. Read from the main checkout,
+// like [Worktree.CommitSubjects]. Any git failure reads as no checkpoint.
+func (w Worktree) TipCheckpoint() (TipCheckpoint, bool) {
+	out, err := w.output("git", "-C", w.repo, "log", "--format=%H %s", "origin/main..refs/heads/"+w.branch, "--")
+	if err != nil {
+		return TipCheckpoint{}, false
+	}
+	var cp TipCheckpoint
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		sha, subject, _ := strings.Cut(strings.TrimSpace(line), " ")
+		if sha == "" {
+			break
+		}
+		if !IsCheckpoint(subject) {
+			cp.Since = sha
+			break
+		}
+		if cp.Commit == "" {
+			cp.Commit = sha
+		}
+	}
+	if cp.Commit == "" {
+		return TipCheckpoint{}, false
+	}
+	if cp.Since == "" {
+		if cp.Since, err = w.BaseSHA(); err != nil {
+			return TipCheckpoint{}, false
+		}
+	}
+	diff, err := w.output("git", "-C", w.repo, "diff", "--name-only", "--no-renames", cp.Since, cp.Commit, "--")
+	if err != nil {
+		return TipCheckpoint{}, false
+	}
+	cp.Paths = pathLines(diff)
+	return cp, true
+}
+
 // Clean reports whether the worktree has no uncommitted changes — the guarantee
 // that the tree the host-side gate validated is exactly the tree that [Worktree.Push]
 // ships. The gate runs against the worktree's working files (committed +

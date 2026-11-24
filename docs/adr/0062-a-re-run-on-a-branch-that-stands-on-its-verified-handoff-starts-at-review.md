@@ -30,7 +30,9 @@ session and starts at review.**
    before it launches a session, and writes it only when that session exited 0
    and `verify.Tdd` passed its handoff. It therefore only ever describes the
    latest session: a later session that crashed, capped, was interrupted or
-   failed verification leaves no record.
+   failed verification leaves no record. Nor does one that exited 0 but left
+   work uncommitted, which the harness commits as a checkpoint for review to
+   take on (ADR-0071).
 2. **The skip** runs after the claim and before provisioning. It reads the
    record and then git itself, as ADR-0016 requires, and holds only when:
    - the worktree exists, is clean, and its branch is ahead of `origin/main`;

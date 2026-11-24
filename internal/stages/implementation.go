@@ -611,7 +611,20 @@ func Implementation(h hostio.Host, cfg config.Config, log *runlog.Logger, args A
 		if err := wt.StripPaths(cfg.HandoffStripPaths); err != nil {
 			log.Event("⚠ could not strip " + strings.Join(cfg.HandoffStripPaths, ", ") + " from the worktree (" + err.Error() + ") — the reviewer should re-run the project's post_create")
 		}
-		if outcome.ExitCode == 0 {
+		// The handoff check reads commits, so a session cut off between a green slice
+		// and its commit passes it with that slice still uncommitted (#431). Review
+		// and the host gate judge only what is committed: save the slice as a
+		// recovery checkpoint at the tip, which review is told to take on as
+		// unhanded-off work. A handoff that left work behind is not a verified one.
+		unhanded := wt.Exists() && !wt.Clean()
+		if unhanded && checkpointUncommitted(cfg, args.Identifier, h, wt, log) {
+			cp, _ := wt.TipCheckpoint()
+			log.Event(fmt.Sprintf(
+				"⚠ the implementation session %s with work uncommitted in the worktree (%s) that its handoff commits leave out — committed it as a recovery checkpoint on %s, and the review is told to take it on as unhanded-off work (#431)",
+				sessionEnd(outcome), strings.Join(cp.Paths, ", "), wt.Branch(),
+			))
+		}
+		if outcome.ExitCode == 0 && !unhanded {
 			recordVerifiedHandoff(wt, log)
 		}
 	} else {
@@ -642,16 +655,7 @@ func Implementation(h hostio.Host, cfg config.Config, log *runlog.Logger, args A
 		// makes recovery cheap. The commit subject loudly marks it a checkpoint so a
 		// reviewer never mistakes it for a verified handoff.
 		if wt.Exists() && !wt.Clean() {
-			// "tdd", not implementationSession: the checkpoint subject is reviewer-
-			// facing, so it uses this stage's human name (matching its "tdd ✓/✗" logs)
-			// rather than the machine identifier used for container/transcript names.
-			// A worktree another live run holds carries that run's edits, not this
-			// session's: leave them uncommitted (#366).
-			if checkpointHeldElsewhere(cfg, args.Identifier, h.RunID(), wt.Path(), log) {
-				// narrated
-			} else if cErr := wt.Checkpoint(args.Identifier, "tdd"); cErr != nil {
-				log.Event("⚠ uncommitted work remains in the worktree at " + wt.Path() + " and the recovery checkpoint commit failed (" + cErr.Error() + ") — recover it manually before re-running")
-			} else {
+			if checkpointUncommitted(cfg, args.Identifier, h, wt, log) {
 				log.Event("✓ harness recovery checkpoint committed on " + wt.Branch() + " — the session's uncommitted diff is preserved (unverified: finish or re-run, then amend, before opening a PR)")
 			}
 		} else if retryableEnvCrash(outcome, capAborted) {
@@ -692,6 +696,35 @@ func Implementation(h hostio.Host, cfg config.Config, log *runlog.Logger, args A
 		res.CapResetAt = outcome.SpendingCapResetTime
 	}
 	return res
+}
+
+// checkpointUncommitted commits what the implementation session left uncommitted
+// in wt as a harness recovery checkpoint, and reports whether it did. A worktree
+// another live run holds carries that run's edits, not this session's: they are
+// left uncommitted (#366). A failed commit is narrated.
+func checkpointUncommitted(cfg config.Config, key string, h hostio.Host, wt gitpkg.Worktree, log *runlog.Logger) bool {
+	if checkpointHeldElsewhere(cfg, key, h.RunID(), wt.Path(), log) {
+		return false
+	}
+	// "tdd", not implementationSession: the checkpoint subject is reviewer-facing,
+	// so it uses this stage's human name (matching its "tdd ✓/✗" logs) rather than
+	// the machine identifier used for container/transcript names.
+	if err := wt.Checkpoint(key, "tdd"); err != nil {
+		log.Event("⚠ uncommitted work remains in the worktree at " + wt.Path() + " and the recovery checkpoint commit failed (" + err.Error() + ") — recover it manually before re-running")
+		return false
+	}
+	return true
+}
+
+// sessionEnd says how a session ended, for narration.
+func sessionEnd(o session.Outcome) string {
+	switch {
+	case o.CapKilled:
+		return fmt.Sprintf("was killed at its wall-clock cap (exit %d)", o.ExitCode)
+	case o.ExitCode != 0:
+		return fmt.Sprintf("ended with exit %d", o.ExitCode)
+	}
+	return "exited 0"
 }
 
 // shortCommit abbreviates a commit SHA for narration.

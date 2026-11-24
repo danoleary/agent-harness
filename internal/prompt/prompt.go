@@ -154,6 +154,10 @@ type Context struct {
 	// flagged, for the scoped review of it that runs before the push (#114); nil on
 	// every other review.
 	Resolution *Resolution
+	// Unhanded is the work a cut-off session left uncommitted, which the harness
+	// committed as the recovery checkpoint at the branch tip, for a Review to take
+	// on as unhanded-off (#431); nil when the tip is a handed-off commit.
+	Unhanded *Unhanded
 	// CILogs is the failing job log the host fetched for CIFix; CILogAvailable
 	// says whether it is a usable log or only an error marker (BEH-558).
 	CILogs         string
@@ -899,6 +903,7 @@ func review(c Context) string {
 		sentrySection(c.Sentry),
 		branchBaseSection(c.Base, c.WorktreePath, c.branch()),
 		priorReviewSection(c.PriorReview),
+		unhandedSection(c.Unhanded),
 		redGateSection(c.RedGate),
 		resolutionSection(c.Resolution),
 		"---",
@@ -918,6 +923,28 @@ func priorReviewSection(p *PriorReview) string {
 		return ""
 	}
 	return "IMPORTANT — UNCHANGED SINCE THE LAST REVIEW: a prior review of this ticket already covered exactly the commits now on the branch (`origin/main.." + p.Head + "`, HEAD `" + p.Head + "`) and emitted:\n\n    " + defang(p.Disposition) + "\n\nNo commit has landed since. Confirm HEAD is still `" + p.Head + "` (`git rev-parse HEAD`); if it is not, ignore this note and review cold. If it is, do NOT re-review the diff from scratch and do NOT commit just to have something to show: emit your `## Review:` report and re-emit that same Disposition line. Commit a fix ONLY for a real defect — a spec, correctness or invariant failure, not a cosmetic tidy-up — and name it in the report. Run the gate only if you commit a fix; with no commit, do NOT run it and write `Gate: deferred to host re-run` in the report, because the harness re-runs every gate host-side over this same HEAD before it pushes."
+}
+
+// Unhanded is the run of recovery checkpoints at a branch tip (#431): Commit is
+// the newest, Since the commit they sit on, Paths what they change.
+type Unhanded struct {
+	Commit string
+	Since  string
+	Paths  []string
+}
+
+// unhandedSection tells a review that the branch tip is work a session left
+// uncommitted when it was cut off, which the harness committed as a recovery
+// checkpoint (#431). No handoff describes it and no session saw it green and
+// committed it, so without this a review could clear only the handed-off commits,
+// or find the work by chance and become its author with no record of it.
+func unhandedSection(u *Unhanded) string {
+	if u == nil {
+		return ""
+	}
+	c, s := shortRef(u.Commit), shortRef(u.Since)
+	return "IMPORTANT — UNHANDED-OFF WORK AT THE TIP: a session before you was cut off (a wall-clock cap, a crash, a refusal) before it committed all of its work. The harness committed what it left uncommitted as the recovery checkpoint `" + c + "` (subject `checkpoint(harness): …`), changing " + codeList(u.Paths) + ". No handoff describes that work, and nothing has verified it." +
+		"\n\nReview it as unhanded-off work, as well as the handed-off commits below it: read `git show " + s + ".." + c + "`, check that a test covers each change in it, and fix or drop what is wrong. Then write the handoff commit for it that the cut-off session never wrote: amend the checkpoint (it is unpushed) into a commit whose subject and body describe the work, with every heading the project's handoff conventions ask of an implementation commit, so the branch does not ship with a checkpoint as its last word. Say in your `## Review:` report that you did."
 }
 
 // redGateSection hands the re-launched review the host gate that went red after
