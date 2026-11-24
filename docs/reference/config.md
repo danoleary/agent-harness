@@ -90,6 +90,15 @@ worktree itself) and carry no comma. A bad path fails config validation. The
 tmpfs counts against the gate container's memory, so list cache directories,
 not whole dependency trees. With the key absent, nothing changes.
 
+A red gate whose log shows an environment failure (the test browser closing, a
+test timeout, a Vite re-optimise and reload, a memory kill, a download failure)
+is re-run once before it counts as red; the built-in signatures are listed in
+[errors](errors.md). A gate that knows its red is the diff's can print a line
+that is exactly `gate-classification: not-infra` (case and surrounding spaces
+aside) to its output: the harness then takes the red as final, whatever else
+the log holds. A gate that says its red is `not a dependency re-optimisation`
+is not re-run as a Vite reload (#427).
+
 ## `[cache]`
 
 An optional persistent toolchain cache, mounted into every sandbox and gate

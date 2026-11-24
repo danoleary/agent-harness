@@ -15,6 +15,12 @@ import (
 // re-optimising its dependencies and reloading the page mid-run (#312), a process
 // killed for memory, a toolchain or package download failing on the network.
 // They are built in, not Consumer config. Matched case-insensitively.
+//
+// A Vite reload is matched only on Vite's own re-optimise and reload lines, never
+// on a generic dev-server error such as a pre-transform error or a failed import
+// of a test file: a story whose import cannot be resolved prints those too, and
+// that red is the diff's (#427). A failed dynamic import counts only for a chunk
+// of the optimised deps, reloadImportRE.
 var infraSignatures = []struct{ cause, needle string }{
 	{"the test browser's connection closed", "browser connection was closed"},
 	{"the test browser's connection closed", "rpc is closed"},
@@ -23,8 +29,9 @@ var infraSignatures = []struct{ cause, needle string }{
 	{"the test browser's connection closed", "target page, context or browser has been closed"},
 	{"no test browser session", "failed to connect to the browser session"},
 	{"a test timeout", "test timed out in"},
-	{"a Vite reload", "optimized dependencies changed"},
-	{"a Vite reload", "failed to fetch dynamically imported module"},
+	{viteReload, "optimized dependencies changed"},
+	{viteReload, "new dependencies optimized"},
+	{viteReload, "vite unexpectedly reloaded a test"},
 	{"an out-of-memory kill", "cannot allocate memory"},
 	{"an out-of-memory kill", "out of memory"},
 	{"a SIGKILL", "sigkill"},
@@ -37,6 +44,22 @@ var infraSignatures = []struct{ cause, needle string }{
 	{"a download failure", "temporary failure in name resolution"},
 	{"a download failure", "tls handshake timeout"},
 }
+
+// viteReload is the cause infraSignatures name a Vite reload with.
+const viteReload = "a Vite reload"
+
+// reloadImportRE is a failed dynamic import of a chunk Vite optimised, which its
+// re-optimisation invalidates mid-run (#312). Over lower-cased text.
+var reloadImportRE = regexp.MustCompile(`failed to fetch dynamically imported module: \S*/\.vite/deps/`)
+
+// notInfraRE is the line a Consumer's gate prints to say its red is the diff's,
+// whatever else its log holds: no signature re-runs it (#427). Over lower-cased
+// text, as a whole line.
+var notInfraRE = regexp.MustCompile(`(?m)^\s*gate-classification:\s*not-infra\s*$`)
+
+// noReoptimiseRE is a gate saying in prose that its red is no dependency
+// re-optimisation, which rules out a Vite reload (#427). Over lower-cased text.
+var noReoptimiseRE = regexp.MustCompile(`not a (?:vite )?dependency re-?optimi[sz]ation`)
 
 // rerunReason says why a gate that ended in out, having written log, deserves one
 // re-run before it counts as red, or "" when its red is final. A re-run costs one
@@ -56,10 +79,20 @@ func rerunReason(out session.Outcome, log string, fixed []string) string {
 		return "the gate cap"
 	}
 	text := strings.ToLower(log + "\n" + out.StderrTail)
+	if notInfraRE.MatchString(text) {
+		return ""
+	}
+	reloads := !noReoptimiseRE.MatchString(text)
 	for _, s := range infraSignatures {
+		if s.cause == viteReload && !reloads {
+			continue
+		}
 		if strings.Contains(text, s.needle) {
 			return s.cause
 		}
+	}
+	if reloads && reloadImportRE.MatchString(text) {
+		return viteReload
 	}
 	for _, line := range strings.Split(text, "\n") {
 		if strings.TrimSpace(line) == "killed" {

@@ -495,6 +495,27 @@ signatures did not name, and each such red cost a fix attempt.
 - The re-run does not wait for sibling sandboxes to finish; it runs at once, in
   the gate slot the first run held.
 
+## Amendment, 2026-11-24: a Vite reload is matched on its own lines, and a gate can say its red is not infra (#427)
+
+A herd storybook gate went red on a story whose import the Vite dev server could
+not resolve. The `Failed to fetch dynamically imported module` signature matched
+the failed import of the story file, so the harness re-ran the whole gate as a
+Vite reload, although the gate's own output said this was no dependency
+re-optimisation. The re-run was red again and spent about 9 minutes of the
+review cap before the fix session started.
+
+- **A Vite reload is matched only on Vite's re-optimise and reload lines**:
+  `optimized dependencies changed`, `new dependencies optimized`, `Vite
+  unexpectedly reloaded a test`, or a failed dynamic import of an optimised-deps
+  chunk (`/.vite/deps/`). A pre-transform error, an internal server error or a
+  failed import of a test file is the diff's, and final.
+- **A gate can classify its own red.** A log line that is exactly
+  `gate-classification: not-infra` makes the red final before any signature is
+  read. This is the one piece of the classifier a Consumer controls; the
+  signatures stay built in. A gate that says its red is `not a dependency
+  re-optimisation` rules out a Vite reload only; another signature still
+  re-runs it. The gate cap still re-runs, as the harness, not the gate, saw it.
+
 ## Amendment, 2026-11-22: a CI fix that changed nothing is not gated again (#396)
 
 A CIFix session that could not reproduce the red committed nothing, and the
