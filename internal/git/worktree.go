@@ -693,6 +693,42 @@ func (w Worktree) AbortRebase() {
 	_ = w.run("git", "-C", w.path, "cherry-pick", "--abort")
 }
 
+// unfinished are the operations a session can leave stopped in a worktree, each
+// by the marker git keeps for it in the worktree's git dir. A stopped rebase is
+// read first: one that stopped on a pick can hold CHERRY_PICK_HEAD too, and its
+// own abort clears that.
+var unfinished = []struct{ marker, op string }{
+	{"rebase-merge", "rebase"},
+	{"rebase-apply", "rebase"},
+	{"CHERRY_PICK_HEAD", "cherry-pick"},
+	{"MERGE_HEAD", "merge"},
+}
+
+// AbortUnfinished aborts a merge, rebase or cherry-pick a session left stopped in
+// the worktree, and names the operation it aborted, or "" when none was (#428).
+// A half-resolved conflict is not worth resuming from, and saving it as a
+// recovery checkpoint would commit its conflict markers, a stopped merge as a
+// merge commit. Unlike [Worktree.AbortRebase] it fails when the abort does: the
+// worktree is then still mid-operation, and the caller must not take it as
+// clean.
+func (w Worktree) AbortUnfinished() (string, error) {
+	out, err := w.output("git", "-C", w.path, "rev-parse", "--absolute-git-dir")
+	if err != nil {
+		return "", err
+	}
+	dir := strings.TrimSpace(string(out))
+	for _, u := range unfinished {
+		if _, err := os.Stat(filepath.Join(dir, u.marker)); err != nil {
+			continue
+		}
+		if out, err := w.combined("git", "-C", w.path, u.op, "--abort"); err != nil {
+			return u.op, fmt.Errorf("git %s --abort: %s", u.op, gitSaid(out, err))
+		}
+		return u.op, nil
+	}
+	return "", nil
+}
+
 // IsRebasedOnto reports whether ref (e.g. "origin/main") is an ancestor of the
 // worktree's HEAD — i.e. the branch genuinely contains the latest base. It is the
 // ground-truth guard the pre-push conflict-resolution path needs (BEH-581): a

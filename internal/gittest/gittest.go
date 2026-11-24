@@ -184,6 +184,55 @@ func (r *Repo) PublishFiles(branch string, files map[string]string) string {
 	return tip
 }
 
+// Republish force-pushes branch from another clone, rebuilt as one commit on
+// origin's current main writing each file in files to its body, as a bot
+// rebasing its PR does. It returns the branch's new tip.
+func (r *Repo) Republish(branch string, files map[string]string) string {
+	r.t.Helper()
+	r.Git(r.others, "fetch", "-q", "origin", "main")
+	r.Git(r.others, "checkout", "-q", "-B", branch, "origin/main")
+	for file, body := range files {
+		r.write(r.others, file, body)
+	}
+	r.Git(r.others, "add", "-A")
+	r.Git(r.others, "commit", "-q", "-m", "a change on "+branch)
+	r.Git(r.others, "push", "-q", "--force", "origin", branch)
+	tip := r.Git(r.others, "rev-parse", "HEAD")
+	r.Git(r.others, "checkout", "-q", "main")
+	return tip
+}
+
+// UnfinishedMerge merges ref into wt and leaves git stopped on the conflict, as a
+// conflict-resolution session that gave up mid-merge does: MERGE_HEAD set, the
+// clashing paths unmerged and the rest of ref's changes staged. It fails the test
+// when the merge does not stop.
+func (r *Repo) UnfinishedMerge(wt gitpkg.Worktree, ref string) {
+	r.t.Helper()
+	r.stopped(wt, "merge", "MERGE_HEAD", "merge", "--no-edit", ref)
+}
+
+// UnfinishedRebase is [Repo.UnfinishedMerge] for a rebase of wt onto ref.
+func (r *Repo) UnfinishedRebase(wt gitpkg.Worktree, ref string) {
+	r.t.Helper()
+	r.stopped(wt, "rebase", "REBASE_HEAD", "rebase", ref)
+}
+
+// UnfinishedCherryPick is [Repo.UnfinishedMerge] for a cherry-pick of commit.
+func (r *Repo) UnfinishedCherryPick(wt gitpkg.Worktree, commit string) {
+	r.t.Helper()
+	r.stopped(wt, "cherry-pick", "CHERRY_PICK_HEAD", "cherry-pick", commit)
+}
+
+func (r *Repo) stopped(wt gitpkg.Worktree, op, head string, args ...string) {
+	r.t.Helper()
+	if out, err := exec.Command("git", append([]string{"-C", wt.Path()}, args...)...).CombinedOutput(); err == nil {
+		r.t.Fatalf("the %s was meant to stop on a conflict but succeeded:\n%s", op, out)
+	}
+	if err := exec.Command("git", "-C", wt.Path(), "rev-parse", "--verify", "-q", head).Run(); err != nil {
+		r.t.Fatalf("the %s stopped without %s: %v", op, head, err)
+	}
+}
+
 // Disjoint re-roots wt's branch on a history unrelated to main, keeping one commit
 // of real work — the BEH-355 shape, where a session's handoff landed on a branch
 // that shares no ancestor with origin/main.

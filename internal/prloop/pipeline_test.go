@@ -1431,3 +1431,137 @@ func TestFixThatPushedNothingBeforeCIStillPendingIsCIPending(t *testing.T) {
 		t.Errorf("CI still pending must not read as a red CI; events:\n%s", events)
 	}
 }
+
+// pr1615 is herd's PR-1615 as pr-doctor polled it: Dependabot's production-deps
+// group, a branch no harness ticket owns, so a conflict is merged, not rebased.
+// Its lockfile clashes with main's, and main has moved on by 30 other files.
+func pr1615(t *testing.T, k Kind) (Item, *gittest.Repo) {
+	t.Helper()
+	repo := gittest.New(t)
+	repo.Merge("web/pnpm-lock.yaml", "lockfileVersion: '9.0'\n", "add the lockfile")
+	it := humanItem(k)
+	it.PR.Number, it.PR.Title, it.PR.HeadBranch = 1615, "Bump the production-deps group", "dependabot/npm_and_yarn/web/production-deps-d6f8155"
+	it.PR.HeadSHA = repo.PublishFile(it.PR.HeadBranch, "web/pnpm-lock.yaml", "lockfileVersion: '9.0'\nstripe: 17.0.0\n")
+	main := map[string]string{"web/pnpm-lock.yaml": "lockfileVersion: '9.0'\nvite: 6.0.0\n"}
+	for i := 0; i < 30; i++ {
+		main[fmt.Sprintf("web/src/f%02d.ts", i)] = "export {}\n"
+	}
+	repo.MergeFiles(main, "main moved on")
+	return it, repo
+}
+
+// #428, replaying herd PR-1615: attempt 2's conflict-resolution session merged
+// origin/main into the Dependabot branch and stopped on the lockfile — MERGE_HEAD
+// set, the lockfile unmerged, 30 files staged. Dependabot then rebased and
+// force-pushed, and attempt 3 (a CI fix at the new head) could not drop the
+// worktree, so the PR went to a human before any session. Now the run aborts the
+// unfinished merge, saying so, and the next checkout starts at the new head.
+func TestFixAbortsAnUnfinishedMergeSoTheNextCheckoutSucceeds(t *testing.T) {
+	it, repo := pr1615(t, Conflict)
+	h := hostio.NewFake(repo.Checkout(), ticket.Slug(Key(it.PR.Number)))
+	h.Branch = it.PR.HeadBranch
+	h.AgentFn = func(_ int, run hostio.AgentRun) session.Outcome {
+		if run.Label == "rebasefix" {
+			repo.UnfinishedMerge(h.Worktree(), "origin/main")
+		}
+		return session.Outcome{}
+	}
+	log := pipelineLog(t)
+
+	if res := Fix(h, pipelineCfg(), log, it, prDoctor()); res.OK || res.Err != nil {
+		t.Fatalf("an unresolved conflict ships nothing and needs no human, got %+v", res)
+	}
+	if events := readEvents(t, log); !strings.Contains(events, "aborted the unfinished merge in "+h.Worktree().Path()) {
+		t.Errorf("the run must say it aborted the merge, naming the worktree:\n%s", events)
+	}
+	if tip := repo.Git(repo.Dir, "rev-parse", "refs/heads/"+it.PR.HeadBranch); tip != it.PR.HeadSHA {
+		t.Errorf("the local branch is at %s, want the polled head %s: a half-resolved merge is no checkpoint", tip, it.PR.HeadSHA)
+	}
+
+	// Dependabot rebases and force-pushes; attempt 3 is a CI fix at the new head.
+	rebased := repo.Republish(it.PR.HeadBranch, map[string]string{"web/pnpm-lock.yaml": "lockfileVersion: '9.0'\nvite: 6.0.0\nstripe: 17.0.0\n"})
+	next := humanItem(CIRed)
+	next.PR = it.PR
+	next.PR.HeadSHA = rebased
+	retry := hostio.NewFake(repo.Checkout(), ticket.Slug(Key(it.PR.Number)))
+	retry.Branch = it.PR.HeadBranch
+
+	res := Fix(retry, pipelineCfg(), pipelineLog(t), next, prDoctor())
+
+	if res.Disposition == stages.CheckoutBlocked {
+		t.Fatalf("the next attempt's checkout must succeed, got %+v", res)
+	}
+	if head, _ := retry.Worktree().HeadSHA(); retry.Worktree().Exists() && head != rebased {
+		t.Errorf("the next attempt is at %s, want the force-pushed head %s", head, rebased)
+	}
+}
+
+// #428: the same for a rebase a CI-fix session stopped on a conflict with main,
+// which nothing on the CI-fix path aborts: the run aborts it, saying so, and saves
+// no checkpoint, so the worktree is removed and the next checkout starts at
+// origin's tip.
+func TestFixAbortsAnUnfinishedRebase(t *testing.T) {
+	h, it, repo := prHost(t, pr1384())
+	h.AgentFn = func(_ int, run hostio.AgentRun) session.Outcome {
+		if run.Label == "cifix-1" {
+			wt := h.Worktree()
+			repo.Commit(wt, "other.txt", "the session's change\n", "Fix the build")
+			repo.UnfinishedRebase(wt, "origin/main")
+		}
+		return session.Outcome{ExitCode: 137, CapKilled: true}
+	}
+	h.CIFn = func(w hostio.CIWatch) ci.Outcome {
+		err := w.Fix(ci.FixInput{Logs: "FAIL web/src/routes/call/-components/more-tray.stories.tsx > MoreTray", LogAvailable: true})
+		return ci.Outcome{Reason: fmt.Sprintf("auto-fix session failed: %v", err)}
+	}
+	log := pipelineLog(t)
+
+	if res := Fix(h, pipelineCfg(), log, it, prDoctor()); res.OK || res.Err != nil {
+		t.Fatalf("a cap-killed fix ships nothing and needs no human, got %+v", res)
+	}
+	if events := readEvents(t, log); !strings.Contains(events, "aborted the unfinished rebase in "+h.Worktree().Path()) {
+		t.Errorf("the run must say it aborted the rebase, naming the worktree:\n%s", events)
+	}
+	if h.Worktree().Exists() {
+		t.Error("the aborted worktree is clean, so it must be removed")
+	}
+	if subject := repo.Git(repo.Dir, "log", "-1", "--format=%s", "refs/heads/"+it.PR.HeadBranch); gitpkg.IsCheckpoint(subject) {
+		t.Errorf("a stopped rebase is no checkpoint, but the local branch's tip is %q", subject)
+	}
+	if resumed, err := h.Worktree().CheckoutRemote(); err != nil || resumed != (gitpkg.Resumed{}) {
+		t.Errorf("the next checkout = %+v, %v; want a plain checkout at origin's tip", resumed, err)
+	}
+}
+
+// #428: when git refuses the abort (here its index is locked), the worktree is
+// still mid-merge and the next checkout would refuse it, so the PR goes to a
+// human at once, as for a checkpoint that cannot be committed (#246).
+func TestFixWhoseUnfinishedMergeCannotBeAbortedNeedsAHuman(t *testing.T) {
+	it, repo := pr1615(t, Conflict)
+	h := hostio.NewFake(repo.Checkout(), ticket.Slug(Key(it.PR.Number)))
+	h.Branch = it.PR.HeadBranch
+	h.AgentFn = func(_ int, run hostio.AgentRun) session.Outcome {
+		if run.Label == "rebasefix" {
+			wt := h.Worktree()
+			repo.UnfinishedMerge(wt, "origin/main")
+			lock := filepath.Join(repo.Git(wt.Path(), "rev-parse", "--absolute-git-dir"), "index.lock")
+			if err := os.WriteFile(lock, nil, 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return session.Outcome{}
+	}
+
+	res := Fix(h, pipelineCfg(), pipelineLog(t), it, prDoctor())
+
+	var unsaved *UnsavedError
+	if res.OK || !errors.As(res.Err, &unsaved) || unsaved.Path != h.Worktree().Path() {
+		t.Fatalf("a refused abort needs a human, naming the worktree %s, got %+v", h.Worktree().Path(), res)
+	}
+	if !strings.Contains(res.Err.Error(), "merge --abort") {
+		t.Errorf("the reason must carry the refused abort: %v", res.Err)
+	}
+	if !h.Worktree().Exists() {
+		t.Error("the worktree must be kept for the human")
+	}
+}
