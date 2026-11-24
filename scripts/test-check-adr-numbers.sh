@@ -111,12 +111,16 @@ printf 'package foo\n\nvar paths = []string{"docs/adr/0026-comments.md", "ADR-00
 expect_pass "Go string literal" "$TEST_DIR/t6"
 
 # Linked worktrees under .claude/worktrees are other branches' trees, not this one.
-echo -n "Test 7: files under .claude/worktrees and .git are ignored... "
+# .agent-harness/logs holds untracked session transcripts that quote ADR names
+# as they stood mid-ticket, before a host-side renumber.
+echo -n "Test 7: files under .claude/worktrees, .agent-harness/logs and .git are ignored... "
 fixture "$TEST_DIR/t7"
 mkdir -p "$TEST_DIR/t7/.claude/worktrees/x/docs/adr" "$TEST_DIR/t7/.git"
 printf '# ADR-0001: Other\n' > "$TEST_DIR/t7/.claude/worktrees/x/docs/adr/0001-other.md"
 printf 'Per ADR-0042.\n' > "$TEST_DIR/t7/.claude/worktrees/x/NOTES.md"
 printf 'Per ADR-0042.\n' > "$TEST_DIR/t7/.git/NOTES.md"
+mkdir -p "$TEST_DIR/t7/.agent-harness/logs/#1"
+printf 'See [x](adr/0042-gone.md), ADR-0042.\n' > "$TEST_DIR/t7/.agent-harness/logs/#1/review.prompt.md"
 expect_pass "ignored dirs" "$TEST_DIR/t7"
 
 echo -n "Test 8: an ADR the index does not list is flagged... "

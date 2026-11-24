@@ -20,7 +20,8 @@
 # last one, so two branches taking the same number edit the same spot of one
 # file, and the second PR conflicts with main instead of merging cleanly. Go string literals are not scanned: they
 # are test data, not cross-references. Linked worktrees under .claude/worktrees
-# are other branches' trees and are skipped.
+# are other branches' trees, and .agent-harness/logs holds untracked session
+# transcripts that quote ADR names as they stood mid-ticket; both are skipped.
 #
 # It is itself bash-3.2-safe (runs under macOS's stock /bin/bash).
 
@@ -33,7 +34,7 @@ violations=0
 
 # Every scanned source file, NUL-free paths one per line.
 sources() {
-    find "$ROOT" \( -path "$ROOT/.git" -o -path "$ROOT/.claude/worktrees" -o -name node_modules \) -prune \
+    find "$ROOT" \( -path "$ROOT/.git" -o -path "$ROOT/.claude/worktrees" -o -path "$ROOT/.agent-harness/logs" -o -name node_modules \) -prune \
         -o -type f \( -name '*.go' -o -name '*.md' \) -print
 }
 
