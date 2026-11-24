@@ -103,7 +103,12 @@ prompt around this skill tells you the ticket, the worktree and the branch.
   so only the sandbox runs it (#261). When you change the Claude CLI argv or
   settings, look the flag up in `claude --help` in the sandbox first. For
   inline `--settings` JSON, run `claude --settings '<json>' --help`: it exits 1
-  on a value it can't parse. To read the CLI's own code, search the binary for
+  on a value it can't parse. The session hooks' exact `--settings` JSON is
+  `internal/sandbox/testdata/session-settings.json`; after a hook change,
+  refresh it with `-update` and run the CLI on it as
+  `docs/how-to/sandbox-image.md` §Checking a hook change against the pinned CLI
+  shows. Never write a scratch `_test.go` into a package to print it: the
+  commit step is `git add -A` (#437). To read the CLI's own code, search the binary for
   a fixed string as `docs/how-to/sandbox-image.md` §Searching the bundled
   Claude CLI shows; a `.{N}literal` context regex on it runs for minutes (#310).
   The CLI also defines the stream-json events the harness parses
