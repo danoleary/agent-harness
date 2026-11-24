@@ -179,7 +179,14 @@ harness has to spend a whole extra cycle recovering the diff (#224).
    wrapped, a value passed through, a condition added), first copy the file
    aside with `cp <file> /tmp/<name>.bak`, then revert just that line, for
    example with a `sed -i` on the call site, and run the owning package's
-   tests as their own Bash call. At least one must fail. Then restore the line
+   tests as their own Bash call. At least one must fail. A compile error
+   (`[build failed]`, `declared and not used`, `imported and not used`) is
+   not a failing test and proves nothing: no test ran. Revert the line in a
+   way that still compiles. In Go, keep any variable or import the line used
+   referenced: replace `v = new` with `v, _ = old, new` or add `_ = new`, and
+   replace a condition term with `true`/`false` rather than deleting it. Then
+   read the `--- FAIL: TestName` line, not the package's `FAIL`, as the red
+   (#452). Then restore the line
    with `cp /tmp/<name>.bak <file>` and check `git diff` shows it back. Do not
    restore with `git checkout` or `git restore`: the file is not committed
    yet, so they would discard its whole uncommitted implementation, not just
