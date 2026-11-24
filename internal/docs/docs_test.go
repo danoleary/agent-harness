@@ -359,6 +359,21 @@ func TestTheTDDSkillChecksEachNewCallSiteTurnsATestRed(t *testing.T) {
 	}
 }
 
+// TestTheTDDSkillsWiringRevertDoesNotCountABuildFailureAsRed pins the compile
+// rule in /tdd's wiring check (#452): a revert that leaves a variable or import
+// unused fails the build, and `go test` prints the package's `FAIL` without
+// running a test, which met "At least one must fail" as written. The check says
+// a compile error proves nothing, how to revert a Go line so it still builds,
+// and to read the `--- FAIL: TestName` line as the red.
+func TestTheTDDSkillsWiringRevertDoesNotCountABuildFailureAsRed(t *testing.T) {
+	text := section(t, filepath.Join(repoRoot(t), ".claude/skills/tdd/SKILL.md"), "Finish")
+	for _, want := range []string{"`[build failed]`", "`declared and not used`", "`imported and not used`", "not a failing test", "still compiles", "`v, _ = old, new`", "`_ = new`", "`true`/`false`", "`--- FAIL: TestName`", "#452"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("/tdd §Finish does not mention %q; say a compile error during the wiring revert is not a red test", want)
+		}
+	}
+}
+
 // TestTheTDDAndReviewSkillsCheckTheHowToForAChangedBehaviour pins the how-to
 // pages in both skills' docs checklists (#443): #439 changed pr-doctor's
 // conflict strategy and updated every doc /tdd's Finish listed, but not
