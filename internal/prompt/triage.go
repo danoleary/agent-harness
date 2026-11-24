@@ -41,5 +41,6 @@ func triage(c Context) string {
 		triageVerdictProtocol,
 		triageContract(c.Tracker),
 		bashQuirkSteer,
+		backgroundWaitSteer,
 	)
 }
