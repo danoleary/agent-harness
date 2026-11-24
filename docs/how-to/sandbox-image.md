@@ -128,11 +128,14 @@ Commit the rewritten file with the change; review then sees the settings diff.
 Do not write a scratch `_test.go` into the package to print the JSON: the
 commit step is `git add -A`, so one left behind gets committed (#437).
 
-Then run the pinned CLI on it from a scratch directory:
+Then copy it out of the worktree and run the pinned CLI on it from a scratch
+directory, so the run does not also load the worktree's own project settings:
 
 ```bash
-claude --settings "$(cat internal/sandbox/testdata/session-settings.json)" --help
-claude -p hi --settings "$(cat internal/sandbox/testdata/session-settings.json)" --output-format stream-json --verbose
+mkdir -p /tmp/hook-check && cp internal/sandbox/testdata/session-settings.json /tmp/hook-check/
+cd /tmp/hook-check
+claude --settings "$(cat session-settings.json)" --help
+claude -p hi --settings "$(cat session-settings.json)" --output-format stream-json --verbose
 ```
 
 The first exits 1 on a value the CLI can't parse. The second prints a
