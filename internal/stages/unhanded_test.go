@@ -93,3 +93,39 @@ func TestAnExitZeroSessionThatLeftWorkUncommittedRecordsNoVerifiedHandoff(t *tes
 		t.Error("a handoff that left work uncommitted is not a verified one a re-run may start review from")
 	}
 }
+
+// A review re-launched over a red host gate is told only of the checkpoint still
+// at the tip: the first session wrote the handoff over it, so naming it again
+// would send the re-launch to amend a commit no longer at the tip (#431).
+func TestAReviewRelaunchIsNotToldOfACheckpointTheFirstSessionHandedOff(t *testing.T) {
+	h, repo := fresh(t, "PROJ-434")
+	h.AgentFn = func(int, hostio.AgentRun) session.Outcome {
+		repo.Commit(h.Worktree(), "fix.txt", "the first slice\n", gittest.HandoffSubject)
+		repo.Dirty(h.Worktree())
+		return session.Outcome{ExitCode: sandbox.ExitOOMKill, CapKilled: true}
+	}
+	log := stageLog(t, "PROJ-434")
+	if res := Implementation(h, stageCfg(), log, Args{Identifier: "PROJ-434"}); !res.OK {
+		t.Fatalf("the committed slice is still a handoff for review, got %+v", res)
+	}
+
+	h.Agents = nil
+	h.AgentFn = func(call int, _ hostio.AgentRun) session.Outcome {
+		if call == 1 {
+			repo.Commit(h.Worktree(), "handoff.txt", "the checkpoint's handoff\n", "the second slice (PROJ-434)")
+		}
+		return clearVerdict
+	}
+	h.ShellFn = redFirstGate(log, session.Outcome{ExitCode: 1}, redGateLog)
+	Review(h, stageCfg(), log, Args{Identifier: "PROJ-434"})
+
+	if got := labels(h.Agents); len(got) != 2 || got[1] != reviewSession+"-gatefix" {
+		t.Fatalf("agent runs = %v, want the review then its red-gate re-launch", got)
+	}
+	if !strings.Contains(h.Agents[0].Prompt, "UNHANDED-OFF WORK") {
+		t.Error("the first review must be told of the checkpoint at the tip")
+	}
+	if strings.Contains(h.Agents[1].Prompt, "UNHANDED-OFF WORK") {
+		t.Error("the re-launch must not be told of a checkpoint the first session handed off")
+	}
+}

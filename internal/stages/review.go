@@ -92,8 +92,8 @@ func Review(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Res
 	// was cut off: the session is told so, and which paths it changes, so it reviews
 	// that work and writes its handoff rather than clear only the commits below it,
 	// or find it by chance (#431).
-	if cp, ok := wt.TipCheckpoint(); ok {
-		subject.Unhanded = &prompt.Unhanded{Commit: cp.Commit, Since: cp.Since, Paths: cp.Paths}
+	if subject.Unhanded = unhandedAtTip(wt); subject.Unhanded != nil {
+		cp := subject.Unhanded
 		log.Event(fmt.Sprintf("review — the branch tip %s is a recovery checkpoint of work no session handed off (%s); the session is told to review it and write its handoff (#431)", shortCommit(cp.Commit), strings.Join(cp.Paths, ", ")))
 	}
 	reviewSessionRun := reviewRun(cfg, subject, prior, nil)
@@ -200,6 +200,10 @@ func Review(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Res
 	runReviewSession := func(attempt int) session.Outcome {
 		run := reviewSessionRun
 		if attempt > 1 {
+			// The session before may have amended the checkpoint into its handoff:
+			// name only what is still at the tip (#431).
+			subject.Unhanded = unhandedAtTip(wt)
+			run = reviewRun(cfg, subject, prior, nil)
 			run.Label = fmt.Sprintf("%s-retry%d", reviewSession, attempt)
 		}
 		return launchReview(run, fmt.Sprintf("attempt %d/%d", attempt, reviewVerdictMaxAttempts))
@@ -257,6 +261,7 @@ func Review(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Res
 			over = "the review's own commit"
 		}
 		log.Event(fmt.Sprintf("review ↻ host gate %q is red (exit %d) over %s — re-launching the review once with its log tail (#111)", gateRes.FailedGate, gateExit, over))
+		subject.Unhanded = unhandedAtTip(wt)
 		run := reviewRun(cfg, subject, nil, &prompt.RedGate{Name: gateRes.FailedGate, Log: gateLogTail(log.Dir, gateRes), OwnCommit: committed})
 		run.Label = reviewSession + "-gatefix"
 		reviewOutcome = launchReview(run, "red-gate re-launch 1/1")
@@ -692,4 +697,16 @@ func codeSpans(paths []string, none string) string {
 		spans[i] = "`" + p + "`"
 	}
 	return strings.Join(spans, ", ")
+}
+
+// unhandedAtTip is the run of recovery checkpoints at wt's branch tip, for the
+// review envelope to name as unhanded-off work (#431); nil when the tip was
+// handed off. Read again before each re-launch: a session that amended the
+// checkpoint into its handoff leaves none to name.
+func unhandedAtTip(wt gitpkg.Worktree) *prompt.Unhanded {
+	cp, ok := wt.TipCheckpoint()
+	if !ok {
+		return nil
+	}
+	return &prompt.Unhanded{Commit: cp.Commit, Since: cp.Since, Paths: cp.Paths}
 }
