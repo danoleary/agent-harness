@@ -111,6 +111,40 @@ the match from nearly every byte offset: one such call has taken over six minute
 where the fixed-string search takes under a second, and the Bash tool shows
 nothing until it returns (#310).
 
+## Checking a hook change against the pinned CLI
+
+Every sandboxed session starts with the `--settings` JSON that
+`internal/sandbox/reap.go` builds: the SessionStart hook that installs the
+interactive-git guard, and the PreToolUse reaper and guard. The exact value the
+launcher passes is kept, one line, in `internal/sandbox/testdata/session-settings.json`.
+A test fails when it goes stale, so after changing a hook, rewrite it first by
+running that test with `-update`:
+
+```bash
+go test -buildvcs=false ./internal/sandbox/ -run TestTheSessionSettingsGoldenIsTheLaunchersSettings -update
+```
+
+Commit the rewritten file with the change; review then sees the settings diff.
+Do not write a scratch `_test.go` into the package to print the JSON: the
+commit step is `git add -A`, so one left behind gets committed (#437).
+
+Then run the pinned CLI on it from a scratch directory:
+
+```bash
+claude --settings "$(cat internal/sandbox/testdata/session-settings.json)" --help
+claude -p hi --settings "$(cat internal/sandbox/testdata/session-settings.json)" --output-format stream-json --verbose
+```
+
+The first exits 1 on a value the CLI can't parse. The second prints a
+`hook_started` and a `hook_response` event for each SessionStart hook before
+`init`, with the hook's `exit_code`, `stdout` and `stderr`, even though the run
+then stops on `Not logged in` because the sandbox has no credentials. The
+PreToolUse hooks never fire there, since no tool is called: feed them a
+`{"tool_name":"Bash","tool_input":{"command":"…"}}` event on stdin under `sh -c`,
+as `internal/sandbox/reap_test.go` does. The SessionStart hook writes
+`/tmp/agent-harness/interactive-git-guard.sh`, the same file your own session's
+guard runs, so a changed guard applies to your session from then on.
+
 ## See also
 
 - [`image`, `dockerfile` and `[cache]`](../reference/config.md)

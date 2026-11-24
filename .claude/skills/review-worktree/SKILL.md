@@ -28,7 +28,10 @@ implementation transcript. Write one line: what should now be true.
    §Exit-code contract). If the diff touches the Claude CLI argv or settings,
    look each flag up in `claude --help` in the sandbox, and for inline
    `--settings` JSON, run `claude --settings '<json>' --help` to confirm it
-   parses (it exits 1 if not). An argv-shape test proves neither (#261). To
+   parses (it exits 1 if not). An argv-shape test proves neither (#261). The
+   session hooks' JSON is `internal/sandbox/testdata/session-settings.json`;
+   run it as `docs/how-to/sandbox-image.md` §Checking a hook change against
+   the pinned CLI shows, not through a scratch `_test.go` (#437). To
    read the CLI's own code, search the binary for a fixed string as
    `docs/how-to/sandbox-image.md` §Searching the bundled Claude CLI shows;
    a `.{N}literal` context regex on it runs for minutes (#310).

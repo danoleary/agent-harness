@@ -156,7 +156,9 @@ func interactiveGitGuardCommand(dir string) string {
 // sessionSettings is the `--settings` JSON every sandboxed session starts with.
 // It travels on the command line rather than in the image so a change reaches
 // the next session without a new base image release, and it adds to the
-// Consumer's own project settings rather than replacing them.
+// Consumer's own project settings rather than replacing them. A copy is kept in
+// testdata/session-settings.json, so a session can run the pinned CLI on it
+// (docs/how-to/sandbox-image.md; #437).
 func sessionSettings() string { return sessionSettingsIn(guardDir) }
 
 // sessionSettingsIn is sessionSettings with the guard script installed in dir.

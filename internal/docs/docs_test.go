@@ -315,6 +315,32 @@ func TestTheTDDAndReviewSkillsCheckAStreamJSONFieldAgainstTheBundledCLI(t *testi
 	}
 }
 
+// TestTheSkillsPointAHookCheckAtTheSessionSettingsGolden pins where a session
+// gets the session hooks' --settings JSON to run against the pinned CLI (#437):
+// the golden internal/sandbox keeps, not a scratch _test.go in the package that
+// `git add -A` can commit.
+func TestTheSkillsPointAHookCheckAtTheSessionSettingsGolden(t *testing.T) {
+	root := repoRoot(t)
+	const how = "§Checking a hook change against the pinned CLI"
+	for _, c := range []struct{ skill, section string }{
+		{".claude/skills/tdd/SKILL.md", "Repo guards"},
+		{".claude/skills/review-worktree/SKILL.md", "2. Read the diff"},
+	} {
+		text := section(t, filepath.Join(root, c.skill), c.section)
+		for _, want := range []string{"internal/sandbox/testdata/session-settings.json", how, "scratch `_test.go`"} {
+			if !strings.Contains(text, want) {
+				t.Errorf("%s §%s does not mention %q; point a hook check at the session settings golden", c.skill, c.section, want)
+			}
+		}
+	}
+	text := section(t, filepath.Join(root, "docs/how-to/sandbox-image.md"), strings.TrimPrefix(how, "§"))
+	for _, want := range []string{"internal/sandbox/testdata/session-settings.json", "-update", "hook_started", "hook_response", "Not logged in"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("sandbox-image.md %s does not mention %q", how, want)
+		}
+	}
+}
+
 // TestTheTDDSkillChecksEachNewCallSiteTurnsATestRed pins the wiring check in
 // /tdd's Finish (#419): a session that tests a new helper on its own and wires it
 // in afterwards never sees a red test for the wiring, so before the commit it
