@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/danoleary/agent-harness/internal/git"
 )
@@ -959,6 +960,127 @@ func TestPreflightSurfacesAFailedRebuild(t *testing.T) {
 	err := Preflight(pc)
 	if err == nil || !strings.Contains(err.Error(), "out of date") || !strings.Contains(err.Error(), "docker build") {
 		t.Errorf("Preflight() = %v, want an out-of-date rebuild failure with the manual command", err)
+	}
+}
+
+// steppingClock returns start on its first call and start+each step after, so a
+// test can pin the elapsed time Preflight narrates.
+func steppingClock(steps ...time.Duration) func() time.Time {
+	start := time.Date(2026, 11, 20, 9, 0, 0, 0, time.UTC)
+	calls := 0
+	return func() time.Time {
+		at := start
+		if calls > 0 && calls <= len(steps) {
+			at = start.Add(steps[calls-1])
+		}
+		calls++
+		return at
+	}
+}
+
+// The #464 incident: a harness upgrade changed the sandbox Dockerfile, so the
+// checkout image's fingerprint label was stale and Preflight spent 6m21s
+// rebuilding it with nothing in the run log between `fetched` and `already
+// claimed`. Both ends of the rebuild must now be narrated, with why and how long.
+func TestPreflightNarratesAStaleRebuildWithItsDuration(t *testing.T) {
+	run := fakeDocker(map[string][]reply{
+		"info":  one([]byte("Server Version: 27.0.0"), nil),
+		"image": {{[]byte(`[{"Id":"sha256:abc"}]`), nil}, {[]byte("0123stale\n"), nil}},
+	}, nil)
+	var events []string
+	built := false
+	pc, _ := staleFixture(t, run, func(string, string, string) error {
+		if len(events) != 1 {
+			t.Errorf("the build-start event should be narrated before the build runs; events = %q", events)
+		}
+		built = true
+		return nil
+	})
+	pc.Narrate = func(m string) { events = append(events, m) }
+	pc.Now = steppingClock(6*time.Minute + 21*time.Second + 400*time.Millisecond)
+	if err := Preflight(pc); err != nil || !built {
+		t.Fatalf("Preflight() = %v (built %v), want a rebuild then pass", err, built)
+	}
+	if len(events) != 2 {
+		t.Fatalf("events = %q, want a start and an end", events)
+	}
+	if !strings.Contains(events[0], testImage) || !strings.Contains(events[0], "Dockerfile changed since the image was built") {
+		t.Errorf("start event = %q, want it to name the image and say its Dockerfile changed", events[0])
+	}
+	if want := "sandbox image " + strconv.Quote(testImage) + " rebuilt in 6m21s"; events[1] != want {
+		t.Errorf("end event = %q, want %q", events[1], want)
+	}
+}
+
+// A missing image is built with its own reason, and a failure is narrated with
+// its elapsed time rather than a success line.
+func TestPreflightNarratesABuildOnMissAndItsFailure(t *testing.T) {
+	run := fakeDocker(map[string][]reply{
+		"info":  one(nil, nil),
+		"image": one([]byte("Error: No such image: herd-agent-harness:latest"), errFake),
+	}, nil)
+	var events []string
+	pc := pf(run, func(string, string, string) error { return errFake }, plentyDisk)
+	pc.Narrate = func(m string) { events = append(events, m) }
+	pc.Now = steppingClock(42 * time.Second)
+	if err := Preflight(pc); err == nil {
+		t.Fatal("Preflight should fail when the build fails")
+	}
+	if len(events) != 2 {
+		t.Fatalf("events = %q, want a start and a failure", events)
+	}
+	if !strings.Contains(events[0], "missing") || !strings.Contains(events[0], testDockerfile) {
+		t.Errorf("start event = %q, want it to say the image is missing and name the Dockerfile", events[0])
+	}
+	if !strings.Contains(events[1], "build failed after 42s") || !strings.Contains(events[1], errFake.Error()) {
+		t.Errorf("end event = %q, want the failure with its elapsed time and reason", events[1])
+	}
+}
+
+// A pull on a miss is narrated the same way: it is the same silent wait.
+func TestPreflightNarratesAPullOnMiss(t *testing.T) {
+	run := fakeDocker(map[string][]reply{
+		"info":  one(nil, nil),
+		"image": {{nil, errFake}, {nil, nil}},
+	}, nil)
+	var events []string
+	pc := pf(run, noBuild(t), plentyDisk)
+	pc.Dockerfile = ""
+	pc.Narrate = func(m string) { events = append(events, m) }
+	pc.Now = steppingClock(3 * time.Second)
+	if err := Preflight(pc); err != nil {
+		t.Fatalf("Preflight() = %v, want a pull then pass", err)
+	}
+	if len(events) != 2 || !strings.Contains(events[0], "pulling") || !strings.HasSuffix(events[1], "pulled in 3s") {
+		t.Errorf("events = %q, want a pull start and `pulled in 3s`", events)
+	}
+}
+
+// An image built from the current Dockerfile needs no build, so nothing is
+// narrated: the run log stays as quiet as it was.
+func TestPreflightNarratesNothingWhenTheFingerprintMatches(t *testing.T) {
+	byVerb := map[string][]reply{"info": one(nil, nil)}
+	pc, fp := staleFixture(t, fakeDocker(byVerb, nil), noBuild(t))
+	byVerb["image"] = []reply{{nil, nil}, {[]byte(fp + "\n"), nil}}
+	var events []string
+	pc.Narrate = func(m string) { events = append(events, m) }
+	if err := Preflight(pc); err != nil {
+		t.Fatalf("Preflight() = %v, want nil", err)
+	}
+	if len(events) != 0 {
+		t.Errorf("events = %q, want none for a current image", events)
+	}
+}
+
+// Narrate is optional: a config without one (doctor, older callers) still builds.
+func TestPreflightBuildsWithoutANarrator(t *testing.T) {
+	run := fakeDocker(map[string][]reply{
+		"info":  one(nil, nil),
+		"image": {{nil, nil}, {[]byte("old\n"), nil}},
+	}, nil)
+	pc, _ := staleFixture(t, run, func(string, string, string) error { return nil })
+	if err := Preflight(pc); err != nil {
+		t.Errorf("Preflight() = %v, want nil", err)
 	}
 }
 

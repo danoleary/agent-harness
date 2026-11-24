@@ -38,9 +38,10 @@ type Runner struct {
 	// is unit-testable without a Docker daemon or a real wait.
 	run   func(dockerArgs []string, opts session.Options) session.Outcome
 	sleep func(time.Duration)
-	// ensureImage makes a branch-scoped image launchable (sandbox.Preflight in
-	// production); branchImages remembers each one's verdict for this run, so the
-	// prep and every gate share one build — or one failed build (#61).
+	// ensureImage makes the checkout image, or a branch-scoped one, launchable
+	// (sandbox.Preflight in production); branchImages remembers each branch
+	// image's verdict for this run, so the prep and every gate share one build —
+	// or one failed build (#61).
 	ensureImage  func(sandbox.PreflightConfig) error
 	branchImages map[string]error
 	// skillDrift lists the checkout's `.claude/` paths that differ from
@@ -205,7 +206,17 @@ func (r *Runner) ShellPreview(s ShellRun) []string {
 // before a stage commits to a run (claiming the ticket, mutating tracker state).
 // A refusal is a setup error, so it ends by pointing at `agent-harness doctor`.
 func (r *Runner) Preflight() error {
-	return config.WithDoctorHint(sandbox.Preflight(sandbox.PreflightFor(r.cfg.Image, r.cfg.ProjectPath, r.cfg.Dockerfile)))
+	return config.WithDoctorHint(r.ensureImage(r.narrated(sandbox.PreflightFor(r.cfg.Image, r.cfg.ProjectPath, r.cfg.Dockerfile))))
+}
+
+// narrated points pc's build/pull narration at this run's log, so a
+// multi-minute image build shows in run.jsonl with its reason and duration
+// rather than only on stderr (#464).
+func (r *Runner) narrated(pc sandbox.PreflightConfig) sandbox.PreflightConfig {
+	if r.log != nil {
+		pc.Narrate = r.log.Event
+	}
+	return pc
 }
 
 // ensureWorktreeImage builds (or reuses) the branch-scoped image a worktree's
@@ -224,7 +235,7 @@ func (r *Runner) ensureWorktreeImage(worktreePath string) error {
 	if r.log != nil {
 		r.log.Event(fmt.Sprintf("branch modifies the sandbox Dockerfile (%s) — running its worktree commands in %s, built from the branch (#61)", r.cfg.Dockerfile, image))
 	}
-	err := r.ensureImage(sandbox.PreflightFor(image, worktreePath, r.cfg.Dockerfile))
+	err := r.ensureImage(r.narrated(sandbox.PreflightFor(image, worktreePath, r.cfg.Dockerfile)))
 	if err != nil {
 		err = fmt.Errorf("branch modifies the sandbox Dockerfile (%s) and its image %s could not be prepared, so its prep and gates cannot run in the image they would ship: %w", r.cfg.Dockerfile, image, err)
 	}

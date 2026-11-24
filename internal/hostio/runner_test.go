@@ -389,6 +389,46 @@ func TestShellRunsABranchThatChangesTheDockerfileInItsOwnImage(t *testing.T) {
 	}
 }
 
+// #464: the checkout image's Preflight narrates a build into this run's log, so a
+// multi-minute rebuild is not a silent gap in run.jsonl.
+func TestPreflightNarratesTheCheckoutImageBuildInTheRunLog(t *testing.T) {
+	r, _ := testRunner(t)
+	var got sandbox.PreflightConfig
+	r.ensureImage = func(pc sandbox.PreflightConfig) error {
+		got = pc
+		if pc.Narrate != nil {
+			pc.Narrate("sandbox image rebuilt in 6m21s")
+		}
+		return nil
+	}
+	if err := r.Preflight(); err != nil {
+		t.Fatalf("Preflight() = %v", err)
+	}
+	if got.Image != r.cfg.Image {
+		t.Errorf("Preflight checked image %q, want the checkout image %q", got.Image, r.cfg.Image)
+	}
+	raw, err := os.ReadFile(filepath.Join(r.log.Dir, "run.jsonl"))
+	if err != nil || !strings.Contains(string(raw), "sandbox image rebuilt in 6m21s") {
+		t.Errorf("run.jsonl does not narrate the image build (%v):\n%s", err, raw)
+	}
+}
+
+// A branch image's build is narrated into the run log the same way.
+func TestShellNarratesTheBranchImageBuildInTheRunLog(t *testing.T) {
+	r, wt, _, _ := branchDockerfileRunner(t, "FROM base:0.5.0\n", "FROM base:0.5.0\nRUN install-go\n", nil)
+	r.ensureImage = func(pc sandbox.PreflightConfig) error {
+		if pc.Narrate != nil {
+			pc.Narrate("sandbox image built in 2m3s")
+		}
+		return nil
+	}
+	r.Shell(ShellRun{Label: "prep", Command: "go mod download", WorktreePath: wt, Cap: time.Minute})
+	raw, err := os.ReadFile(filepath.Join(r.log.Dir, "run.jsonl"))
+	if err != nil || !strings.Contains(string(raw), "sandbox image built in 2m3s") {
+		t.Errorf("run.jsonl does not narrate the branch image build (%v):\n%s", err, raw)
+	}
+}
+
 func TestShellKeepsTheCheckoutImageWhenTheBranchLeavesTheDockerfileAlone(t *testing.T) {
 	r, wt, seen, ensured := branchDockerfileRunner(t, "FROM base:0.5.0\n", "FROM base:0.5.0\n", nil)
 

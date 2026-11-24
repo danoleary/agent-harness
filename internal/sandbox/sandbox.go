@@ -623,6 +623,12 @@ func PullImage(image string) error {
 // lands) for both paths. Run/Build/Pull/DiskFree are injected so the check is
 // unit-testable; production passes ProbeRunner, BuildImage, PullImage, and
 // FreeDiskBytes.
+//
+// Narrate, when set, receives one line as an image build or pull starts (saying
+// why) and one as it ends (with its elapsed time, or the failure), so a
+// multi-minute rebuild shows in the run log rather than as an unexplained gap
+// between two events (#464); docker's own chatter stays on stderr. Now is the
+// clock that times it, time.Now when nil.
 type PreflightConfig struct {
 	Image        string
 	Dockerfile   string
@@ -631,6 +637,31 @@ type PreflightConfig struct {
 	Build        func(image, dockerfile, buildContext string) error
 	Pull         func(image string) error
 	DiskFree     func(path string) (uint64, error)
+	Narrate      func(message string)
+	Now          func() time.Time
+}
+
+// timed narrates the start of a build or pull, runs it, and narrates its end:
+// `<subject> <done> in 6m21s` on success, `<subject> <verb> failed after 42s: …`
+// on failure. With no Narrate it just runs fn.
+func (pc PreflightConfig) timed(start, subject, done, verb string, fn func() error) error {
+	if pc.Narrate == nil {
+		return fn()
+	}
+	now := pc.Now
+	if now == nil {
+		now = time.Now
+	}
+	pc.Narrate(start)
+	began := now()
+	err := fn()
+	elapsed := now().Sub(began).Round(time.Second)
+	if err != nil {
+		pc.Narrate(fmt.Sprintf("%s %s failed after %s: %v", subject, verb, elapsed, err))
+	} else {
+		pc.Narrate(fmt.Sprintf("%s %s in %s", subject, done, elapsed))
+	}
+	return err
 }
 
 // PreflightFor builds the production PreflightConfig for a checkout, wiring the
@@ -731,7 +762,11 @@ func (pc PreflightConfig) rebuildIfStale() error {
 	if err == nil && strings.TrimSpace(string(out)) == want {
 		return nil
 	}
-	if err := pc.Build(pc.Image, pc.Dockerfile, pc.BuildContext); err != nil {
+	if err := pc.timed(
+		fmt.Sprintf("sandbox image %q is out of date — the Dockerfile changed since the image was built (%s); rebuilding it (this takes a few minutes)", pc.Image, pc.Dockerfile),
+		fmt.Sprintf("sandbox image %q", pc.Image), "rebuilt", "rebuild",
+		func() error { return pc.Build(pc.Image, pc.Dockerfile, pc.BuildContext) },
+	); err != nil {
 		return fmt.Errorf(
 			"sandbox image %q is out of date with %s and the rebuild failed — run `docker build -t %s -f %s %s` manually (%s)",
 			pc.Image, pc.Dockerfile, pc.Image, pc.Dockerfile, pc.BuildContext, err,
@@ -744,8 +779,13 @@ func (pc PreflightConfig) rebuildIfStale() error {
 // declared, else pulls the named prebuilt ref (ADR-0008). Each path surfaces the
 // manual recovery command in its error.
 func (pc PreflightConfig) resolveMissingImage() error {
+	subject := fmt.Sprintf("sandbox image %q", pc.Image)
 	if pc.Dockerfile != "" {
-		if err := pc.Build(pc.Image, pc.Dockerfile, pc.BuildContext); err != nil {
+		if err := pc.timed(
+			fmt.Sprintf("sandbox image %q missing — building it from %s (this takes a few minutes)", pc.Image, pc.Dockerfile),
+			subject, "built", "build",
+			func() error { return pc.Build(pc.Image, pc.Dockerfile, pc.BuildContext) },
+		); err != nil {
 			return fmt.Errorf(
 				"sandbox image %q missing and the build failed — run `docker build -t %s -f %s %s` manually (%s)",
 				pc.Image, pc.Image, pc.Dockerfile, pc.BuildContext, err,
@@ -753,7 +793,11 @@ func (pc PreflightConfig) resolveMissingImage() error {
 		}
 		return nil
 	}
-	if err := pc.Pull(pc.Image); err != nil {
+	if err := pc.timed(
+		fmt.Sprintf("sandbox image %q missing — pulling it", pc.Image),
+		subject, "pulled", "pull",
+		func() error { return pc.Pull(pc.Image) },
+	); err != nil {
 		return fmt.Errorf(
 			"sandbox image %q missing and the pull failed — run `docker pull %s` manually, or check the ref/registry auth (%s)",
 			pc.Image, pc.Image, err,
