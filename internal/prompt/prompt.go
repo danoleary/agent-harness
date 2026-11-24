@@ -45,6 +45,16 @@ import (
 // carry one Consumer's toolchain to every other Consumer's agent.
 const bashQuirkSteer = "Sandbox bash quirk (BEH-401/BEH-598/BEH-601/BEH-645): the bundled Claude CLI's Bash tool can surface opaque errors that look like a bug in your command but are an environment artifact, in four ways. (1) It intermittently mangles a single Bash call that BOTH pipes into `head`/`tail` AND uses a command substitution like `cd \"$(...)\"`, producing errors like `head: invalid number of bytes: 'set -euo pipefail; ...'` or `cd: too many arguments`. (2) When a plain command exits non-zero BY DESIGN, the tool can collapse that into a bare `Error` string with the real exit code and stderr stripped — e.g. `git merge-base HEAD origin/main` exits 1 when two commits share no common ancestor, which is an expected signal, not a failure. (3) A `VAR=value; cmd \"$VAR\"` assignment-then-use within ONE Bash call can expand `$VAR` to the EMPTY string: the failure is silent (empty output) or surfaces as a path with the prefix missing (e.g. `\"$DP/dist\"` becomes `/dist` → `cannot access '/dist'`). `&&`-chaining the assignment to its use (`VAR=value && cmd \"$VAR\"`) expands fine; `;`-separating it is what drops the variable. (4) THE WORST, because it makes a GREEN gate look RED: chaining trailing statements onto a GATE command in one Bash call — e.g. `<gate command> > /tmp/gate.log 2>&1; echo exit=$?; grep -i error /tmp/gate.log | head` — can concatenate those trailing statements as ARGUMENTS onto the gate's own command, so the underlying tool receives `echo exit=$? grep …` where it expected files or targets. It then fails with an argument/target complaint (a formatter reporting it matched no input files, a test runner reporting an unknown target) and your task runner reports a non-zero lifecycle exit — a spurious failure on a gate that actually PASSED. Work around all four: run one command per Bash call, prefer absolute paths over `cd \"$(...)\"`, and don't tack `| head -n N` onto a compound command; when a plain command (not a gate — see below) returns a bare `Error`, do NOT assume it broke — re-run it capturing the exit code explicitly (append `; echo exit=$?`, or use `cmd || echo \"exit $?\"`) to tell an expected non-zero exit from a real failure; avoid intra-call shell variables — inline the absolute path, `&&`-chain instead of `;`, split into separate calls, or use the Grep/Glob tools with literal absolute paths; and run each configured verification gate as its OWN Bash call with NOTHING appended — no `; echo exit=$?`, no `> log 2>&1; grep … | head` — and take the tool's answer AS its exit status, because `$?` does not carry over to a later Bash call: a gate call that returns without the tool's `Error` marker (a bare `Error` or `Exit code N`) exited 0, a bare `(Bash completed with no output)` included, while a non-zero exit always comes back marked `Error` as in (2). So do NOT re-run a gate just to learn its exit status: on green move on, on red read the output it returned for the failure line; and if a gate reds with an argument/target complaint naming input it was never meant to receive, re-run it ALONE before treating it as a real failure. Retrying verbatim won't help in any case — split it up, inspect the exit code, drop the intra-call variable, or re-run the gate alone."
 
+// backgroundWaitSteer is how a session waits on a long run (#426). A review
+// session ran its gate with run_in_background and also armed a Monitor on
+// `tail -f <log> | grep --line-buffered ...`. The gate ended and the session
+// reached end_turn, but `tail -f` never exits, so the CLI held the finished session
+// open until the Monitor's 10-minute expiry, idle time the session cap counts. The
+// CLI already wakes the session when a background command ends, so the steer says
+// to rely on that and, when a Monitor is needed at all, to give it a source that
+// ends with the run. Like bashQuirkSteer it is envelope content on every Stage.
+const backgroundWaitSteer = "Waiting on a long run: when you start a command with run_in_background, rely on its completion notification, which wakes you when the command ends; end your turn rather than poll, sleep or arm a Monitor for it. If you do arm a Monitor, never use `tail -f` as its source: `tail -f` never exits, so the Monitor stays armed after the run ends and keeps your finished session open until the Monitor expires, idle time that counts against the session's time cap. Give a Monitor a source that ends when the run ends instead, an until-loop that exits on the run's summary line or its failure line, e.g. `until grep -qE '<summary line>|<failure line>' <log>; do sleep 5; done; tail -n 20 <log>`."
+
 // Stage names which sandboxed session a prompt drives. It is the one axis the
 // caller chooses; everything that varies within a Stage (resume state, filed
 // findings, CI logs) is a field of Context, so a new variant costs no interface.
@@ -443,15 +453,16 @@ func worktreeAt(slug, worktreePath string) string {
 }
 
 // tddFooter is the shared contract footer for every implementation-stage prompt
-// (fresh, resumed-branch, retry). It structurally guarantees the four
+// (fresh, resumed-branch, retry). It structurally guarantees the five
 // non-overridable envelope items: branch/handoff contract, tracker-off steer,
-// findings steer, and bash-quirk steer.
+// findings steer, bash-quirk steer and background-wait steer.
 func tddFooter(id, kind, branchPrefix, slug string) string {
 	return join(
 		branchHandoffContract(branchPrefix, slug),
 		trackerOffSteer(id, kind),
 		implementFindingsSteer,
 		bashQuirkSteer,
+		backgroundWaitSteer,
 	)
 }
 
@@ -773,6 +784,7 @@ func retrospective(c Context) string {
 		retroContractSteer(c.Tracker),
 		alreadyFiledSection(c.Filed),
 		bashQuirkSteer,
+		backgroundWaitSteer,
 	)
 }
 
@@ -872,6 +884,7 @@ func reviewContractFooter(kind, branch string) string {
 		trackerOff(kind),
 		"Do NOT emit or file any harness-improvement findings, and do NOT write `/findings/out.json`. The retrospective tool, running last over every transcript, owns findings now — this is a deliberate change from the skill's default. Your only outputs are your report and any review fixes committed locally.",
 		bashQuirkSteer,
+		backgroundWaitSteer,
 	)
 }
 
@@ -1061,6 +1074,8 @@ func ciFix(c Context) string {
 		"Do NOT emit or file any harness-improvement findings, and do NOT write `/findings/out.json`. The retrospective tool owns findings — your only output is the local fix commit, or no commit at all when there is nothing real to fix.",
 		"",
 		bashQuirkSteer,
+		"",
+		backgroundWaitSteer,
 	)
 	return withFixBody(c, withCheckpoint(c, lines))
 }
@@ -1179,6 +1194,8 @@ func rebaseFix(c Context) string {
 		"Do NOT emit or file any harness-improvement findings, and do NOT write `/findings/out.json`. The retrospective tool owns findings — your only output is the resolved, rebased worktree and the overlap report of step 6.",
 		"",
 		bashQuirkSteer,
+		"",
+		backgroundWaitSteer,
 	}
 	return withFixBody(c, withCheckpoint(c, lines))
 }
@@ -1224,6 +1241,8 @@ func mergeFix(c Context) string {
 		"Do NOT emit or file any harness-improvement findings, and do NOT write `/findings/out.json`. The retrospective tool owns findings — your only output is the merged worktree.",
 		"",
 		bashQuirkSteer,
+		"",
+		backgroundWaitSteer,
 	}
 	return withFixBody(c, withCheckpoint(c, lines))
 }

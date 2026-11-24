@@ -48,6 +48,8 @@ func securityFix(c Context) string {
 		"Do NOT emit or file any harness-improvement findings, and do NOT write `/findings/out.json`. The retrospective tool owns findings — your only output is the local fix commit, or no commit at all when no fix works.",
 		"",
 		bashQuirkSteer,
+		"",
+		backgroundWaitSteer,
 	)
 	return withFixBody(c, lines)
 }

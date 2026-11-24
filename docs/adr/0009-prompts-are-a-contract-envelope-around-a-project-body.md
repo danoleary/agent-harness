@@ -25,6 +25,8 @@ envelope is harness-owned and non-overridable and the body is Consumer-supplied.
 
 - **Envelope (harness):** injected ticket context, the findings-dropbox protocol,
   the tracker-off steer, the branch/handoff contract, the sandbox bash-quirk steer,
+  the background-wait steer (rely on a background command's completion notice, never
+  a `tail -f` Monitor source; #426),
   and — for the retrospective — the **sanitize rule** (Harness findings carry
   failure-class + harness-side detail only, never Consumer source/secrets; ADR-0011).
 - **Body (Consumer):** `.agent-harness/prompts/{implement,review,retro}.md` — which
