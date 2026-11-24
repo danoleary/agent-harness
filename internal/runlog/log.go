@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/danoleary/agent-harness/internal/loopstream"
+	"github.com/danoleary/agent-harness/internal/version"
 )
 
 // Logger writes one ticket's logs under logs/<ticket-id>/.
@@ -138,7 +139,13 @@ func (l *Logger) Event(message string) {
 // record — with its kind/ticket/stage — is appended to the global stream the viewer
 // tails. A record with no Ticket is stamped with this logger's ticket; the TS is
 // shared with the console/run.jsonl line so the three stay aligned.
+//
+// A KindStageStart record is the run's header, and every pipeline writes it
+// here, so this is where it gains the harness build that ran it (#458).
 func (l *Logger) Structured(r loopstream.Record) {
+	if r.Kind == loopstream.KindStageStart {
+		r.Message += " · " + version.Build()
+	}
 	ts := l.narrate(r.Message)
 	if l.stream == nil {
 		return

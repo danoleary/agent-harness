@@ -16,6 +16,11 @@ judged the code.
 - `git diff <base>...HEAD` in the worktree, where `<base>` is the commit the
   prompt names as the branch's base (else `origin/main`; local `main` may be
   stale), only to understand what the sessions were trying to do.
+- The build commit at the end of each `run <id> — …` header in `run.jsonl`
+  (`· agent-harness <version> (<commit>)`). Before you report behaviour as
+  friction, check with `git log <commit>..origin/main` that no commit already
+  on main has fixed it: if one has, the binary was stale, and the class is not
+  new (#458).
 
 ## 2. Look for friction
 
