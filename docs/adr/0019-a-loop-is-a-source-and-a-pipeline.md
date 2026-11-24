@@ -495,6 +495,24 @@ signatures did not name, and each such red cost a fix attempt.
 - The re-run does not wait for sibling sandboxes to finish; it runs at once, in
   the gate slot the first run held.
 
+## Amendment, 2026-11-24: a transform failure explains a failed deps-chunk import, and a red re-run hands on the first log (#450)
+
+A herd storybook gate went red because Vite could not resolve a bare package
+import inside a pre-bundled dependency. The browser's import of that
+optimised-deps chunk failed with it, which the #427 classifier still read as a
+Vite reload, so the gate was re-run. The re-run was red again, with secondary
+timeouts on top, and its noisier log was the one the re-launched session got.
+
+- **A failed import of an optimised-deps chunk is a Vite reload only when no
+  transform failure explains it.** A log holding `Failed to resolve import` or
+  `Plugin: vite:import-analysis` makes that symptom the diff's. Vite's own
+  re-optimise and reload lines still re-run the gate, transform failure or not:
+  they say a reload happened. A bare `Pre-transform error` does not count, since
+  Vite prints one for a stale deps chunk mid-re-optimisation too.
+- **A gate red on its re-run hands on the first run's log** (`GateResult.Log`),
+  which the classifier read and which carries the root cause. Until now it was
+  the re-run's; that one stays in the log dir as `gate-…-rerun-*.log`.
+
 ## Amendment, 2026-11-24: a Vite reload is matched on its own lines, and a gate can say its red is not infra (#427)
 
 A herd storybook gate went red on a story whose import the Vite dev server could

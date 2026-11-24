@@ -44,6 +44,23 @@ A story failed to import: Vite could not transform a module. This is not a depen
  ELIFECYCLE  Command failed with exit code 1.
 `
 
+// depResolveRed is the #450 storybook gate red without the Consumer wrapper's
+// epilogue: Vite could not resolve a bare package import inside a pre-bundled
+// dependency, so the browser's import of that optimised-deps chunk failed too. The
+// failed chunk import is the transform failure's symptom, not a re-optimisation.
+const depResolveRed = `5:52:31 PM [vite] Pre-transform error: Failed to resolve import "@floating-ui/dom" from "node_modules/.vite/vitest/da39a3ee5e6b4b0d3255bfef95601890afd80709/deps/chunk-QZ7VJ3LM.js?v=4b1c9e02". Does the file exist?
+5:52:31 PM [vite] Internal server error: Failed to resolve import "@floating-ui/dom" from "node_modules/.vite/vitest/da39a3ee5e6b4b0d3255bfef95601890afd80709/deps/chunk-QZ7VJ3LM.js?v=4b1c9e02". Does the file exist?
+  Plugin: vite:import-analysis
+  File: /work/herd/web/node_modules/.vite/vitest/da39a3ee5e6b4b0d3255bfef95601890afd80709/deps/chunk-QZ7VJ3LM.js?v=4b1c9e02:12:27
+
+ FAIL   storybook (chromium)  src/routes/call/-components/more-tray.stories.tsx [ src/routes/call/-components/more-tray.stories.tsx ]
+TypeError: Failed to fetch dynamically imported module: http://localhost:63315/node_modules/.vite/vitest/da39a3ee5e6b4b0d3255bfef95601890afd80709/deps/chunk-QZ7VJ3LM.js?v=4b1c9e02
+
+ Test Files  1 failed | 69 passed (70)
+      Tests  67 passed (67)
+ ELIFECYCLE  Command failed with exit code 1.
+`
+
 // gateScript is one scripted gate run: the log it writes and the outcome it ends in.
 type gateScript struct {
 	log string
@@ -131,6 +148,10 @@ func TestAGateIsRerunOnlyOverAnInfrastructureSignature(t *testing.T) {
 		{"vitest saw vite reload a test", gateScript{log: "Vite unexpectedly reloaded a test. This may cause tests to fail, lead to flaky behaviour or duplicated test runs.\n", out: session.Outcome{ExitCode: 1}}, true},
 		{"a story file that failed to import", gateScript{log: "TypeError: Failed to fetch dynamically imported module: http://localhost:63315/src/routes/call/-components/more-tray.stories.tsx\n", out: session.Outcome{ExitCode: 1}}, false},
 		{"an import vite could not resolve", gateScript{log: importResolveRed, out: session.Outcome{ExitCode: 1}}, false},
+		{"a deps chunk that failed to import over a resolve failure", gateScript{log: depResolveRed, out: session.Outcome{ExitCode: 1}}, false},
+		{"a deps chunk that failed to import over an import-analysis error", gateScript{log: "  Plugin: vite:import-analysis\nTypeError: Failed to fetch dynamically imported module: http://localhost:63315/node_modules/.vite/deps/chunk-5TQXH3ZB.js?v=8f2c1a7e\n", out: session.Outcome{ExitCode: 1}}, false},
+		{"a stale deps chunk's pre-transform error", gateScript{log: "[vite] Pre-transform error: The file does not exist at \"/work/herd/web/node_modules/.vite/deps/chunk-5TQXH3ZB.js?v=8f2c1a7e\" which is in the optimize deps directory.\nTypeError: Failed to fetch dynamically imported module: http://localhost:63315/node_modules/.vite/deps/chunk-5TQXH3ZB.js?v=8f2c1a7e\n", out: session.Outcome{ExitCode: 1}}, true},
+		{"a re-optimisation line beside a resolve failure", gateScript{log: "[vite] ✨ new dependencies optimized: @floating-ui/dom\n" + depResolveRed, out: session.Outcome{ExitCode: 1}}, true},
 		{"a reload line the gate says was no re-optimisation", gateScript{log: "[vite] ✨ optimized dependencies changed. reloading\nThis is not a dependency re-optimization; fix the error above before re-running.\n", out: session.Outcome{ExitCode: 1}}, false},
 		{"a timeout beside the no-re-optimisation sentence", gateScript{log: "Error: Test timed out in 30000ms.\nThis is not a dependency re-optimisation.\n", out: session.Outcome{ExitCode: 1}}, true},
 		{"the gate's not-infra marker", gateScript{log: "Error: Test timed out in 30000ms.\ngate-classification: not-infra\n", out: session.Outcome{ExitCode: 1}}, false},
@@ -194,7 +215,9 @@ func TestTheRunLogNamesTheClassOfARed(t *testing.T) {
 }
 
 // A re-run that is red again is the verdict: the gate is red, and its log is the
-// re-run's, which is what a later session is handed.
+// first run's, which is what a later session is handed (#450). The first run is
+// the one the classifier read, and it carries the root cause; the re-run can add
+// secondary failures, such as timeouts, that bury it.
 func TestARerunGateThatIsRedAgainIsRed(t *testing.T) {
 	e, h := scriptedGates(t, append(storybook, config.Gate{Name: "after", Command: "true"}),
 		gateScript{log: storybookCrash, out: session.Outcome{ExitCode: 1}},
@@ -205,8 +228,8 @@ func TestARerunGateThatIsRedAgainIsRed(t *testing.T) {
 	if res.Green() || res.FailedGate != "storybook" {
 		t.Fatalf("got %+v, want storybook red", res)
 	}
-	if res.Log != "gate-storybook-rerun.log" {
-		t.Errorf("Log = %q, want the re-run's log", res.Log)
+	if res.Log != "gate-storybook.log" {
+		t.Errorf("Log = %q, want the first run's log", res.Log)
 	}
 	if got := shellLabels(h); got != "gate-storybook,gate-storybook-rerun" {
 		t.Errorf("gate runs = %s: one re-run, and nothing after a red", got)

@@ -20,7 +20,8 @@ import (
 // on a generic dev-server error such as a pre-transform error or a failed import
 // of a test file: a story whose import cannot be resolved prints those too, and
 // that red is the diff's (#427). A failed dynamic import counts only for a chunk
-// of the optimised deps, reloadImportRE.
+// of the optimised deps, reloadImportRE, and only when no transform failure,
+// transformFailureRE, explains it (#450).
 var infraSignatures = []struct{ cause, needle string }{
 	{"the test browser's connection closed", "browser connection was closed"},
 	{"the test browser's connection closed", "rpc is closed"},
@@ -53,6 +54,14 @@ const viteReload = "a Vite reload"
 // (/.vite/deps/), Vitest's (/.vite/vitest/<hash>/deps/) or Storybook's
 // (/sb-vite/deps/). Over lower-cased text.
 var reloadImportRE = regexp.MustCompile(`failed to fetch dynamically imported module: \S*/(?:\.vite|sb-vite)/(?:\S*/)?deps/`)
+
+// transformFailureRE is Vite failing to resolve or transform a module (#450): a
+// bare import it cannot resolve, even one inside a pre-bundled dependency, fails
+// the browser's import of the optimised-deps chunk that holds it too, so that
+// failed import is the transform failure's symptom, not a re-optimisation. Not a
+// bare "Pre-transform error": Vite prints one for a stale optimised-deps chunk
+// mid-re-optimisation too. Over lower-cased text.
+var transformFailureRE = regexp.MustCompile(`failed to resolve import|plugin: vite:import-analysis`)
 
 // notInfraRE is the line a Consumer's gate prints to say its red is the diff's,
 // whatever else its log holds: no signature re-runs it (#427). Over lower-cased
@@ -93,7 +102,7 @@ func rerunReason(out session.Outcome, log string, fixed []string) string {
 			return s.cause
 		}
 	}
-	if reloads && reloadImportRE.MatchString(text) {
+	if reloads && !transformFailureRE.MatchString(text) && reloadImportRE.MatchString(text) {
 		return viteReload
 	}
 	for _, line := range strings.Split(text, "\n") {
