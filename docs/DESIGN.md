@@ -84,8 +84,11 @@ runnable by hand against a ticket id before the next is added:
    *already exists* keeps the strong "recommend close" wording. Since no verb
    list catches every way a ticket names its target ("one composition root,
    `X`, that both callers use"), a missing symbol is also checked against git
-   history (#116): one that no commit ever added (`git log -S`) was never
-   removed, so it gets the soft note too. Dependency
+   history (#116): one that no commit ever added or removed as a whole word
+   (`git log -G`, so `NewThingy` is not history for `NewThing`, #455) was
+   never removed, so it gets the soft note too. A code span that quotes tool
+   output (`--- FAIL: TestX`, `=== RUN …`) or carries a `<…>` placeholder
+   cites no symbols at all (#455). Dependency
    symbols are not repo code either (#69): a symbol cited behind a package
    qualifier the repo doesn't own (`tea.Model`, where no source-root directory
    is named `tea`) is dropped, and when the ticket names a `go.mod` dependency
