@@ -49,6 +49,10 @@ implementation transcript. Write one line: what should now be true.
 5. **Design** — does it deepen a module or add a shallow pass-through? Does it
    use `CONTEXT.md` vocabulary? Is a changed decision recorded in an ADR?
 6. **Docs** — README, the page under `docs/` that covers the change (`docs/README.md` indexes them; `docs/reference/` for a key, variable, command or message), `docs/DESIGN.md`, the example config.
+   Check any `docs/how-to/` page that describes the behaviour the diff changed:
+   Grep `docs/how-to/` for the loop, stage or command name, e.g. `pr-doctor`,
+   `github_prs`, `conflict`. The implementer's checklist missed one in #439
+   (#443).
    There is no release-notes file; do not create a CHANGELOG, and do not count
    its absence as a gap. `.github/workflows/release.yml` builds the notes from
    merged PRs (`gh release create --generate-notes`), so a ticket's "Release

@@ -358,3 +358,24 @@ func TestTheTDDSkillChecksEachNewCallSiteTurnsATestRed(t *testing.T) {
 		}
 	}
 }
+
+// TestTheTDDAndReviewSkillsCheckTheHowToForAChangedBehaviour pins the how-to
+// pages in both skills' docs checklists (#443): #439 changed pr-doctor's
+// conflict strategy and updated every doc /tdd's Finish listed, but not
+// docs/how-to/fix-open-prs.md, whose table of conflict strategies went stale
+// until review added the row. The checklist names docs/how-to/ and says to grep
+// it for the loop, stage or command the change touches.
+func TestTheTDDAndReviewSkillsCheckTheHowToForAChangedBehaviour(t *testing.T) {
+	root := repoRoot(t)
+	for _, c := range []struct{ skill, section string }{
+		{".claude/skills/tdd/SKILL.md", "Finish"},
+		{".claude/skills/review-worktree/SKILL.md", "2. Read the diff"},
+	} {
+		text := section(t, filepath.Join(root, c.skill), c.section)
+		for _, want := range []string{"`docs/how-to/` page that describes the behaviour", "Grep `docs/how-to/`", "`pr-doctor`", "#443"} {
+			if !strings.Contains(text, want) {
+				t.Errorf("%s §%s does not mention %q; say to check the operator how-to for a changed behaviour", c.skill, c.section, want)
+			}
+		}
+	}
+}

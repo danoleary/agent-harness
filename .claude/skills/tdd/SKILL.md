@@ -155,7 +155,11 @@ harness has to spend a whole extra cycle recovering the diff (#224).
 
 1. Update docs the change makes stale (README, `docs/DESIGN.md`, an ADR, and
    the `docs/reference/` page for a key, variable, command or message you
-   added or changed: `config.md`, `env.md`, `cli.md`, `errors.md`).
+   added or changed: `config.md`, `env.md`, `cli.md`, `errors.md`), and any
+   `docs/how-to/` page that describes the behaviour you changed. Grep
+   `docs/how-to/` for the loop, stage or command name the diff touches, e.g.
+   `pr-doctor`, `github_prs`, `conflict`: #439 changed pr-doctor's conflict
+   strategy and left `fix-open-prs.md`'s table of strategies stale (#443).
    Before numbering a new ADR, check `origin/main`'s `docs/adr/`, not local
    main, and expect a sibling branch may take the same number. The harness
    fetched `origin/main` before the session started; the sandbox has no network
