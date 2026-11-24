@@ -25,6 +25,25 @@ Caused by: Error: [birpc] rpc is closed, cannot call "createTesters"
  ELIFECYCLE  Command failed with exit code 1.
 `
 
+// importResolveRed is a storybook gate red on a story whose import the Vite dev
+// server could not resolve (#427): the shape of the herd log the harness read as
+// a Vite reload and re-ran. The gate's own epilogue says it is no dependency
+// re-optimisation.
+const importResolveRed = `5:41:07 PM [vite] Pre-transform error: Failed to resolve import "./more-tray-menu" from "src/routes/call/-components/more-tray.tsx". Does the file exist?
+5:41:07 PM [vite] Internal server error: Failed to resolve import "./more-tray-menu" from "src/routes/call/-components/more-tray.tsx". Does the file exist?
+  Plugin: vite:import-analysis
+  File: /work/herd/web/src/routes/call/-components/more-tray.tsx:4:29
+
+ FAIL   storybook (chromium)  src/routes/call/-components/more-tray.stories.tsx [ src/routes/call/-components/more-tray.stories.tsx ]
+TypeError: Failed to fetch dynamically imported module: http://localhost:63315/src/routes/call/-components/more-tray.stories.tsx?import&browserv=1764002467000
+
+ Test Files  1 failed | 69 passed (70)
+      Tests  67 passed (67)
+
+A story failed to import: Vite could not transform a module. This is not a dependency re-optimisation; fix the error above before re-running.
+ ELIFECYCLE  Command failed with exit code 1.
+`
+
 // gateScript is one scripted gate run: the log it writes and the outcome it ends in.
 type gateScript struct {
 	log string
@@ -105,7 +124,18 @@ func TestAGateIsRerunOnlyOverAnInfrastructureSignature(t *testing.T) {
 		{"stderr only", gateScript{out: session.Outcome{ExitCode: 1, StderrTail: "Error: [vitest] Browser connection was closed while running tests."}}, true},
 		{"a per-story timeout", gateScript{log: " FAIL  src/routes/call/-components/more-tray.stories.tsx > Open\nError: Test timed out in 30000ms.\nIf this is a long-running test, pass a timeout value as the last argument or configure it globally with \"testTimeout\".\n", out: session.Outcome{ExitCode: 1}}, true},
 		{"vite re-optimised its dependencies", gateScript{log: "[vite] ✨ optimized dependencies changed. reloading\n", out: session.Outcome{ExitCode: 1}}, true},
-		{"vite reloaded a dynamic import", gateScript{log: "TypeError: Failed to fetch dynamically imported module: http://localhost:63315/src/routes/call/-components/more-tray.stories.tsx\n", out: session.Outcome{ExitCode: 1}}, true},
+		{"vite reloaded an optimised-deps chunk", gateScript{log: "TypeError: Failed to fetch dynamically imported module: http://localhost:63315/node_modules/.vite/deps/chunk-5TQXH3ZB.js?v=8f2c1a7e\n", out: session.Outcome{ExitCode: 1}}, true},
+		{"vitest reloaded an optimised-deps chunk", gateScript{log: "TypeError: Failed to fetch dynamically imported module: http://localhost:63315/node_modules/.vite/vitest/da39a3ee5e6b4b0d3255bfef95601890afd80709/deps/@storybook_react.js?v=8f2c1a7e\n", out: session.Outcome{ExitCode: 1}}, true},
+		{"storybook reloaded an optimised-deps chunk", gateScript{log: "TypeError: Failed to fetch dynamically imported module: http://localhost:6006/node_modules/.cache/storybook/1a2b3c/sb-vite/deps/chunk-5TQXH3ZB.js?v=8f2c1a7e\n", out: session.Outcome{ExitCode: 1}}, true},
+		{"vite optimised new dependencies", gateScript{log: "[vite] ✨ new dependencies optimized: @radix-ui/react-dialog\n", out: session.Outcome{ExitCode: 1}}, true},
+		{"vitest saw vite reload a test", gateScript{log: "Vite unexpectedly reloaded a test. This may cause tests to fail, lead to flaky behaviour or duplicated test runs.\n", out: session.Outcome{ExitCode: 1}}, true},
+		{"a story file that failed to import", gateScript{log: "TypeError: Failed to fetch dynamically imported module: http://localhost:63315/src/routes/call/-components/more-tray.stories.tsx\n", out: session.Outcome{ExitCode: 1}}, false},
+		{"an import vite could not resolve", gateScript{log: importResolveRed, out: session.Outcome{ExitCode: 1}}, false},
+		{"a reload line the gate says was no re-optimisation", gateScript{log: "[vite] ✨ optimized dependencies changed. reloading\nThis is not a dependency re-optimization; fix the error above before re-running.\n", out: session.Outcome{ExitCode: 1}}, false},
+		{"a timeout beside the no-re-optimisation sentence", gateScript{log: "Error: Test timed out in 30000ms.\nThis is not a dependency re-optimisation.\n", out: session.Outcome{ExitCode: 1}}, true},
+		{"the gate's not-infra marker", gateScript{log: "Error: Test timed out in 30000ms.\ngate-classification: not-infra\n", out: session.Outcome{ExitCode: 1}}, false},
+		{"the not-infra marker in stderr", gateScript{log: "[vite] ✨ optimized dependencies changed. reloading\n", out: session.Outcome{ExitCode: 1, StderrTail: "  Gate-Classification:  NOT-INFRA  "}}, false},
+		{"the marker named in prose", gateScript{log: "Error: Test timed out in 30000ms.\nprint gate-classification: not-infra to stop a re-run\n", out: session.Outcome{ExitCode: 1}}, true},
 		{"no browser session", gateScript{log: "Error: Failed to connect to the browser session \"chromium\" within the timeout.\n", out: session.Outcome{ExitCode: 1}}, true},
 		{"a real red", gateScript{log: "--- FAIL: TestThing (0.00s)\n    thing_test.go:12: got 1, want 2\nFAIL\n", out: session.Outcome{ExitCode: 1}}, false},
 	}
