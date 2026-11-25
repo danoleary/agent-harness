@@ -1395,3 +1395,36 @@ func TestASpentDependabotPRThatConflictsIsAskedToRebaseNotHandedOff(t *testing.T
 		t.Errorf("last comment = %q, want @dependabot rebase", last)
 	}
 }
+
+// #466: GitHub refused the CI watch's checks poll before it pushed anything, so
+// the watch read no CI state and no session ran. That spends no attempt and puts
+// no label on the PR: the next poll works the still-red PR again, as attempt 1.
+func TestRequeueSpendsNoAttemptAndTheNextPollWorksThePRAgain(t *testing.T) {
+	gh := newFakeGitHub(harnessPR(1466, "7c2d9e1"))
+	gh.checks["7c2d9e1"] = github.ChecksRed
+	s := NewSource(gh, testOptions, nil, &quietLog{})
+	s.now = func() time.Time { return testNow }
+
+	item, claim, ok, err := s.Next()
+	if !ok || err != nil {
+		t.Fatalf("Next = ok %v err %v", ok, err)
+	}
+	s.Requeue(item.Context.(Item))
+	if err := claim.Release(); err != nil {
+		t.Fatal(err)
+	}
+
+	posted := gh.posted[1466]
+	if last := posted[len(posted)-1]; !strings.Contains(last, "does not count as an attempt") || !strings.Contains(last, "HTTP 401 or 403") {
+		t.Errorf("the PR must say GitHub refused the poll and no attempt was spent; posted %q", last)
+	}
+	if len(gh.added[1466]) > 0 && strings.Contains(strings.Join(gh.added[1466], ","), "blocked") {
+		t.Errorf("added = %v, want no blocked label: the fault is the host's", gh.added[1466])
+	}
+	if _, _, ok, _ := s.Next(); !ok {
+		t.Fatal("the next poll works the red PR again")
+	}
+	if last := gh.posted[1466][len(gh.posted[1466])-1]; !strings.Contains(last, "attempt 1 of 3") {
+		t.Errorf("the refused poll must not have spent an attempt; posted %q", last)
+	}
+}

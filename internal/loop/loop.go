@@ -623,6 +623,15 @@ func Run(d Deps) int {
 			d.handMergedToHuman(key, outcome.ResolvedBy, outcome.ResolvedWhy)
 		case stages.RunLive:
 			d.leaveToLiveRun(key)
+		case stages.CIAuthFailed:
+			// GitHub refused the PR's checks poll, so the watch read no CI state and
+			// pushed nothing (#466). The Source has already taken the attempt back; give
+			// the claim back so the next poll works the PR again. Not neutral: the
+			// breaker counts it below, as a credential fault sinks every PR.
+			d.Log.Structured(loopstream.Record{Kind: loopstream.KindTicketReleased, Ticket: key, Message: "loop ✗ " + key + " CI watch read no CI state: GitHub refused the checks poll (HTTP 401/403) — nothing pushed; not an attempt; worked again on the next poll (#466)"})
+			if err := claim.Release(); err != nil {
+				d.Log.Event("loop … warning: could not release " + key + " after its checks poll was refused: " + err.Error())
+			}
 		case stages.NoPR:
 			// Release-on-no-PR (BEH-590): a run that finished WITHOUT opening a pushed PR —
 			// any non-cap failure mode: OOM, sandbox crash, a review stage that died before
@@ -653,6 +662,10 @@ func Run(d Deps) int {
 			// base build) that would sink the next item too.
 			d.Log.Structured(loopstream.Record{Kind: loopstream.KindBreakerTrip, Ticket: key, Message: "loop ✗ " + b.report() + " — winding down; fix the environment and relaunch"})
 			return d.stopped("circuit breaker tripped")
+		}
+		// A refused checks poll is worked again on the next tick, not at once (#466).
+		if outcome.Disposition == stages.CIAuthFailed {
+			d.interruptibleSleep(d.Limits.PollInterval)
 		}
 	}
 }

@@ -99,7 +99,14 @@ Every fix is checked host-side before it is pushed: the conflict session must
 leave a clean tree with `origin/main` in its history, a CI fix must be committed,
 and every Gate must be green. If any check fails, nothing is pushed. After a push,
 the loop watches CI until it passes or fails, then runs the retrospective over the
-session transcripts. Project findings from a PR run file into your tracker's
+session transcripts.
+
+If GitHub refuses the loop's checks poll, with a 401 (bad credentials) or a 403 (a
+token that cannot read check runs), the loop polls once more. If it is refused
+again, the run logs `✗ ci-watch-auth-failed`, keeps its worktree, takes back the
+attempt and works the PR again on its next poll. The circuit breaker counts the
+run, so a token that stays refused stops the loop: check `GH_TOKEN` with
+`agent-harness doctor` (ADR-0074). Project findings from a PR run file into your tracker's
 configured `repo`, `project_key` or `team_key` (ADR-0038). Harness findings are
 always routed.
 

@@ -685,39 +685,72 @@ func TestWatchSurfacesRerunError(t *testing.T) {
 	}
 }
 
-func TestWatchDegradesWhenChecksUnobservable(t *testing.T) {
-	// The token opened the PR but can't read check runs (fine-grained PAT). The
-	// PR shipped, so this is a success that degrades — not a failure to auto-fix:
-	// no rerun, no fix, OK, and a reason that points the operator at manual CI.
-	d := &fakeDriver{polls: []pollResult{{v: Pending, err: errChecksUnobservable}}}
-	out := WatchAndFix(d, testWatchCfg(), newFakeClock().now)
-	if !out.OK {
-		t.Fatalf("expected OK (PR shipped, CI just unobservable), got %+v", out)
+// #466: GitHub refused the checks poll's credentials, with a 403 (a token that
+// cannot read check runs, BEH-476) or a 401 (bad credentials, BEH-627). The watch
+// read no CI state at all, so it is no pass: it ends not OK and AuthFailed, with
+// no re-run and no fix, and a reason that names the refusal.
+func TestWatchFailsWhenGitHubRefusesTheChecksPoll(t *testing.T) {
+	cases := map[string]struct {
+		err  error
+		want string
+	}{
+		"403 resource not accessible": {errChecksUnobservable, "unobservable"},
+		"401 bad credentials":         {errChecksUnauthenticated, "not authenticated"},
 	}
-	if d.reruns != 0 || d.fixes != 0 {
-		t.Fatalf("unobservable CI must not trigger rerun/fix; got rerun=%d fix=%d", d.reruns, d.fixes)
-	}
-	if !strings.Contains(strings.ToLower(out.Reason), "unobservable") {
-		t.Fatalf("reason %q should explain CI is unobservable with this token", out.Reason)
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			d := &fakeDriver{polls: []pollResult{{v: Pending, err: tc.err}}}
+			out := WatchAndFix(d, testWatchCfg(), newFakeClock().now)
+			if out.OK || !out.AuthFailed || out.PollFault || out.Pending {
+				t.Fatalf("want a non-OK AuthFailed outcome, got %+v", out)
+			}
+			if d.reruns != 0 || d.fixes != 0 {
+				t.Fatalf("a refused poll must not re-run or fix; got rerun=%d fix=%d", d.reruns, d.fixes)
+			}
+			if !strings.Contains(out.Reason, tc.want) || strings.Contains(out.Reason, "PR was pushed OK") {
+				t.Fatalf("reason %q should contain %q and not read as a pass", out.Reason, tc.want)
+			}
+		})
 	}
 }
 
-func TestWatchDegradesWhenChecksUnauthenticated(t *testing.T) {
-	// push + PR create succeeded, but the poll's `gh pr checks` was rejected with a
-	// 401 / bad credentials (BEH-627). That is a credentials/environment problem, not
-	// a red build, so — like the unobservable degrade — this is a success that leaves
-	// the open PR for a human: no rerun, no fix, OK, and a reason that says the PR was
-	// pushed and CI just couldn't be authenticated.
-	d := &fakeDriver{polls: []pollResult{{v: Pending, err: errChecksUnauthenticated}}}
+// badCredentialsStderr is gh's stderr when GitHub answers the checks poll with
+// HTTP 401, as in BEH-627 and #466.
+const badCredentialsStderr = "Try authenticating with: gh auth login -h github.com: HTTP 401: Bad credentials (https://api.github.com/graphql)"
+
+// refusedChecksRunner is a `gh pr checks` runner that GitHub answers with a 401
+// for the first n calls (n < 0: forever), then green checks JSON. It counts its
+// calls.
+func refusedChecksRunner(n int, calls *int) func() ([]byte, []byte, error) {
+	return func() ([]byte, []byte, error) {
+		*calls++
+		if n < 0 || *calls <= n {
+			return nil, []byte(badCredentialsStderr), errors.New("exit status 1")
+		}
+		return []byte(`[{"name":"check","bucket":"pass","state":"SUCCESS","link":""}]`), nil, nil
+	}
+}
+
+// #466, replaying the incident: the first checks poll was refused with a 401,
+// and a run ten minutes later authenticated. The watch polls once more before it
+// gives up, gh reading its credentials afresh, so a refusal that has cleared reads
+// CI's verdict in the same run.
+func TestWatchRetriesARefusedChecksPollOnce(t *testing.T) {
+	calls := 0
+	d := newGhPollDriver(refusedChecksRunner(1, &calls))
 	out := WatchAndFix(d, testWatchCfg(), newFakeClock().now)
-	if !out.OK {
-		t.Fatalf("expected OK (PR pushed, CI poll just unauthenticated), got %+v", out)
+	if !out.OK || out.Reason != "CI is green" || calls != 2 {
+		t.Fatalf("outcome = %+v after %d polls, want OK with \"CI is green\" on the retry", out, calls)
+	}
+
+	calls = 0
+	d = newGhPollDriver(refusedChecksRunner(-1, &calls))
+	out = WatchAndFix(d, testWatchCfg(), newFakeClock().now)
+	if out.OK || !out.AuthFailed || calls != 2 {
+		t.Fatalf("outcome = %+v after %d polls, want AuthFailed after one retry", out, calls)
 	}
 	if d.reruns != 0 || d.fixes != 0 {
-		t.Fatalf("unauthenticated CI must not trigger rerun/fix; got rerun=%d fix=%d", d.reruns, d.fixes)
-	}
-	if !strings.Contains(strings.ToLower(out.Reason), "authenticat") {
-		t.Fatalf("reason %q should explain gh could not be authenticated to read CI", out.Reason)
+		t.Fatalf("a refused poll must not re-run or fix; got rerun=%d fix=%d", d.reruns, d.fixes)
 	}
 }
 
@@ -958,7 +991,7 @@ func TestWatchRetriesADialTimeoutThenPassesOnGreen(t *testing.T) {
 
 func TestWatchFailsSoftWhenGitHubStaysUnreachable(t *testing.T) {
 	// The network errors never clear. The PR is pushed and gate-green and no check
-	// was seen to fail, so fail soft like the 401 degrade: OK, no rerun/fix, and a
+	// was seen to fail, so fail soft: OK, no rerun/fix, and a
 	// reason that says CI could not be reached rather than that it went red.
 	d := newGhPollDriver(scriptedChecksRunner(-1))
 	out := WatchAndFix(d, testWatchCfg(), newFakeClock().now)

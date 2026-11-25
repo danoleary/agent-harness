@@ -3,6 +3,7 @@ package prloop
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/danoleary/agent-harness/internal/gittest"
@@ -60,5 +61,27 @@ func TestRunFixesThePRUnderItsRunLock(t *testing.T) {
 	got := p.Run(item, &lease.Lease{})
 	if got.Disposition != stages.RunLive || len(keys) != 1 || keys[0] != "PR-416" {
 		t.Errorf("Run = %+v, lock taken for %v; want the fix run only under PR-416's run lock, and its RunLive returned", got, keys)
+	}
+}
+
+// #466: a run whose checks poll GitHub refused hands the PR back to its Source,
+// which takes the attempt back on the PR, before the lease is released.
+func TestRunRequeuesAPRWhoseChecksPollWasRefused(t *testing.T) {
+	configuredCheckout(t)
+	gh := newFakeGitHub(harnessPR(1466, "7c2d9e1"))
+	p := Pipeline{
+		Loop:   prDoctor(),
+		Source: NewSource(gh, testOptions, nil, &quietLog{}),
+		RunLock: func(string, string, func() stages.Result) stages.Result {
+			return stages.Result{Disposition: stages.CIAuthFailed}
+		},
+	}
+	it := Item{PR: harnessPR(1466, "7c2d9e1"), Kind: CIRed}
+	got := p.Run(loop.WorkItem{Key: Key(1466), Branch: it.PR.HeadBranch, Context: it}, &lease.Lease{})
+	if got.Disposition != stages.CIAuthFailed {
+		t.Fatalf("Run = %+v, want CIAuthFailed", got)
+	}
+	if posted := strings.Join(gh.posted[1466], "\n"); !strings.Contains(posted, "void sha=7c2d9e1") {
+		t.Errorf("the attempt must be taken back on the PR; posted %q", posted)
 	}
 }

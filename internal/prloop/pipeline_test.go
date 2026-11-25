@@ -1624,3 +1624,72 @@ func TestFixRetrospectiveOverAGoneWorktreeReadsTheRemoteTrackingRef(t *testing.T
 		t.Errorf("the run log must say the retrospective reads the remote-tracking ref; events:\n%s", events)
 	}
 }
+
+// refusedChecksPoll is the watch's outcome in #466: GitHub answered the checks
+// poll, and its one retry, with HTTP 401, so the watch read no CI state.
+func refusedChecksPoll() ci.Outcome {
+	return ci.Outcome{
+		AuthFailed: true,
+		Reason:     "CI watch read no CI state: gh not authenticated for the checks poll (HTTP 401 / bad credentials) — fix the harness gh auth; the PR is worked again on the next poll",
+	}
+}
+
+// #466, replaying the incident: pr-doctor opened on a red PR and the checks poll
+// was refused with a 401. The run logged a ✓, removed the worktree and launched
+// no fix, so the red PR read as done. Now the run is CIAuthFailed, not OK, logs a
+// failure mark with that outcome, launches nothing, pushes nothing and keeps the
+// worktree for the next run.
+func TestFixWhoseChecksPollGitHubRefusedIsCIAuthFailed(t *testing.T) {
+	h, it, repo := prHost(t, harnessItem(CIRed))
+	tip := it.PR.HeadSHA
+	h.CI = refusedChecksPoll()
+	log := pipelineLog(t)
+
+	res := Fix(h, pipelineCfg(), log, it, prDoctor())
+
+	if res.Disposition != stages.CIAuthFailed || res.OK {
+		t.Fatalf("want CIAuthFailed and not OK, got %+v", res)
+	}
+	if len(h.Agents) != 0 {
+		t.Errorf("agents = %v, want none: the watch never read a red", agentLabels(h))
+	}
+	assertWatchPushedNothing(t, h, repo, it.PR.HeadBranch, tip)
+	if !h.Worktree().Exists() {
+		t.Error("a run that read no CI state keeps its worktree for the next run")
+	}
+	events := readEvents(t, log)
+	if !strings.Contains(events, "pr-fix ✗ ci-watch-auth-failed: CI watch read no CI state") {
+		t.Errorf("the run log must mark the refused poll as a failure; events:\n%s", events)
+	}
+	if strings.Contains(events, "pr-fix ✓") || strings.Contains(events, "removed the clean worktree") {
+		t.Errorf("a refused poll must not read as a finished run; events:\n%s", events)
+	}
+}
+
+// #466: a watch that pushed a fix before GitHub refused its next poll changed the
+// branch on origin, so it ships as any pushed fix does, and its worktree goes.
+func TestFixThatPushedBeforeTheChecksPollWasRefusedShips(t *testing.T) {
+	h, it, repo := prHost(t, harnessItem(CIRed))
+	h.AgentFn = func(_ int, run hostio.AgentRun) session.Outcome {
+		if run.Label == "cifix-1" {
+			repo.Commit(h.Worktree(), "thing.go", "package thing\n", "Fix TestThing")
+		}
+		return session.Outcome{}
+	}
+	h.CIFn = func(w hostio.CIWatch) ci.Outcome {
+		if err := w.Fix(ci.FixInput{Logs: "FAIL TestThing", LogAvailable: true}); err != nil {
+			t.Fatalf("the gate-green fix is accepted, got %v", err)
+		}
+		return refusedChecksPoll()
+	}
+	log := pipelineLog(t)
+
+	res := Fix(h, pipelineCfg(), log, it, prDoctor())
+
+	if res.Disposition != stages.Shipped || res.OK {
+		t.Fatalf("a pushed fix ships, not OK while CI is unread, got %+v", res)
+	}
+	if !strings.Contains(readEvents(t, log), "pr-fix ✗ ci-watch-auth-failed") {
+		t.Error("the refused poll is still marked as a failure")
+	}
+}
