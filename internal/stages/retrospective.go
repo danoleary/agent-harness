@@ -125,6 +125,23 @@ func restoreWorktree(wt gitpkg.Worktree, log *runlog.Logger) {
 	log.Event(fmt.Sprintf("retrospective ↺ worktree %s was gone — re-created it from %s, so the session reads the branch there, not in the host checkout (#384)", wt.Path(), wt.Branch()))
 }
 
+// worktreeGone reports whether the retrospective must read the branch's change
+// from its remote-tracking ref: the worktree is not on disk, so the session starts
+// in the host checkout, where a `git -C` on the worktree fails and the local branch
+// may be gone too (#467). A branch origin does not have either keeps the prompt as
+// it was: there is no ref to point the session at.
+func worktreeGone(wt gitpkg.Worktree, log *runlog.Logger) bool {
+	if wt.Exists() {
+		return false
+	}
+	tracking := "refs/remotes/origin/" + wt.Branch()
+	if _, err := wt.RefSHA(tracking); err != nil {
+		return false
+	}
+	log.Event(fmt.Sprintf("retrospective ⚠ worktree %s is not on disk — the session starts in the host checkout and reads the change from origin/%s (#467)", wt.Path(), wt.Branch()))
+	return true
+}
+
 // FindingsTeam is where a retrospective over a Work item no ticket names files
 // its project findings: the tracker's findings team — the configured repo,
 // project or team (ADR-0038). The PR loop and the security-alerts loop ask for
@@ -188,6 +205,7 @@ func RetrospectiveOver(h hostio.Host, cfg config.Config, log *runlog.Logger, sub
 		return Result{Err: err}
 	}
 
+	subject.WorktreeGone = worktreeGone(h.Worktree(), log)
 	outcome := f.launch(retrospectiveRun(cfg, subject, filed), "").Outcome
 	if res, ok := f.interrupted(outcome); ok {
 		return res

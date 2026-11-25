@@ -1562,3 +1562,65 @@ func TestFixWhoseUnfinishedMergeCannotBeAbortedNeedsAHuman(t *testing.T) {
 		t.Error("the worktree must be kept for the human")
 	}
 }
+
+// #467: after the auto-fix and a green CI, the retrospective runs in the run's
+// worktree, which the pr-doctor cleanup removes only once the retrospective ends.
+func TestFixRunsTheRetrospectiveInTheWorktreeBeforeTheCleanupRemovesIt(t *testing.T) {
+	h, it, repo := prHost(t, harnessItem(CIRed))
+	h.CIFn = func(w hostio.CIWatch) ci.Outcome {
+		_ = w.Fix(ci.FixInput{Logs: "FAIL TestThing", LogAvailable: true})
+		return ci.Outcome{OK: true, Reason: "green after the fix"}
+	}
+	var onDisk bool
+	h.AgentFn = func(_ int, run hostio.AgentRun) session.Outcome {
+		switch run.Label {
+		case "cifix-1":
+			repo.Commit(h.Worktree(), "thing.go", "package thing\n", "Fix TestThing")
+		case "retrospective":
+			onDisk = h.Worktree().Exists() && run.WorkDir == h.Worktree().Path()
+		}
+		return session.Outcome{}
+	}
+
+	Fix(h, pipelineCfg(), pipelineLog(t), it, prDoctor())
+
+	if !onDisk {
+		t.Error("the retrospective must launch in the run's worktree, while it is still on disk")
+	}
+	if h.Worktree().Exists() {
+		t.Error("the cleanup removes the clean worktree once the retrospective has ended")
+	}
+}
+
+// #467, replaying the incident: the worktree and its local branch went from under
+// the run after the auto-fix and a green CI, so the retrospective starts in the
+// host checkout. Its prompt reads the change from origin/<branch>, which the
+// checkout still has, and never names a `git -C` on the absent worktree.
+func TestFixRetrospectiveOverAGoneWorktreeReadsTheRemoteTrackingRef(t *testing.T) {
+	h, it, repo := prHost(t, harnessItem(CIRed))
+	h.CIFn = func(w hostio.CIWatch) ci.Outcome {
+		_ = w.Fix(ci.FixInput{Logs: "FAIL TestThing", LogAvailable: true})
+		repo.Git(repo.Dir, "worktree", "remove", "--force", h.Worktree().Path())
+		repo.Git(repo.Dir, "branch", "-D", it.PR.HeadBranch)
+		return ci.Outcome{OK: true, Reason: "green after the fix"}
+	}
+	log := pipelineLog(t)
+
+	Fix(h, pipelineCfg(), log, it, prDoctor())
+
+	if got := agentLabels(h); len(got) != 2 || got[1] != "retrospective" {
+		t.Fatalf("agents = %v, want the CIFix session then the retrospective", got)
+	}
+	p := h.Agents[1].Prompt
+	for _, want := range []string{"git log origin/main..origin/feat/gh-7", "git diff origin/main...origin/feat/gh-7"} {
+		if !strings.Contains(p, want) {
+			t.Errorf("retrospective prompt missing %q:\n%s", want, p)
+		}
+	}
+	if strings.Contains(p, "git -C "+h.Worktree().Path()) {
+		t.Errorf("retrospective prompt still reads the change in the absent worktree:\n%s", p)
+	}
+	if events := readEvents(t, log); !strings.Contains(events, "reads the change from origin/feat/gh-7") {
+		t.Errorf("the run log must say the retrospective reads the remote-tracking ref; events:\n%s", events)
+	}
+}

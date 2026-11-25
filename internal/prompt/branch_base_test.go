@@ -86,3 +86,35 @@ func TestBranchRangeQuotesAWorktreePathTheShellWouldSplit(t *testing.T) {
 		t.Errorf("prompt missing %q", want)
 	}
 }
+
+// #467: a retrospective whose worktree is gone from disk starts in the host
+// checkout, where the local branch may be gone too. The envelope reads the change
+// from the branch's remote-tracking ref instead of a `git -C` on the absent path,
+// so a session that follows it to the letter meets no git error.
+func TestRetrospectiveWithTheWorktreeGoneReadsTheRemoteTrackingRef(t *testing.T) {
+	const wt = "/repo/.claude/worktrees/pr-12"
+	p := For(Retrospective, Context{Ticket: sample, Slug: "pr-12", BranchPrefix: testPrefix, Branch: "feat/gh-7", WorktreePath: wt, WorktreeGone: true, Body: exampleBody(t, "retro")})
+
+	for _, want := range []string{
+		"git log origin/main..origin/feat/gh-7",
+		"git diff origin/main...origin/feat/gh-7",
+		"`" + wt + "` is not on disk",
+	} {
+		if !strings.Contains(p, want) {
+			t.Errorf("prompt missing %q:\n%s", want, p)
+		}
+	}
+	if strings.Contains(p, "git -C "+wt) || strings.Contains(p, "..HEAD") {
+		t.Errorf("prompt still reads the change in the absent worktree or at HEAD:\n%s", p)
+	}
+}
+
+// The review never runs without its worktree, and a retrospective whose worktree
+// is on disk keeps the `git -C` range.
+func TestOnlyAGoneWorktreeSwitchesTheRangeToTheRemoteTrackingRef(t *testing.T) {
+	const wt = "/repo/.claude/worktrees/pr-12"
+	p := For(Retrospective, Context{Ticket: sample, Slug: "pr-12", BranchPrefix: testPrefix, Branch: "feat/gh-7", WorktreePath: wt})
+	if !strings.Contains(p, "git -C "+wt+" log origin/main..HEAD") || strings.Contains(p, "origin/feat/gh-7") {
+		t.Errorf("a retrospective over a worktree on disk reads the change there:\n%s", p)
+	}
+}

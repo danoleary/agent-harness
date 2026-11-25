@@ -325,3 +325,58 @@ func TestRetrospectiveRunsTheBranchRangeInTheRunsWorktree(t *testing.T) {
 		}
 	}
 }
+
+// #467: a shipped branch whose worktree and local branch are both gone cannot be
+// re-created (#384), so the session starts in the host checkout. Its prompt reads
+// the change from origin's copy of the branch, which the checkout still tracks.
+func TestRetrospectiveOverAGoneWorktreeReadsTheShippedBranchFromOrigin(t *testing.T) {
+	h, repo := handedOff(t, "PROJ-10")
+	if err := h.PushForceWithLease(); err != nil {
+		t.Fatalf("push: %v", err)
+	}
+	wt := h.Worktree()
+	if err := wt.Remove(); err != nil {
+		t.Fatalf("remove worktree: %v", err)
+	}
+	repo.Git(repo.Dir, "branch", "-D", wt.Branch())
+	h.AgentFn = writesDropbox("[]")
+	log := stageLog(t, "PROJ-10")
+	if err := os.WriteFile(filepath.Join(log.Dir, implementationSession+"-1.jsonl"), []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if res := Retrospective(h, stageCfg(), log, Args{Identifier: "PROJ-10"}); !res.OK {
+		t.Fatalf("the retrospective itself succeeded, got %+v", res)
+	}
+	if len(h.Agents) != 1 {
+		t.Fatalf("agents = %d, want the retrospective", len(h.Agents))
+	}
+	if p := h.Agents[0].Prompt; !strings.Contains(p, "..origin/"+wt.Branch()+"`") {
+		t.Errorf("prompt does not read the change from origin/%s:\n%s", wt.Branch(), p)
+	}
+}
+
+// A gone worktree whose branch origin never had keeps the prompt as it was: there
+// is no remote-tracking ref to point the session at.
+func TestRetrospectiveOverAGoneUnpushedWorktreeNamesNoRemoteTrackingRef(t *testing.T) {
+	h, repo := handedOff(t, "PROJ-11")
+	wt := h.Worktree()
+	if err := wt.Remove(); err != nil {
+		t.Fatalf("remove worktree: %v", err)
+	}
+	repo.Git(repo.Dir, "branch", "-D", wt.Branch())
+	h.AgentFn = writesDropbox("[]")
+	log := stageLog(t, "PROJ-11")
+	if err := os.WriteFile(filepath.Join(log.Dir, implementationSession+"-1.jsonl"), []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	Retrospective(h, stageCfg(), log, Args{Identifier: "PROJ-11"})
+
+	if len(h.Agents) != 1 || strings.Contains(h.Agents[0].Prompt, "origin/"+wt.Branch()) {
+		t.Errorf("a branch origin never had is not named as a remote-tracking ref; agents = %d", len(h.Agents))
+	}
+	if strings.Contains(narration(t, log), "#467") {
+		t.Errorf("run.jsonl = %s, want no remote-tracking narration without the ref", narration(t, log))
+	}
+}
