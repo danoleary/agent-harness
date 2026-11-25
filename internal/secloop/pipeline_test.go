@@ -400,6 +400,29 @@ func TestFixNarratesCIPendingPastThePollBudgetApartFromARedCI(t *testing.T) {
 	}
 }
 
+// #466: GitHub refused the checks poll, so the watch read no CI state. The run
+// log marks it a failure with its outcome, never a ✓ and never a red CI.
+func TestFixNarratesARefusedChecksPollAsAFailure(t *testing.T) {
+	it := lodashItem()
+	h, _ := secHost(t, it)
+	h.CI = ci.Outcome{AuthFailed: true, Reason: "CI watch read no CI state: gh not authenticated for the checks poll (HTTP 401 / bad credentials)"}
+	log := secLog(t)
+
+	Fix(h, securityCfg(t), log, it, watchingLoop())
+
+	b, err := os.ReadFile(filepath.Join(log.Dir, "run.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := string(b)
+	if !strings.Contains(events, "✗ ci-watch-auth-failed: CI watch read no CI state") {
+		t.Errorf("the run log must mark the refused poll as a failure; events:\n%s", events)
+	}
+	if strings.Contains(events, "did not go green") {
+		t.Errorf("a refused poll must not read as a red CI; events:\n%s", events)
+	}
+}
+
 // CI goes red once over the opened PR: the CIFix session commits a fix, the gates
 // run green over it, the watch pushes it, and CI then goes green. The fix is
 // pr-doctor's gated CI fix, and the watch may rebase the harness's own branch.

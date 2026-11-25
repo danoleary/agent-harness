@@ -20,8 +20,8 @@ var errNoChecksYet = errors.New("no CI checks reported yet")
 // errChecksUnobservable marks the case where the GH_TOKEN can fetch/push/open the
 // PR but cannot read the Checks API — a fine-grained PAT has no "Checks"
 // permission, so `gh pr checks` 403s with "Resource not accessible by personal
-// access token". This is a permission ceiling, not a real CI failure: the watch
-// must degrade (leave the open PR for a human) rather than abort or auto-fix.
+// access token". This is a permission ceiling, not a real CI failure, but the
+// watch read no CI state either: it ends AuthFailed, with no auto-fix (#466).
 // Only a classic `repo`-scoped PAT can read check runs (BEH-476).
 var errChecksUnobservable = errors.New("CI checks not observable with this token (needs a classic repo-scoped PAT)")
 
@@ -30,8 +30,8 @@ var errChecksUnobservable = errors.New("CI checks not observable with this token
 // even though `git push` + `gh pr create` succeeded moments earlier with the harness
 // auth (BEH-627, the BEH-625 false-negative). Like errChecksUnobservable this is an
 // environment/credentials problem, NOT a red build: the diff is pushed and gate-green,
-// the harness simply can't authenticate to *read* CI status. The watch must fail soft
-// (leave the open PR for a human) rather than report "CI did not go green".
+// the harness simply can't authenticate to *read* CI status. The watch polls once
+// more, then ends AuthFailed rather than report "CI did not go green" or pass (#466).
 var errChecksUnauthenticated = errors.New("CI checks not readable: gh not authenticated (HTTP 401 / bad credentials) — PR was pushed, check CI manually")
 
 // errPollTransient marks a `gh pr checks` call that failed at the transport layer:
@@ -99,6 +99,12 @@ func isUnauthenticatedErr(stderr string) bool {
 	return strings.Contains(s, "bad credentials") ||
 		strings.Contains(s, "http 401") ||
 		strings.Contains(s, "gh auth login")
+}
+
+// isAuthRefusal reports whether err is a checks poll GitHub refused the
+// credentials of: a 403 the token cannot read check runs with, or a 401.
+func isAuthRefusal(err error) bool {
+	return errors.Is(err, errChecksUnobservable) || errors.Is(err, errChecksUnauthenticated)
 }
 
 // checksJSONFields is the `gh pr checks --json` field set the driver reads: the
@@ -241,6 +247,15 @@ func NewGhDriver(herdPath, branch string, cfg Config, ghTimeout time.Duration, r
 // Actions started any run for the head; none means no workflow applies (#101).
 func (d *GhDriver) Poll() (Verdict, []Check, error) {
 	fetch := func() ([]Check, error) {
+		checks, err := interpretChecksOutput(d.runChecks())
+		if !isAuthRefusal(err) {
+			return checks, err
+		}
+		// GitHub refused the poll's credentials. gh reads them afresh on every call,
+		// and a refusal has cleared within minutes (#466), so poll once more before
+		// the watch ends with no CI state.
+		d.Narrate(fmt.Sprintf("↻ GitHub refused the checks poll (%v) — retrying it once (#466)", err))
+		d.sleep(d.pollCfg.interval)
 		return interpretChecksOutput(d.runChecks())
 	}
 	headRuns := func() (string, bool, error) {
@@ -405,14 +420,14 @@ func interpretChecksOutput(stdout, stderr []byte, runErr error) ([]Check, error)
 			return nil, errNoChecksYet
 		}
 		// A 403 "Resource not accessible" means the token cannot read check runs
-		// at all (fine-grained PAT) — degrade, don't surface as a real failure.
+		// at all (fine-grained PAT) — no CI state, not a red CI (#466).
 		if isUnobservableErr(s) {
 			return nil, errChecksUnobservable
 		}
 		// An HTTP 401 / "Bad credentials" means the poll path's token was rejected
 		// outright (missing/stale/wrong) even though push + PR create just succeeded —
-		// a credentials/environment problem, not a red build (BEH-627). Degrade rather
-		// than report the pushed, gate-green PR as a CI failure.
+		// a credentials/environment problem, not a red build (BEH-627), and no CI
+		// state either (#466).
 		if isUnauthenticatedErr(s) {
 			return nil, errChecksUnauthenticated
 		}

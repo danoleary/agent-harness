@@ -470,23 +470,25 @@ loop:
     for <sha>)", still through the mergeability gate. It no longer waits out the budget and reports "CI
     never reached a terminal state". A registered run is a cold start, and an unreadable run list is
     doubt: both keep waiting. Once any check appears, the normal poll path owns the run.
-  gh-auth/permission degrade classes (NOT a red build — the diff is pushed + gate-green, the harness just
-    can't READ CI): these fail SOFT to a green pass that leaves the open PR for a human, distinct from
-    "CI did not go green". Two signatures, keyed off `gh pr checks` stderr:
+  gh-auth/permission refusal (#466, ADR-0074): GitHub refused the poll's credentials, so the watch read
+    no CI state. Two signatures, keyed off `gh pr checks` stderr:
       - 403 "Resource not accessible by …" (fine-grained PAT lacks the Checks permission) -> errChecksUnobservable
-        -> pass with "CI status unobservable with this token" (needs a classic repo-scoped PAT; BEH-476)
-      - 401 / "Bad credentials" / "gh auth login" hint (the poll path's token is missing/stale/wrong even
-        though `git push` + `gh pr create` just succeeded with the harness auth) -> errChecksUnauthenticated
-        -> pass with "CI watch unavailable: gh not authenticated … PR was pushed OK, check CI manually and
-        fix the harness gh auth" (BEH-627, the BEH-625 false-negative). A future operator seeing a 401 from
-        `gh pr checks` should read it as a harness gh-auth problem, NOT a CI failure.
+        (needs a classic repo-scoped PAT; BEH-476)
+      - 401 / "Bad credentials" / "gh auth login" hint (the poll path's token is missing/stale/wrong)
+        -> errChecksUnauthenticated (BEH-627)
+    Either is polled once more, one interval later ("↻ GitHub refused the checks poll … — retrying it
+    once"), since gh reads its credentials afresh on every call. A refusal that survives the retry ends
+    the watch NOT OK with AuthFailed set: no re-run, no fix, and "✗ ci-watch-auth-failed: CI watch read
+    no CI state: …" in the run log — never a ✓, never "CI did not go green". In the PR loop a run that
+    pushed nothing is CIAuthFailed: void marker takes the attempt back, the worktree is kept, and the
+    loop releases the claim and waits one poll; the breaker counts it (a credential fault sinks every PR).
   network-error retry (#194): a `gh pr checks` call that fails at the transport layer ("dial tcp",
     "i/o timeout", "operation timed out", "connection reset", "TLS handshake timeout", "no such host",
     gh's own offline message "error connecting to …" / "check your internet connection" (#266),
     HTTP 502/503/504, or the gh call hanging past its timeout) never reached CI -> errPollTransient. The
     poll backs off one interval and polls again, like the no-checks-yet window; any answer from GitHub
     resets the count. Only 5 in a row, or a budget spent while GitHub is unreachable, ends the poll, and
-    that fails SOFT like the 401 class: pass with "CI watch unavailable: network errors reaching GitHub,
+    that fails SOFT: pass with "CI watch unavailable: network errors reaching GitHub,
     check CI manually — PR was pushed OK; last error: …", not "CI did not go green".
   poll fault (#383): a `gh pr checks` call exec could not start at all (gh is not on the harness PATH,
     `exec: "gh": executable file not found in $PATH`) -> errGhMissing. A missing binary is permanent, so
@@ -650,7 +652,7 @@ loop:
   // breaker signal = the run's Disposition, NOT the pipeline exit code
   if Disposition == Shipped    -> reset consecutive-failure counter to 0
   else if Disposition in {CapAborted, PreflightAborted, RecommendClose, Interrupted, BaseRed, CheckoutBlocked, ResolvedOnMain, AlreadyOnMain} -> neutral (neither increment nor reset)
-  else /* NoPR, NeedsHuman */  -> increment consecutive-failure counter
+  else /* NoPR, NeedsHuman, CIAuthFailed */  -> increment consecutive-failure counter
   // a retrospective-only failure (PR shipped) and a CI-red-after-budget (a reviewable PR
   // exists) do NOT count as failures; only "never produced a PR" does.
   // a recommend-close (BEH-603) is a correct terminal no-op — neutral, like a cap abort.
@@ -734,6 +736,10 @@ pipeline (one PR, worktree .claude/worktrees/pr-<n> on the PR's head branch):
       a fix was pushed -> Shipped;  nothing pushed -> CIPending: void marker takes the
       attempt back, breaker-neutral, and the next poll re-checks that commit's CI
       (pending or green -> skip; red -> work it) before it launches a session
+    GitHub refused the checks poll (401/403) on the poll and its one retry ->  // #466, ADR-0074
+      ci.Outcome.AuthFailed: narrate "✗ ci-watch-auth-failed: …"; a fix was pushed -> Shipped;
+      nothing pushed -> CIAuthFailed: void marker takes the attempt back, the worktree is
+      kept, the loop releases the claim, waits one poll and counts it toward the breaker
   retrospective over the run's transcripts (if a session ran) -> route findings
   uncommitted work left in the worktree -> local recovery checkpoint commit, not pushed  // #246
     the commit fails -> label blocked + comment naming the worktree, this run
@@ -746,7 +752,8 @@ It writes its own stream (`logs/loops/pr-doctor/loop.jsonl`, per-PR logs under
 runs beside the ticket loop. A push is **Shipped** for the breaker, as a ticket's PR
 is; nothing pushed is **NoPR**, except a checkout git refused on local state, which
 is **CheckoutBlocked**, and CI still pending past the poll budget, which is
-**CIPending** (ADR-0069); both are breaker-neutral. The reaper releases an `in-progress` label older
+**CIPending** (ADR-0069); both are breaker-neutral. A checks poll GitHub refused,
+with nothing pushed, is **CIAuthFailed** (ADR-0074), which the breaker counts. The reaper releases an `in-progress` label older
 than the claim TTL (timed by its attempt marker): the reaper runs only between
 this daemon's own items, so one PR loop per checkout. A held PR with no attempt
 marker is not its claim (a human's label, or another loop's hold), so the reaper

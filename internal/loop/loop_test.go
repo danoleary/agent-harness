@@ -2768,3 +2768,52 @@ func TestCIPendingThreeTimesInARowDoesNotTripTheBreaker(t *testing.T) {
 		t.Errorf("record kind = %q (found=%v), want %q; events = %v", k, ok, loopstream.KindTicketReleased, r.events)
 	}
 }
+
+// #466: a PR run whose checks poll GitHub refused, with nothing pushed, read no CI
+// state. It is a failed run, so the breaker counts it: a credential fault would
+// sink every PR. Each releases its claim, says so in the stream, and waits one
+// poll before the PR is worked again.
+func TestCIAuthFailedReleasesTheClaimWaitsAPollAndCountsTowardTheBreaker(t *testing.T) {
+	r := &recorder{}
+	ran := 0
+	var released []string
+	var slept []time.Duration
+	code := Run(Deps{
+		Host: &fakeHost{
+			clearStop:     func() error { return nil },
+			fetchMain:     func() error { return nil },
+			stopRequested: func() bool { return ran >= 5 },
+		},
+		Source: &fakeSource{
+			next:    func() (string, bool) { return "PR-1466", true },
+			release: func(id string) error { released = append(released, id); return nil },
+		},
+		Pipeline: &fakePipeline{
+			run: func(string) stages.Result { ran++; return stages.Result{Disposition: stages.CIAuthFailed} },
+		},
+		Limits: Limits{
+			PollInterval:           10 * time.Second,
+			TickInterval:           2 * time.Second,
+			MaxConsecutiveFailures: 2,
+		},
+		Clock: testClock{sleep: func(d time.Duration) { slept = append(slept, d) }},
+		Log:   r,
+	})
+	if ran != 2 || !r.saw("circuit breaker tripped") {
+		t.Errorf("code = %d, ran = %d; want the breaker tripped on the second refused poll; events = %v", code, ran, r.events)
+	}
+	if want := []string{"PR-1466", "PR-1466"}; !reflect.DeepEqual(released, want) {
+		t.Errorf("released = %v, want %v", released, want)
+	}
+	if k, ok := r.kindFor("PR-1466 CI watch read no CI state"); !ok || k != loopstream.KindTicketReleased {
+		t.Errorf("record kind = %q (found=%v), want %q; events = %v", k, ok, loopstream.KindTicketReleased, r.events)
+	}
+	// The first run waits one poll, in ticks; the second trips the breaker first.
+	var waited time.Duration
+	for _, d := range slept {
+		waited += d
+	}
+	if waited != 10*time.Second {
+		t.Errorf("slept %v, want one poll interval before the PR is worked again", slept)
+	}
+}

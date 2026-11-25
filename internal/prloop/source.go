@@ -637,6 +637,21 @@ func (s *Source) AwaitCI(it Item) {
 	}
 }
 
+// Requeue takes back the attempt Next recorded on it.PR when GitHub refused the
+// CI watch's checks poll, a 401 or a 403, on the poll and its retry, before the
+// watch pushed anything (#466). The watch read no CI state and no session ran, so
+// no attempt is spent and the PR is left unlabelled: the next poll works it
+// again. Call it before the lease is released, so settling the lease does not
+// count the attempt. Best-effort: a failure is narrated, and an attempt it could
+// not take back stays spent. A refused token may refuse this comment too.
+func (s *Source) Requeue(it Item) {
+	body := fmt.Sprintf("%s\nagent-harness's CI watch on `%s` could not read CI: GitHub refused the checks poll's credentials (HTTP 401 or 403), so it read no CI state. It pushed nothing and this does not count as an attempt. It works the PR again on its next poll.\n",
+		voidMarker(it.PR.HeadSHA, it.Kind), short(it.PR.HeadSHA))
+	if err := s.gh.Comment(it.PR.Number, body); err != nil {
+		s.log.Event("loop … warning: could not take back the attempt on " + Key(it.PR.Number) + ": " + err.Error())
+	}
+}
+
 // settle runs as the lease on c's PR is released, after the run that worked it. A
 // run that spent the PR's last attempt and left it failing hands it to a human
 // now, not on the next poll: the daemon's breaker may stop it before then, and the

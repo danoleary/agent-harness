@@ -43,7 +43,8 @@ type Pipeline struct {
 	Loop config.Loop
 	// Source is the loop's Source, which takes back the attempt it recorded when
 	// git refuses the checkout on local state (#247), the sandbox preflight
-	// refuses (#232) or CI is still pending past the poll budget (#421), and hands the PR to a human when a run's leftover work could
+	// refuses (#232), CI is still pending past the poll budget (#421) or GitHub
+	// refused the checks poll (#466), and hands the PR to a human when a run's leftover work could
 	// not be saved (#246). Nil leaves the attempt spent and the PR unlabelled.
 	Source *Source
 	// RunLock is held for the whole fix, checkout to cleanup, the retrospective
@@ -89,6 +90,8 @@ func (p Pipeline) Run(item loop.WorkItem, claim *lease.Lease) stages.Result {
 			p.Source.HoldOnBase(it, out.HeldBase, out.HeldGate)
 		case out.Disposition == stages.CIPending:
 			p.Source.AwaitCI(it)
+		case out.Disposition == stages.CIAuthFailed:
+			p.Source.Requeue(it)
 		case errors.As(out.Err, &unsaved):
 			p.Source.HandOver(it, unsaved)
 		}
@@ -168,6 +171,12 @@ func Fix(h hostio.Host, cfg config.Config, log *runlog.Logger, it Item, l config
 		if err := fixes.Checkpoint(key); err != nil {
 			log.Event(fmt.Sprintf("%s ✗ could not save the uncommitted work in %s as a recovery checkpoint: %v — handing %s to a human", who, wt.Path(), err, key))
 			out.OK, out.Err = false, &UnsavedError{Path: wt.Path(), Err: err}
+		}
+		// A run whose CI watch read no CI state leaves the worktree for the next
+		// run, which works the PR again on the next tick (#466).
+		if out.Disposition == stages.CIAuthFailed {
+			log.Event(fmt.Sprintf("%s — worktree %s kept: the CI watch read no CI state, and the next poll works %s again (#466)", who, wt.Path(), key))
+			return
 		}
 		fixes.Cleanup()
 	}()
@@ -433,6 +442,13 @@ func (r *run) watch() stages.Result {
 	case res.SpendingCapAbort && !r.pushed:
 		r.log.Event(who + " ↻ CI auto-fix deferred — spending cap reached, retry after reset")
 		return stages.Result{Disposition: stages.CapAborted}
+	case res.AuthFailed:
+		// GitHub refused the checks poll: no CI state, so neither a pass nor a red
+		// CI (#466). A run that pushed nothing is worked again on the next tick.
+		r.log.Event(who + " ✗ " + stages.CIAuthFailed.String() + ": " + res.Reason)
+		if !r.pushed {
+			return stages.Result{Disposition: stages.CIAuthFailed}
+		}
 	case res.PollFault:
 		// The watch never read CI's verdict: a tooling fault, not a red CI (#383).
 		r.log.Event(who + " ✗ could not poll CI (not a red CI): " + res.Reason)

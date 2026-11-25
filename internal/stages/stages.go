@@ -321,6 +321,15 @@ const (
 	// passes over it until a human removes the label. The breaker stays blind.
 	// BlockedWhy and BlockedQuestions carry them.
 	SessionBlocked
+	// CIAuthFailed — GitHub refused the PR loop's CI checks poll, with a 401 or a
+	// 403, on the poll and on its one retry, before the watch pushed anything
+	// (#466, ADR-0074). Only the PR Pipeline produces it. The watch read no CI
+	// state, so the run is neither a pass nor a red CI: it is a failed run, and the
+	// breaker counts it, since a credential fault would sink every PR. No session
+	// ran and the branch is as the run found it, so the Source takes back the
+	// attempt, the worktree is kept, and the loop releases the claim and works the
+	// PR again on its next tick.
+	CIAuthFailed
 )
 
 func (d Disposition) String() string {
@@ -351,6 +360,8 @@ func (d Disposition) String() string {
 		return "ci-pending"
 	case SessionBlocked:
 		return "session-blocked"
+	case CIAuthFailed:
+		return "ci-watch-auth-failed"
 	default:
 		return "no-pr"
 	}

@@ -152,6 +152,11 @@ type Outcome struct {
 	// the PR loop re-checks that commit's CI on its next poll before it launches
 	// any fix session (#421).
 	Pending bool
+	// AuthFailed marks the non-OK outcome where GitHub refused the checks poll's
+	// credentials, a 401 or a 403, on the poll and on its one retry: the watch read
+	// no CI state at all. It is neither a pass nor a red CI, so the PR loop ends the
+	// run as a failure and works the PR again on its next tick (#466).
+	AuthFailed bool
 	// Polled is the budget a Pending outcome's poll ran to, when the poll recorded
 	// it; the zero value otherwise (#424).
 	Polled PollSpend
@@ -362,7 +367,7 @@ const mergeConflictReason = "CI is green but the PR conflicts with base (merge c
 // merge state. CI is green and was observed, so the run still passes; the
 // conflict-with-base guard simply could not run, and the operator is told to
 // eyeball mergeability rather than handed a bare "CI is green". This mirrors the
-// checks-unobservable degrade, which likewise surfaces a *distinct* reason
+// unreachable-GitHub degrade, which likewise surfaces a *distinct* reason
 // instead of silently passing (BEH-484/BEH-476).
 const mergeUnconfirmedNote = " — note: mergeability against base could not be confirmed; check the PR has no merge conflict before merging"
 
@@ -392,7 +397,7 @@ const (
 // resolves. The rebase loop is capped (maxRebaseAttempts) so a continuously-moving
 // main can't spin it forever. An unreadable or persistently-UNKNOWN merge state must
 // not block an otherwise-green PR, so it degrades to a green pass with the conflict
-// guard flagged as unrun (mergeUnconfirmedNote), mirroring the checks-unobservable
+// guard flagged as unrun (mergeUnconfirmedNote), mirroring the unreachable-GitHub
 // degrade rather than passing silently.
 func greenOutcome(d Driver, reason string) Outcome {
 	for attempt := 0; ; attempt++ {
@@ -440,21 +445,20 @@ func greenOutcome(d Driver, reason string) Outcome {
 	}
 }
 
-// unobservableReason is the operator-facing summary when the token cannot read
-// CI: the PR is open and gates passed host-side, so the run succeeds — a human
-// just has to eyeball CI manually because the harness can't (BEH-476).
-const unobservableReason = "CI status unobservable with this token — skipping watch/auto-fix; PR is open, check CI manually"
+// unobservableReason is the operator-facing summary when GitHub answers the
+// checks poll with a 403: the token cannot read check runs (a fine-grained PAT,
+// BEH-476). The watch read no CI state, so it is no pass (#466).
+const unobservableReason = "CI watch read no CI state: CI status unobservable with this token (HTTP 403 resource not accessible) — needs a classic repo-scoped PAT; the PR is worked again on the next poll"
 
-// unauthenticatedReason is the operator-facing summary when `gh pr checks` is
-// rejected with a 401 / bad credentials even though push + PR create just succeeded
-// with the harness auth (BEH-627). The diff is pushed and gate-green; only the poll
-// path's token failed, so this fails soft to a green pass rather than a spurious
-// "CI did not go green" — a human just eyeballs CI (and fixes the poll credentials).
-const unauthenticatedReason = "CI watch unavailable: gh not authenticated for the checks poll (HTTP 401 / bad credentials) — PR was pushed OK, check CI manually and fix the harness gh auth"
+// unauthenticatedReason is the operator-facing summary when GitHub answers the
+// checks poll with a 401 / bad credentials (BEH-627), on the poll and on its
+// retry. The watch read no CI state, so it is no pass: a red PR it passed would
+// wait for a later tick with no fix session run (#466).
+const unauthenticatedReason = "CI watch read no CI state: gh not authenticated for the checks poll (HTTP 401 / bad credentials) — fix the harness gh auth; the PR is worked again on the next poll"
 
 // unreachableReason prefixes the operator-facing summary when `gh pr checks` kept
 // failing with network errors (#194). No check was seen to fail and the diff is
-// pushed and gate-green, so this fails soft like unauthenticatedReason; the last
+// pushed and gate-green, so this fails soft to a pass; the last
 // network error follows it for diagnosis.
 const unreachableReason = "CI watch unavailable: network errors reaching GitHub, check CI manually — PR was pushed OK; last error: "
 
@@ -463,21 +467,21 @@ const unreachableReason = "CI watch unavailable: network errors reaching GitHub,
 // polling does helps; exec's lookup error follows it.
 const ghMissingReason = "CI watch could not run: the gh CLI is not on the harness PATH — PR was pushed, check CI manually and install gh (https://cli.github.com) where the harness runs; "
 
-// pollErrOutcome turns a poll error into an outcome. An unobservable-checks error
-// is a *success* that degrades — the PR shipped, the token just can't read CI, so
-// leave it for a human rather than abort or auto-fix. A bad-credentials error and
-// a run of network errors (errPollTransient, #194) degrade the same way: the harness
-// could not read CI, and no check was seen to fail. A timeout means CI never
+// pollErrOutcome turns a poll error into an outcome. A poll GitHub refused, an
+// unobservable-checks 403 or a bad-credentials 401, is AuthFailed: the watch read
+// no CI state, so it is neither a pass nor a red CI (#466). A run of network
+// errors (errPollTransient, #194) degrades to a pass: the harness could not read
+// CI, and no check was seen to fail. A timeout means CI never
 // settled: a Pending outcome, unknown rather than red, reporting the still-non-green
 // checks (#421). A missing gh (#383) and any other error are a poll fault: the
 // watch never read a verdict, so the outcome says so instead of passing for a red
 // CI.
 func pollErrOutcome(err error, checks []Check) Outcome {
 	if errors.Is(err, errChecksUnobservable) {
-		return Outcome{OK: true, Reason: unobservableReason}
+		return Outcome{OK: false, AuthFailed: true, Reason: unobservableReason}
 	}
 	if errors.Is(err, errChecksUnauthenticated) {
-		return Outcome{OK: true, Reason: unauthenticatedReason}
+		return Outcome{OK: false, AuthFailed: true, Reason: unauthenticatedReason}
 	}
 	if errors.Is(err, errPollTransient) {
 		return Outcome{OK: true, Reason: unreachableReason + err.Error()}

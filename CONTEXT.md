@@ -161,7 +161,7 @@ base, clean tree) the harness verifies independently of what the sandbox reporte
 **Disposition**:
 A run's one terminal verdict — **Shipped**, **RecommendClose**, **CapAborted**,
 **PreflightAborted**, **Interrupted**, **BaseRed**, **NeedsHuman**, **CheckoutBlocked**,
-**ResolvedOnMain**, **AlreadyOnMain**, **RunLive**, **CIPending** or **NoPR** (`stages.Disposition`). Exactly
+**ResolvedOnMain**, **AlreadyOnMain**, **RunLive**, **CIPending**, **CIAuthFailed** or **NoPR** (`stages.Disposition`). Exactly
 one holds per stage and, folded across the three, per ticket; it is the only thing
 the loop branches on and the breaker counts. Distinct from a Stage's **OK**, which
 asks only "did this stage do its job?" — on the **PR loop** and the

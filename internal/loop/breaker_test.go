@@ -255,3 +255,14 @@ func TestBreakerNeutralOnSessionBlocked(t *testing.T) {
 		t.Error("session-blocked must not reset the counter either")
 	}
 }
+
+// #466: a PR run whose checks poll GitHub refused read no CI state; a credential
+// fault sinks every PR, so it counts as a failure.
+func TestBreakerCountsCIAuthFailed(t *testing.T) {
+	b := newBreaker(2)
+	b.record("PR-1466", stages.Result{Disposition: stages.CIAuthFailed})
+	b.record("PR-1467", stages.Result{Disposition: stages.CIAuthFailed})
+	if !b.tripped() {
+		t.Fatalf("a refused checks poll must advance the streak; streak %v", b.streak)
+	}
+}
