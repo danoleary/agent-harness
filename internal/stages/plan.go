@@ -40,6 +40,10 @@ type Subject struct {
 	// Unhanded is the recovery checkpoint at the branch tip that review is told to
 	// take on as unhanded-off work (#431); nil when the tip was handed off.
 	Unhanded *prompt.Unhanded
+	// WorktreeGone marks a retrospective whose worktree is not on disk at launch
+	// while origin still has the branch: its prompt reads the change from the
+	// remote-tracking ref instead of the absent worktree (#467).
+	WorktreeGone bool
 }
 
 // NewSubject resolves identifier's worktree and branch through p — the run's Host,
@@ -234,7 +238,7 @@ func resolutionReviewRun(cfg config.Config, s Subject, base string, r *prompt.Re
 // live under the checkout, not under the worktree.
 func retrospectiveRun(cfg config.Config, s Subject, filed []prompt.FiledFinding) hostio.AgentRun {
 	pctx := prompt.Context{
-		Ticket: s.Ticket, Slug: s.Slug, BranchPrefix: cfg.BranchPrefix, Branch: s.Branch, Tracker: cfg.Tracker.Kind, WorktreePath: s.WorktreePath, Body: cfg.Prompts.Retro, Filed: filed, Base: s.Base,
+		Ticket: s.Ticket, Slug: s.Slug, BranchPrefix: cfg.BranchPrefix, Branch: s.Branch, Tracker: cfg.Tracker.Kind, WorktreePath: s.WorktreePath, WorktreeGone: s.WorktreeGone, Body: cfg.Prompts.Retro, Filed: filed, Base: s.Base,
 		LogDir: s.LogDir, Transcripts: runLogs(s.LogDir),
 	}
 	warnings := prompt.BodyWarnings(pctx)

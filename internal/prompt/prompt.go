@@ -103,6 +103,11 @@ type Context struct {
 	Slug         string
 	BranchPrefix string
 	WorktreePath string
+	// WorktreeGone marks a Retrospective whose worktree is not on disk when it
+	// launches: the session starts in the host checkout, where the local branch
+	// may be gone too, so the envelope reads the change from the branch's
+	// remote-tracking ref, not from WorktreePath (#467).
+	WorktreeGone bool
 	// Tracker is the configured tracker kind (`linear`, `github`, `jira`). The
 	// envelope's tracker-off steer names it and forbids the tool that would reach
 	// it (ADR-0010); empty names no tracker in particular.
@@ -784,7 +789,7 @@ func retrospective(c Context) string {
 		retroFindingsProtocol,
 		retroAudienceContract,
 		retroADRNumberRule,
-		branchBaseSection(c.Base, c.WorktreePath, c.branch()),
+		retroBranchSection(c),
 		retroContractSteer(c.Tracker),
 		alreadyFiledSection(c.Filed),
 		bashQuirkSteer,
@@ -841,6 +846,27 @@ func branchBaseSection(base, worktree, branch string) string {
 	return where + "The branch's change is exactly `" + git + "log " + base + "..HEAD` and `" + git + "diff " + base + "...HEAD`" +
 		" — `" + base + "` is the commit the harness cut the branch from or last rebased it onto. Scope the change with that range only." +
 		" Do NOT diff against local `main`: the harness never updates it, so it may be stale and `main...HEAD` would also show commits from other, already-merged tickets."
+}
+
+// retroBranchSection is the retrospective's branch range: [branchBaseSection] in
+// the worktree, or, when the worktree is gone from disk, the same range read from
+// the branch's remote-tracking ref (#467). The session then starts in the host
+// checkout, where `git -C` on the absent path fails and the local branch may have
+// gone with the worktree, and a session that follows the range to the letter
+// would otherwise meet only git errors and could conclude the change is missing.
+// The harness fetched origin/<branch> when it checked the branch out, so the ref
+// is there however the worktree went.
+func retroBranchSection(c Context) string {
+	if !c.WorktreeGone {
+		return branchBaseSection(c.Base, c.WorktreePath, c.branch())
+	}
+	base, tip := c.Base, "origin/"+c.branch()
+	if base == "" {
+		base = "origin/main"
+	}
+	return "This run's worktree `" + c.WorktreePath + "` is not on disk: it was removed before this session started, so your cwd is the host checkout, and the local branch `" + c.branch() + "` may be gone from it too. Do NOT read the change in that worktree or with `git -C` on it, whatever else in this prompt names it." +
+		" Read the branch's change from its remote-tracking ref instead: it is exactly `git log " + base + ".." + tip + "` and `git diff " + base + "..." + tip + "`. Scope the change with that range only." +
+		" Do NOT diff against local `main`: the harness never updates it, so it may be stale and would also show commits from other, already-merged tickets."
 }
 
 // shellWord single-quotes s for a shell command line when it carries a character

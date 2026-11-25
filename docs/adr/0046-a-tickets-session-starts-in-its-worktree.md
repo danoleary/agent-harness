@@ -41,6 +41,13 @@ so nothing showed that a skill fix on main had not reached the run.
    launch, when the checkout's tracked `.claude/` files differ from origin/main,
    the run log narrates a warning naming them. `agent-harness doctor` reports
    the same drift as a warning, with the fix: update the checkout.
+   A retrospective left in the checkout has its branch range rewritten too
+   (#467). The `git -C <worktree>` range would fail there, and the local
+   branch may have gone with the worktree, so a session that followed it
+   could conclude that the change is missing. When origin has the branch, the
+   envelope names the remote-tracking ref instead: `git log
+   <base>..origin/<branch>` and `git diff <base>...origin/<branch>`, with
+   `<base>` falling back to origin/main.
 
 ## Consequences
 
@@ -49,6 +56,10 @@ so nothing showed that a skill fix on main had not reached the run.
 - A branch that edits a skill runs its own sessions on its edited skill, as it
   already runs its gates on its own code. A broken skill edit fails on the
   branch that made it.
+- A retrospective whose worktree is gone still reads the branch's change
+  as origin has it. The change it reads is the pushed one, so it does not
+  see work that was never pushed. A branch that origin never had keeps the
+  `git -C` range, because there is no ref to point the session at.
 - Triage still loads the checkout's skills. The warning and the doctor line make
   that visible, but they do not fix it; the operator updates the checkout.
 - A Consumer prompt body that names the worktree as `.claude/worktrees/{{.Slug}}`
