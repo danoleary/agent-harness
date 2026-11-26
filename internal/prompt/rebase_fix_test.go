@@ -203,7 +203,7 @@ func TestFixPromptsLeadWithALoopsFixBody(t *testing.T) {
 // host-side as soon as the session exits. Both variants must say to check only the
 // touched packages and leave the full gate to the host.
 func TestRebaseFixLeavesTheFullGateToTheHost(t *testing.T) {
-	const want = "After resolving, compile and run the tests of the packages you touched, and stop there. Do NOT run the project's full gate command: the harness runs it host-side on the resulting HEAD right after you stop and blocks the push if it is red, so running it here only pays the same gate twice."
+	const want = "After resolving, compile and run the tests of the packages you touched, format the resolved tree, and stop there. Do NOT run the project's full gate command: the harness runs it host-side on the resulting HEAD right after you stop and blocks the push if it is red, so running it here only pays the same gate twice."
 	for _, merge := range []bool{false, true} {
 		p := For(RebaseFix, Context{Ticket: sample, Slug: "beh-362", BranchPrefix: "feat", WorktreePath: sampleWorktree, Merge: merge})
 		if !strings.Contains(p, want) {
@@ -327,5 +327,51 @@ func TestRebaseFixSaysWhatTriggeredIt(t *testing.T) {
 				t.Errorf("merge=%v: a conflict with no unmerged paths must not claim %q", merge, wrong)
 			}
 		}
+	}
+}
+
+// #473: a resolution session followed "compile and run the tests of the packages
+// you touched, and stop there", left its hand-merged hunks unformatted, and the
+// host re-gate went red on the formatter alone over a green base, so a correct
+// resolution was dropped. Both variants must make running the project's formatter
+// over the resolved tree a step that is never skipped, name the Consumer's gates
+// so the session can find the formatter's auto-fixing counterpart, and commit
+// what it changes the way each variant may: the replay amends or adds one commit,
+// the merge, whose history must not be rewritten, adds one.
+func TestRebaseFixFormatsTheResolvedTreeBeforeItStops(t *testing.T) {
+	gates := []Gate{{Name: "test", Command: "dotnet test"}, {Name: "format", Command: "dotnet format --verify-no-changes"}}
+	for _, merge := range []bool{false, true} {
+		p := For(RebaseFix, Context{Ticket: sample, Slug: "beh-362", BranchPrefix: "feat", WorktreePath: sampleWorktree, Merge: merge, Gates: gates})
+		for _, want := range []string{
+			"run the project's formatter over the resolved tree",
+			"`format`: `dotnet format --verify-no-changes`",
+			"`test`: `dotnet test`",
+			"auto-fixing counterpart",
+			"Never skip it",
+			"a red formatter gate alone drops the resolution",
+		} {
+			if !strings.Contains(p, want) {
+				t.Errorf("merge=%v: prompt must carry the format step; missing %q", merge, want)
+			}
+		}
+		amend := "`git commit --amend --no-edit`"
+		if got := strings.Contains(p, amend); got == merge {
+			t.Errorf("merge=%v: prompt carries %s = %v; only the replay may amend", merge, amend, got)
+		}
+		if !strings.Contains(p, "compile and run the tests of the packages you touched, format the resolved tree, and stop there") {
+			t.Errorf("merge=%v: the stop-there list must name the format step", merge)
+		}
+	}
+}
+
+// A Consumer with no gates configured still gets the format step, pointed at the
+// project's own format command.
+func TestRebaseFixFormatStepWithoutGatesPointsAtTheProjectsFormatter(t *testing.T) {
+	p := For(RebaseFix, Context{Ticket: sample, Slug: "beh-362", BranchPrefix: "feat", WorktreePath: sampleWorktree})
+	if !strings.Contains(p, "run the project's formatter over the resolved tree") {
+		t.Errorf("prompt must carry the format step without gates")
+	}
+	if strings.Contains(p, "The project's gates are") {
+		t.Errorf("prompt must not list gates the Consumer did not configure")
 	}
 }

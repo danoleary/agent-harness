@@ -758,6 +758,9 @@ func (e Env) ResolveConflict(c Conflict) ConflictResult {
 	pctx := e.promptContext(c.Target)
 	pctx.Merge = c.Strategy == Merge
 	pctx.Conflicted = c.Conflicted
+	for _, g := range e.Cfg.Gates {
+		pctx.Gates = append(pctx.Gates, prompt.Gate{Name: g.Name, Command: g.Command})
+	}
 	dropbox := e.overlapDropbox(c.Strategy)
 	res := e.Host.Agent(hostio.AgentRun{
 		Label:       "rebasefix",

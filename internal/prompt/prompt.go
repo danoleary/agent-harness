@@ -190,11 +190,17 @@ type Context struct {
 	// conflict. None means the only sign of a conflict is GitHub's mergeability,
 	// which ignores the merge drivers .gitattributes sets (#403).
 	Conflicted []string
+	// Gates are the Consumer's host-side gates, in order. RebaseFix names them so
+	// the session can find the formatter whose check one of them runs (#473).
+	Gates []Gate
 
 	// Alerts are the open Dependabot alerts on one package that a SecurityFix
 	// session fixes together (ADR-0040, decision 1).
 	Alerts []github.Alert
 }
+
+// Gate is one of the Consumer's named host-side gates, as a prompt names it.
+type Gate struct{ Name, Command string }
 
 // branch is the branch the session's worktree is on: the override, else the
 // canonical `<BranchPrefix>/<Slug>`.
@@ -1149,7 +1155,27 @@ func withFixBody(c Context, lines []string) string {
 // exits, so an in-sandbox run paid the gate twice in a row and told the host
 // nothing it was not about to learn. The touched packages' build and tests stay:
 // they are the fast check that the hand-merged hunks compile.
-const leaveFullGateToHost = "After resolving, compile and run the tests of the packages you touched, and stop there. Do NOT run the project's full gate command: the harness runs it host-side on the resulting HEAD right after you stop and blocks the push if it is red, so running it here only pays the same gate twice."
+const leaveFullGateToHost = "After resolving, compile and run the tests of the packages you touched, format the resolved tree, and stop there. Do NOT run the project's full gate command: the harness runs it host-side on the resulting HEAD right after you stop and blocks the push if it is red, so running it here only pays the same gate twice."
+
+// formatResolution makes formatting the resolved tree a step a conflict-resolution
+// session never skips (#473). A hand-merged or regex-replaced hunk rarely matches
+// the project formatter, and the touched packages' build and tests do not check
+// it, so a correct resolution reached the host re-gate with format drift, went red
+// on the formatter alone over a green base, and was dropped. The harness has no
+// format command of its own to run, so the step names the Consumer's gates: the
+// session runs the auto-fixing counterpart of the one that checks formatting.
+// commit says how the variant may record what the formatter changed.
+func formatResolution(c Context, commit string) string {
+	gates := ""
+	if len(c.Gates) > 0 {
+		named := make([]string, len(c.Gates))
+		for i, g := range c.Gates {
+			named[i] = "`" + g.Name + "`: `" + g.Command + "`"
+		}
+		gates = " The project's gates are " + strings.Join(named, ", ") + "."
+	}
+	return "Then run the project's formatter over the resolved tree." + gates + " Run the auto-fixing counterpart of the format check (the same tool without its check or verify flag, e.g. `dotnet format` for `dotnet format --verify-no-changes`, `prettier --write` for `prettier --check`, `gofmt -w` for `gofmt -l`); when the format check sits inside a wrapper such as `make check`, use the project's own format command (a `fmt` or `format` target or script). " + commit + " Never skip it, even when the resolution looks tidy: it is cheap, and a red formatter gate alone drops the resolution with nothing pushed."
+}
 
 // leaveRedBaseAlone tells a conflict-resolution session what to do when origin/main
 // itself does not build (#253). Unsaid, two sessions on the same red base did
@@ -1230,6 +1256,8 @@ func rebaseFix(c Context) string {
 		"",
 		leaveFullGateToHost,
 		"",
+		formatResolution(c, "If it changes anything, `git add` it and `git commit --amend --no-edit` it into the last replayed commit, or add one commit for it; `git status` must be clean when you stop."),
+		"",
 		leaveRedBaseAlone,
 		"",
 		"Ticket context (the intent to preserve — already fetched for you):",
@@ -1276,6 +1304,8 @@ func mergeFix(c Context) string {
 		"Do NOT run `git merge --abort` or otherwise give up — aborting leaves the PR conflicting, which is exactly the dead-end this session exists to fix. If a hunk is genuinely impossible to reconcile, make your best-effort merge and say so in the merge commit message; the harness re-runs the full gate host-side and watches CI, so a mistake surfaces there rather than silently shipping.",
 		"",
 		leaveFullGateToHost,
+		"",
+		formatResolution(c, "If it changes anything, `git add` it and add one commit for it on top of the merge (do not amend the merge); `git status` must be clean when you stop."),
 		"",
 		leaveRedBaseAlone,
 		"",

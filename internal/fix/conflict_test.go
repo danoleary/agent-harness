@@ -368,3 +368,25 @@ func TestAMergeResolutionMountsNoOverlapDropbox(t *testing.T) {
 		t.Errorf("merge resolution FindingsDir = %q, want none", got)
 	}
 }
+
+// #473: the resolution session is told to format the resolved tree, and it can
+// only find the formatter through the Consumer's gates, so the prompt it launches
+// with must name them as configured.
+func TestTheResolutionSessionIsToldTheConsumersGates(t *testing.T) {
+	e, repo := conflictEnv(t, func(repo *gittest.Repo, h *hostio.Fake) { repo.Resolve(h.Worktree()) })
+	e.Cfg.Gates = []config.Gate{{Name: "test", Command: "dotnet test"}, {Name: "format", Command: "dotnet format --verify-no-changes"}}
+	repo.Conflict("proj-1")
+	if err := e.Host.FetchMain(); err != nil {
+		t.Fatal(err)
+	}
+
+	_ = e.ResolveConflict(Conflict{Regate: func() GateResult { return GateResult{} }})
+
+	h := e.Host.(*hostio.Fake)
+	if len(h.Agents) != 1 {
+		t.Fatalf("want one resolution session, got %d", len(h.Agents))
+	}
+	if want := "`format`: `dotnet format --verify-no-changes`"; !strings.Contains(h.Agents[0].Prompt, want) {
+		t.Errorf("resolution prompt must name the Consumer's format gate %s", want)
+	}
+}
