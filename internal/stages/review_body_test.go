@@ -121,6 +121,30 @@ func TestReviewRedGateWithholdsThePushAndNamesTheGate(t *testing.T) {
 	}
 }
 
+// #472: a host gate the kernel killed on its run and its re-run ships nothing, and
+// the stage's verdict line says the gate was killed twice rather than reading as a
+// plain red gate.
+func TestReviewRedGateKilledTwiceSaysInfraInItsVerdict(t *testing.T) {
+	h, repo := handedOff(t, "PROJ-2")
+	h.ShellFn = func(_ int, s hostio.ShellRun) session.Outcome {
+		if strings.HasPrefix(s.Label, gateStep) {
+			return session.Outcome{ExitCode: 2, StderrTail: "golangci-lint: signal: killed"}
+		}
+		return session.Outcome{}
+	}
+	log := stageLog(t, "PROJ-2")
+
+	res := Review(h, stageCfg(), log, Args{Identifier: "PROJ-2"})
+
+	if res.OK || res.Disposition == Shipped {
+		t.Fatalf("a gate killed twice ships nothing, got %+v", res)
+	}
+	assertNothingPushed(t, h, repo)
+	if got := narration(t, log); !strings.Contains(got, `[gate \"check\"] — infra: gate killed twice (likely OOM), not a test failure`) {
+		t.Errorf("the verdict line must name the double kill; run.jsonl = %s", got)
+	}
+}
+
 // BEH-687: a docs-only diff feeds none of the gates, so the heavy host re-run
 // validates nothing a prose edit could break — it is skipped and treated as green.
 func TestReviewSkipsTheHostGateForADocsOnlyDiff(t *testing.T) {

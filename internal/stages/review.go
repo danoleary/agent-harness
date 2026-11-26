@@ -397,6 +397,14 @@ func Review(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Res
 		if gateRes.FailedGate != "" {
 			gateClause = fmt.Sprintf(" [gate %q]", gateRes.FailedGate)
 		}
+		// A gate the environment failed on its run and its re-run is told apart from
+		// a real red in the stage's own verdict line too (#472).
+		switch {
+		case gateRes.KilledTwice():
+			gateClause += " — infra: gate killed twice (likely OOM), not a test failure"
+		case gateRes.Infra != "":
+			gateClause += fmt.Sprintf(" — infra: red twice with %s, not a test failure", gateRes.Infra)
+		}
 		log.Event(fmt.Sprintf("review ✗ %s (gate exit %d)%s — keeping worktree, nothing pushed", result.Reason, gateExit, gateClause))
 		// What the gate printed goes in the run log, so a gate that could not run its
 		// tool reads as PATH (#46), and a guard that reports on stdout reads as its
