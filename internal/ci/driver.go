@@ -34,12 +34,13 @@ var errChecksUnobservable = errors.New("CI checks not observable with this token
 // more, then ends AuthFailed rather than report "CI did not go green" or pass (#466).
 var errChecksUnauthenticated = errors.New("CI checks not readable: gh not authenticated (HTTP 401 / bad credentials) — PR was pushed, check CI manually")
 
-// errPollTransient marks a `gh pr checks` call that failed at the transport layer:
-// a TCP dial or read timed out, the connection was reset, DNS failed, gh found the
-// host offline, or GitHub's edge answered 502/503/504. The poll never reached CI,
-// so it says nothing about whether a check failed. The poller retries it, and only a run of them in a row
-// ends the watch, failing soft to "CI watch unavailable" (#194).
-var errPollTransient = errors.New("CI checks poll could not reach GitHub (network error)")
+// errPollTransient marks a `gh pr checks` call that got no answer about CI: a TCP
+// dial or read timed out, the connection was reset, DNS failed, gh found the host
+// offline (#194), or GitHub failed server-side, with an HTTP 500/502/503/504 or a
+// GraphQL "Something went wrong" (#471). It says nothing about whether a check
+// failed. The poller retries it, and only a run of them in a row ends the watch,
+// failing soft to "CI watch unavailable".
+var errPollTransient = errors.New("CI checks poll got no answer from GitHub (network or server error)")
 
 // errGhMissing marks a poll that could not run gh at all: the binary is not on the
 // harness PATH. That is a permanent configuration fault, not a network blip, so the
@@ -48,7 +49,9 @@ var errPollTransient = errors.New("CI checks poll could not reach GitHub (networ
 var errGhMissing = errors.New("the gh CLI is not on the harness PATH")
 
 // transientSignatures are lower-cased fragments of gh's stderr that mark a network
-// failure rather than an answer from GitHub (#194).
+// failure (#194) or a GitHub server fault (#471) rather than an answer about CI.
+// There is no bare "timeout": gh echoes the branch name in a not-found error, and
+// a branch named for a timeout must still stop the watch at once.
 var transientSignatures = []string{
 	"dial tcp",
 	"i/o timeout",
@@ -63,11 +66,16 @@ var transientSignatures = []string{
 	// Go's transport errors above (#266).
 	"error connecting to",
 	"check your internet connection",
+	// GitHub's own server-side faults: a REST 500, and the GraphQL API's
+	// "Something went wrong while executing your query" and query timeout (#471).
+	"http 500",
+	"something went wrong while executing your query",
+	"couldn't respond to your request in time",
 }
 
-// isTransientErr reports whether a failed gh call never got an answer from GitHub:
-// its stderr carries a transport-level failure, or the call hung past its timeout
-// (proc.ErrTimeout) — a stalled connection, not a verdict.
+// isTransientErr reports whether a failed gh call never got an answer about CI:
+// its stderr carries a transport-level failure or a GitHub server fault, or the
+// call hung past its timeout (proc.ErrTimeout) — a stalled connection, not a verdict.
 func isTransientErr(stderr string, runErr error) bool {
 	if errors.Is(runErr, proc.ErrTimeout) {
 		return true
@@ -431,8 +439,9 @@ func interpretChecksOutput(stdout, stderr []byte, runErr error) ([]Check, error)
 		if isUnauthenticatedErr(s) {
 			return nil, errChecksUnauthenticated
 		}
-		// A transport-level failure (dial/read timeout, reset, DNS, gh offline, a
-		// 502/503/504 from GitHub's edge) never reached CI — the poller retries it (#194).
+		// A transport-level failure (dial/read timeout, reset, DNS, gh offline) or a
+		// GitHub server fault (a 5xx, GraphQL's "Something went wrong") never read
+		// CI — the poller retries it (#194, #471).
 		if isTransientErr(s, runErr) {
 			if s != "" {
 				return nil, fmt.Errorf("%w: %s", errPollTransient, s)

@@ -485,10 +485,14 @@ loop:
   network-error retry (#194): a `gh pr checks` call that fails at the transport layer ("dial tcp",
     "i/o timeout", "operation timed out", "connection reset", "TLS handshake timeout", "no such host",
     gh's own offline message "error connecting to …" / "check your internet connection" (#266),
-    HTTP 502/503/504, or the gh call hanging past its timeout) never reached CI -> errPollTransient. The
+    HTTP 502/503/504, or the gh call hanging past its timeout) never reached CI -> errPollTransient. So
+    does a GitHub server fault (#471, ADR-0075): an HTTP 500, or GraphQL's "Something went wrong while
+    executing your query" / "couldn't respond to your request in time". A not-found PR or branch, a 404
+    or a 422 stays a hard failure that stops the poll at once; there is no bare "timeout" signature,
+    since gh echoes the branch name in its not-found error. The
     poll backs off one interval and polls again, like the no-checks-yet window; any answer from GitHub
     resets the count. Only 5 in a row, or a budget spent while GitHub is unreachable, ends the poll, and
-    that fails SOFT: pass with "CI watch unavailable: network errors reaching GitHub,
+    that fails SOFT: pass with "CI watch unavailable: network or server errors reaching GitHub,
     check CI manually — PR was pushed OK; last error: …", not "CI did not go green".
   poll fault (#383): a `gh pr checks` call exec could not start at all (gh is not on the harness PATH,
     `exec: "gh": executable file not found in $PATH`) -> errGhMissing. A missing binary is permanent, so
