@@ -457,10 +457,10 @@ const unobservableReason = "CI watch read no CI state: CI status unobservable wi
 const unauthenticatedReason = "CI watch read no CI state: gh not authenticated for the checks poll (HTTP 401 / bad credentials) — fix the harness gh auth; the PR is worked again on the next poll"
 
 // unreachableReason prefixes the operator-facing summary when `gh pr checks` kept
-// failing with network errors (#194). No check was seen to fail and the diff is
+// failing with network errors (#194) or GitHub server errors (#471). No check was seen to fail and the diff is
 // pushed and gate-green, so this fails soft to a pass; the last
 // network error follows it for diagnosis.
-const unreachableReason = "CI watch unavailable: network errors reaching GitHub, check CI manually — PR was pushed OK; last error: "
+const unreachableReason = "CI watch unavailable: network or server errors reaching GitHub, check CI manually — PR was pushed OK; last error: "
 
 // ghMissingReason prefixes the operator-facing summary when the checks poll could
 // not run gh at all (#383). Every gh read the watch makes needs it, so nothing more
@@ -470,7 +470,7 @@ const ghMissingReason = "CI watch could not run: the gh CLI is not on the harnes
 // pollErrOutcome turns a poll error into an outcome. A poll GitHub refused, an
 // unobservable-checks 403 or a bad-credentials 401, is AuthFailed: the watch read
 // no CI state, so it is neither a pass nor a red CI (#466). A run of network
-// errors (errPollTransient, #194) degrades to a pass: the harness could not read
+// or server errors (errPollTransient, #194, #471) degrades to a pass: the harness could not read
 // CI, and no check was seen to fail. A timeout means CI never
 // settled: a Pending outcome, unknown rather than red, reporting the still-non-green
 // checks (#421). A missing gh (#383) and any other error are a poll fault: the

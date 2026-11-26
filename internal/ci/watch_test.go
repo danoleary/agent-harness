@@ -989,6 +989,39 @@ func TestWatchRetriesADialTimeoutThenPassesOnGreen(t *testing.T) {
 	}
 }
 
+// graphQLServerErrorStderr is the one-off error GitHub's GraphQL API answered the
+// #471 re-poll with: a server-side fault, not a verdict on CI.
+const graphQLServerErrorStderr = "GraphQL: Something went wrong while executing your query. Please include `C3A4:2B1F:1D2E3F:1E2F3A:6745B2C1` when reporting this issue."
+
+// #471, replayed: the PR's CI was red, a flake re-run left it red, and the fix
+// session committed and was pushed. The re-poll got GitHub's GraphQL "Something
+// went wrong" error once, then CI answered green. The server fault must be retried,
+// so the pushed fix is watched to its green result rather than ending the run as
+// "could not poll CI".
+func TestWatchRetriesAGraphQLServerErrorOnTheRePollAfterAFix(t *testing.T) {
+	calls := 0
+	d := newGhPollDriver(func() ([]byte, []byte, error) {
+		calls++
+		switch calls {
+		case 1, 2:
+			return []byte(`[{"name":"check","bucket":"fail","state":"FAILURE","link":""}]`), nil, errors.New("exit status 8")
+		case 3:
+			return nil, []byte(graphQLServerErrorStderr), errors.New("exit status 1")
+		}
+		return []byte(`[{"name":"check","bucket":"pass","state":"SUCCESS","link":""}]`), nil, nil
+	})
+	out := WatchAndFix(d, testWatchCfg(), newFakeClock().now)
+	if out.PollFault {
+		t.Fatalf("outcome = %+v: a GraphQL server error must be retried, not end the watch as a poll fault", out)
+	}
+	if !out.OK || out.Reason == "" || strings.HasPrefix(out.Reason, "CI watch unavailable") {
+		t.Fatalf("outcome = %+v, want OK on the green re-poll", out)
+	}
+	if d.fixes != 1 || calls != 4 {
+		t.Fatalf("fixes=%d polls=%d, want one fix and the re-poll retried once", d.fixes, calls)
+	}
+}
+
 func TestWatchFailsSoftWhenGitHubStaysUnreachable(t *testing.T) {
 	// The network errors never clear. The PR is pushed and gate-green and no check
 	// was seen to fail, so fail soft: OK, no rerun/fix, and a
@@ -1001,7 +1034,7 @@ func TestWatchFailsSoftWhenGitHubStaysUnreachable(t *testing.T) {
 	if d.reruns != 0 || d.fixes != 0 {
 		t.Fatalf("unreachable CI must not trigger rerun/fix; got rerun=%d fix=%d", d.reruns, d.fixes)
 	}
-	if !strings.HasPrefix(out.Reason, "CI watch unavailable: network errors reaching GitHub") {
+	if !strings.HasPrefix(out.Reason, "CI watch unavailable: network or server errors reaching GitHub") {
 		t.Fatalf("reason %q should say CI watch is unavailable over network errors", out.Reason)
 	}
 	if !strings.Contains(out.Reason, "operation timed out") {
@@ -1016,8 +1049,8 @@ func TestWatchFailsSoftWhenGhReportsTheHostOffline(t *testing.T) {
 		return nil, []byte(ghOfflineStderr), errors.New("exit status 1")
 	})
 	out := WatchAndFix(d, testWatchCfg(), newFakeClock().now)
-	if !out.OK || !strings.HasPrefix(out.Reason, "CI watch unavailable: network errors reaching GitHub") {
-		t.Fatalf("outcome = %+v, want OK with \"CI watch unavailable: network errors …\"", out)
+	if !out.OK || !strings.HasPrefix(out.Reason, "CI watch unavailable: network or server errors reaching GitHub") {
+		t.Fatalf("outcome = %+v, want OK with \"CI watch unavailable: network or server errors …\"", out)
 	}
 	if d.reruns != 0 || d.fixes != 0 {
 		t.Fatalf("an offline host must not trigger rerun/fix; got rerun=%d fix=%d", d.reruns, d.fixes)

@@ -295,8 +295,12 @@ func TestInterpretChecksOutputFlagsNetworkFailuresAsTransient(t *testing.T) {
 		"http 502":              {`HTTP 502: Bad Gateway (https://api.github.com/graphql)`, errors.New("exit status 1")},
 		"http 503":              {`HTTP 503: Service Unavailable (https://api.github.com/graphql)`, errors.New("exit status 1")},
 		"http 504":              {`HTTP 504: Gateway Timeout (https://api.github.com/graphql)`, errors.New("exit status 1")},
-		"gh offline (#266)":     {ghOfflineStderr, errors.New("exit status 1")},
-		"gh call hung":          {"", fmt.Errorf(`"gh" did not respond within 1m0s: %w`, proc.ErrTimeout)},
+		// GitHub answered, but with a server-side fault that says nothing about CI (#471).
+		"http 500":                     {`HTTP 500: Internal Server Error (https://api.github.com/graphql)`, errors.New("exit status 1")},
+		"graphql something went wrong": {graphQLServerErrorStderr, errors.New("exit status 1")},
+		"graphql timed out":            {"GraphQL: We couldn't respond to your request in time. Sorry about that. Please try resubmitting your request and contact us if the problem persists.", errors.New("exit status 1")},
+		"gh offline (#266)":            {ghOfflineStderr, errors.New("exit status 1")},
+		"gh call hung":                 {"", fmt.Errorf(`"gh" did not respond within 1m0s: %w`, proc.ErrTimeout)},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -312,10 +316,15 @@ func TestInterpretChecksOutputFlagsNetworkFailuresAsTransient(t *testing.T) {
 }
 
 func TestInterpretChecksOutputKeepsRealFailuresNonTransient(t *testing.T) {
-	// A 500 or a bad branch is not a network blip; it stays a real gh failure.
+	// A PR gh cannot find, or a request GitHub rejected, is an answer, not a
+	// server fault: more polling does not change it, so it stops the watch at once.
+	// A branch named for a timeout must not read as one (#471).
 	for _, stderr := range []string{
-		"HTTP 500: Internal Server Error (https://api.github.com/graphql)",
 		"no pull requests found for branch \"feat/x\"",
+		"no pull requests found for branch \"fix/poll-timeout\"",
+		"GraphQL: Could not resolve to a PullRequest with the number of 999. (repository.pullRequest)",
+		"HTTP 404: Not Found (https://api.github.com/graphql)",
+		"HTTP 422: Validation Failed (https://api.github.com/graphql)",
 	} {
 		_, err := interpretChecksOutput([]byte(""), []byte(stderr), errors.New("exit status 1"))
 		if err == nil || errors.Is(err, errPollTransient) {

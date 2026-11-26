@@ -82,3 +82,4 @@ catches a duplicate there.
 - [ADR-0072](0072-a-diff-scoped-gate-is-compared-on-the-base-over-the-branchs-paths.md): A diff-scoped gate is compared on the base over the branch's paths, or not at all
 - [ADR-0073](0073-a-resolved-on-main-ticket-waits-for-close-not-for-main.md): A resolved-on-main ticket waits for close, not for main
 - [ADR-0074](0074-a-checks-poll-github-refused-is-a-failed-run-not-a-pass.md): A checks poll GitHub refused is a failed run, not a pass
+- [ADR-0075](0075-a-github-server-error-on-the-checks-poll-is-retried.md): A GitHub server error on the checks poll is retried like a network error
