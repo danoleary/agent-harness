@@ -121,6 +121,30 @@ func TestReviewRedGateWithholdsThePushAndNamesTheGate(t *testing.T) {
 	}
 }
 
+// #472: a host gate the kernel killed on its run and its re-run ships nothing, and
+// the stage's verdict line says the gate was killed twice rather than reading as a
+// plain red gate.
+func TestReviewRedGateKilledTwiceSaysInfraInItsVerdict(t *testing.T) {
+	h, repo := handedOff(t, "PROJ-2")
+	h.ShellFn = func(_ int, s hostio.ShellRun) session.Outcome {
+		if strings.HasPrefix(s.Label, gateStep) {
+			return session.Outcome{ExitCode: 2, StderrTail: "golangci-lint: signal: killed"}
+		}
+		return session.Outcome{}
+	}
+	log := stageLog(t, "PROJ-2")
+
+	res := Review(h, stageCfg(), log, Args{Identifier: "PROJ-2"})
+
+	if res.OK || res.Disposition == Shipped {
+		t.Fatalf("a gate killed twice ships nothing, got %+v", res)
+	}
+	assertNothingPushed(t, h, repo)
+	if got := narration(t, log); !strings.Contains(got, `[gate \"check\"] — infra: gate killed twice (likely OOM), not a test failure`) {
+		t.Errorf("the verdict line must name the double kill; run.jsonl = %s", got)
+	}
+}
+
 // BEH-687: a docs-only diff feeds none of the gates, so the heavy host re-run
 // validates nothing a prose edit could break — it is skipped and treated as green.
 func TestReviewSkipsTheHostGateForADocsOnlyDiff(t *testing.T) {
@@ -318,6 +342,31 @@ func TestReviewResolvesAPrePushConflictThenRegatesAndPushes(t *testing.T) {
 	if got := narration(t, log); !strings.Contains(got, "proj-10.txt") || !strings.Contains(got, "CONFLICT") {
 		t.Errorf("run.jsonl must name the unmerged file and keep git's conflict report (#164); got %s", got)
 	}
+}
+
+// #472: the re-gate over a resolved conflict was SIGKILLed on its run and on its
+// re-run. Nothing ships, and the tracker breadcrumb says the gate was killed
+// twice, likely for memory, rather than that the rebased branch failed its gate.
+func TestReviewSaysAPostRebaseGateKilledTwiceIsInfra(t *testing.T) {
+	h, repo := handedOff(t, "PROJ-10")
+	repo.Conflict("proj-10")
+	resolvesConflicts(h, repo)
+	h.ShellFn = func(_ int, s hostio.ShellRun) session.Outcome {
+		if strings.Contains(s.Label, "postrebase") {
+			return session.Outcome{ExitCode: 2, StderrTail: "golangci-lint: signal: killed"}
+		}
+		return session.Outcome{}
+	}
+
+	res := Review(h, stageCfg(), stageLog(t, "PROJ-10"), Args{Identifier: "PROJ-10"})
+
+	if res.OK {
+		t.Fatalf("a re-gate killed twice ships nothing, got %+v", res)
+	}
+	if len(h.Trk.Comments) != 1 || !strings.Contains(h.Trk.Comments[0], "killed twice (likely OOM)") || strings.Contains(h.Trk.Comments[0], "gate re-run failed") {
+		t.Errorf("comments = %v, want one naming the double kill, not a failed gate", h.Trk.Comments)
+	}
+	assertNothingPushed(t, h, repo)
 }
 
 // replayFailsWithNoConflict is the #164 branch: two commits cut from origin/main,

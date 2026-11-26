@@ -139,6 +139,9 @@ func (r *Runner) Shell(s ShellRun) Result {
 		return Result{Outcome: session.Outcome{ExitCode: sandbox.ExitCannotStart, DockerReason: reason, StderrTail: reason}, Attempts: 1}
 	}
 	createIsolatedPaths(s)
+	if s.Delay > 0 {
+		r.sleep(s.Delay)
+	}
 	return r.attempts(s.Label, s.Retry, func(label string) Result {
 		name := r.name(label)
 		transcript := runlog.StepLogName(label, r.runID)

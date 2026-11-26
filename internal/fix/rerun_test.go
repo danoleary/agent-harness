@@ -231,7 +231,7 @@ func TestTheRunLogNamesTheClassOfARed(t *testing.T) {
 	}{
 		{"a real assertion", []gateScript{assertion}, 1, []string{`gate \"storybook\" is red (exit 1): test failure`}},
 		{"infra, green on its re-run", []gateScript{timeout, {log: "ok\n"}}, 2, []string{"infra — re-running it once"}},
-		{"infra, red again", []gateScript{timeout}, 2, []string{"infra — re-running it once", `gate \"storybook\" is red again on its re-run (exit 1): test failure`}},
+		{"infra, red again", []gateScript{timeout}, 2, []string{"infra — re-running it once", `gate \"storybook\" is red again on its re-run (exit 1) with a test timeout: infra, not a test failure`}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -248,7 +248,7 @@ func TestTheRunLogNamesTheClassOfARed(t *testing.T) {
 					t.Errorf("run log lacks %q:\n%s", w, raw)
 				}
 			}
-			if c.runs == 2 && len(c.want) == 1 && strings.Contains(string(raw), "test failure") {
+			if c.runs == 2 && strings.Contains(string(raw), "): test failure") {
 				t.Errorf("a red the re-run washed out is no test failure:\n%s", raw)
 			}
 		})
@@ -293,6 +293,64 @@ func TestABootstrapFailureThenARealRedIsATestFailure(t *testing.T) {
 	raw, _ := os.ReadFile(filepath.Join(e.Log.Dir, "run.jsonl"))
 	if !strings.Contains(string(raw), "test failure") {
 		t.Errorf("the re-run's real red is a test failure:\n%s", raw)
+	}
+}
+
+// lintKilled is the #472 lint step's log: the kernel SIGKILLed golangci-lint under
+// memory pressure, so the step printed no lint error, only the kill, and make
+// exited 2. The re-run died the same way.
+const lintKilled = `golangci-lint run ./...
+golangci-lint: signal: killed
+make: *** [Makefile:41: lint] Error 2
+`
+
+// #472, replayed: after a conflict resolution the re-gate's lint step was SIGKILLed,
+// classified infra and re-run, and SIGKILLed again. The re-run's red was labelled a
+// test failure. Now the re-run's log goes through the same classifier: the gate is
+// still red (nothing is pushed over it), but it says it was killed twice, likely
+// for memory, and the re-run waits for memory to free before it starts.
+func TestAGateKilledAgainOnItsRerunIsInfraNotATestFailure(t *testing.T) {
+	lint := []config.Gate{{Name: "lint", Command: "make lint"}}
+	e, h := scriptedGates(t, lint, gateScript{log: lintKilled, out: session.Outcome{ExitCode: 2}})
+
+	res := e.Gates("gate")
+
+	if res.Green() || res.FailedGate != "lint" {
+		t.Fatalf("a gate killed on both runs is still red, got %+v", res)
+	}
+	if res.Infra != "a SIGKILL" {
+		t.Errorf("Infra = %q, want the re-run's own cause, a SIGKILL", res.Infra)
+	}
+	if !res.KilledTwice() {
+		t.Errorf("KilledTwice = false over two SIGKILLs")
+	}
+	got := runLog(t, e)
+	if !strings.Contains(got, "infra: gate killed twice (likely OOM)") {
+		t.Errorf("run log must name the double kill:\n%s", got)
+	}
+	if strings.Contains(got, "): test failure") {
+		t.Errorf("a gate the kernel killed twice is no test failure:\n%s", got)
+	}
+	if got := shellLabels(h); got != "gate-lint,gate-lint-rerun" {
+		t.Fatalf("gate runs = %s, want the gate then one re-run", got)
+	}
+	if h.Shells[0].Delay != 0 || h.Shells[1].Delay != gateOOMBackoffBase {
+		t.Errorf("delays = %s, %s; want the re-run to wait %s for memory headroom", h.Shells[0].Delay, h.Shells[1].Delay, gateOOMBackoffBase)
+	}
+}
+
+// A re-run over a cause that is not memory starts at once: waiting frees nothing
+// for a closed browser connection.
+func TestARerunOverABrowserCrashDoesNotWait(t *testing.T) {
+	e, h := scriptedGates(t, storybook, gateScript{log: storybookCrash, out: session.Outcome{ExitCode: 1}})
+
+	res := e.Gates("gate")
+
+	if len(h.Shells) != 2 || h.Shells[1].Delay != 0 {
+		t.Fatalf("want one immediate re-run, got %+v", h.Shells)
+	}
+	if res.Infra == "" || res.KilledTwice() {
+		t.Errorf("Infra = %q, KilledTwice = %v; want infra, not a kill", res.Infra, res.KilledTwice())
 	}
 }
 

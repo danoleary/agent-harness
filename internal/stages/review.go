@@ -397,6 +397,14 @@ func Review(h hostio.Host, cfg config.Config, log *runlog.Logger, args Args) Res
 		if gateRes.FailedGate != "" {
 			gateClause = fmt.Sprintf(" [gate %q]", gateRes.FailedGate)
 		}
+		// A gate the environment failed on its run and its re-run is told apart from
+		// a real red in the stage's own verdict line too (#472).
+		switch {
+		case gateRes.KilledTwice():
+			gateClause += " — infra: gate killed twice (likely OOM), not a test failure"
+		case gateRes.Infra != "":
+			gateClause += fmt.Sprintf(" — infra: red twice with %s, not a test failure", gateRes.Infra)
+		}
 		log.Event(fmt.Sprintf("review ✗ %s (gate exit %d)%s — keeping worktree, nothing pushed", result.Reason, gateExit, gateClause))
 		// What the gate printed goes in the run log, so a gate that could not run its
 		// tool reads as PATH (#46), and a guard that reports on stdout reads as its
@@ -585,6 +593,12 @@ func resolveRebaseConflict(fixes fix.Env, target fix.Target, comment func(string
 		comment(fmt.Sprintf(
 			"The %s conflict was auto-resolved on `%s`, but gate %q is red on `main` itself (`%s`), with nothing of this branch on it, so nothing was pushed. The rebased branch is waiting in a worktree: `main` needs repairing, not this branch. (#250)",
 			trigger, branch, res.BaseRed.Verdict.Gate, res.BaseRed.SHA,
+		))
+	case res.Resolved && res.Gate.Infra != "":
+		fixes.Log.Event("review — keeping worktree, nothing pushed")
+		comment(fmt.Sprintf(
+			"The %s conflict was auto-resolved on `%s`, but the post-rebase gate re-run could not finish: %s. That is the host, not the branch, and no test failed; the rebased branch is waiting in a worktree. (#472)",
+			trigger, branch, res.Reason,
 		))
 	case res.Resolved:
 		fixes.Log.Event("review — keeping worktree, nothing pushed")

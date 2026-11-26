@@ -272,6 +272,29 @@ func TestRunnerNotifiesEachRetryWithTheSleptBackoff(t *testing.T) {
 	}
 }
 
+// A shell run with a Delay sleeps it out before it launches (#472): a gate re-run
+// over a kill waits for memory headroom rather than starting at once.
+func TestShellWaitsOutItsDelayBeforeLaunching(t *testing.T) {
+	r, seen := testRunner(t)
+	var order []string
+	r.sleep = func(d time.Duration) { order = append(order, "slept "+d.String()) }
+	run := r.run
+	r.run = func(args []string, opts session.Options) session.Outcome {
+		order = append(order, "launched")
+		return run(args, opts)
+	}
+
+	r.Shell(ShellRun{Label: "gate-lint-rerun", Command: "make lint", Delay: 30 * time.Second})
+	r.Shell(ShellRun{Label: "gate-lint", Command: "make lint"})
+
+	if want := []string{"slept 30s", "launched", "launched"}; !reflect.DeepEqual(order, want) {
+		t.Errorf("order = %v, want %v", order, want)
+	}
+	if len(*seen) != 2 {
+		t.Errorf("launches = %d, want 2", len(*seen))
+	}
+}
+
 // The `--dry-run` preview comes from the same builder as the launch, so a printed
 // plan can never show a command the harness would not actually run.
 func TestRunnerPreviewMatchesTheLaunchedArgv(t *testing.T) {

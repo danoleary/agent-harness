@@ -88,6 +88,9 @@ type ShellRun struct {
 	// the sandbox session (a gate's cache_isolate, #314): each is mounted over by
 	// an empty tmpfs for this container alone.
 	Isolate []string
+	// Delay is how long to wait before the run launches: a gate re-run over a
+	// kill waits for the memory the killed run held to be reclaimed (#472).
+	Delay time.Duration
 }
 
 // Retry is the transient-failure retry schedule for one launch: re-run while the
