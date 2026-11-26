@@ -622,3 +622,28 @@ better, and whatever it pushes Dependabot overwrites.
   still conflicts is asked again at the new head.
 - **Red CI is unchanged.** A `ci` item on a Dependabot branch is worked as on
   any human's branch.
+
+## Amendment, 2026-11-26: a failed Corepack download is infra, and Corepack's home is on the cache volume (#470)
+
+On herd, every gate container printed Corepack's `about to download
+pnpm-<version>.tgz` notice: a `--rm` container's Corepack home goes with it, so
+each gate, `post_create` and session fetched pnpm from the registry again. One
+base gate's fetch ended short (undici's `UND_ERR_RES_CONTENT_LENGTH_MISMATCH` on
+an HTTP/2 stream), Node threw it unhandled, and the gate exited 1 before the
+project's tool ran. No signature matched, so it was logged as a test failure, the
+whole gate set was re-run (#189), and a green base was recorded as flaked.
+
+- **A failed Corepack download is a signature of its own.** A log that holds
+  Corepack's download notice followed by an undici error code, a Node HTTP/2
+  stream error or a failed fetch, before pnpm prints the header of a project
+  script, earns the gate the one re-run. An undici error in the project's own
+  tests, after pnpm started them, is the tree's.
+- **A gate whose re-run fails its download too is infra, not a test failure.** It
+  stays red, since nothing was checked, but `GateResult.Bootstrap` marks it, the
+  log says Corepack could not download the package manager, and
+  `GateResult.Environmental` counts it with an OOM-kill or the cap. The base check
+  and a conflict resolution's base gate then record no verdict for that base.
+- **Corepack's home is on the cache volume.** Every container that mounts the
+  Consumer's `[cache]` gets `COREPACK_HOME=<path>/corepack`, so the download is
+  made once into the volume. It overrides a `COREPACK_HOME` the image bakes; a
+  Consumer with no cache keeps its own.

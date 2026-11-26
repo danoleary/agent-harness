@@ -76,6 +76,11 @@ path = "/root/.nuget/packages"
 prune_command = "dotnet nuget locals all --clear"   # runs on the HOST when disk is low
 ```
 
+With a cache declared, the harness also sets `COREPACK_HOME=<path>/corepack` in
+every container, so a Node project's pnpm or yarn is downloaded once into the
+volume, not once per gate (#470). That overrides a `COREPACK_HOME` your
+Dockerfile sets.
+
 ## Changing the image in a ticket
 
 A ticket that edits this Dockerfile has its `post_create` and gates run in an

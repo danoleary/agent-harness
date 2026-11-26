@@ -225,6 +225,37 @@ func TestARedReGateGatesTheBaseAndFindsItGreen(t *testing.T) {
 	}
 }
 
+// A base gated alone whose Corepack download fails on its run and its re-run was
+// never gated (#470): it records no verdict, is not re-run as a red, and the
+// branch keeps the blame for its red re-gate.
+func TestARedReGateOverABaseThatCannotBootstrapRecordsNothing(t *testing.T) {
+	var e Env
+	e, h := redBaseEnv(t, func(run hostio.ShellRun) session.Outcome {
+		if strings.HasPrefix(run.Label, "basegate") {
+			if err := os.WriteFile(filepath.Join(e.Log.Dir, run.Label+".log"), []byte(corepackStreamRed), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			return session.Outcome{ExitCode: 1}
+		}
+		return mainDoesNotBuild(run)
+	})
+	base, _ := h.Worktree().RefSHA("origin/main")
+
+	res := e.ResolveConflict(Conflict{Regate: func() GateResult { return e.Gates("gate") }})
+
+	if res.BaseRed != nil || res.OK {
+		t.Fatalf("a base never gated leaves the red re-gate the branch's, got %+v", res)
+	}
+	if v, ok := basegate.For(e.Cfg).Read(base); ok {
+		t.Errorf("recorded verdict = %+v, want none for a base never gated", v)
+	}
+	for _, s := range h.Shells {
+		if strings.HasPrefix(s.Label, "basegate-confirm") {
+			t.Errorf("re-ran the gates over the base (%s): a download failure is no red to confirm", s.Label)
+		}
+	}
+}
+
 // overlapsFrom is a resolution session that resolves the conflict and writes
 // report, verbatim, as its overlap file; "" writes none.
 func overlapsFrom(t *testing.T, report string) (Env, *hostio.Fake) {

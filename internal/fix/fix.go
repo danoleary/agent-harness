@@ -129,10 +129,23 @@ type GateResult struct {
 	// Logs is every gate run's step log by gate name, green ones included: the
 	// red-base check reads whether the base run of a gate selected anything (#448).
 	Logs map[string]string
+	// Bootstrap is set when the failing gate never reached the project's tool:
+	// Corepack could not download the package manager on its run and on its
+	// re-run (#470). Its red says nothing about the tree, but nothing was checked,
+	// so it is still red.
+	Bootstrap bool
 }
 
 // Green reports whether every gate passed.
 func (g GateResult) Green() bool { return g.Outcome.ExitCode == 0 }
+
+// Environmental reports whether a red gate failed for its environment, not its
+// tree, so its red says nothing about the tree: an OOM-kill or a failed launch
+// through its retries, its cap, or a package manager Corepack could not download
+// on the run and its re-run (#470).
+func (g GateResult) Environmental() bool {
+	return !g.Green() && (g.Outcome.Retryable() || g.Outcome.CapKilled || g.Bootstrap)
+}
 
 // RunGates runs each configured named gate in order via runOne, stopping at the
 // first non-zero exit. runOne launches one gate's throwaway container (with its
@@ -249,6 +262,7 @@ func (e Env) gatesIn(worktreePath string, gates []config.Gate, labelPrefix strin
 	defer release()
 	// RunGates stops at the first red, so the last gate run is the failing one.
 	var lastLog string
+	var bootstrap bool
 	logs := map[string]string{}
 	res := RunGates(gates, func(g config.Gate) session.Outcome {
 		e.Log.Event(fmt.Sprintf("%s · gate %q: %s", e.Who, g.Name, g.Command))
@@ -273,7 +287,13 @@ func (e Env) gatesIn(worktreePath string, gates []config.Gate, labelPrefix strin
 			r = e.Host.Shell(run)
 			again = " again on its re-run"
 		}
-		if r.ExitCode != 0 && !r.Retryable() {
+		// A gate whose re-run could not download the package manager either never
+		// ran the project's tool, so it is no test failure (#470).
+		bootstrap = again != "" && r.ExitCode != 0 && bootstrapFailed(strings.ToLower(e.gateLog(r.Transcript)+"\n"+r.StderrTail))
+		switch {
+		case bootstrap:
+			e.Log.Event(fmt.Sprintf("%s ✗ gate %q is red again on its re-run (exit %d): infra — Corepack could not download the package manager, so the project's tool never ran (#470)", e.Who, g.Name, r.ExitCode))
+		case r.ExitCode != 0 && !r.Retryable():
 			e.Log.Event(fmt.Sprintf("%s ✗ gate %q is red%s (exit %d): test failure (#312)", e.Who, g.Name, again, r.ExitCode))
 		}
 		// A red re-run hands on the first run's log: the classifier read that one,
@@ -284,7 +304,7 @@ func (e Env) gatesIn(worktreePath string, gates []config.Gate, labelPrefix strin
 		return r.Outcome
 	})
 	if !res.Green() {
-		res.Log = lastLog
+		res.Log, res.Bootstrap = lastLog, bootstrap
 	}
 	res.Logs = logs
 	return res
@@ -860,7 +880,7 @@ func (e Env) readOverlaps(dropbox string) []Overlap {
 // Gate or fails another, the re-gate's red or the base's was environmental (which
 // says nothing about either), or the base could not be read or gated.
 func (e Env) redBase(regate GateResult) *BaseRed {
-	if regate.FailedGate == "" || regate.Outcome.Retryable() || regate.Outcome.CapKilled {
+	if regate.FailedGate == "" || regate.Environmental() {
 		return nil
 	}
 	wt := e.Host.Worktree()
@@ -902,11 +922,11 @@ func (e Env) redBase(regate GateResult) *BaseRed {
 		return nil
 	}
 	res := e.gatesIn(b.Path(), gates, baseGateStep, nil)
-	if !res.Green() && !environmental(res) {
+	if !res.Green() && !res.Environmental() {
 		e.Log.Event(fmt.Sprintf("%s ↻ base gate %q is red (exit %d) — re-running the gates once before the base counts as red (#189)", e.Who, res.FailedGate, res.Outcome.ExitCode))
 		res = e.gatesIn(b.Path(), gates, baseConfirmStep, nil)
 	}
-	if environmental(res) {
+	if res.Environmental() {
 		e.Log.Event(fmt.Sprintf("%s ⚠ base gate %q failed environmentally (exit %d) — that says nothing about the base; the red re-gate stays the branch's", e.Who, res.FailedGate, res.Outcome.ExitCode))
 		return nil
 	}
@@ -993,9 +1013,3 @@ var selectedNothingRE = regexp.MustCompile(`(?i)(?:^|[^\d])0 (?:tests?|stor(?:y|
 // selectedNothing reports whether a gate's log says it ran zero tests: on the
 // base, a green that is no proof of anything (#448).
 func selectedNothing(log string) bool { return selectedNothingRE.MatchString(log) }
-
-// environmental reports whether a red gate failed for its environment, not its
-// tree: an OOM-kill or a failed launch through its retries, or its cap.
-func environmental(g GateResult) bool {
-	return !g.Green() && (g.Outcome.Retryable() || g.Outcome.CapKilled)
-}
