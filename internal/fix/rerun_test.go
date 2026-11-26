@@ -61,6 +61,44 @@ TypeError: Failed to fetch dynamically imported module: http://localhost:63315/n
  ELIFECYCLE  Command failed with exit code 1.
 `
 
+// corepackStreamRed is the #470 base gate's log: Corepack set out to download the
+// pnpm the project pins, the HTTP/2 stream carrying the tarball ended short, and
+// undici's error went unhandled, so the gate exited 1 before the project's tool
+// ever ran. Nothing in it is the tree's.
+const corepackStreamRed = `! Corepack is about to download https://registry.npmjs.org/pnpm/-/pnpm-10.18.3.tgz
+node:events:497
+      throw er; // Unhandled 'error' event
+      ^
+
+ResponseContentLengthMismatchError: Response body length does not match content-length header
+    at Parser.onMessageComplete (/usr/local/lib/node_modules/corepack/dist/lib/corepack.cjs:4921:15)
+    at ClientHttp2Stream.<anonymous> (/usr/local/lib/node_modules/corepack/dist/lib/corepack.cjs:6304:19)
+    at ClientHttp2Stream.emit (node:events:519:28)
+    at endReadableNT (node:internal/streams/readable:1698:12)
+    at process.processTicksAndRejections (node:internal/process/task_queues:90:21)
+Emitted 'error' event on BodyReadable instance at:
+    at emitErrorNT (node:internal/streams/destroy:170:8)
+    at process.processTicksAndRejections (node:internal/process/task_queues:90:21) {
+  code: 'UND_ERR_RES_CONTENT_LENGTH_MISMATCH'
+}
+
+Node.js v26.0.0
+`
+
+// corepackThenProjectRed is a gate whose Corepack download went through: pnpm ran
+// the project's script, and it is the project's own tests that met an undici
+// error. That red is the tree's.
+const corepackThenProjectRed = `! Corepack is about to download https://registry.npmjs.org/pnpm/-/pnpm-10.18.3.tgz
+
+> web@0.0.0 test /work/herd/web
+> vitest run
+
+ FAIL  src/api/client.test.ts > fetches the roster
+TypeError: fetch failed
+  [cause]: SocketError: other side closed { code: 'UND_ERR_SOCKET' }
+ ELIFECYCLE  Test failed. See above for more details.
+`
+
 // gateScript is one scripted gate run: the log it writes and the outcome it ends in.
 type gateScript struct {
 	log string
@@ -137,6 +175,9 @@ func TestAGateIsRerunOnlyOverAnInfrastructureSignature(t *testing.T) {
 		{"a child SIGKILLed", gateScript{log: "make: *** [test] Killed\nKilled\n", out: session.Outcome{ExitCode: 2}}, true},
 		{"corepack download", gateScript{log: "Internal Error: Error when performing the request to https://registry.npmjs.org/pnpm/-/pnpm-9.1.0.tgz\n", out: session.Outcome{ExitCode: 1}}, true},
 		{"network reset", gateScript{log: "npm ERR! code ECONNRESET\n", out: session.Outcome{ExitCode: 1}}, true},
+		{"corepack's download ended short", gateScript{log: corepackStreamRed, out: session.Outcome{ExitCode: 1}}, true},
+		{"an undici error from the project's own tests after corepack", gateScript{log: corepackThenProjectRed, out: session.Outcome{ExitCode: 1}}, false},
+		{"an undici error with no corepack download", gateScript{log: "TypeError: fetch failed\n  code: 'UND_ERR_RES_CONTENT_LENGTH_MISMATCH'\n", out: session.Outcome{ExitCode: 1}}, false},
 		{"gate cap", gateScript{log: "running…\n", out: session.Outcome{ExitCode: sandbox.ExitOOMKill, CapKilled: true}}, true},
 		{"stderr only", gateScript{out: session.Outcome{ExitCode: 1, StderrTail: "Error: [vitest] Browser connection was closed while running tests."}}, true},
 		{"a per-story timeout", gateScript{log: " FAIL  src/routes/call/-components/more-tray.stories.tsx > Open\nError: Test timed out in 30000ms.\nIf this is a long-running test, pass a timeout value as the last argument or configure it globally with \"testTimeout\".\n", out: session.Outcome{ExitCode: 1}}, true},
@@ -211,6 +252,47 @@ func TestTheRunLogNamesTheClassOfARed(t *testing.T) {
 				t.Errorf("a red the re-run washed out is no test failure:\n%s", raw)
 			}
 		})
+	}
+}
+
+// #470: a gate whose Corepack download fails on its run and its re-run never
+// reached the project's tool, so its red says nothing about the tree. It stays
+// red, since nothing was checked, but it is marked a bootstrap failure, and the
+// run log calls it infra, never a test failure.
+func TestAGateThatCannotBootstrapItsPackageManagerIsInfraNotATestFailure(t *testing.T) {
+	e, h := scriptedGates(t, storybook, gateScript{log: corepackStreamRed, out: session.Outcome{ExitCode: 1}})
+
+	res := e.Gates("gate")
+
+	if res.Green() || !res.Bootstrap {
+		t.Fatalf("got %+v, want a red marked a bootstrap failure", res)
+	}
+	if got := shellLabels(h); got != "gate-storybook,gate-storybook-rerun" {
+		t.Errorf("gate runs = %s, want the gate then one re-run", got)
+	}
+	raw, _ := os.ReadFile(filepath.Join(e.Log.Dir, "run.jsonl"))
+	if strings.Contains(string(raw), "test failure") {
+		t.Errorf("a gate that never ran the project's tool is no test failure:\n%s", raw)
+	}
+	if !strings.Contains(string(raw), "could not download the package manager") {
+		t.Errorf("the run log should say the package-manager download failed:\n%s", raw)
+	}
+}
+
+// A real red that follows a bootstrap failure on the first run is a test failure:
+// only a re-run that failed to bootstrap too marks the gate.
+func TestABootstrapFailureThenARealRedIsATestFailure(t *testing.T) {
+	e, _ := scriptedGates(t, storybook,
+		gateScript{log: corepackStreamRed, out: session.Outcome{ExitCode: 1}},
+		gateScript{log: corepackThenProjectRed, out: session.Outcome{ExitCode: 1}},
+	)
+
+	if res := e.Gates("gate"); res.Green() || res.Bootstrap {
+		t.Fatalf("got %+v, want a red that is not a bootstrap failure", res)
+	}
+	raw, _ := os.ReadFile(filepath.Join(e.Log.Dir, "run.jsonl"))
+	if !strings.Contains(string(raw), "test failure") {
+		t.Errorf("the re-run's real red is a test failure:\n%s", raw)
 	}
 }
 

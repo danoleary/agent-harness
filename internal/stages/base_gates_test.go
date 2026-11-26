@@ -372,3 +372,91 @@ func TestImplementationDispatchesWhenARedBaseGateReRunFailsEnvironmentally(t *te
 		t.Errorf("recorded %d base verdicts, want none for an unconfirmed red", len(recorded))
 	}
 }
+
+// corepackStreamRed is the #470 base gate's log: Corepack's download of the pnpm
+// the project pins ended short on its HTTP/2 stream, undici's error went
+// unhandled, and the gate exited 1 before the project's tool ran.
+const corepackStreamRed = `! Corepack is about to download https://registry.npmjs.org/pnpm/-/pnpm-10.18.3.tgz
+node:events:497
+      throw er; // Unhandled 'error' event
+      ^
+
+ResponseContentLengthMismatchError: Response body length does not match content-length header
+    at ClientHttp2Stream.<anonymous> (/usr/local/lib/node_modules/corepack/dist/lib/corepack.cjs:6304:19)
+    at endReadableNT (node:internal/streams/readable:1698:12)
+Emitted 'error' event on BodyReadable instance at:
+    at emitErrorNT (node:internal/streams/destroy:170:8) {
+  code: 'UND_ERR_RES_CONTENT_LENGTH_MISMATCH'
+}
+
+Node.js v26.0.0
+`
+
+// #470, replayed: one base gate's Corepack download of pnpm died mid-stream on a
+// green base. Before, the gate was logged red as a test failure, the whole gate
+// set was re-run, and the base was recorded as flaked. Now the download failure
+// re-runs just that gate, whose green is the base's: no confirming re-run of the
+// gates, no flake, no test failure.
+func TestImplementationRerunsOnlyTheGateWhoseCorepackDownloadFailed(t *testing.T) {
+	repo := gittest.New(t)
+	cfg := sharedCfg(t)
+	h := hostio.NewFake(repo.Checkout(), ticket.Slug("#470"))
+	log := stageLog(t, "#470")
+	h.ShellFn = func(_ int, run hostio.ShellRun) session.Outcome {
+		if run.Label == baseGateLabel {
+			_ = os.WriteFile(filepath.Join(log.Dir, run.Label+".log"), []byte(corepackStreamRed), 0o644)
+			return session.Outcome{ExitCode: 1}
+		}
+		return session.Outcome{}
+	}
+	h.AgentFn = commitsHandoff(h, repo)
+
+	if res := Implementation(h, cfg, log, Args{Identifier: "#470"}); !res.OK || res.Disposition == BaseRed {
+		t.Fatalf("a green base whose download failed once must dispatch, got %+v", res)
+	}
+	if got := gateRuns(h, baseGateLabel+"-rerun"); got != 1 {
+		t.Errorf("re-ran the gate %d times, want once", got)
+	}
+	if got := gateRuns(h, baseConfirmLabel); got != 0 {
+		t.Errorf("re-ran the whole gate set %d times, want none", got)
+	}
+	said := narration(t, log)
+	for _, not := range []string{"flaked", "test failure"} {
+		if strings.Contains(said, not) {
+			t.Errorf("run.jsonl should not say %q; got %s", not, said)
+		}
+	}
+	if !strings.Contains(said, "passes its gates") {
+		t.Errorf("run.jsonl should record the base green; got %s", said)
+	}
+}
+
+// A base whose Corepack download fails on every run was never gated: the ticket
+// dispatches and no verdict is recorded, so a green base is not held as red.
+func TestImplementationDispatchesWhenTheBaseCannotBootstrapItsPackageManager(t *testing.T) {
+	repo := gittest.New(t)
+	cfg := sharedCfg(t)
+	h := hostio.NewFake(repo.Checkout(), ticket.Slug("#471"))
+	log := stageLog(t, "#471")
+	h.ShellFn = func(_ int, run hostio.ShellRun) session.Outcome {
+		if strings.HasPrefix(run.Label, baseGateStep) {
+			_ = os.WriteFile(filepath.Join(log.Dir, run.Label+".log"), []byte(corepackStreamRed), 0o644)
+			return session.Outcome{ExitCode: 1}
+		}
+		return session.Outcome{}
+	}
+	h.AgentFn = commitsHandoff(h, repo)
+
+	if res := Implementation(h, cfg, log, Args{Identifier: "#471"}); !res.OK || res.Disposition == BaseRed {
+		t.Fatalf("a base that was never gated must dispatch, got %+v", res)
+	}
+	if got := gateRuns(h, baseConfirmLabel); got != 0 {
+		t.Errorf("re-ran the whole gate set %d times, want none: a download failure says nothing about the base", got)
+	}
+	if recorded, _ := os.ReadDir(config.BaseVerdictsDir(cfg.ProjectPath)); len(recorded) != 0 {
+		t.Errorf("recorded %d base verdicts, want none for a base never gated", len(recorded))
+	}
+	if len(h.Filed) != 0 {
+		t.Errorf("filed = %v, want nothing", h.Filed)
+	}
+}

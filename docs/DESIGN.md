@@ -1393,6 +1393,10 @@ pnpm (`/pnpm-store`) Consumer differs only in config. The cache is **optional** 
 Consumer that declares none mounts no cache volume. The deprecated
 `pnpm_store_volume` key still maps onto `[cache]` with the historical `/pnpm-store`
 mount for back-compat.
+Every container that mounts the cache also gets `COREPACK_HOME=<path>/corepack`,
+so the package manager Corepack downloads for a project (pnpm, at the version
+`packageManager` pins) is fetched once into the volume rather than in every gate
+and session (#470). It overrides a `COREPACK_HOME` the image bakes.
 
 A cache that lives **inside the worktree** is the opposite case: the session and
 the gate container see the same files through the checkout mount. A gate may list

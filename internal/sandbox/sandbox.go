@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -308,6 +309,7 @@ func BuildDockerRunArgs(c Config) []string {
 		// could not otherwise write it. The base image cannot know the path — it is
 		// the Consumer's `[cache].path` — so it is passed by value here.
 		args = append(args, "-e", "HARNESS_CACHE_PATH="+c.CacheMountPath)
+		args = append(args, corepackHomeArgs(c.CacheMountPath)...)
 	}
 
 	// The findings dropbox is mounted only when the tool produces findings.
@@ -374,6 +376,17 @@ type GateConfig struct {
 	IsolatePaths []string
 }
 
+// corepackHomeArgs point Corepack's home into the cache volume mounted at
+// cachePath. Corepack downloads the package manager a project pins into its home,
+// which in a --rm container is gone with the container, so every gate,
+// post_create and session fetched it from the registry again, and a network blip
+// in that fetch failed the gate before the project's tool ran (#470). On the
+// volume the first download is the only one. It overrides a COREPACK_HOME the
+// image bakes; with no volume, the image's own stands.
+func corepackHomeArgs(cachePath string) []string {
+	return []string{"-e", "COREPACK_HOME=" + path.Join(cachePath, "corepack")}
+}
+
 // BuildWorktreeCommandArgs builds the argv (everything after `docker`) for a
 // throwaway container that runs ONE command in the feature worktree: a
 // config-declared named gate, or the Consumer's `post_create` toolchain-setup
@@ -424,6 +437,7 @@ func BuildWorktreeCommandArgs(c GateConfig, command string) []string {
 	if c.CacheVolume != "" {
 		args = append(args, "-v", c.CacheVolume+":"+c.CacheMountPath)
 		args = append(args, "-e", "HARNESS_CACHE_PATH="+c.CacheMountPath)
+		args = append(args, corepackHomeArgs(c.CacheMountPath)...)
 	}
 	// A cache the gate must not share with the session (herd's Vite dependency
 	// cache) is shadowed by a fresh tmpfs, so the gate rebuilds its own and the

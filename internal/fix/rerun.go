@@ -46,6 +46,38 @@ var infraSignatures = []struct{ cause, needle string }{
 	{"a download failure", "tls handshake timeout"},
 }
 
+// bootstrapFailure is the cause rerunReason names a failed Corepack download with.
+const bootstrapFailure = "Corepack failing to download the package manager"
+
+// corepackNotice is the line Corepack prints before it downloads the package
+// manager a project pins, whether or not it prompts. Over lower-cased text.
+const corepackNotice = "corepack is about to download"
+
+// bootstrapErrorRE is a fetch failing under that download: any undici error code,
+// Node's HTTP/2 stream errors, or a fetch that failed (#470). Over lower-cased text.
+var bootstrapErrorRE = regexp.MustCompile(`und_err_[a-z_]+|err_http2_[a-z_]+|fetch failed|error when performing the request|econnreset|etimedout|eai_again|socket hang up`)
+
+// projectStartRE is the header pnpm prints when it runs one of the project's
+// scripts: past it, the project's tool is running. Over lower-cased text.
+var projectStartRE = regexp.MustCompile(`(?m)^> \S`)
+
+// bootstrapFailed reports whether text, a lower-cased gate log, is a gate that
+// never reached the project's tool: Corepack set out to download the package
+// manager and a fetch error followed before the project's first script header
+// (#470). The download is the harness's toolchain bootstrap, not the tree, so an
+// undici error in the project's own tests, after pnpm started them, is not one.
+func bootstrapFailed(text string) bool {
+	i := strings.LastIndex(text, corepackNotice)
+	if i < 0 {
+		return false
+	}
+	after := text[i:]
+	if loc := projectStartRE.FindStringIndex(after); loc != nil {
+		after = after[:loc[0]]
+	}
+	return bootstrapErrorRE.MatchString(after)
+}
+
 // viteReload is the cause infraSignatures name a Vite reload with.
 const viteReload = "a Vite reload"
 
@@ -92,6 +124,9 @@ func rerunReason(out session.Outcome, log string, fixed []string) string {
 	text := strings.ToLower(log + "\n" + out.StderrTail)
 	if notInfraRE.MatchString(text) {
 		return ""
+	}
+	if bootstrapFailed(text) {
+		return bootstrapFailure
 	}
 	reloads := !noReoptimiseRE.MatchString(text)
 	for _, s := range infraSignatures {

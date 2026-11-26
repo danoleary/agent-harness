@@ -107,6 +107,33 @@ func TestOmitsCachePathWhenNoCacheVolume(t *testing.T) {
 	}
 }
 
+// #470: Corepack downloads the package manager a project pins into its home, and
+// a --rm container's home goes with it, so every gate, post_create and session
+// fetched pnpm from the registry again, and a network blip in that fetch failed a
+// gate. With a cache volume mounted, every container points COREPACK_HOME into
+// it, so the first download is the only one.
+func TestPointsCorepackHomeIntoTheCacheVolume(t *testing.T) {
+	c := baseConfig()
+	c.CacheVolume = "herd-pnpm"
+	c.CacheMountPath = "/pnpm-store"
+	g := cacheGateConfig()
+	g.CacheVolume = "herd-pnpm"
+	g.CacheMountPath = "/pnpm-store"
+
+	for name, args := range map[string][]string{"session": BuildDockerRunArgs(c), "worktree": BuildWorktreeCommandArgs(g, "true")} {
+		if got := envValue(args, "COREPACK_HOME"); got != "/pnpm-store/corepack" {
+			t.Errorf("%s container COREPACK_HOME = %q, want it on the cache volume", name, got)
+		}
+	}
+
+	c.CacheVolume, g.CacheVolume = "", ""
+	for name, args := range map[string][]string{"session": BuildDockerRunArgs(c), "worktree": BuildWorktreeCommandArgs(g, "true")} {
+		if got := envValue(args, "COREPACK_HOME"); got != "" {
+			t.Errorf("%s container COREPACK_HOME = %q, want the image's own with no cache volume", name, got)
+		}
+	}
+}
+
 // The entrypoint ships in the shared base image every Consumer runs (ADR-0007), so
 // a project-specific path baked into it is a defect that silently degrades every
 // OTHER Consumer: a .NET project would have its NuGet cache left root-owned while

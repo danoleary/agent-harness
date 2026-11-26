@@ -46,7 +46,8 @@ type baseCheck struct {
 // The check applies only to an untouched base: a branch already carrying commits
 // (a resumed ticket) or uncommitted work is past it. It is skipped for --force.
 // A Gate that failed environmentally — OOM-killed or unable to launch through its
-// retries, or killed at its cap — says nothing about the base, so it records
+// retries, killed at its cap, or never run because Corepack could not download
+// the package manager on its run and its re-run (#470) — says nothing about the base, so it records
 // nothing and the ticket dispatches.
 //
 // The repair ticket a red base files (its base-gates-red finding key) is gated
@@ -114,15 +115,15 @@ func checkBase(h hostio.Host, cfg config.Config, log *runlog.Logger, t ticket.Ti
 
 	log.Event("tdd · gating the untouched base " + short + " before the session, so a red main is not repaired in every branch cut from it (#125)")
 	res := fix.Env{Host: h, Cfg: cfg, Log: log, Who: "tdd"}.Gates(baseGateStep)
-	if res.Outcome.Retryable() || res.Outcome.CapKilled {
-		log.Event(fmt.Sprintf("⚠ base gate %q failed environmentally (exit %d: an OOM-kill, a failed launch or its cap) — that says nothing about the base; dispatching", res.FailedGate, res.Outcome.ExitCode))
+	if res.Environmental() {
+		log.Event(fmt.Sprintf("⚠ base gate %q failed environmentally (exit %d: an OOM-kill, a failed launch, its cap or a failed package-manager download) — that says nothing about the base; dispatching", res.FailedGate, res.Outcome.ExitCode))
 		return baseCheck{}
 	}
 	if !res.Green() {
 		log.Event(fmt.Sprintf("tdd ↻ base gate %q is red (exit %d) — re-running the gates once before the base counts as red (#189)", res.FailedGate, res.Outcome.ExitCode))
 		first := res
 		res = fix.Env{Host: h, Cfg: cfg, Log: log, Who: "tdd"}.Gates(baseConfirmStep)
-		if res.Outcome.Retryable() || res.Outcome.CapKilled {
+		if res.Environmental() {
 			log.Event(fmt.Sprintf("⚠ base gate %q failed environmentally on its re-run (exit %d) — the red is unconfirmed; dispatching", res.FailedGate, res.Outcome.ExitCode))
 			return baseCheck{}
 		}
