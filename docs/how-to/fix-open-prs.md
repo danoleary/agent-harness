@@ -87,6 +87,11 @@ number read as a conflict there and nowhere else. When the replay applies with
 nothing unmerged, the loop renumbers the branch's clashing ADR, runs every Gate
 and pushes, with no session. Only a replay that git stops on goes to a
 conflict-resolution session, which is told the paths git left unmerged.
+The session is told your Gates and runs the auto-fixing counterpart of your
+format check over the resolved tree before it stops, so a hand-merged hunk does
+not fail the re-gate on formatting alone (#473). If your format check runs inside
+a wrapper such as `make check`, give the project a `fmt` or `format` target or
+script the session can find.
 
 ## What it does to red CI
 
