@@ -204,6 +204,33 @@ func TestARedReGateOverAGreenBaseIsTheBranchs(t *testing.T) {
 	}
 }
 
+// #472: a re-gate over a resolved branch that the kernel killed on its run and its
+// re-run is not the branch's red. Nothing is pushed, but the reason says the gate
+// was killed twice, and origin/main is not gated to blame it either: a base gated
+// under the same memory pressure would be killed too.
+func TestAReGateKilledTwiceIsInfraNotTheBranchsRed(t *testing.T) {
+	e, h := redBaseEnv(t, func(hostio.ShellRun) session.Outcome {
+		return session.Outcome{ExitCode: 2, StderrTail: "golangci-lint: signal: killed"}
+	})
+
+	res := e.ResolveConflict(Conflict{Regate: func() GateResult { return e.Gates("gate") }})
+
+	if res.OK || !res.Resolved || res.BaseRed != nil {
+		t.Fatalf("want a resolved conflict held over an infra re-gate, got %+v", res)
+	}
+	if !strings.Contains(res.Reason, "killed twice (likely OOM)") {
+		t.Errorf("Reason = %q, want the double kill named", res.Reason)
+	}
+	if got := runLog(t, e); strings.Contains(got, "post-resolution gate re-run failed") || strings.Contains(got, "): test failure") {
+		t.Errorf("run.jsonl must not read as a real red:\n%s", got)
+	}
+	for _, s := range h.Shells {
+		if strings.HasPrefix(s.Label, "basegate") {
+			t.Errorf("gated the base over an infra red (%s)", s.Label)
+		}
+	}
+}
+
 // A base gated alone that passes is recorded green, and the branch keeps the
 // blame for its red re-gate.
 func TestARedReGateGatesTheBaseAndFindsItGreen(t *testing.T) {

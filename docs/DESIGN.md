@@ -732,7 +732,9 @@ pipeline (one PR, worktree .claude/worktrees/pr-<n> on the PR's head branch):
       attempt gets that gate's output as its logs (ci.ErrFixRefused)
       the same tree already gated green merged with the same origin/main -> skip  // #396
     a red gate with an infrastructure signature, or red only in files the fix
-      did not touch, is re-run once before it refuses the fix (#167)
+      did not touch, is re-run once before it refuses the fix (#167); a kill
+      waits 30s before its re-run, and a re-run with an infrastructure
+      signature too is infra, not a test failure (#472)
     a human branch is never reactively rebased (CIWatch.KeepHistory)
     CI still pending past the poll budget -> ci.Outcome.Pending, unknown not red:  // #421, ADR-0069
       narrate "⧗ CI still pending past the poll budget (not a red CI) on <checks> after <d> of polling

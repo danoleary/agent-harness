@@ -586,6 +586,12 @@ func resolveRebaseConflict(fixes fix.Env, target fix.Target, comment func(string
 			"The %s conflict was auto-resolved on `%s`, but gate %q is red on `main` itself (`%s`), with nothing of this branch on it, so nothing was pushed. The rebased branch is waiting in a worktree: `main` needs repairing, not this branch. (#250)",
 			trigger, branch, res.BaseRed.Verdict.Gate, res.BaseRed.SHA,
 		))
+	case res.Resolved && res.Gate.Infra != "":
+		fixes.Log.Event("review — keeping worktree, nothing pushed")
+		comment(fmt.Sprintf(
+			"The %s conflict was auto-resolved on `%s`, but the post-rebase gate re-run could not finish: %s. That is the host, not the branch, and no test failed; the rebased branch is waiting in a worktree. (#472)",
+			trigger, branch, res.Reason,
+		))
 	case res.Resolved:
 		fixes.Log.Event("review — keeping worktree, nothing pushed")
 		comment(fmt.Sprintf(

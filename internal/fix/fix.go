@@ -134,6 +134,10 @@ type GateResult struct {
 	// re-run (#470). Its red says nothing about the tree, but nothing was checked,
 	// so it is still red.
 	Bootstrap bool
+	// Infra is the environment cause the failing gate's re-run was red with too,
+	// such as "a SIGKILL" (#472): both runs died of the environment, so the red
+	// says nothing of the diff. Empty for a real red, and when every gate passed.
+	Infra string
 }
 
 // Green reports whether every gate passed.
@@ -146,6 +150,10 @@ func (g GateResult) Green() bool { return g.Outcome.ExitCode == 0 }
 func (g GateResult) Environmental() bool {
 	return !g.Green() && (g.Outcome.Retryable() || g.Outcome.CapKilled || g.Bootstrap)
 }
+
+// KilledTwice reports whether the failing gate was killed on its run and on its
+// re-run, likely for memory (#472).
+func (g GateResult) KilledTwice() bool { return isKill(g.Infra) }
 
 // RunGates runs each configured named gate in order via runOne, stopping at the
 // first non-zero exit. runOne launches one gate's throwaway container (with its
@@ -262,8 +270,7 @@ func (e Env) gatesIn(worktreePath string, gates []config.Gate, labelPrefix strin
 	defer release()
 	// RunGates stops at the first red, so the last gate run is the failing one.
 	var lastLog string
-	var bootstrap bool
-	logs := map[string]string{}
+	logs, infra := map[string]string{}, map[string]string{}
 	res := RunGates(gates, func(g config.Gate) session.Outcome {
 		e.Log.Event(fmt.Sprintf("%s · gate %q: %s", e.Who, g.Name, g.Command))
 		run := GateRun(e.Cfg, worktreePath, labelPrefix, g)
@@ -279,22 +286,43 @@ func (e Env) gatesIn(worktreePath string, gates []config.Gate, labelPrefix strin
 		}
 		r := e.Host.Shell(run)
 		// Each red is narrated with its class (#312): infra, re-run once, or a test
-		// failure, which is final. An infra red that is red again is final too.
+		// failure, which is final. An infra red that is red again is final too, and
+		// the re-run's log is classified as the first run's was, so a gate killed
+		// twice reads as the environment's red, not the diff's (#472).
 		again, first := "", r.Transcript
-		if why := rerunReason(r.Outcome, e.gateLog(r.Transcript), fixed); why != "" {
-			e.Log.Event(fmt.Sprintf("%s ↻ gate %q is red (exit %d) with %s: infra — re-running it once before it counts as red (#167)", e.Who, g.Name, r.ExitCode, why))
+		why := rerunReason(r.Outcome, e.gateLog(r.Transcript), fixed)
+		if why != "" {
+			wait := ""
+			if isKill(why) {
+				// Memory pressure compounds when a killed run is retried at once
+				// (BEH-530): give the host the OOM schedule's first beat to reclaim.
+				run.Delay = gateOOMBackoffBase
+				wait = fmt.Sprintf(" after %s for memory to free", run.Delay)
+			}
+			e.Log.Event(fmt.Sprintf("%s ↻ gate %q is red (exit %d) with %s: infra — re-running it once%s before it counts as red (#167)", e.Who, g.Name, r.ExitCode, why, wait))
 			run.Label += "-rerun"
 			r = e.Host.Shell(run)
 			again = " again on its re-run"
 		}
-		// A gate whose re-run could not download the package manager either never
-		// ran the project's tool, so it is no test failure (#470).
-		bootstrap = again != "" && r.ExitCode != 0 && bootstrapFailed(strings.ToLower(e.gateLog(r.Transcript)+"\n"+r.StderrTail))
+		// Only a re-run is classified again, and over the infra signatures alone: a
+		// re-run red again in files the fix did not touch is a real red. A re-run
+		// that could not download the package manager either never ran the
+		// project's tool, so it is no test failure (#470).
+		cause := ""
+		if why != "" && r.ExitCode != 0 {
+			cause = rerunReason(r.Outcome, e.gateLog(r.Transcript), nil)
+		}
+		infra[g.Name] = cause
 		switch {
-		case bootstrap:
+		case r.ExitCode == 0 || r.Retryable():
+		case cause == bootstrapFailure:
 			e.Log.Event(fmt.Sprintf("%s ✗ gate %q is red again on its re-run (exit %d): infra — Corepack could not download the package manager, so the project's tool never ran (#470)", e.Who, g.Name, r.ExitCode))
-		case r.ExitCode != 0 && !r.Retryable():
+		case cause == "":
 			e.Log.Event(fmt.Sprintf("%s ✗ gate %q is red%s (exit %d): test failure (#312)", e.Who, g.Name, again, r.ExitCode))
+		case isKill(cause):
+			e.Log.Event(fmt.Sprintf("%s ✗ gate %q is red%s (exit %d) with %s: infra: gate killed twice (likely OOM), not a test failure — the host is short of memory, not the diff wrong (#472)", e.Who, g.Name, again, r.ExitCode, cause))
+		default:
+			e.Log.Event(fmt.Sprintf("%s ✗ gate %q is red%s (exit %d) with %s: infra, not a test failure — the environment failed it twice (#472)", e.Who, g.Name, again, r.ExitCode, cause))
 		}
 		// A red re-run hands on the first run's log: the classifier read that one,
 		// and it carries the root cause, which the re-run's secondary failures
@@ -304,7 +332,8 @@ func (e Env) gatesIn(worktreePath string, gates []config.Gate, labelPrefix strin
 		return r.Outcome
 	})
 	if !res.Green() {
-		res.Log, res.Bootstrap = lastLog, bootstrap
+		res.Log, res.Infra = lastLog, infra[res.FailedGate]
+		res.Bootstrap = res.Infra == bootstrapFailure
 	}
 	res.Logs = logs
 	return res
@@ -767,6 +796,16 @@ func (e Env) ResolveConflict(c Conflict) ConflictResult {
 func (e Env) regate(c Conflict, overlaps []Overlap) ConflictResult {
 	wt := e.Host.Worktree()
 	gate := c.Regate()
+	if gate.Infra != "" {
+		// Both runs died of the environment: the red is neither the branch's nor,
+		// gated under the same pressure, the base's (#472).
+		reason := fmt.Sprintf("post-resolution gate %q is red twice with %s (exit %d): infra, not a test failure", gate.FailedGate, gate.Infra, gate.Outcome.ExitCode)
+		if gate.KilledTwice() {
+			reason = fmt.Sprintf("post-resolution gate %q was killed twice (likely OOM) (exit %d): infra, not a test failure", gate.FailedGate, gate.Outcome.ExitCode)
+		}
+		e.Log.Event(e.Who + " ⏸ " + reason + " — nothing pushed; the resolution is sound as far as the gate got (#472)")
+		return ConflictResult{Resolved: true, Reason: reason, Gate: gate, Overlaps: overlaps}
+	}
 	if !gate.Green() {
 		if base := e.redBase(gate); base != nil {
 			reason := fmt.Sprintf("post-resolution gate %q is red (exit %d), and origin/main %s fails it too with nothing of the branch on it", gate.FailedGate, gate.Outcome.ExitCode, shortSHA(base.SHA))

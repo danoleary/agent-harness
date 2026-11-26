@@ -320,6 +320,31 @@ func TestReviewResolvesAPrePushConflictThenRegatesAndPushes(t *testing.T) {
 	}
 }
 
+// #472: the re-gate over a resolved conflict was SIGKILLed on its run and on its
+// re-run. Nothing ships, and the tracker breadcrumb says the gate was killed
+// twice, likely for memory, rather than that the rebased branch failed its gate.
+func TestReviewSaysAPostRebaseGateKilledTwiceIsInfra(t *testing.T) {
+	h, repo := handedOff(t, "PROJ-10")
+	repo.Conflict("proj-10")
+	resolvesConflicts(h, repo)
+	h.ShellFn = func(_ int, s hostio.ShellRun) session.Outcome {
+		if strings.Contains(s.Label, "postrebase") {
+			return session.Outcome{ExitCode: 2, StderrTail: "golangci-lint: signal: killed"}
+		}
+		return session.Outcome{}
+	}
+
+	res := Review(h, stageCfg(), stageLog(t, "PROJ-10"), Args{Identifier: "PROJ-10"})
+
+	if res.OK {
+		t.Fatalf("a re-gate killed twice ships nothing, got %+v", res)
+	}
+	if len(h.Trk.Comments) != 1 || !strings.Contains(h.Trk.Comments[0], "killed twice (likely OOM)") || strings.Contains(h.Trk.Comments[0], "gate re-run failed") {
+		t.Errorf("comments = %v, want one naming the double kill, not a failed gate", h.Trk.Comments)
+	}
+	assertNothingPushed(t, h, repo)
+}
+
 // replayFailsWithNoConflict is the #164 branch: two commits cut from origin/main,
 // which has not moved, with a host-side failure in the way of the replay's second
 // pick for the next times replays. The cherry-pick commits the first pick and stops

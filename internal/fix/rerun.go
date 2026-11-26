@@ -78,6 +78,10 @@ func bootstrapFailed(text string) bool {
 	return bootstrapErrorRE.MatchString(after)
 }
 
+// isKill reports whether cause, one rerunReason gave, is a process killed, which
+// on the host is near always for memory (#472).
+func isKill(cause string) bool { return cause == "a SIGKILL" || cause == "an out-of-memory kill" }
+
 // viteReload is the cause infraSignatures name a Vite reload with.
 const viteReload = "a Vite reload"
 

@@ -920,6 +920,36 @@ func rebasingHost(t *testing.T, repo *gittest.Repo, it Item, red *bool) *hostio.
 	return h
 }
 
+// #472: a saved resolution re-gated under memory pressure is SIGKILLed on its run
+// and its re-run. Nothing ships, and the run log names the double kill as infra,
+// not a failed gate over the resolution.
+func TestASavedResolutionKilledTwiceOnItsRegateIsInfra(t *testing.T) {
+	repo := gittest.New(t)
+	it := harnessItem(Conflict)
+	it.PR.HeadSHA = repo.Publish(it.PR.HeadBranch)
+	conflictWithMain(repo, it.PR.HeadBranch)
+	red := true
+	if res := Fix(rebasingHost(t, repo, it, &red), pipelineCfg(), pipelineLog(t), it, prDoctor()); res.OK {
+		t.Fatalf("a red re-gate pushes nothing, got %+v", res)
+	}
+
+	retry := rebasingHost(t, repo, it, &red)
+	retry.ShellFn = func(_ int, s hostio.ShellRun) session.Outcome {
+		if strings.HasPrefix(s.Label, "gate") {
+			return session.Outcome{ExitCode: 2, StderrTail: "golangci-lint: signal: killed"}
+		}
+		return session.Outcome{}
+	}
+	log := pipelineLog(t)
+	if res := Fix(retry, pipelineCfg(), log, it, prDoctor()); res.OK {
+		t.Fatalf("a re-gate killed twice pushes nothing, got %+v", res)
+	}
+	events := readEvents(t, log)
+	if !strings.Contains(events, "over the saved resolution is red twice with a SIGKILL") || strings.Contains(events, "saved resolution failed") {
+		t.Errorf("the run log must name the double kill as infra:\n%s", events)
+	}
+}
+
 // #252: a conflict-resolution session rebased and committed the branch cleanly,
 // the re-gate went red for a reason outside the branch, and the run logged
 // "keeping worktree, nothing pushed" — then removed the clean worktree, and the

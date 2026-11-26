@@ -295,6 +295,10 @@ func (r *run) resolve() (out stages.Result, ok bool) {
 			return stages.Result{}, false
 		}
 		if gate := r.fixes.Gates("gate"); !gate.Green() || !wt.Clean() {
+			if gate.Infra != "" && wt.Clean() {
+				r.log.Event(fmt.Sprintf("%s ⏸ gate %q over the saved resolution is red twice with %s (exit %d): infra, not a test failure — nothing pushed; the resolution stays saved for the next run at this head (#472)", who, gate.FailedGate, gate.Infra, gate.Outcome.ExitCode))
+				return stages.Result{}, false
+			}
 			r.log.Event(fmt.Sprintf("%s ✗ gate re-run over the saved resolution failed (exit %d) — nothing pushed; the resolution stays saved for the next run at this head (#252)", who, gate.Outcome.ExitCode))
 			return stages.Result{}, false
 		}
