@@ -650,6 +650,62 @@ func TestPruneMergedWorktreesLeavesAWorktreeAPRLoopRunIsIn(t *testing.T) {
 	}
 }
 
+// #478: a PR-loop run occupies its worktree for as long as it is in it. The prune
+// leaves a live run's lock in place, so the worktree is still locked once the
+// prune is done, and lifts the one a killed run left, so a merged worktree no run is
+// in any more is reclaimed rather than kept for ever.
+func TestPruneMergedWorktreesKeepsALiveRunsOccupancyAndLiftsAKilledRuns(t *testing.T) {
+	repo := gittest.New(t)
+	script := filepath.Join(repo.Dir, "scripts", "prune-merged-worktrees.sh")
+	if err := os.MkdirAll(filepath.Dir(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := "#!/bin/sh\nn=0\nfor wt in $(git worktree list --porcelain | sed -n 's|^worktree \\(.*/.claude/worktrees/.*\\)|\\1|p'); do\n" +
+		"  if git worktree remove --force \"$wt\" 2>/dev/null; then n=$((n+1)); fi\ndone\necho \"Pruned $n worktree(s).\"\n"
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	repo.Git(repo.Dir, "add", "-A")
+	repo.Git(repo.Dir, "commit", "-q", "-m", "add the prune script")
+	repo.Git(repo.Dir, "push", "-q", "origin", "main")
+	live, killed := repo.Worktree(ticket.Slug(prloop.Key(478))), repo.Worktree(ticket.Slug(prloop.Key(477)))
+	for _, wt := range []gitpkg.Worktree{live, killed} {
+		if err := wt.Create(); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := wt.Occupy(); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	cfg := config.Config{Project: config.Project{BranchPrefix: gittest.Prefix}}
+	cfg.ProjectPath = repo.Dir
+	release, err := HoldRun(cfg, prloop.Key(478), "run-retro", &narrator{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	removed, err := hostFor(t, cfg).PruneMergedWorktrees()
+	if err != nil {
+		t.Fatalf("PruneMergedWorktrees: %v", err)
+	}
+	if !live.Exists() {
+		t.Fatal("the prune removed PR-478's occupied worktree while its run was live")
+	}
+	if killed.Exists() || removed != 1 {
+		t.Errorf("removed = %d, killed run's worktree still there: %v; want its lock lifted and the worktree reclaimed", removed, killed.Exists())
+	}
+	list, err := repo.Checkout().ListWorktrees()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, w := range list {
+		if filepath.Base(w.Path) == filepath.Base(live.Path()) && (!w.Locked || w.LockReason != gitpkg.OccupiedReason) {
+			t.Errorf("%s = %+v, want the live run's lock left in place", w.Path, w)
+		}
+	}
+}
+
 // A daemon killed mid-prune leaves its shield's lock on a worktree. The next prune
 // lifts it once no run is in the worktree, so the worktree is reclaimed and the
 // ticket's own reap is not refused for ever; a lock someone else took stays.

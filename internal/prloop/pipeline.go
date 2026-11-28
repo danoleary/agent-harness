@@ -133,7 +133,9 @@ func (Pipeline) Recover(loop.WorkItem) (stages.Result, bool) { return stages.Res
 // opened: the PR exists. Uncommitted work a session leaves is saved as a local
 // recovery checkpoint when the run ends; if it cannot be, the result carries an
 // [UnsavedError]. A push counts as Shipped for the breaker, as a ticket's
-// does, even when CI is still red after the fix budget.
+// does, even when CI is still red after the fix budget. The worktree is locked
+// from the checkout until the retrospective, the last session, has exited, and
+// removed once clean after that (ADR-0076).
 func Fix(h hostio.Host, cfg config.Config, log *runlog.Logger, it Item, l config.Loop) (out stages.Result) {
 	l.ApplyPrompts(&cfg.Prompts)
 	key := Key(it.PR.Number)
@@ -149,6 +151,13 @@ func Fix(h hostio.Host, cfg config.Config, log *runlog.Logger, it Item, l config
 		log.Event(who + " … warning: could not fetch origin/main: " + err.Error())
 	}
 	wt := h.Worktree()
+	// This run holds the run lock, so an occupancy lock on the worktree is a
+	// killed run's.
+	if lifted, err := wt.LiftStaleOccupancy(); err != nil {
+		log.Event(fmt.Sprintf("%s … warning: could not read whether a killed run left its occupancy lock on %s: %v", who, wt.Path(), err))
+	} else if lifted {
+		log.Event(fmt.Sprintf("%s ↺ lifted the occupancy lock a killed run left on %s (#478)", who, wt.Path()))
+	}
 	resumed, err := wt.CheckoutRemote()
 	if err != nil {
 		log.Event(fmt.Sprintf("%s ✗ could not check out %s: %v — nothing pushed", who, it.PR.HeadBranch, err))
@@ -161,6 +170,15 @@ func Fix(h hostio.Host, cfg config.Config, log *runlog.Logger, it Item, l config
 		return stages.Result{}
 	}
 	r := run{h: h, cfg: cfg, log: log, fixes: fixes, target: target, it: it, watchCI: l.Has(config.StepWatchCI)}
+	// The run occupies the worktree, locking it against a remover that never
+	// reads the run lock while any session is in it, the retrospective included,
+	// and vacates it only once the last one has exited, just before the cleanup
+	// (#478).
+	vacate, err := wt.Occupy()
+	if err != nil {
+		log.Event(fmt.Sprintf("%s ⚠ could not lock the worktree %s for the run: %v — only the run lock keeps it while the sessions run (#478)", who, wt.Path(), err))
+		vacate = func() error { return nil }
+	}
 	// The branch on origin is the record. What a session left uncommitted is saved
 	// as a local recovery checkpoint, which the next attempt at this head starts
 	// from (#246). If it cannot be saved, the next checkout would refuse the dirty
@@ -168,6 +186,9 @@ func Fix(h hostio.Host, cfg config.Config, log *runlog.Logger, it Item, l config
 	// merge, rebase or cherry-pick a session left stopped is aborted, not saved
 	// (#428).
 	defer func() {
+		if err := vacate(); err != nil {
+			log.Event(fmt.Sprintf("%s ⚠ could not lift the run's lock on the worktree %s: %v — the next run on %s lifts it (#478)", who, wt.Path(), err, key))
+		}
 		if err := fixes.Checkpoint(key); err != nil {
 			log.Event(fmt.Sprintf("%s ✗ could not save the uncommitted work in %s as a recovery checkpoint: %v — handing %s to a human", who, wt.Path(), err, key))
 			out.OK, out.Err = false, &UnsavedError{Path: wt.Path(), Err: err}

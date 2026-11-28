@@ -993,6 +993,51 @@ func (c Checkout) UnlockWorktree(path string) error {
 	return c.run("git", "-C", c.path, "worktree", "unlock", path)
 }
 
+// OccupiedReason is the `git worktree lock` reason [Worktree.Occupy] gives, so a
+// later run, or the merged-worktree prune's shield, can tell the lock a killed
+// run left from a lock someone else took (#478).
+const OccupiedReason = "agent-harness: a run's sessions are in it, and the run removes it when the last one ends (#478)"
+
+// Occupy locks the worktree for the run in it, its sessions and retrospective
+// included, until the returned func lifts the lock (#478). `git worktree remove`
+// refuses a locked worktree unless forced twice, so a remover that never reads
+// the run lock, such as a Consumer's prune script run outside the shield, leaves
+// it while a session is in it. The run vacates it, lifting the lock, only once
+// its last session has exited, just before its own cleanup.
+func (w Worktree) Occupy() (vacate func() error, err error) {
+	if err := w.run("git", "-C", w.repo, "worktree", "lock", "--reason", OccupiedReason, w.path); err != nil {
+		return nil, err
+	}
+	return func() error { return w.run("git", "-C", w.repo, "worktree", "unlock", w.path) }, nil
+}
+
+// LiftStaleOccupancy lifts the [Worktree.Occupy] lock a killed run left on the
+// worktree, and says whether there was one. Only the next run on the worktree,
+// which holds its run lock, calls it: no other run can be in it. A lock with any
+// other reason, and a worktree that is not there, are left alone.
+func (w Worktree) LiftStaleOccupancy() (bool, error) {
+	if !w.Exists() {
+		return false, nil
+	}
+	list, err := Checkout{path: w.repo, runners: w.runners}.ListWorktrees()
+	if err != nil {
+		return false, err
+	}
+	for _, l := range list {
+		if l.Main || !samePath(l.Path, w.path) {
+			continue
+		}
+		if !l.Locked || l.LockReason != OccupiedReason {
+			return false, nil
+		}
+		if err := w.run("git", "-C", w.repo, "worktree", "unlock", w.path); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+	return false, nil
+}
+
 // WorktreeSafeToRemove reports why removing the worktree at path would lose work,
 // or nil when it would not: its tree is clean (the readiness sentinel aside) and
 // origin's tip for its branch, tip, already contains its HEAD. A worktree left

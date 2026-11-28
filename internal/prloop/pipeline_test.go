@@ -1622,15 +1622,83 @@ func TestFixRunsTheRetrospectiveInTheWorktreeBeforeTheCleanupRemovesIt(t *testin
 	}
 }
 
+// #478, replaying the incident: a pushed conflict resolution, CI green, then a
+// slow retrospective in the PR's worktree, about a minute into which a sweep that
+// never reads the run lock (a Consumer's prune script, run outside the shield)
+// removed the worktree. The run occupies the worktree, which outlives every sweep
+// until the retrospective exits, and the run's own cleanup removes it after.
+func TestFixOccupiesTheWorktreeUntilTheRetrospectiveExits(t *testing.T) {
+	h, it, repo := prHost(t, harnessItem(Conflict))
+	path := h.Worktree().Path()
+	sweep := func() error {
+		return exec.Command("git", "-C", repo.Dir, "worktree", "remove", "--force", path).Run()
+	}
+	var swept, kept bool
+	h.AgentFn = func(_ int, run hostio.AgentRun) session.Outcome {
+		switch run.Label {
+		case "rebasefix":
+			repo.Resolve(h.Worktree())
+		case "retrospective":
+			kept = true
+			for i := 0; i < 5; i++ {
+				swept = swept || sweep() == nil
+				time.Sleep(10 * time.Millisecond)
+				kept = kept && h.Worktree().Exists() && h.Worktree().Clean()
+			}
+		}
+		return session.Outcome{}
+	}
+	log := pipelineLog(t)
+
+	res := Fix(h, pipelineCfg(), log, it, prDoctor())
+
+	if !res.OK || res.Disposition != stages.Shipped {
+		t.Fatalf("a pushed, CI-green resolution ships, got %+v", res)
+	}
+	if swept || !kept {
+		t.Error("a sweep removed the worktree while the retrospective was still running in it")
+	}
+	if h.Worktree().Exists() {
+		t.Error("the run's cleanup removes the clean worktree once the retrospective has exited")
+	}
+	if events := readEvents(t, log); !strings.Contains(events, "removed the clean worktree") {
+		t.Errorf("the cleanup must remove the worktree itself; events:\n%s", events)
+	}
+}
+
+// #478: the occupancy lock a killed run left on the PR's worktree is lifted by the next run,
+// which holds the run lock, so its checkout is not refused as local state.
+func TestFixLiftsTheOccupancyLockAKilledRunLeftOnItsWorktree(t *testing.T) {
+	h, it, repo := prHost(t, harnessItem(CIRed))
+	if _, err := h.Worktree().CheckoutRemote(); err != nil {
+		t.Fatal(err)
+	}
+	repo.Git(repo.Dir, "worktree", "lock", "--reason", gitpkg.OccupiedReason, h.Worktree().Path())
+	log := pipelineLog(t)
+
+	res := Fix(h, pipelineCfg(), log, it, prDoctor())
+
+	if res.Disposition == stages.CheckoutBlocked {
+		t.Fatalf("a killed run's occupancy lock must not block the checkout: %+v", res)
+	}
+	if !strings.Contains(calls(h), "watch-ci|") {
+		t.Errorf("the run must go on past the checkout; calls: %v", h.Calls)
+	}
+	if events := readEvents(t, log); !strings.Contains(events, "lifted the occupancy lock a killed run left") {
+		t.Errorf("the lifted lock must be narrated; events:\n%s", events)
+	}
+}
+
 // #467, replaying the incident: the worktree and its local branch went from under
-// the run after the auto-fix and a green CI, so the retrospective starts in the
+// the run after the auto-fix and a green CI, at the hands of a remover that forces
+// past the run's occupancy lock (#478), so the retrospective starts in the
 // host checkout. Its prompt reads the change from origin/<branch>, which the
 // checkout still has, and never names a `git -C` on the absent worktree.
 func TestFixRetrospectiveOverAGoneWorktreeReadsTheRemoteTrackingRef(t *testing.T) {
 	h, it, repo := prHost(t, harnessItem(CIRed))
 	h.CIFn = func(w hostio.CIWatch) ci.Outcome {
 		_ = w.Fix(ci.FixInput{Logs: "FAIL TestThing", LogAvailable: true})
-		repo.Git(repo.Dir, "worktree", "remove", "--force", h.Worktree().Path())
+		repo.Git(repo.Dir, "worktree", "remove", "--force", "--force", h.Worktree().Path())
 		repo.Git(repo.Dir, "branch", "-D", it.PR.HeadBranch)
 		return ci.Outcome{OK: true, Reason: "green after the fix"}
 	}

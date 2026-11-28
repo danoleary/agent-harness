@@ -292,7 +292,10 @@ const liveRunLockReason = "agent-harness: a live run is in it, so the merged-wor
 //
 // Prunes are serialized on locks/prune.lock, so a lock with the shield's reason
 // found here is a killed daemon's: it is lifted if no run is in the worktree any
-// more, and otherwise kept for this prune and lifted after it. A run lock that
+// more, and otherwise kept for this prune and lifted after it. A run's own lock
+// ([gitpkg.Worktree.Occupy]) already keeps a live run's worktree, and is left for
+// the run to lift; one no run is in any more is a killed run's, and is lifted so
+// the prune can reclaim the worktree (#478). A run lock that
 // cannot be read fails the shield, and the caller prunes nothing: a failed read
 // must never remove a worktree from under a run.
 func (h *Daemon) shieldLiveWorktrees() (release func(), err error) {
@@ -332,7 +335,7 @@ func (h *Daemon) shieldLiveWorktrees() (release func(), err error) {
 				return nil, fmt.Errorf("lock %s: %w", w.Path, err)
 			}
 			locked = append(locked, w.Path)
-		case !live && ours:
+		case !live && (ours || w.Locked && w.LockReason == gitpkg.OccupiedReason):
 			_ = wts.UnlockWorktree(w.Path)
 		}
 	}
