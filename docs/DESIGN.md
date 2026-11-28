@@ -846,6 +846,10 @@ shared        : STOP (every loop), STOP-tickets (every instance), locks/claim.lo
   security-alerts run holds the run lock for its item's key the same way, from
   checkout to cleanup with its retrospective included, so the merged-worktree
   prune leaves its worktree once the PR it pushed merges (#416, ADR-0068).
+  A PR-loop run also `git worktree lock`s its worktree from checkout until its
+  last session, the retrospective, has exited, so a remover that never reads the
+  run lock is refused too; the next run, or the prune, lifts a killed run's lock
+  (#478, ADR-0076).
 - **The viewer.** `watch --instance <id>` follows one instance (its stream,
   pidfile and sentinel); `watch --all` follows every instance in the plain view,
   each line labeled `[<id>]`.

@@ -104,7 +104,10 @@ Every fix is checked host-side before it is pushed: the conflict session must
 leave a clean tree with `origin/main` in its history, a CI fix must be committed,
 and every Gate must be green. If any check fails, nothing is pushed. After a push,
 the loop watches CI until it passes or fails, then runs the retrospective over the
-session transcripts.
+session transcripts. While a run is in its worktree, `.claude/worktrees/pr-<n>`,
+the worktree is locked (`git worktree list` shows it `locked`). A
+`git worktree remove`, yours or a prune script's, is refused until the
+retrospective has exited and the run removes the worktree itself (ADR-0076).
 
 If GitHub refuses the loop's checks poll, with a 401 (bad credentials) or a 403 (a
 token that cannot read check runs), the loop polls once more. If it is refused
