@@ -1038,6 +1038,13 @@ func (w Worktree) LiftStaleOccupancy() (bool, error) {
 	return false, nil
 }
 
+// Vacate lifts the [Worktree.Occupy] lock on the worktree, whichever run took it,
+// and says whether there was one. It is [Worktree.LiftStaleOccupancy] under the
+// name for a run lifting its own lock where it holds no vacate func: the ticket
+// pipeline, whose worktree outlives any one stage (#481). Only a run holding the
+// worktree's run lock calls it, so the lock is that run's own or a killed run's.
+func (w Worktree) Vacate() (bool, error) { return w.LiftStaleOccupancy() }
+
 // WorktreeSafeToRemove reports why removing the worktree at path would lose work,
 // or nil when it would not: its tree is clean (the readiness sentinel aside) and
 // origin's tip for its branch, tip, already contains its HEAD. A worktree left

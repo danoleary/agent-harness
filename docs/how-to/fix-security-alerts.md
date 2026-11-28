@@ -53,7 +53,11 @@ severities. For each group the loop:
 5. watches CI, and fixes a red check with a gated CI fix (`watch_ci`), then files
    the run's Findings (`retro`).
 
-Nothing is pushed if a check fails. It fixes npm (pnpm) and Go modules; the
+Nothing is pushed if a check fails. While a run is in its worktree,
+`.claude/worktrees/sec-<ecosystem>-<package>`, the worktree is locked
+(`git worktree list` shows it `locked`), so a `git worktree remove` is refused
+until the retrospective has exited and the run removes the worktree itself
+(ADR-0076). It fixes npm (pnpm) and Go modules; the
 [loop guide](declare-a-loop.md#run-or-re-tune-the-security-alerts-loop) lists
 the files each one scans and may change.
 

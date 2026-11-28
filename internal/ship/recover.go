@@ -172,8 +172,15 @@ func Recover(h Port, log EventSink, key string, gate *PushGate) Recovery {
 // had no PR — the committed-fix recovery needed it (verify.WorktreeReap) — and no
 // retrospective follows a recovery. Left checked out, the ticket loop would hold the
 // branch for as long as the ticket stays In Progress, so the PR loop could never fix
-// the PR. A failed removal is narrated, not fatal: the PR is open either way.
+// the PR. A failed removal is narrated, not fatal: the PR is open either way. The
+// recovery holds the run lock, so an occupancy lock on the worktree is a killed
+// run's, and it is lifted first or git refuses the removal (ADR-0076, #481).
 func reap(wt gitpkg.Worktree, log EventSink, key string) {
+	if lifted, err := wt.Vacate(); err != nil {
+		log.Event(fmt.Sprintf("loop … %s committed-fix recovery: warning: could not read whether a killed run left its occupancy lock on %s: %v", key, wt.Path(), err))
+	} else if lifted {
+		log.Event(fmt.Sprintf("loop ↺ %s committed-fix recovery: lifted the occupancy lock a killed run left on %s (#481)", key, wt.Path()))
+	}
 	if err := wt.Remove(); err != nil {
 		log.Event("loop … " + key + " committed-fix recovery: worktree kept — removal failed: " + err.Error())
 		return

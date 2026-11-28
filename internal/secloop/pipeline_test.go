@@ -3,6 +3,7 @@ package secloop
 import (
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/danoleary/agent-harness/internal/ci"
 	"github.com/danoleary/agent-harness/internal/config"
+	gitpkg "github.com/danoleary/agent-harness/internal/git"
 	"github.com/danoleary/agent-harness/internal/github"
 	"github.com/danoleary/agent-harness/internal/gittest"
 	"github.com/danoleary/agent-harness/internal/hostio"
@@ -532,4 +534,79 @@ func TestFixFilesProjectFindingsIntoTheTrackersTeam(t *testing.T) {
 	if strings.Join(h.Routed, ",") != it.Key() || strings.Join(h.RoutedTeams, ",") != "beh-team-uuid" {
 		t.Errorf("routed %v into teams %v, want %s into beh-team-uuid", h.Routed, h.RoutedTeams, it.Key())
 	}
+}
+
+// #481: a sweep that never reads the run lock (a Consumer's prune script, run
+// outside the shield) leaves the package's worktree while the retrospective runs
+// in it, as it does a PR-loop run's (ADR-0076); the run's own cleanup removes it
+// once the retrospective has exited.
+func TestFixOccupiesTheWorktreeUntilTheRetrospectiveExits(t *testing.T) {
+	it := lodashItem()
+	h, repo := secHost(t, it)
+	path := h.Worktree().Path()
+	sweep := func() error {
+		return exec.Command("git", "-C", repo.Dir, "worktree", "remove", "--force", path).Run()
+	}
+	var swept, kept bool
+	fix := h.AgentFn
+	h.AgentFn = func(i int, run hostio.AgentRun) session.Outcome {
+		if run.Label == "retrospective" {
+			kept = true
+			for i := 0; i < 5; i++ {
+				swept = swept || sweep() == nil
+				time.Sleep(10 * time.Millisecond)
+				kept = kept && h.Worktree().Exists() && h.Worktree().Clean()
+			}
+			return session.Outcome{}
+		}
+		return fix(i, run)
+	}
+	log := secLog(t)
+
+	res := Fix(h, securityCfg(t), log, it, watchingLoop())
+
+	if !res.OK || res.Disposition != stages.Shipped {
+		t.Fatalf("a checked, gate-green fix ships, got %+v", res)
+	}
+	if swept || !kept {
+		t.Error("a sweep removed the worktree while the retrospective was still running in it")
+	}
+	if h.Worktree().Exists() {
+		t.Error("the run's cleanup removes the clean worktree once the retrospective has exited")
+	}
+	if events := readEvents(t, log); !strings.Contains(events, "removed the clean worktree") {
+		t.Errorf("the cleanup must remove the worktree itself; events:\n%s", events)
+	}
+}
+
+// #481: the occupancy lock a killed run left on the package's worktree is lifted
+// by the next run, which holds the run lock, so cutting the branch fresh is not
+// refused.
+func TestFixLiftsTheOccupancyLockAKilledRunLeftOnItsWorktree(t *testing.T) {
+	it := lodashItem()
+	h, repo := secHost(t, it)
+	if err := h.Worktree().Create(); err != nil {
+		t.Fatal(err)
+	}
+	repo.Git(repo.Dir, "worktree", "lock", "--reason", gitpkg.OccupiedReason, h.Worktree().Path())
+	log := secLog(t)
+
+	res := Fix(h, securityCfg(t), log, it, securityLoop())
+
+	if !res.OK || res.Disposition != stages.Shipped {
+		t.Fatalf("a killed run's occupancy lock must not block the fresh branch, got %+v", res)
+	}
+	if events := readEvents(t, log); !strings.Contains(events, "lifted the occupancy lock a killed run left") {
+		t.Errorf("the lifted lock must be narrated; events:\n%s", events)
+	}
+}
+
+// readEvents is the run log's narration so far.
+func readEvents(t *testing.T, log *runlog.Logger) string {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(log.Dir, "run.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
 }

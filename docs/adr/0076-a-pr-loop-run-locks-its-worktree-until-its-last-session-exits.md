@@ -63,5 +63,30 @@ an older binary, or a prune whose liveness snapshot predates the run.
   `origin/<branch>` still cover that case.
 - `git worktree list` shows the run's worktree as `locked` while the run is in
   it. A human who tries to remove it is told why.
-- The security-alerts loop and the ticket pipeline do not lock their worktrees
-  yet. They keep the run lock and the shield.
+- The security-alerts loop and the ticket pipeline lock their worktrees too,
+  since #481: see the addendum.
+
+## Addendum: every run occupies its worktree (#481)
+
+The occupancy lock now covers all three runs that hold a run lock over a
+worktree.
+
+- **The security-alerts loop** (`secloop.Fix`) takes it as the PR loop does: it
+  lifts a killed run's lock before `CreateFresh`, whose unforced removal git
+  would otherwise refuse, occupies the worktree right after the branch cut, and
+  lifts the lock first in its deferred cleanup, after the retrospective.
+- **The ticket pipeline** (`pipeline.Run`) has no one place that holds the
+  worktree from start to end: implementation creates or reuses it, the
+  retrospective may re-create it (#384) and reaps it. Only the run holding the
+  run lock can be in the worktree, so a lock with the occupancy reason found
+  there is that run's own or a killed run's. The run lifts it by reading the
+  worktree (`git.Worktree.Vacate`) rather than through a func passed between
+  stages. Implementation lifts any such lock and occupies the worktree each time
+  it provisions it, the BEH-543 second attempt included. The retrospective
+  occupies a worktree it re-creates. The run lifts the lock before each of its
+  removals: the base-red discard and the retrospective's reap. `pipeline.Run`
+  lifts it on every return, the early ones included, so a worktree the run keeps
+  is not left locked. `ship.Recover`'s reap, in a later run, lifts a killed
+  run's lock before it removes the kept worktree.
+- The standalone `implementation` and `retrospective` commands reuse the same
+  stage code, so they occupy the worktree too, and lift the lock as they exit.

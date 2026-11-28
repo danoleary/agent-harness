@@ -97,7 +97,12 @@ func Retrospective(h hostio.Host, cfg config.Config, log *runlog.Logger, args Ar
 	reap := verify.WorktreeReap(wt, h.PRExists)
 	if !reap.OK {
 		log.Event("worktree kept — " + reap.Reason)
-	} else if err := wt.Remove(); err != nil {
+		return Result{OK: true}
+	}
+	// The run's own occupancy lock, or a killed run's, would refuse the removal
+	// (#481).
+	Vacate(wt, log)
+	if err := wt.Remove(); err != nil {
 		log.Event("worktree kept — removal failed: " + err.Error())
 	} else {
 		log.Event("worktree removed — " + reap.Reason)
@@ -123,6 +128,7 @@ func restoreWorktree(wt gitpkg.Worktree, log *runlog.Logger) {
 		return
 	}
 	log.Event(fmt.Sprintf("retrospective ↺ worktree %s was gone — re-created it from %s, so the session reads the branch there, not in the host checkout (#384)", wt.Path(), wt.Branch()))
+	occupy(wt, log)
 }
 
 // worktreeGone reports whether the retrospective must read the branch's change

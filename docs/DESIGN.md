@@ -852,7 +852,10 @@ shared        : STOP (every loop), STOP-tickets (every instance), locks/claim.lo
   A PR-loop run also `git worktree lock`s its worktree from checkout until its
   last session, the retrospective, has exited, so a remover that never reads the
   run lock is refused too; the next run, or the prune, lifts a killed run's lock
-  (#478, ADR-0076).
+  (#478, ADR-0076). A security-alerts run does the same from its branch cut, and
+  a ticket run from when implementation provisions the worktree: it lifts the
+  lock before each of its own removals and on every return, so a worktree it
+  keeps is left unlocked (#481).
 - **The viewer.** `watch --instance <id>` follows one instance (its stream,
   pidfile and sentinel); `watch --all` follows every instance in the plain view,
   each line labeled `[<id>]`.

@@ -49,7 +49,11 @@ func main() {
 		os.Exit(1)
 	}
 	defer release()
-	res := stages.Implementation(hostio.New(cfg, log, runID, args.Verbose, ticket.Slug(args.Identifier)), cfg, log, args)
+	host := hostio.New(cfg, log, runID, args.Verbose, ticket.Slug(args.Identifier))
+	res := stages.Implementation(host, cfg, log, args)
+	// The stage occupies the worktree it provisions or re-creates while its session
+	// runs; the command leaves it unlocked, as the pipeline does (#481).
+	stages.Vacate(host.Worktree(), log)
 	if res.Err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", res.Err)
 		os.Exit(1)

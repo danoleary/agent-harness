@@ -474,6 +474,23 @@ func TestRecoverCompletesACommittedUnpushedFix(t *testing.T) {
 	}
 }
 
+// #481: a ticket run killed while its sessions were in the worktree left it
+// occupied (ADR-0076). The recovery that later ships the branch, under the run
+// lock, lifts that lock before it reaps the worktree, or git refuses the removal.
+func TestRecoverReapsAWorktreeAKilledRunLeftOccupied(t *testing.T) {
+	s, log := recoverable(t), &sink{}
+	s.repo.Occupy(s.wt)
+
+	got := ship.Recover(s.h, log, "PROJ-1", cleared(t, s))
+
+	if !got.Attempted || !got.Shipped {
+		t.Fatalf("Recover() = %+v, want an attempted recovery that shipped", got)
+	}
+	if s.wt.Exists() {
+		t.Errorf("a shipped recovery must lift a killed run's lock and reap the worktree; events = %v", log.events)
+	}
+}
+
 // A content conflict can't be auto-resolved here (that is the review stage's
 // sandboxed job): the worktree is left on its branch and clean for the next run,
 // and the recovery reports attempted-but-not-shipped.
