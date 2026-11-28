@@ -153,3 +153,41 @@ func TestImplementationRecordsTheMergeCommitOfWorkAlreadyOnMain(t *testing.T) {
 		t.Errorf("a hand-passed run records nothing, got %+v", rec)
 	}
 }
+
+// #480, replayed: a run found the ticket already resolved on main, and ten hours
+// later the ticket was dispatched again with a prompt byte-identical to the
+// first. The session re-derived the verdict from scratch and named a different
+// commit. Now a run whose ticket carries a resolved verdict is told it, so it can
+// confirm it in one step; a plain no-work record tells it nothing.
+func TestImplementationTellsTheSessionAPriorResolvedVerdict(t *testing.T) {
+	const fix = "5e1f0c2d9b8a7f6e5d4c3b2a1908f7e6d5c4b3a2"
+	const why = "the skip guard already keys the verdict on the ticket"
+	for name, c := range map[string]struct {
+		write func(nowork.Records) error
+		told  bool
+	}{
+		"resolved": {write: func(r nowork.Records) error { return r.WriteResolved("#480", "base", "fp", fix, why) }, told: true},
+		"no work":  {write: func(r nowork.Records) error { return r.Write("#480", "base", "fp") }},
+	} {
+		h, repo := fresh(t, "#480")
+		cfg := sharedCfg(t)
+		if err := c.write(nowork.For(cfg)); err != nil {
+			t.Fatal(err)
+		}
+		h.AgentFn = commitsHandoff(h, repo)
+		log := stageLog(t, "#480")
+
+		Implementation(h, cfg, log, Args{Identifier: "#480", Selected: selectedAs})
+
+		if len(h.Agents) != 1 {
+			t.Fatalf("%s: runs = %v, want one session", name, labels(h.Agents))
+		}
+		p := h.Agents[0].Prompt
+		if got := strings.Contains(p, "found this ticket already resolved on `main` by commit `"+fix+"`") && strings.Contains(p, why); got != c.told {
+			t.Errorf("%s: prompt names the prior verdict = %v, want %v:\n%s", name, got, c.told, p)
+		}
+		if got := strings.Contains(narration(t, log), "#480's last run found it already resolved on main by "+fix[:12]); got != c.told {
+			t.Errorf("%s: run log names the prior verdict = %v, want %v", name, got, c.told)
+		}
+	}
+}

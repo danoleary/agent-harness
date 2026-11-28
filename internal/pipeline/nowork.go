@@ -47,7 +47,9 @@ type noWorkScreen struct {
 // when main moves: the fix is still there. While onMain still finds that commit on
 // main and the ticket reads as it did, the screen logs `skipping <key>: already
 // resolved on main by <sha>; awaiting close` and passes over it, until a human
-// closes the ticket (#453).
+// closes the ticket (#453). A resolved record the loop's blocked label holds is
+// passed through: the adapter offers the ticket only once a human removed the
+// label (#480).
 //
 // It reads and never writes: the implementation stage keeps the record, and a
 // dry-run selects through this screen too. A main that cannot be read, or an
@@ -98,6 +100,11 @@ func (s *noWorkScreen) SelectNextTicket(skip ...string) (ticket.Ticket, bool, er
 		}
 		short := shortSHA(rec.Base)
 		switch {
+		case rec.Held:
+			// The loop's blocked label held the ticket, and only a human removing it
+			// lets selection offer it again: the human's word that the commit does
+			// not fix it (#480).
+			s.log.Event(fmt.Sprintf("%s's last run found it already resolved on main by %s, and the blocked label the loop applied is gone — dispatching it again (#480)", t.Identifier, shortSHA(rec.ResolvedBy)))
 		case mainErr != nil:
 			s.log.Event(fmt.Sprintf("%s's last run found no work against origin/main %s, but origin/main could not be read (%v) — dispatching it (#330)", t.Identifier, short, mainErr))
 		case main != rec.Base && rec.ResolvedBy == "":

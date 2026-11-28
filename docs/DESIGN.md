@@ -1125,8 +1125,13 @@ A ticket is eligible iff **all** hold:
   resolved on main by <sha>; awaiting close`), until the ticket changes or the
   commit leaves main (#453,
   [ADR-0073](https://github.com/danoleary/agent-harness/blob/main/docs/adr/0073-a-resolved-on-main-ticket-waits-for-close-not-for-main.md)).
-  Labelling a ticket blocked clears its record, so removing the label
-  dispatches it. A main or an ancestry check that cannot be read fails *open*.
+  The occurrence count a retrospective bumps in a filed finding's body is the
+  harness's own edit and does not count as a change (#480). Labelling a ticket
+  blocked clears a plain record and marks a resolved one held, so removing the
+  label dispatches it; a run of a ticket with a resolved record is told the
+  verdict, to confirm or refute it first (#480,
+  [ADR-0078](https://github.com/danoleary/agent-harness/blob/main/docs/adr/0078-a-resolved-verdict-outlives-the-blocked-label-and-reaches-the-next-run.md)).
+  A main or an ancestry check that cannot be read fails *open*.
   A hand-passed `pipeline <KEY>` is never screened.
 - **not gated on a telemetry re-measure**: a low-confidence perf *watch/confirm*
   ticket whose first acceptance criterion is to re-pull the metric over a wider

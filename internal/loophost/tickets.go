@@ -207,15 +207,17 @@ func (s *TicketSource) inFlight() ([]overlap.Work, error) {
 func (s *TicketSource) Release(key string) error { return s.client.ReleaseToTodo(key) }
 
 // Block labels the ticket blocked for a human (#230). The label then holds the
-// ticket, and its removal is a human's word to work it again, so Block clears the
-// ticket's no-work record: removing the label restores the labels the record was
-// read with, and a resolved record would pass the ticket over for as long as main
-// has its fix (#453). A label that was not applied leaves the record holding it.
+// ticket, and its removal is a human's word to work it again, so Block marks the
+// ticket's no-work record held: selection dispatches a held record's ticket
+// rather than pass it over, though removing the label restores the labels the
+// record was read with (#453). A resolved record keeps its verdict, for the run
+// the removal dispatches (#480). A label that was not applied leaves the record
+// holding the ticket.
 func (s *TicketSource) Block(key string) error {
 	if err := s.client.MarkBlocked(key); err != nil {
 		return err
 	}
-	nowork.For(s.cfg).Clear(key)
+	nowork.For(s.cfg).Hold(key)
 	return nil
 }
 

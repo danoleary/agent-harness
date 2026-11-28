@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/danoleary/agent-harness/internal/config"
+	"github.com/danoleary/agent-harness/internal/findings"
 	"github.com/danoleary/agent-harness/internal/gittest"
 	"github.com/danoleary/agent-harness/internal/loop"
 	"github.com/danoleary/agent-harness/internal/nowork"
@@ -91,7 +92,7 @@ func TestNextPassesOverAResolvedTicketAfterAnUnrelatedMerge(t *testing.T) {
 	if err := repo.Checkout().FetchMain(); err != nil {
 		t.Fatal(err)
 	}
-	if err := nowork.For(cfg).WriteResolved("#330", fix, nowork.Of(issue330), fix); err != nil {
+	if err := nowork.For(cfg).WriteResolved("#330", fix, nowork.Of(issue330), fix, ""); err != nil {
 		t.Fatal(err)
 	}
 	repo.Merge("docs.md", "an unrelated docs change\n", "Land a docs change")
@@ -109,23 +110,22 @@ func TestNextPassesOverAResolvedTicketAfterAnUnrelatedMerge(t *testing.T) {
 }
 
 // Once the loop labels a resolved ticket blocked for a human, the label holds
-// it, and removing the label is how a human says the commit does not fix it. The
-// removal restores the labels the record's fingerprint was read with, so a kept
-// record would pass the ticket over for as long as main has the commit: Block
-// clears it. A label that could not be applied leaves the record to hold the
-// ticket (#453).
-func TestBlockingATicketForAHumanClearsItsNoWorkRecord(t *testing.T) {
+// it, and removing the label is how a human says the commit does not fix it.
+// Block keeps the record's verdict, marked held, so the screen dispatches the
+// ticket once the label is gone and the run is told the verdict (#480). A label
+// that could not be applied leaves the record to hold the ticket (#453).
+func TestBlockingATicketForAHumanHoldsItsResolvedRecord(t *testing.T) {
 	for name, c := range map[string]struct {
 		blockErr error
-		kept     bool
+		held     bool
 	}{
-		"labelled":      {},
-		"label refused": {blockErr: errors.New("no tracker.blocked_label is configured"), kept: true},
+		"labelled":      {held: true},
+		"label refused": {blockErr: errors.New("no tracker.blocked_label is configured")},
 	} {
 		cfg := config.Config{Project: config.Project{BranchPrefix: gittest.Prefix}}
 		cfg.ProjectPath = t.TempDir()
 		records := nowork.For(cfg)
-		if err := records.WriteResolved("#330", "base", nowork.Of(issue330), "fix"); err != nil {
+		if err := records.WriteResolved("#330", "base", nowork.Of(issue330), "fix", "why"); err != nil {
 			t.Fatal(err)
 		}
 		trk := newQueueTracker()
@@ -134,8 +134,51 @@ func TestBlockingATicketForAHumanClearsItsNoWorkRecord(t *testing.T) {
 
 		s.Block("#330")
 
-		if _, ok := records.Read("#330"); ok != c.kept {
-			t.Errorf("%s: record kept = %v, want %v", name, ok, c.kept)
+		if rec, ok := records.Read("#330"); !ok || rec.ResolvedBy != "fix" || rec.Held != c.held {
+			t.Errorf("%s: record = %+v, %v; want it kept, held = %v", name, rec, ok, c.held)
 		}
 	}
+}
+
+// #480, replayed through the Source: the ticket is a harness finding. Its run
+// found it already resolved on main, and the loop could not label it blocked.
+// Then a retrospective saw the finding recur and bumped the occurrence count in
+// its body. That edit is the harness's own, so the next poll still passes over
+// the ticket.
+func TestNextPassesOverAResolvedTicketAfterTheHarnessBumpsItsOccurrences(t *testing.T) {
+	repo := gittest.New(t)
+	cfg := config.Config{Project: config.Project{BranchPrefix: gittest.Prefix}}
+	cfg.ProjectPath = repo.Dir
+	fix := repo.OnOrigin("main")
+	if err := repo.Checkout().FetchMain(); err != nil {
+		t.Fatal(err)
+	}
+	if err := nowork.For(cfg).WriteResolved("#480", fix, nowork.Of(issue480), fix, "that commit already fixes it"); err != nil {
+		t.Fatal(err)
+	}
+	trk := newQueueTracker()
+	trk.BlockErr = errors.New("no tracker.blocked_label is configured to mark #480 with")
+	s := NewTicketSource(cfg, &narrator{}, trk)
+	s.Block("#480")
+	bumped := issue480
+	bumped.Description = findings.WithOccurrences(issue480.Description, 2)
+	trk.next, trk.nextOK = bumped, true
+	log := &narrator{}
+	s = NewTicketSource(cfg, log, trk)
+
+	if _, claim, ok, err := s.Next(); ok || claim != nil || err != nil {
+		t.Fatalf("Next() = (%v, %v, %v), want #480 passed over after the harness's own edit", claim, ok, err)
+	}
+	if !saw(log, "skipping #480: already resolved on main by "+fix[:12]+"; awaiting close (#330)") {
+		t.Errorf("events = %v, want the skip named", log.events)
+	}
+}
+
+// issue480 is #480 as the retrospective filed it: a harness finding, carrying
+// its dedup key.
+var issue480 = ticket.Ticket{
+	Identifier:  "#480",
+	Title:       "Harness re-dispatched a ticket it had just marked already-resolved on main, with an identical prompt",
+	Description: "**Kind:** harness-dispatch\n\nThe first implementation run ended with the harness recording the ticket as already resolved on main…\n\n_Surfaced during herd by the agent harness._\n\n<!-- finding-key: redispatch-after-already-fixed-handoff -->",
+	Labels:      []string{"agent-ready", "harness-dispatch"},
 }
