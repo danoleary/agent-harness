@@ -84,3 +84,4 @@ catches a duplicate there.
 - [ADR-0074](0074-a-checks-poll-github-refused-is-a-failed-run-not-a-pass.md): A checks poll GitHub refused is a failed run, not a pass
 - [ADR-0075](0075-a-github-server-error-on-the-checks-poll-is-retried.md): A GitHub server error on the checks poll is retried like a network error
 - [ADR-0076](0076-a-pr-loop-run-locks-its-worktree-until-its-last-session-exits.md): A PR-loop run locks its worktree until its last session exits
+- [ADR-0077](0077-a-saved-conflict-resolution-is-replayed-onto-a-moved-base.md): A saved conflict resolution is replayed onto a moved base, not dropped

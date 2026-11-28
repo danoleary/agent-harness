@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -1003,10 +1004,13 @@ func TestFixKeepsACommittedResolutionWhoseRegateWentRed(t *testing.T) {
 	}
 }
 
-// #252: a saved resolution is cut from the origin/main it was resolved onto. Once
-// origin/main moves on, it is no longer a resolution of the conflict the PR has,
-// so the next run resolves afresh.
-func TestFixResolvesAfreshOnceOriginMainMovesPastASavedResolution(t *testing.T) {
+// #479, replayed: a resolution saved at a PR head, whose re-gate went red, was
+// cut from an origin/main that then moved on by a commit the resolution does not
+// touch. The next run at that head used to drop it and launch a second
+// conflict-resolution session that re-derived the same hunks from nothing. Now it
+// says it found the saved resolution on an old base, replays it onto origin/main
+// as it stands, re-gates it and pushes it, with no session.
+func TestFixReplaysASavedResolutionOntoAMovedOriginMain(t *testing.T) {
 	repo := gittest.New(t)
 	it := harnessItem(Conflict)
 	it.PR.HeadSHA = repo.Publish(it.PR.HeadBranch)
@@ -1015,20 +1019,83 @@ func TestFixResolvesAfreshOnceOriginMainMovesPastASavedResolution(t *testing.T) 
 	if res := Fix(rebasingHost(t, repo, it, &red), pipelineCfg(), pipelineLog(t), it, prDoctor()); res.OK {
 		t.Fatalf("a red re-gate pushes nothing, got %+v", res)
 	}
+	saved := repo.Git(repo.Dir, "rev-parse", "refs/harness/resolved/pr-12/"+it.PR.HeadSHA)
 	repo.Merge("another.txt", "more\n", "main moved on again")
 
 	red = false
 	retry := rebasingHost(t, repo, it, &red)
-	res := Fix(retry, pipelineCfg(), pipelineLog(t), it, prDoctor())
+	log := pipelineLog(t)
+	res := Fix(retry, pipelineCfg(), log, it, prDoctor())
 
-	if !res.OK {
-		t.Fatalf("a fresh resolution ships, got %+v", res)
+	if !res.OK || res.Disposition != stages.Shipped {
+		t.Fatalf("the saved resolution, replayed onto the new base and green, ships, got %+v", res)
 	}
-	if labels := agentLabels(retry); len(labels) == 0 || labels[0] != "rebasefix" {
-		t.Errorf("a saved resolution on a stale origin/main must be resolved afresh, got %v", labels)
+	if labels := agentLabels(retry); slices.Contains(labels, "rebasefix") {
+		t.Errorf("a saved resolution that replays cleanly onto the moved origin/main needs no session, got %v", labels)
 	}
 	if !onMain(repo, it.PR.HeadBranch) {
 		t.Error("what reached origin must sit on the current origin/main")
+	}
+	if pushed := repo.OnOrigin(it.PR.HeadBranch); repo.Git(repo.Dir, "show", pushed+":feat-gh-7.txt") != "a change" {
+		t.Error("the push must carry the saved resolution's side of the conflict")
+	}
+	events := readEvents(t, log)
+	if !strings.Contains(events, "found the saved conflict resolution "+short(saved)) || !strings.Contains(events, "replaying it onto origin/main") {
+		t.Errorf("the run log must say it found the saved resolution and is replaying it:\n%s", events)
+	}
+	if out := repo.Git(repo.Dir, "for-each-ref", "refs/harness/resolved/"); out != "" {
+		t.Errorf("a pushed resolution leaves no saved ref behind: %s", out)
+	}
+}
+
+// #479: when origin/main's new commits conflict with the saved resolution too,
+// its replay stops. The run says it set the saved resolution aside and why, and
+// the conflict-resolution session is handed it as a prior resolution to reuse.
+func TestFixHandsASavedResolutionThatNoLongerReplaysToTheSession(t *testing.T) {
+	repo := gittest.New(t)
+	it := harnessItem(Conflict)
+	it.PR.HeadSHA = repo.Publish(it.PR.HeadBranch)
+	conflictWithMain(repo, it.PR.HeadBranch)
+	red := true
+	if res := Fix(rebasingHost(t, repo, it, &red), pipelineCfg(), pipelineLog(t), it, prDoctor()); res.OK {
+		t.Fatalf("a red re-gate pushes nothing, got %+v", res)
+	}
+	saved := repo.Git(repo.Dir, "rev-parse", "refs/harness/resolved/pr-12/"+it.PR.HeadSHA)
+	repo.Merge("feat-gh-7.txt", "main changed it again\n", "main changed the same file again")
+
+	red = false
+	retry := rebasingHost(t, repo, it, &red)
+	log := pipelineLog(t)
+	res := Fix(retry, pipelineCfg(), log, it, prDoctor())
+
+	if !res.OK {
+		t.Fatalf("the session's fresh resolution ships, got %+v", res)
+	}
+	if labels := agentLabels(retry); len(labels) == 0 || labels[0] != "rebasefix" {
+		t.Fatalf("a saved resolution that does not replay goes to a session, got %v", labels)
+	}
+	if p := retry.Agents[0].Prompt; !strings.Contains(p, "PRIOR RESOLUTION") || !strings.Contains(p, short(saved)) {
+		t.Errorf("the session must be handed the saved resolution %s to reuse:\n%s", short(saved), p)
+	}
+	events := readEvents(t, log)
+	if !strings.Contains(events, "does not replay onto origin/main") || !strings.Contains(events, "feat-gh-7.txt") {
+		t.Errorf("the run log must say why the saved resolution was not reused:\n%s", events)
+	}
+	if !onMain(repo, it.PR.HeadBranch) {
+		t.Error("what reached origin must sit on the current origin/main")
+	}
+}
+
+// #479: a conflict run with no saved resolution says so, so the operator can tell
+// the reuse path ran and found nothing.
+func TestFixSaysWhenThereIsNoSavedResolution(t *testing.T) {
+	h, it, _ := prHost(t, harnessItem(Conflict))
+	log := pipelineLog(t)
+
+	Fix(h, pipelineCfg(), log, it, prDoctor())
+
+	if events := readEvents(t, log); !strings.Contains(events, "no saved conflict resolution of "+short(it.PR.HeadSHA)) {
+		t.Errorf("the run log must say no saved resolution was found:\n%s", events)
 	}
 }
 

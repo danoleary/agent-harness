@@ -87,6 +87,13 @@ number read as a conflict there and nowhere else. When the replay applies with
 nothing unmerged, the loop renumbers the branch's clashing ADR, runs every Gate
 and pushes, with no session. Only a replay that git stops on goes to a
 conflict-resolution session, which is told the paths git left unmerged.
+
+A resolution whose Gates went red is saved as a local ref, and the next run at the
+same PR head re-gates it instead of resolving again. If `origin/main` has moved
+since, the loop first replays the saved resolution onto it, then gates and pushes
+it with no session. If that replay conflicts too, the session is given the saved
+resolution to reuse. The run log always says whether a saved resolution was found
+and what became of it (#479, ADR-0077).
 The session is told your Gates and runs the auto-fixing counterpart of your
 format check over the resolved tree before it stops, so a hand-merged hunk does
 not fail the re-gate on formatting alone (#473). If your format check runs inside

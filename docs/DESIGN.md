@@ -721,7 +721,10 @@ pipeline (one PR, worktree .claude/worktrees/pr-<n> on the PR's head branch):
         holds on that base (ADR-0039); the run that recorded the red files base-gates-red
     resolved but the gates red -> save the tip as refs/harness/resolved/pr-<n>/<head>  // #252
       the next run at <head>, origin/main still in that tip -> re-gate + push it, no session
-      origin/main moved past it -> drop it, resolve afresh;  pushed -> drop it
+      origin/main moved past it -> replay its commits onto origin/main host-side  // #479, ADR-0077
+        (merge origin/main into it on a human's branch) -> all gates -> push, no session
+        git stops on the replay -> back to <head>; the session is told it as a prior resolution
+      pushed -> drop it;  each conflict run logs whether one was found and what became of it
   both kinds: ci.WatchAndFix to a terminal verdict
     red check: flake re-run, then CIFix session over the failing logs
     -> committed fix -> all gates -> push (append-only)
