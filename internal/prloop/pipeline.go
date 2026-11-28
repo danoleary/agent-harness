@@ -300,7 +300,10 @@ func (r *run) repair() stages.Result {
 // clear to push; when it is not, out is the run's result. A resolution an earlier
 // run at this head committed, whose push its red re-gate held back, is re-gated
 // and pushed as it stands, with no session, while origin/main is still its base
-// (#252). Otherwise the host replays a rebase onto origin/main itself, renumbers a
+// (#252). Once origin/main has moved past that base, the host replays the saved
+// resolution onto origin/main as it stands and re-gates it, with no session; one
+// whose replay git stops on is handed to the session as a prior resolution to
+// reuse (#479). Otherwise the host replays a rebase onto origin/main itself, renumbers a
 // clashing ADR and re-gates, with no session, when git stops on nothing (#403).
 // Failing that a RebaseFix session resolves the conflict, told the paths git left
 // unmerged. A resolution the ground truth accepts but the gates hold back is
@@ -309,33 +312,37 @@ func (r *run) repair() stages.Result {
 func (r *run) resolve() (out stages.Result, ok bool) {
 	wt := r.h.Worktree()
 	head := r.it.PR.HeadSHA
-	if tip, saved := wt.SavedResolution(head); saved && r.target.Checkpoint == nil {
-		r.log.Event(fmt.Sprintf("%s ↺ resuming the conflict resolution %s an earlier run committed over %s on %s — re-gating it instead of launching a conflict-resolution session (#252)", who, short(tip), short(head), git.BaseRef))
-		if err := wt.ResumeResolution(tip); err != nil {
-			r.log.Event(fmt.Sprintf("%s ✗ could not move %s to the saved resolution %s: %v — nothing pushed", who, r.it.PR.HeadBranch, short(tip), err))
-			return stages.Result{}, false
-		}
-		if gate := r.fixes.Gates("gate"); !gate.Green() || !wt.Clean() {
-			if gate.Infra != "" && wt.Clean() {
-				r.log.Event(fmt.Sprintf("%s ⏸ gate %q over the saved resolution is red twice with %s (exit %d): infra, not a test failure — nothing pushed; the resolution stays saved for the next run at this head (#472)", who, gate.FailedGate, gate.Infra, gate.Outcome.ExitCode))
-				return stages.Result{}, false
-			}
-			r.log.Event(fmt.Sprintf("%s ✗ gate re-run over the saved resolution failed (exit %d) — nothing pushed; the resolution stays saved for the next run at this head (#252)", who, gate.Outcome.ExitCode))
-			return stages.Result{}, false
-		}
-		r.log.Event(who + " ✓ gate re-run over the saved resolution is green — clear to push")
-		return stages.Result{}, true
-	}
 	conflict := fix.Conflict{
 		Target:   r.target,
 		Strategy: r.it.Strategy(),
 		Regate:   func() fix.GateResult { return r.fixes.Gates("gate") },
 	}
+	// Say what became of a saved resolution, so the run log shows the reuse path
+	// ran (#479).
+	var replay fix.HostReplay
+	switch saved, found := wt.SavedResolution(head); {
+	case !found:
+		r.log.Event(fmt.Sprintf("%s · no saved conflict resolution of %s — resolving it (#479)", who, short(head)))
+	case r.target.Checkpoint != nil:
+		r.log.Event(fmt.Sprintf("%s · found the saved conflict resolution %s of %s, not reused: the run resumes the recovery checkpoint an earlier attempt left instead (#479)", who, short(saved.Tip), short(head)))
+	case !saved.Stale:
+		return r.resume(saved.Tip)
+	default:
+		main, _ := wt.MainSHA()
+		r.log.Event(fmt.Sprintf("%s ↺ found the saved conflict resolution %s of %s, resolved onto origin/main %s, which has since moved to %s — replaying it onto origin/main before any session (#479)", who, short(saved.Tip), short(head), short(saved.Base), short(main)))
+		if replay = r.fixes.ReplaySaved(conflict, saved.Tip); !replay.Replayed {
+			why := "git failed on it"
+			if len(replay.Conflicted) > 0 {
+				why = "it stops on " + strings.Join(replay.Conflicted, ", ")
+			}
+			r.log.Event(fmt.Sprintf("%s · the saved conflict resolution %s does not replay onto origin/main %s (%s) — set aside; the conflict-resolution session is handed it as a prior resolution to reuse (#479)", who, short(saved.Tip), short(main), why))
+			conflict.Prior = &prompt.PriorResolution{Commit: saved.Tip, Base: saved.Base}
+		}
+	}
 	// GitHub's mergeability is what selected the PR, and it ignores merge=union, so
 	// a branch whose only clash with main is an ADR number reads as conflicting.
 	// A recovery checkpoint is the session's to replay: the host's would reset it.
-	var replay fix.HostReplay
-	if r.target.Checkpoint == nil {
+	if !replay.Replayed && r.target.Checkpoint == nil {
 		replay = r.fixes.ReplayOnBase(conflict)
 		conflict.Conflicted = replay.Conflicted
 	}
@@ -361,6 +368,29 @@ func (r *run) resolve() (out stages.Result, ok bool) {
 		}
 	}
 	return stages.Result{}, false
+}
+
+// resume re-gates the resolution, tip, an earlier run at this head committed onto
+// origin/main as it stands, whose push its red re-gate held back (#252), and
+// reports whether it is clear to push.
+func (r *run) resume(tip string) (out stages.Result, ok bool) {
+	wt := r.h.Worktree()
+	head := r.it.PR.HeadSHA
+	r.log.Event(fmt.Sprintf("%s ↺ resuming the conflict resolution %s an earlier run committed over %s on %s — re-gating it instead of launching a conflict-resolution session (#252)", who, short(tip), short(head), git.BaseRef))
+	if err := wt.ResumeResolution(tip); err != nil {
+		r.log.Event(fmt.Sprintf("%s ✗ could not move %s to the saved resolution %s: %v — nothing pushed", who, r.it.PR.HeadBranch, short(tip), err))
+		return stages.Result{}, false
+	}
+	if gate := r.fixes.Gates("gate"); !gate.Green() || !wt.Clean() {
+		if gate.Infra != "" && wt.Clean() {
+			r.log.Event(fmt.Sprintf("%s ⏸ gate %q over the saved resolution is red twice with %s (exit %d): infra, not a test failure — nothing pushed; the resolution stays saved for the next run at this head (#472)", who, gate.FailedGate, gate.Infra, gate.Outcome.ExitCode))
+			return stages.Result{}, false
+		}
+		r.log.Event(fmt.Sprintf("%s ✗ gate re-run over the saved resolution failed (exit %d) — nothing pushed; the resolution stays saved for the next run at this head (#252)", who, gate.Outcome.ExitCode))
+		return stages.Result{}, false
+	}
+	r.log.Event(who + " ✓ gate re-run over the saved resolution is green — clear to push")
+	return stages.Result{}, true
 }
 
 // renumberDescription rewrites the PR's title and description after a pushed

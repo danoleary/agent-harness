@@ -651,6 +651,10 @@ type Conflict struct {
 	// Conflicted names the paths the harness's replay left unmerged, which the
 	// session is told; none means only GitHub reported the conflict (#403).
 	Conflicted []string
+	// Prior, when set, is a resolution of this conflict an earlier run committed
+	// onto an older origin/main, whose replay onto origin/main as it stands
+	// stopped (#479). The session is told to reuse its hunks.
+	Prior *prompt.PriorResolution
 }
 
 // ConflictResult is how a conflict resolution ended. OK authorises the push.
@@ -758,6 +762,7 @@ func (e Env) ResolveConflict(c Conflict) ConflictResult {
 	pctx := e.promptContext(c.Target)
 	pctx.Merge = c.Strategy == Merge
 	pctx.Conflicted = c.Conflicted
+	pctx.PriorResolution = c.Prior
 	for _, g := range e.Cfg.Gates {
 		pctx.Gates = append(pctx.Gates, prompt.Gate{Name: g.Name, Command: g.Command})
 	}
@@ -854,6 +859,34 @@ func (e Env) ReplayOnBase(c Conflict) HostReplay {
 		return HostReplay{Conflicted: conflicted}
 	}
 	e.Log.Event(fmt.Sprintf("%s ✓ replayed %s onto origin/main host-side with no unmerged paths — the conflict was GitHub's alone, so no conflict-resolution session (#403)", e.Who, wt.Branch()))
+	e.renumberADRs()
+	return HostReplay{Replayed: true, Result: e.regate(c, nil)}
+}
+
+// ReplaySaved replays a resolution of this conflict an earlier run saved, tip,
+// onto origin/main as it stands, host-side and before any session (#479): the
+// saved resolution was cut from an origin/main that has since moved, and its
+// resolved commits already settle the conflict the branch has. A clean replay
+// has a clashing ADR renumbered on a rebase, as [Env.ReplayOnBase] does, and is
+// re-gated as a resolution is. Otherwise the branch is back where it started, and
+// Conflicted names the paths the saved resolution's replay stopped on.
+func (e Env) ReplaySaved(c Conflict, tip string) HostReplay {
+	wt := e.Host.Worktree()
+	r := wt.ReplayResolution(tip, c.Strategy == Merge)
+	if r.Result != gitpkg.RebaseClean {
+		return HostReplay{Conflicted: r.Conflicted}
+	}
+	e.Log.Event(fmt.Sprintf("%s ✓ replayed the saved resolution %s onto origin/main host-side with no unmerged paths — re-gating it instead of launching a conflict-resolution session (#479)", e.Who, shortSHA(tip)))
+	if c.Strategy == Rebase {
+		e.renumberADRs()
+	}
+	return HostReplay{Replayed: true, Result: e.regate(c, nil)}
+}
+
+// renumberADRs renumbers each of the branch's ADRs whose number origin/main now
+// holds, after a host-side replay onto it (#374), and narrates what it did.
+func (e Env) renumberADRs() {
+	wt := e.Host.Worktree()
 	switch moved, err := wt.RenumberCollidingADRs(); {
 	case err != nil:
 		e.Log.Event(fmt.Sprintf("%s ⚠ could not renumber the branch's ADRs against origin/main (%v) — pushing it as replayed; check-adr may fail in CI on a duplicate number (#374)", e.Who, err))
@@ -864,7 +897,6 @@ func (e Env) ReplayOnBase(c Conflict) HostReplay {
 		}
 		e.Log.Event(fmt.Sprintf("%s ✓ renumbered %s: origin/main took the number while the branch was in flight (#374)", e.Who, strings.Join(names, ", ")))
 	}
-	return HostReplay{Replayed: true, Result: e.regate(c, nil)}
 }
 
 // overlapDropbox is the dropbox a replay's resolution session writes its overlap

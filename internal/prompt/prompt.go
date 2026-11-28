@@ -181,6 +181,11 @@ type Context struct {
 	// an earlier attempt's uncommitted work, saved when its session ended (#246).
 	// CIFix and RebaseFix name it as unverified; nil starts from origin's tip.
 	Checkpoint *Checkpoint
+	// PriorResolution is a resolution of this same conflict an earlier run
+	// committed onto an older origin/main, which no longer replays cleanly onto
+	// origin/main as it stands (#479). RebaseFix names it, so the session reuses
+	// its hunks rather than re-deriving them; nil when there is none.
+	PriorResolution *PriorResolution
 	// Merge selects the RebaseFix variant that merges origin/main into the branch
 	// instead of replaying it, for a branch a human opted in: its history must not
 	// be rewritten (ADR-0019).
@@ -703,10 +708,34 @@ func checkpointSteer(cp *Checkpoint) []string {
 	}
 }
 
-// withCheckpoint puts the checkpoint steer right after a fix prompt's opening
-// paragraph (lines[0] and its blank line), before the session reads its job.
+// PriorResolution is a conflict resolution an earlier run committed (#479):
+// Commit is its resolved tip, cut from Base, the origin/main it was resolved onto.
+type PriorResolution struct {
+	Commit string
+	Base   string
+}
+
+// priorResolutionSteer tells a conflict-resolution session an earlier run already
+// resolved this conflict onto an older origin/main, and how to read what it did
+// (#479). Three runs over one PR head each re-derived the same hunk-by-hunk
+// resolution from nothing, and one re-introduced a format slip an earlier one had
+// fixed. Empty when there is no prior resolution.
+func priorResolutionSteer(pr *PriorResolution) []string {
+	if pr == nil {
+		return nil
+	}
+	c, b := shortRef(pr.Commit), shortRef(pr.Base)
+	return []string{
+		"PRIOR RESOLUTION — an earlier run already resolved this conflict: it committed the resolution `" + c + "` onto an older origin/main, `" + b + "`, and the harness held its push back. origin/main has moved since, and the harness's replay of that resolution onto origin/main as it stands stopped on what origin/main gained, so it is yours to finish. Start from its hunks rather than re-deriving them: `git diff " + b + " " + c + "` is the whole resolved change, and for each conflicted path `git show " + c + ":<path>` is how the earlier run resolved it. Carry its choices over where origin/main's new commits leave them valid, resolve only what is new, and re-check what it got wrong: the harness gates whatever you commit before it pushes.",
+		"",
+	}
+}
+
+// withCheckpoint puts the checkpoint and prior-resolution steers right after a fix
+// prompt's opening paragraph (lines[0] and its blank line), before the session
+// reads its job.
 func withCheckpoint(c Context, lines []string) []string {
-	steer := checkpointSteer(c.Checkpoint)
+	steer := append(checkpointSteer(c.Checkpoint), priorResolutionSteer(c.PriorResolution)...)
 	if steer == nil {
 		return lines
 	}
