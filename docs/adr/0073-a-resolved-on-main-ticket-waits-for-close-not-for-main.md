@@ -1,6 +1,6 @@
 # ADR-0073: A resolved-on-main ticket waits for close, not for main
 
-- Status: Accepted
+- Status: Accepted; decision 4 amended by ADR-0078
 - Date: 2026-11-24
 - Extends: ADR-0053 (a ticket whose last run found no work waits for main or the ticket to move), ADR-0052 (a session's already-resolved-on-main stop is handed to a human)
 

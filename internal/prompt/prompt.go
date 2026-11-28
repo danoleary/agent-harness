@@ -144,6 +144,11 @@ type Context struct {
 	// The Implement envelope names them; empty says nothing.
 	Landed []Landed
 
+	// PriorResolved is the verdict of the ticket's last run, when it found the
+	// ticket already resolved on main (#480). The Implement envelope names it; nil
+	// says nothing.
+	PriorResolved *PriorResolved
+
 	// Resume selects the Implement variant.
 	Resume Resume
 	// Filed lists the finding classes already filed, for a Retrospective re-run.
@@ -510,6 +515,7 @@ func implement(c Context) string {
 		greenBaseSection(c.GreenBase),
 		prerequisitesSection(c.Ticket.Prerequisites),
 		landedSection(c.Landed),
+		priorResolvedSection(c.PriorResolved),
 		openQuestionsSection(c.Ticket.OpenQuestions()),
 		adrNumberSection(c.Ticket.ADRFiles()),
 		"---",
@@ -574,6 +580,29 @@ func landedSection(landed []Landed) string {
 	}
 	b.WriteString("\n\nBefore you plan or write any code, read each one and check whether it already does what the ticket asks. If one does, do not re-implement it: make no commit, write `/findings/resolved.json` as `{\"commit\": \"<sha>\", \"reason\": \"<why it already fixes this ticket>\"}` naming that commit, say \"already fixed on main by <sha>\" in your handoff, and stop. If none does, carry on as usual.")
 	return b.String()
+}
+
+// PriorResolved is the verdict of a ticket's last run that found it already
+// resolved on main: the commit, in full, and the reason the run gave.
+type PriorResolved struct {
+	SHA string
+	Why string
+}
+
+// priorResolvedSection tells the session what the ticket's last run concluded
+// (#480). The second #480 run was dispatched with a prompt byte-identical to the
+// first, re-derived the verdict from scratch and named a different commit. Empty
+// when the last run reached no such verdict.
+func priorResolvedSection(p *PriorResolved) string {
+	if p == nil {
+		return ""
+	}
+	why := ""
+	if p.Why != "" {
+		// Defang it: the reason is the last session's text.
+		why = defang(" Its reason: " + p.Why)
+	}
+	return "A previous run found this ticket already resolved on `main` by commit `" + p.SHA + "` and stopped without committing." + why + " Start by checking that verdict with `git show " + p.SHA + "` against the ticket as it reads now. If it still holds, make no commit, write `/findings/resolved.json` naming that commit (or the commit that does fix it, if you find a better one), and stop. If the ticket asks for something that commit does not do, say what in your handoff and carry on as usual."
 }
 
 // openQuestionsSection names each section of the ticket body that still lists

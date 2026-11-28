@@ -73,3 +73,14 @@ func WithOccurrences(body string, n int) string {
 	}
 	return body + "\n\n" + occurrenceMarker(n)
 }
+
+// bumpRe matches an occurrence marker with the blank line WithOccurrences put
+// before it.
+var bumpRe = regexp.MustCompile(`\s*<!--\s*occurrences:\s*\d+\s*-->`)
+
+// WithoutOccurrences returns body as it read before any WithOccurrences bump: a
+// recurrence is the harness's own edit, which says nothing new about the work
+// (#480).
+func WithoutOccurrences(body string) string {
+	return bumpRe.ReplaceAllString(body, "")
+}

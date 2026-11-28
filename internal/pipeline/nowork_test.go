@@ -191,7 +191,7 @@ var issue453 = ticket.Ticket{
 // a resolved record stands while its resolving commit is still on main.
 func TestSkipNoWorkPassesOverAResolvedTicketWhileItsFixIsStillOnMain(t *testing.T) {
 	records := noWorkRecords(t)
-	if err := records.WriteResolved("#453", resolvedOn, nowork.Of(issue453), fixedBy); err != nil {
+	if err := records.WriteResolved("#453", resolvedOn, nowork.Of(issue453), fixedBy, ""); err != nil {
 		t.Fatal(err)
 	}
 	q := &readyQueue{ready: []ticket.Ticket{issue453, {Identifier: "#454", Description: "Other work."}}}
@@ -211,7 +211,7 @@ func TestSkipNoWorkPassesOverAResolvedTicketWhileItsFixIsStillOnMain(t *testing.
 // A queue that only holds a resolved ticket is held, and says why.
 func TestSkipNoWorkWithOnlyAResolvedTicketReadyHoldsTheQueue(t *testing.T) {
 	records := noWorkRecords(t)
-	if err := records.WriteResolved("#453", resolvedOn, nowork.Of(issue453), fixedBy); err != nil {
+	if err := records.WriteResolved("#453", resolvedOn, nowork.Of(issue453), fixedBy, ""); err != nil {
 		t.Fatal(err)
 	}
 	q := &readyQueue{ready: []ticket.Ticket{issue453}}
@@ -241,7 +241,7 @@ func TestSkipNoWorkDispatchesAResolvedTicketOnceItsFixLeftMainOrTheTicketMoved(t
 		"check failed":  {ticket: issue453, onMain: func(string) (bool, error) { return false, errors.New("git broke") }, says: "#453's last run found it already resolved on main by 5e1f0c2d9b8a, but whether main dadf13a00000 still has it could not be read (git broke) — dispatching it (#330)"},
 	} {
 		records := noWorkRecords(t)
-		if err := records.WriteResolved("#453", resolvedOn, nowork.Of(issue453), fixedBy); err != nil {
+		if err := records.WriteResolved("#453", resolvedOn, nowork.Of(issue453), fixedBy, ""); err != nil {
 			t.Fatal(err)
 		}
 		q := &readyQueue{ready: []ticket.Ticket{c.ticket}}
@@ -255,5 +255,29 @@ func TestSkipNoWorkDispatchesAResolvedTicketOnceItsFixLeftMainOrTheTicketMoved(t
 		if !rec.saw(c.says) {
 			t.Errorf("%s: want %q; events = %v", name, c.says, rec.events)
 		}
+	}
+}
+
+// Once the loop's blocked label landed, the resolved record is kept, held, for
+// the verdict. The label holds the ticket, so a selection that offers it again
+// means a human removed the label to say the commit does not fix it: the screen
+// dispatches it, though main still has the commit and the ticket reads the same
+// (#480).
+func TestSkipNoWorkDispatchesAHeldResolvedTicketOnceItsBlockedLabelIsGone(t *testing.T) {
+	records := noWorkRecords(t)
+	if err := records.WriteResolved("#453", resolvedOn, nowork.Of(issue453), fixedBy, "the fix holds"); err != nil {
+		t.Fatal(err)
+	}
+	records.Hold("#453")
+	q := &readyQueue{ready: []ticket.Ticket{issue453}}
+	rec := &recorder{}
+
+	sel := ResolveNext(SkipNoWork(q, records, (&mainRef{sha: resolvedOn}).read, mainHolds(fixedBy), rec), &mutexLock{}, false, "", rec)
+
+	if !sel.Proceed || sel.Identifier != "#453" {
+		t.Fatalf("selection = %+v, want #453 dispatched", sel)
+	}
+	if says := "#453's last run found it already resolved on main by 5e1f0c2d9b8a, and the blocked label the loop applied is gone — dispatching it again (#480)"; !rec.saw(says) {
+		t.Errorf("want %q; events = %v", says, rec.events)
 	}
 }

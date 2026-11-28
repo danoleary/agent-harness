@@ -85,3 +85,4 @@ catches a duplicate there.
 - [ADR-0075](0075-a-github-server-error-on-the-checks-poll-is-retried.md): A GitHub server error on the checks poll is retried like a network error
 - [ADR-0076](0076-a-pr-loop-run-locks-its-worktree-until-its-last-session-exits.md): A PR-loop run locks its worktree until its last session exits
 - [ADR-0077](0077-a-saved-conflict-resolution-is-replayed-onto-a-moved-base.md): A saved conflict resolution is replayed onto a moved base, not dropped
+- [ADR-0078](0078-a-resolved-verdict-outlives-the-blocked-label-and-reaches-the-next-run.md): A resolved verdict outlives the blocked label and reaches the next run

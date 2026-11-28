@@ -37,6 +37,9 @@ type Subject struct {
 	// Landed is the commits that reached main after the ticket was filed and
 	// changed a file it names, for the implementation prompt (#335).
 	Landed []prompt.Landed
+	// PriorResolved is the verdict of the ticket's last run, when it found the
+	// ticket already resolved on main, for the implementation prompt (#480).
+	PriorResolved *prompt.PriorResolved
 	// Unhanded is the recovery checkpoint at the branch tip that review is told to
 	// take on as unhanded-off work (#431); nil when the tip was handed off.
 	Unhanded *prompt.Unhanded
@@ -178,7 +181,7 @@ func postCreateRun(cfg config.Config, worktreePath string) hostio.ShellRun {
 // ticket session it starts in the worktree (#245), so the envelope names the
 // worktree by its absolute path.
 func implementationRun(cfg config.Config, s Subject, resume prompt.Resume) hostio.AgentRun {
-	pctx := prompt.Context{Ticket: s.Ticket, Slug: s.Slug, BranchPrefix: cfg.BranchPrefix, Tracker: cfg.Tracker.Kind, WorktreePath: s.WorktreePath, Body: cfg.Prompts.Implement, Resume: resume, Sentry: s.Sentry, GreenBase: s.GreenBase, Landed: s.Landed}
+	pctx := prompt.Context{Ticket: s.Ticket, Slug: s.Slug, BranchPrefix: cfg.BranchPrefix, Tracker: cfg.Tracker.Kind, WorktreePath: s.WorktreePath, Body: cfg.Prompts.Implement, Resume: resume, Sentry: s.Sentry, GreenBase: s.GreenBase, Landed: s.Landed, PriorResolved: s.PriorResolved}
 	return hostio.AgentRun{
 		Label:       implementationSession,
 		Role:        sandbox.RoleImplementation,

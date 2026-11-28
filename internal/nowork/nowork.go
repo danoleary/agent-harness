@@ -6,7 +6,9 @@
 // main and the ticket are both unchanged, because a second run would find the same
 // nothing for the same reason. A run that found the ticket already resolved on
 // main also names the resolving commit, and selection passes over the ticket for
-// as long as main still has that commit, however far main moves (#453).
+// as long as main still has that commit, however far main moves (#453). That
+// verdict outlives the loop's blocked label, so a later run of the ticket is told
+// it (#480).
 package nowork
 
 import (
@@ -19,6 +21,7 @@ import (
 	"time"
 
 	"github.com/danoleary/agent-harness/internal/config"
+	"github.com/danoleary/agent-harness/internal/findings"
 	"github.com/danoleary/agent-harness/internal/ticket"
 )
 
@@ -28,14 +31,16 @@ import (
 type Fingerprint string
 
 // Of is t's fingerprint. Label order does not count, and neither does anything
-// else selection reads (priority, URL), which says nothing about the work.
+// else selection reads (priority, URL), which says nothing about the work. Nor
+// does the occurrence count a retrospective bumps in a filed finding's body: the
+// harness wrote it, not a human (#480).
 func Of(t ticket.Ticket) Fingerprint {
 	labels := slices.Clone(t.Labels)
 	slices.Sort(labels)
 	raw, _ := json.Marshal(struct {
 		Title, Body string
 		Labels      []string
-	}{t.Title, t.Description, labels})
+	}{t.Title, findings.WithoutOccurrences(t.Description), labels})
 	sum := sha256.Sum256(raw)
 	return Fingerprint(hex.EncodeToString(sum[:]))
 }
@@ -53,6 +58,13 @@ type Record struct {
 	// resolving the ticket (ResolvedOnMain or AlreadyOnMain), or empty. A main
 	// that moved still holds that fix while the commit is on it (#453).
 	ResolvedBy string `json:"resolved_by,omitempty"`
+	// Why is the session's reason that ResolvedBy fixes the ticket, or the
+	// subject of the commit the own-key scan matched; a later run is told it (#480).
+	Why string `json:"why,omitempty"`
+	// Held is set once the loop's blocked label landed on the ticket: the label
+	// holds it from then on, and a selection that offers it again means a human
+	// removed the label (#480).
+	Held bool `json:"held,omitempty"`
 }
 
 // Records is the per-ticket record every loop instance of one Consumer shares
@@ -92,13 +104,34 @@ func (r Records) Read(key string) (Record, bool) {
 // ticket selection read as fp. The rename makes it atomic, so a concurrent reader
 // sees the old record or the new one, never half of one.
 func (r Records) Write(key, base string, fp Fingerprint) error {
-	return r.WriteResolved(key, base, fp, "")
+	return r.WriteResolved(key, base, fp, "", "")
 }
 
 // WriteResolved is Write for a run that found key already resolved on main by
-// the commit by (#453). An empty by is a plain Write.
-func (r Records) WriteResolved(key, base string, fp Fingerprint, by string) error {
-	raw, err := json.Marshal(Record{Base: base, Ticket: fp, At: r.now(), ResolvedBy: by})
+// the commit by, for the reason why (#453). An empty by is a plain Write.
+func (r Records) WriteResolved(key, base string, fp Fingerprint, by, why string) error {
+	return r.put(key, Record{Base: base, Ticket: fp, At: r.now(), ResolvedBy: by, Why: why})
+}
+
+// Hold notes that the loop's blocked label landed on key. The label holds the
+// ticket from then on, so a plain record is cleared; a resolved one is kept,
+// marked held, so the run a human's removal of the label dispatches is told the
+// verdict (#480). Best-effort, like Clear.
+func (r Records) Hold(key string) {
+	rec, ok := r.Read(key)
+	if !ok || rec.ResolvedBy == "" {
+		r.Clear(key)
+		return
+	}
+	rec.Held = true
+	if err := r.put(key, rec); err != nil {
+		r.Clear(key)
+	}
+}
+
+// put writes rec as key's record. The rename makes it atomic.
+func (r Records) put(key string, rec Record) error {
+	raw, err := json.Marshal(rec)
 	if err != nil {
 		return err
 	}

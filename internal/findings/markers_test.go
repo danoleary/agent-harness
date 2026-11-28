@@ -56,3 +56,21 @@ func TestWithOccurrencesOnEmptyBody(t *testing.T) {
 		t.Errorf("WithOccurrences(empty) = %q", got)
 	}
 }
+
+// WithoutOccurrences undoes every WithOccurrences bump: the body reads as it did
+// when it was filed, whatever the count (#480).
+func TestWithoutOccurrencesUndoesTheBump(t *testing.T) {
+	filed := "body\n\n<!-- finding-key: k -->"
+	for _, n := range []int{2, 3, 11} {
+		bumped := WithOccurrences(filed, n)
+		if got := WithoutOccurrences(bumped); got != filed {
+			t.Errorf("WithoutOccurrences(%q) = %q, want %q", bumped, got, filed)
+		}
+		if got := WithoutOccurrences(WithOccurrences(bumped, n+1)); got != filed {
+			t.Errorf("a replaced marker = %q, want %q", got, filed)
+		}
+	}
+	if got := WithoutOccurrences(filed); got != filed {
+		t.Errorf("a body with no marker must read unchanged, got %q", got)
+	}
+}
