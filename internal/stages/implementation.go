@@ -233,6 +233,10 @@ func provisionWorktree(h hostio.Host, cfg config.Config, log *runlog.Logger) (pr
 			log.Event(fmt.Sprintf("fast-forwarded %s from %s to %s — it had no commits ahead, so it now starts from current origin/main (#334)", wt.Branch(), from[:12], to[:12]))
 		}
 	}
+	// The run occupies the worktree from here until it ends, the retrospective
+	// included (ADR-0076, #481). A second attempt provisions again, and re-takes
+	// the lock.
+	occupy(wt, log)
 	if cfg.PostCreate != "" {
 		return runPostCreate(h, cfg, log)
 	}
@@ -485,6 +489,7 @@ func Implementation(h hostio.Host, cfg config.Config, log *runlog.Logger, args A
 	if !provisioned {
 		log.Event("tdd · post_create did not succeed, so the base's gates would judge the install, not the base — not gating the base (#125)")
 	} else if base := checkBase(h, cfg, log, t, args.Force, findingsDir); base.Red {
+		Vacate(wt, log)
 		if err := wt.Discard(); err != nil {
 			log.Event("⚠ could not discard the untouched worktree on the red base (" + err.Error() + ") — the next attempt may reuse it at this base")
 		}

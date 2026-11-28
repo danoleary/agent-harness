@@ -41,7 +41,11 @@ type Deps struct {
 	Implementation Stage
 	Review         Stage
 	Retrospective  Stage
-	Log            Narrator
+	// Vacate lifts the run's occupancy lock on the ticket's worktree (ADR-0076,
+	// #481). Run calls it on every return, so a worktree the run keeps is left
+	// unlocked. Nil lifts nothing.
+	Vacate func()
+	Log    Narrator
 }
 
 // ForTicket binds the three Stages to one ticket's slice: one Host, bound to that
@@ -50,7 +54,11 @@ type Deps struct {
 // same cfg, log and args (--verbose and the lease forward through args). It is the one composition root cmd/pipeline and
 // the ticket loop share (#29); the pipeline decides ordering, the Stages do the work.
 func ForTicket(cfg config.Config, log *runlog.Logger, runID string, args stages.Args) Deps {
-	host := hostio.New(cfg, log, runID, args.Verbose, ticket.Slug(args.Identifier))
+	return forHost(hostio.New(cfg, log, runID, args.Verbose, ticket.Slug(args.Identifier)), cfg, log, args)
+}
+
+// forHost binds the Stages to one ticket's slice over host.
+func forHost(host hostio.Host, cfg config.Config, log *runlog.Logger, args stages.Args) Deps {
 	impl, retro := withGreenBase(
 		func() stages.Result { return stages.Implementation(host, cfg, log, args) },
 		func(greenBase string) stages.Result {
@@ -65,6 +73,7 @@ func ForTicket(cfg config.Config, log *runlog.Logger, runID string, args stages.
 		Implementation: impl,
 		Review:         func() stages.Result { return stages.Review(host, cfg, log, args) },
 		Retrospective:  retro,
+		Vacate:         func() { stages.Vacate(host.Worktree(), log) },
 		Log:            log,
 	}
 }
@@ -108,6 +117,14 @@ func withGreenBase(impl Stage, retro func(greenBase string) stages.Result) (Stag
 // whole slice's verdict, so Result.ExitCode is the process exit code the standalone
 // wrapper exits with.
 func Run(d Deps) stages.Result {
+	// The stages occupy the ticket's worktree while their sessions run; whichever
+	// way the run ends, it leaves the worktree it keeps unlocked (#481).
+	vacate := func() {
+		if d.Vacate != nil {
+			d.Vacate()
+		}
+	}
+	defer vacate()
 	// Fast-forward main once for the whole run: the three stages run seconds apart,
 	// so main won't meaningfully move mid-pipeline (DESIGN.md). A fetch failure is
 	// not fatal — keep going and let the stages' own checks surface any staleness.
@@ -152,6 +169,8 @@ func Run(d Deps) stages.Result {
 	// persistently sick host (e.g. full disk) can't spin the slice.
 	if !impl.OK && impl.Retryable {
 		d.Log.Event("pipeline ↻ implementation crashed environmentally with no commit — re-attempting the stage once (BEH-543)")
+		// The second attempt provisions again, and finds no lock but a killed run's.
+		vacate()
 		impl = d.Implementation()
 		narrateErr(d.Log, "implementation", impl)
 		if impl.Disposition == stages.Interrupted {

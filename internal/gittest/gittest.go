@@ -356,3 +356,34 @@ spend() { echo $((left - 1)) > %[1]q; }
 	}
 	r.Git(r.Dir, "config", "core.hooksPath", dir)
 }
+
+// Occupy locks wt as a run killed while its sessions were in it leaves it: with
+// [gitpkg.OccupiedReason] (#478).
+func (r *Repo) Occupy(wt gitpkg.Worktree) {
+	r.t.Helper()
+	r.Git(r.Dir, "worktree", "lock", "--reason", gitpkg.OccupiedReason, wt.Path())
+}
+
+// Occupied reports whether wt is locked with [gitpkg.OccupiedReason], the lock a
+// run holds while its sessions are in the worktree (#478).
+func (r *Repo) Occupied(wt gitpkg.Worktree) bool {
+	r.t.Helper()
+	list, err := r.Checkout().ListWorktrees()
+	if err != nil {
+		r.t.Fatalf("list worktrees: %v", err)
+	}
+	want := realPath(wt.Path())
+	for _, l := range list {
+		if realPath(l.Path) == want {
+			return l.Locked && l.LockReason == gitpkg.OccupiedReason
+		}
+	}
+	return false
+}
+
+func realPath(p string) string {
+	if r, err := filepath.EvalSymlinks(p); err == nil {
+		return r
+	}
+	return p
+}

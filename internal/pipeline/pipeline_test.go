@@ -8,10 +8,13 @@ import (
 	"time"
 
 	"github.com/danoleary/agent-harness/internal/config"
+	"github.com/danoleary/agent-harness/internal/gittest"
+	"github.com/danoleary/agent-harness/internal/hostio"
 	"github.com/danoleary/agent-harness/internal/loopstream"
 	"github.com/danoleary/agent-harness/internal/runlog/runlogtest"
 	"github.com/danoleary/agent-harness/internal/session"
 	"github.com/danoleary/agent-harness/internal/stages"
+	"github.com/danoleary/agent-harness/internal/ticket"
 )
 
 // recorder captures the order stages ran in and the narration emitted.
@@ -453,8 +456,8 @@ func TestRunWithoutARetrospectiveEndsAfterReview(t *testing.T) {
 func TestForTicketBindsEveryStageToOneSlice(t *testing.T) {
 	log := runlogtest.New(t, "PROJ-1")
 	d := ForTicket(config.Config{}, log, "run", stages.Args{Identifier: "PROJ-1"})
-	if d.FetchMain == nil || d.Implementation == nil || d.Review == nil || d.Retrospective == nil {
-		t.Fatalf("ForTicket must bind the fetch and all three Stages, got %+v", d)
+	if d.FetchMain == nil || d.Implementation == nil || d.Review == nil || d.Retrospective == nil || d.Vacate == nil {
+		t.Fatalf("ForTicket must bind the fetch, all three Stages and the vacate (#481), got %+v", d)
 	}
 	if d.Log != log {
 		t.Errorf("the pipeline narrates to the slice's own runlog, got %v", d.Log)
@@ -677,5 +680,122 @@ func TestRunImplementationSessionBlockedSkipsReviewAndIsNoFailure(t *testing.T) 
 	}
 	if r.saw("implementation failed") || !r.saw("blocked on a human") {
 		t.Errorf("events = %v, want the block narrated, not a failure", r.events)
+	}
+}
+
+// #481: the ticket run occupies its worktree while its sessions run (ADR-0076),
+// so a run that ends with the worktree kept must not leave it locked: not after
+// an early return, not without a retrospective, not after a reap the
+// retrospective refused. Each run binds a real Host over a temp repo, as
+// ForTicket binds the real one.
+func TestRunLeavesNoOccupancyLockOnAKeptWorktree(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		session func(h *hostio.Fake, repo *gittest.Repo) func(int, hostio.AgentRun) session.Outcome
+		retro   bool
+	}{
+		{"an interrupted implementation", func(*hostio.Fake, *gittest.Repo) func(int, hostio.AgentRun) session.Outcome {
+			return func(int, hostio.AgentRun) session.Outcome { return session.Outcome{ExitCode: 143} }
+		}, true},
+		{"a loop without the retro step", handsOff, false},
+		{"a retrospective that keeps the unshipped worktree", handsOff, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := gittest.New(t)
+			h := hostio.NewFake(repo.Checkout(), ticket.Slug("PROJ-1"))
+			h.AgentFn = tc.session(h, repo)
+			// No push reaches a PR, so a retrospective keeps the worktree.
+			h.PushErr, h.ForcePushErr, h.PRThere = errors.New("push refused"), errors.New("push refused"), false
+			log := runlogtest.New(t, "PROJ-1")
+			d := forHost(h, sliceCfg(), log, stages.Args{Identifier: "PROJ-1"})
+			if !tc.retro {
+				d.Retrospective = nil
+			}
+			var occupied bool
+			impl := d.Implementation
+			d.Implementation = func() stages.Result {
+				res := impl()
+				occupied = repo.Occupied(h.Worktree())
+				return res
+			}
+
+			Run(d)
+
+			if !occupied {
+				t.Fatal("the run must occupy the worktree it provisioned while its sessions run")
+			}
+			if !h.Worktree().Exists() {
+				t.Fatal("the run was meant to keep its worktree")
+			}
+			if repo.Occupied(h.Worktree()) {
+				t.Error("a run that keeps its worktree must lift its occupancy lock when it ends")
+			}
+		})
+	}
+}
+
+// handsOff is a /tdd session that commits its handoff.
+func handsOff(h *hostio.Fake, repo *gittest.Repo) func(int, hostio.AgentRun) session.Outcome {
+	return func(_ int, run hostio.AgentRun) session.Outcome {
+		if run.Label == "implementation" {
+			repo.Commit(h.Worktree(), "fix.txt", "the fix\n", gittest.HandoffSubject)
+		}
+		return session.Outcome{}
+	}
+}
+
+// sliceCfg is a minimal Consumer config a slice runs every stage over.
+func sliceCfg() config.Config {
+	return config.Config{
+		Host: config.Host{
+			ProjectPath: "/fake/checkout", TddTimeout: 30 * time.Minute, ReviewTimeout: 30 * time.Minute,
+			RetrospectiveTimeout: 20 * time.Minute, SessionIdleTimeout: 5 * time.Minute,
+		},
+		Project: config.Project{
+			BranchPrefix: "feat", Image: "example-agent-harness:latest",
+			Gates:   []config.Gate{{Name: "check", Command: "pnpm run check"}},
+			Prompts: config.PromptBodies{Implement: "implement the ticket", Review: "review the worktree", Retro: "retrospect the run"},
+		},
+	}
+}
+
+// #481: Run lifts the run's occupancy lock on every return, the early ones
+// included, and before the BEH-543 second attempt at implementation provisions
+// again.
+func TestRunVacatesTheWorktreeOnEveryReturn(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		impl  []stages.Result
+		retro bool
+		want  []string
+	}{
+		{"a full slice", []stages.Result{{OK: true}}, true, []string{"impl", "review", "retro", "vacate"}},
+		{"no retro step", []stages.Result{{OK: true}}, false, []string{"impl", "review", "vacate"}},
+		{"a red base", []stages.Result{{Disposition: stages.BaseRed}}, true, []string{"impl", "vacate"}},
+		{"already on main", []stages.Result{{Disposition: stages.AlreadyOnMain}}, true, []string{"impl", "vacate"}},
+		{"a cap abort", []stages.Result{{Disposition: stages.CapAborted}}, true, []string{"impl", "vacate"}},
+		{"an interruption", []stages.Result{interruptedBy143(t)}, true, []string{"impl", "vacate"}},
+		{"a re-attempt", []stages.Result{{Retryable: true}, {OK: true}}, true, []string{"impl", "vacate", "impl", "review", "retro", "vacate"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := &recorder{}
+			d := Deps{
+				FetchMain:      func() error { return nil },
+				Implementation: r.stageSeq("impl", tc.impl...),
+				Review:         r.stage("review", stages.Result{OK: true}),
+				Retrospective:  r.stage("retro", stages.Result{OK: true}),
+				Vacate:         func() { r.order = append(r.order, "vacate") },
+				Log:            r,
+			}
+			if !tc.retro {
+				d.Retrospective = nil
+			}
+
+			Run(d)
+
+			if !reflect.DeepEqual(r.order, tc.want) {
+				t.Errorf("order = %v, want %v", r.order, tc.want)
+			}
+		})
 	}
 }

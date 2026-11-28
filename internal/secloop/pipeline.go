@@ -93,7 +93,9 @@ func (Pipeline) Recover(loop.WorkItem) (stages.Result, bool) { return stages.Res
 // Nothing is pushed unless the host check and the gates agree. A landing that
 // conflicts pushes nothing, and the started line the lease wrote keeps the
 // attempt from being retried until main moves. A landing that collapses means main
-// already fixed the package: the ledger records the fingerprint resolved.
+// already fixed the package: the ledger records the fingerprint resolved. The
+// worktree is locked from the branch cut until the retrospective, the last
+// session, has exited, and removed once clean after that (ADR-0076).
 func Fix(h hostio.Host, cfg config.Config, log *runlog.Logger, it Item, l config.Loop) stages.Result {
 	l.ApplyPrompts(&cfg.Prompts)
 	opts := OptionsFrom(cfg, l)
@@ -108,13 +110,33 @@ func Fix(h hostio.Host, cfg config.Config, log *runlog.Logger, it Item, l config
 		log.Event(who + " … warning: could not fetch origin/main: " + err.Error())
 	}
 	wt := h.Worktree()
+	// This run holds the run lock, so an occupancy lock on the worktree is a
+	// killed run's, and git would refuse to drop the worktree under it (#481).
+	if lifted, err := wt.LiftStaleOccupancy(); err != nil {
+		log.Event(fmt.Sprintf("%s … warning: could not read whether a killed run left its occupancy lock on %s: %v", who, wt.Path(), err))
+	} else if lifted {
+		log.Event(fmt.Sprintf("%s ↺ lifted the occupancy lock a killed run left on %s (#478)", who, wt.Path()))
+	}
 	if err := wt.CreateFresh(); err != nil {
 		log.Event(fmt.Sprintf("%s ✗ could not cut %s fresh from origin/main: %v — nothing pushed", who, wt.Branch(), err))
 		return stages.Result{}
 	}
 	r := run{h: h, cfg: cfg, log: log, it: it, opts: opts, fixes: fixes}
+	// The run occupies the worktree while any session is in it, the
+	// retrospective included, and vacates it just before the cleanup (ADR-0076,
+	// #481).
+	vacate, err := wt.Occupy()
+	if err != nil {
+		log.Event(fmt.Sprintf("%s ⚠ could not lock the worktree %s for the run: %v — only the run lock keeps it while the sessions run (#478)", who, wt.Path(), err))
+		vacate = func() error { return nil }
+	}
 	// The branch on origin is the record, and the next attempt cuts it fresh.
-	defer fixes.Cleanup()
+	defer func() {
+		if err := vacate(); err != nil {
+			log.Event(fmt.Sprintf("%s ⚠ could not lift the run's lock on the worktree %s: %v — the next run on %s lifts it (#478)", who, wt.Path(), err, key))
+		}
+		fixes.Cleanup()
+	}()
 	if !fixes.Provision() {
 		return stages.Result{}
 	}
